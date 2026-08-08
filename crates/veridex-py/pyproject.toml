@@ -8,6 +8,8 @@ description = "The open, cross-format trust layer for physical-AI data (import m
 requires-python = ">=3.9"
 license = { text = "MIT" }
 readme = "README.md"
+# Version is taken from the crate (Cargo.toml) so the wheel and the Rust crate never drift.
+dynamic = ["version"]
 classifiers = [
     "Programming Language :: Rust",
     "License :: OSI Approved :: MIT License",

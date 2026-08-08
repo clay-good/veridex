@@ -46,7 +46,15 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 - **Configuration** — a `veridex.toml` (auto-discovered, or `--config`) that selects categories,
   disables checks, overrides per-check severities, and sets the failure threshold; the effective
   config is recorded in every verdict.
-- **CI** — GitHub Actions running fmt, clippy (`-D warnings`), and the full test suite.
+- **CI** — GitHub Actions running fmt, clippy (`-D warnings`), and the full test suite, plus a
+  Python job that builds the extension with maturin and runs the CLI ⇄ Python parity test on every
+  push.
+
+### Fixed
+
+- The `veridex-data` wheel could not build: `pyproject.toml` was missing a `version` (now taken
+  dynamically from the crate) and referenced a nonexistent package `README.md` (now added). The
+  wheel builds and the parity test passes under pyo3 0.29.
 
 ### Security
 
