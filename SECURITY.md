@@ -36,7 +36,8 @@ document states what Veridex guarantees, what it does **not**, and how signing k
   private; never commit it. The repository `.gitignore` excludes `*.key` and `*.pem`, and generated
   certificates (`*.veridex.json`).
 - `veridex keygen <path>` writes the secret to `<path>` and the public key to `<path>.pub`. Share
-  only the public key; verifiers use it to check certificates.
+  only the public key; verifiers use it to check certificates. `keygen` refuses to overwrite an
+  existing key file unless `--force` is given, so an accidental re-run cannot destroy a signing key.
 - Rotating an issuer key invalidates trust in future certificates signed by the old key; already
   issued certificates remain verifiable against the public key they embed.
 

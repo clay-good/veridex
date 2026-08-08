@@ -65,6 +65,7 @@ struct Args {
     sarif: bool,
     html: bool,
     config: Option<String>,
+    force: bool,
 }
 
 fn parse_args(rest: &[String]) -> Args {
@@ -80,12 +81,14 @@ fn parse_args(rest: &[String]) -> Args {
     let mut sarif = false;
     let mut html = false;
     let mut config = None;
+    let mut force = false;
     let mut it = rest.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--json" => json = true,
             "--sarif" => sarif = true,
             "--html" => html = true,
+            "--force" => force = true,
             "--config" => config = it.next().cloned(),
             "--format" => format = it.next().cloned(),
             "--key" => key = it.next().cloned(),
@@ -111,6 +114,7 @@ fn parse_args(rest: &[String]) -> Args {
         sarif,
         html,
         config,
+        force,
     }
 }
 
@@ -538,8 +542,21 @@ fn cmd_keygen(rest: &[String]) -> ExitCode {
         eprintln!("veridex: keygen requires an output path, e.g. `veridex keygen issuer`");
         return ExitCode::from(EXIT_TOOL_ERROR);
     };
-    let keypair = SigningKeypair::generate();
     let pub_path = format!("{path}.pub");
+    // Never silently clobber an existing signing key: overwriting a secret key is unrecoverable and
+    // invalidates every certificate it issued. Require --force to replace an existing key.
+    if !args.force {
+        for existing in [path.as_str(), pub_path.as_str()] {
+            if std::path::Path::new(existing).exists() {
+                eprintln!(
+                    "veridex: {existing} already exists; refusing to overwrite a key. \
+                     Choose another path or pass --force."
+                );
+                return ExitCode::from(EXIT_TOOL_ERROR);
+            }
+        }
+    }
+    let keypair = SigningKeypair::generate();
     if let Err(e) = std::fs::write(path, format!("{}\n", keypair.secret_hex())) {
         eprintln!("veridex: cannot write {path}: {e}");
         return ExitCode::from(EXIT_TOOL_ERROR);
@@ -671,6 +688,7 @@ fn print_help() {
     println!("    --emit <fmt>         provenance format: croissant (default) or prov");
     println!("    --fail-on <sev>      check failure threshold: error (default) or warning");
     println!("    --config <file>      veridex.toml (auto-discovered in cwd if present)");
+    println!("    --force              overwrite existing key files (keygen)");
     println!("    --version            print the version");
     println!("    --help               print this help");
     println!();

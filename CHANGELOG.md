@@ -63,6 +63,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   string as the key, then reporting `untrusted issuer` (a verification *failure*, exit 20) instead of
   a tool error. The `--key` value is now resolved unambiguously — a 64-char hex key inline, otherwise
   a file path — and an unreadable or non-hex key file is a clear exit-2 error, not a false mismatch.
+- `veridex keygen` silently overwrote an existing key file — an unrecoverable loss of a signing key.
+  It now refuses to clobber an existing secret or public key unless `--force` is passed.
 
 ### Security
 
