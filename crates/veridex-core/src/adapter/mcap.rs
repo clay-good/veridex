@@ -150,6 +150,7 @@ impl Adapter for McapAdapter {
                 declared_rate_hz: None,
                 clock_id: CLOCK_ID.to_string(),
                 frames: b.frames,
+                stats: None,
             })
             .collect();
 

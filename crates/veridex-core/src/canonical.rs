@@ -173,6 +173,12 @@ impl Stream {
         e.str(self.modality.tag());
         e.opt(&self.declared_rate_hz, |e, r| e.f64(*r));
         e.str(&self.clock_id);
+        e.opt(&self.stats, |e, s| {
+            e.f64(s.min);
+            e.f64(s.max);
+            e.f64(s.mean);
+            e.f64(s.std);
+        });
         // frames: order is data-defined and preserved (the recorded timeline)
         e.seq(&self.frames, |e, f| f.encode(e));
     }

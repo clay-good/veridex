@@ -1,10 +1,10 @@
 //! The checks catalog: concrete [`Check`](crate::check::Check) implementations grouped by family.
 //!
-//! MVP families implemented so far: [`structural`], [`temporal`] (including the headline
-//! `TEMPORAL.CLOCK_SKEW`), and [`provenance`] completeness. Statistical checks follow as the CDM
-//! grows to carry stored/recomputed statistics.
+//! MVP families: [`structural`], [`temporal`] (including the headline `TEMPORAL.CLOCK_SKEW`),
+//! [`statistical`] (range/sanity over stored stats), and [`provenance`] completeness.
 
 pub mod provenance;
+pub mod statistical;
 pub mod structural;
 pub mod temporal;
 
@@ -20,6 +20,7 @@ pub fn standard_checks() -> Vec<Box<dyn Check>> {
         Box::new(temporal::RateConformance::default()),
         Box::new(temporal::Gaps::default()),
         Box::new(temporal::ClockSkew::default()),
+        Box::new(statistical::RangeSanity),
         Box::new(provenance::ProvenanceCompleteness),
     ]
 }

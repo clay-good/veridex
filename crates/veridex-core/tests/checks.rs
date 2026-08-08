@@ -5,7 +5,7 @@ use veridex_core::cdm::{
     ProvenanceScope, Stream, ValueRef,
 };
 use veridex_core::check::{Check, Severity};
-use veridex_core::checks::{provenance, structural, temporal};
+use veridex_core::checks::{provenance, statistical, structural, temporal};
 
 fn vref() -> ValueRef {
     ValueRef {
@@ -31,6 +31,7 @@ fn stream(name: &str, clock: &str, rate: Option<f64>, ts: &[i64]) -> Stream {
         modality: Modality::ScalarState,
         declared_rate_hz: rate,
         clock_id: clock.into(),
+        stats: None,
         frames: frames_at(ts),
     }
 }
@@ -266,5 +267,66 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 7);
+    assert_eq!(verdict.executed_checks.len(), 8);
+}
+
+// ---- statistical ----
+
+fn stream_with_stats(name: &str, stats: veridex_core::cdm::StreamStats) -> Stream {
+    let mut s = stream(name, "c", None, &[0, 1]);
+    s.stats = Some(stats);
+    s
+}
+
+fn stats(min: f64, max: f64, mean: f64, std: f64) -> veridex_core::cdm::StreamStats {
+    veridex_core::cdm::StreamStats {
+        min,
+        max,
+        mean,
+        std,
+    }
+}
+
+#[test]
+fn inverted_stat_range_is_an_error() {
+    let d = dataset(vec![episode(
+        0,
+        vec![stream_with_stats("s", stats(5.0, 1.0, 3.0, 1.0))],
+    )]);
+    let f = statistical::RangeSanity.run(&d);
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].code, "STATISTICAL.RANGE_INVERTED");
+    assert_eq!(f[0].severity, Severity::Error);
+}
+
+#[test]
+fn non_finite_stats_are_an_error() {
+    let d = dataset(vec![episode(
+        0,
+        vec![stream_with_stats("s", stats(0.0, f64::NAN, 0.0, 1.0))],
+    )]);
+    let f = statistical::RangeSanity.run(&d);
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].code, "STATISTICAL.NON_FINITE");
+}
+
+#[test]
+fn constant_stream_is_a_degenerate_warning() {
+    let d = dataset(vec![episode(
+        0,
+        vec![stream_with_stats("s", stats(2.0, 2.0, 2.0, 0.0))],
+    )]);
+    let f = statistical::RangeSanity.run(&d);
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].code, "STATISTICAL.DEGENERATE");
+    assert_eq!(f[0].severity, Severity::Warning);
+}
+
+#[test]
+fn healthy_stats_produce_no_findings() {
+    let d = dataset(vec![episode(
+        0,
+        vec![stream_with_stats("s", stats(-1.0, 1.0, 0.0, 0.5))],
+    )]);
+    assert!(statistical::RangeSanity.run(&d).is_empty());
 }

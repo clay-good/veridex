@@ -221,6 +221,41 @@ fn provenance_records_robot_type_but_does_not_fabricate() {
 }
 
 #[test]
+fn reads_stored_stats_from_stats_json() {
+    let dir = tempfile::tempdir().unwrap();
+    write_lerobot(
+        dir.path(),
+        &[("observation.state", "float32")],
+        10.0,
+        &[(0, 0.0), (0, 0.1)],
+    );
+    // A constant (degenerate) stored stat for the feature.
+    let stats = serde_json::json!({
+        "observation.state": { "min": [2.0], "max": [2.0], "mean": [2.0], "std": [0.0] }
+    });
+    fs::write(
+        dir.path().join("meta/stats.json"),
+        serde_json::to_string(&stats).unwrap(),
+    )
+    .unwrap();
+
+    let d = ingest_lerobot(dir.path());
+    let s = &d.episodes[0].streams[0];
+    let st = s.stats.expect("stats populated from stats.json");
+    assert_eq!(st.min, 2.0);
+    assert_eq!(st.std, 0.0);
+
+    // The statistical check flags the constant stream as degenerate.
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let hash = veridex_core::content_hash(&d);
+    let verdict = engine.run(&d, hash, &veridex_core::RunConfig::default());
+    assert!(verdict
+        .findings
+        .iter()
+        .any(|f| f.code == "STATISTICAL.DEGENERATE"));
+}
+
+#[test]
 fn same_logical_dataset_yields_equivalent_cdms_across_formats() {
     // One episode, two frame-aligned streams at 0.0/0.1/0.2 s.
     let dir = tempfile::tempdir().unwrap();

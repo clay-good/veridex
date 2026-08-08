@@ -96,6 +96,22 @@ pub struct Stream {
     pub clock_id: String,
     /// The frames, in recorded order. Frame order is data-defined and is preserved (not sorted).
     pub frames: Vec<Frame>,
+    /// Stored per-stream summary statistics, if the source records them (e.g. LeRobot's
+    /// `meta/stats.json`). Checks may sanity-check these without decoding frame payloads.
+    pub stats: Option<StreamStats>,
+}
+
+/// Stored summary statistics for a stream, as recorded by the source (not recomputed by Veridex).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct StreamStats {
+    /// Minimum value.
+    pub min: f64,
+    /// Maximum value.
+    pub max: f64,
+    /// Mean value.
+    pub mean: f64,
+    /// Standard deviation.
+    pub std: f64,
 }
 
 /// One frame: a timestamped pointer to a value in streamed storage.

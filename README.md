@@ -155,14 +155,14 @@ cargo clippy --all-targets
 
 **Early implementation, runs end-to-end.** Against a full [OpenSpec](openspec/) design, these are
 in and tested: the Canonical Dataset Model with deterministic content hashing; the validation
-engine; the structural / temporal / provenance check catalog (including the headline
+engine; the structural / temporal / statistical / provenance check catalog (including the headline
 `TEMPORAL.CLOCK_SKEW`); the v1 trust-score rubric; terminal + JSON reporting; **LeRobot v3 and MCAP
 adapters** with a passing cross-format neutrality gate (the same logical dataset yields equivalent
 CDMs in both formats); Croissant + W3C PROV provenance emit; Ed25519 **certificate signing with
 offline verification** (tamper + transplant rejection); a working CLI (`check`, `inspect`,
 `certify`, `verify`, `provenance`, `keygen`) — see the [Quickstart](#quickstart); and **Python
 bindings** (`import veridex`) that call the same core pipeline, with a passing CLI⇄Python parity
-test. Next up: streaming/remote ingestion and statistical checks.
+test. Next up: streaming/remote ingestion and stored-vs-recomputed statistics.
 
 Start with [openspec/project.md](openspec/project.md) for the design, or track progress in
 [openspec/changes/bootstrap-veridex-mvp/tasks.md](openspec/changes/bootstrap-veridex-mvp/tasks.md).

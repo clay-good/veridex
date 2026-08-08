@@ -13,6 +13,7 @@ fn stream(name: &str, clock: &str, rate: Option<f64>, ts: &[i64]) -> Stream {
         modality: Modality::ScalarState,
         declared_rate_hz: rate,
         clock_id: clock.into(),
+        stats: None,
         frames: ts
             .iter()
             .map(|t| Frame {

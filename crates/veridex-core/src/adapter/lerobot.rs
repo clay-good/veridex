@@ -25,7 +25,7 @@ use serde::Deserialize;
 
 use crate::cdm::{
     Dataset, Episode, Frame, Modality, Provenance, ProvenanceClass, ProvenanceElement,
-    ProvenanceScope, Stream, ValueRef,
+    ProvenanceScope, Stream, StreamStats, ValueRef,
 };
 
 use super::{
@@ -89,6 +89,49 @@ fn infer_modality(name: &str, dtype: Option<&str>) -> Modality {
     } else {
         Modality::ScalarState
     }
+}
+
+/// The first scalar number reachable in a JSON value (descending into arrays). LeRobot stats are
+/// per-dimension arrays; we summarize with the first dimension.
+fn first_number(v: &serde_json::Value) -> Option<f64> {
+    match v {
+        serde_json::Value::Number(n) => n.as_f64(),
+        serde_json::Value::Array(a) => a.iter().find_map(first_number),
+        _ => None,
+    }
+}
+
+/// Load per-feature stored statistics from `meta/stats.json`, if present. Missing or unparseable
+/// stats are simply absent (never fabricated).
+fn load_stats(dir: &Path) -> BTreeMap<String, StreamStats> {
+    let mut out = BTreeMap::new();
+    let Ok(bytes) = std::fs::read(dir.join("meta").join("stats.json")) else {
+        return out;
+    };
+    let Ok(serde_json::Value::Object(map)) = serde_json::from_slice::<serde_json::Value>(&bytes)
+    else {
+        return out;
+    };
+    for (feature, stats) in map {
+        let (Some(min), Some(max), Some(mean), Some(std)) = (
+            stats.get("min").and_then(first_number),
+            stats.get("max").and_then(first_number),
+            stats.get("mean").and_then(first_number),
+            stats.get("std").and_then(first_number),
+        ) else {
+            continue;
+        };
+        out.insert(
+            feature,
+            StreamStats {
+                min,
+                max,
+                mean,
+                std,
+            },
+        );
+    }
+    out
 }
 
 /// Recursively collect `.parquet` files under `dir`, in a deterministic sorted order.
@@ -243,6 +286,8 @@ impl Adapter for LeRobotAdapter {
             }
         }
 
+        let stats = load_stats(dir);
+
         // Build episodes: one stream per feature, frames at the episode's row timestamps.
         let episodes: Vec<Episode> = episode_ts
             .into_iter()
@@ -268,6 +313,7 @@ impl Adapter for LeRobotAdapter {
                                 },
                             })
                             .collect(),
+                        stats: stats.get(name).copied(),
                     })
                     .collect();
                 Episode {
@@ -325,6 +371,7 @@ impl Adapter for LeRobotAdapter {
                 "episode_index -> episode".into(),
                 "fps -> stream.declared_rate_hz".into(),
                 "robot_type -> provenance.sensor".into(),
+                "meta/stats.json -> stream.stats".into(),
             ],
             unmapped_fields: vec![UnmappedField {
                 source_path: "feature array values".into(),

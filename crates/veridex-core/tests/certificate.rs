@@ -13,6 +13,7 @@ fn stream(name: &str, clock: &str, ts: &[i64]) -> Stream {
         modality: Modality::ScalarState,
         declared_rate_hz: None,
         clock_id: clock.into(),
+        stats: None,
         frames: ts
             .iter()
             .map(|t| Frame {
@@ -75,12 +76,12 @@ fn certificate_binds_content_and_states_coverage() {
     assert_eq!(cert.dataset_id, "acme/demo");
     // Coverage is reported (known/asserted/unknown); this dataset has no provenance.
     assert_eq!(cert.provenance_coverage.unknown, 6);
-    // Checks were run and some categories skipped (statistical/semantic/video have no MVP checks).
+    // Checks were run and some categories skipped (semantic/video have no MVP checks).
     assert!(!cert.checks_run.is_empty());
-    assert!(cert
-        .categories_skipped
-        .iter()
-        .any(|c| matches!(c, veridex_core::Category::Statistical)));
+    assert!(cert.categories_skipped.iter().any(|c| matches!(
+        c,
+        veridex_core::Category::Semantic | veridex_core::Category::Video
+    )));
 }
 
 #[test]

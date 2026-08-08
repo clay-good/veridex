@@ -35,8 +35,10 @@ the build plan.
       adapter-populated shape metadata — deferred to M2.)
 - [x] Temporal: monotonicity, rate conformance, gaps — and **`TEMPORAL.CLOCK_SKEW`** cross-stream
       alignment (D4, headline).
-- [ ] Statistical: stored-vs-recomputed stats, range/sanity, saturation, degenerate distributions.
-      (Needs CDM to carry stored/recomputed stats — deferred until adapters populate them.)
+- [~] Statistical: range/sanity + degenerate distributions over stored stats
+      (`statistical.range-sanity`: inverted range, non-finite, negative std, constant). CDM now
+      carries `Stream.stats`; the LeRobot adapter reads `meta/stats.json`. Stored-vs-recomputed and
+      saturation need streamed values — a follow-up.
 - [x] Provenance-completeness checks (presence + internal consistency).
 - [x] Each check ships ID + documented risk + remedy.
 
