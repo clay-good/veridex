@@ -2,7 +2,7 @@
 //! known / asserted / unknown (design D9). Kept separate from the check score so a clean data
 //! verdict can never mask missing provenance.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::cdm::{Dataset, ProvenanceClass};
 
@@ -17,7 +17,7 @@ pub const EXPECTED_PROVENANCE_KEYS: &[&str] = &[
 ];
 
 /// Coverage of the expected provenance set.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProvenanceCoverage {
     /// Expected keys present as extracted (`known`).
     pub known: u32,

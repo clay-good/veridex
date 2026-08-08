@@ -112,11 +112,20 @@ cargo run -p veridex-cli -- inspect /tmp/demo.mcap
 
 # machine-readable output
 cargo run -p veridex-cli -- check --json /tmp/demo.mcap
+
+# issue a signed, content-bound trust certificate and verify it offline
+cargo run -p veridex-cli -- keygen /tmp/issuer
+cargo run -p veridex-cli -- certify /tmp/demo.mcap --key /tmp/issuer --out /tmp/demo.veridex.json
+cargo run -p veridex-cli -- verify  /tmp/demo.mcap --certificate /tmp/demo.veridex.json --key /tmp/issuer.pub
 ```
 
 `check` catches the headline `TEMPORAL.CLOCK_SKEW` (the camera and robot clocks drift 210 ms apart),
 reports the training risk and remedy, and exits `20` (fail). Exit codes: `0` pass · `10`
 pass-with-warnings · `20` fail · `2` tool-error.
+
+The certificate binds to the dataset's CDM content hash and is Ed25519-signed: `verify` succeeds
+offline, and rejects a tampered certificate (signature mismatch) or one presented against a
+different dataset (content-hash mismatch).
 
 ## Build & test
 
@@ -132,9 +141,10 @@ cargo clippy --all-targets
 in and tested: the Canonical Dataset Model with deterministic content hashing; the validation
 engine; the structural / temporal / provenance check catalog (including the headline
 `TEMPORAL.CLOCK_SKEW`); the v1 trust-score rubric; terminal + JSON reporting; the **MCAP adapter**;
-and a working CLI (`veridex check`, `veridex inspect`) — see the [Quickstart](#quickstart). Next up:
-the LeRobot v3 adapter (completing the cross-format neutrality proof) and certificate signing, so
-`certify` / `verify` / `provenance` come online.
+Ed25519 **certificate signing with offline verification** (tamper + transplant rejection); and a
+working CLI (`check`, `inspect`, `certify`, `verify`, `keygen`) — see the
+[Quickstart](#quickstart). Next up: the LeRobot v3 adapter (completing the cross-format neutrality
+proof) and Croissant/PROV emit for `provenance`.
 
 Start with [openspec/project.md](openspec/project.md) for the design, or track progress in
 [openspec/changes/bootstrap-veridex-mvp/tasks.md](openspec/changes/bootstrap-veridex-mvp/tasks.md).

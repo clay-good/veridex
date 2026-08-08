@@ -27,7 +27,10 @@ pub use adapter::{
     IngestReport, Ingested, Sample, Source, UnmappedField,
 };
 pub use canonical::{content_hash, ContentHash, CANONICAL_VERSION};
-pub use certificate::{score, Grade, ProvenanceCoverage, TrustScore, RUBRIC_VERSION};
+pub use certificate::{
+    score, sign, verify, CertError, Certificate, Grade, Issuance, ProvenanceCoverage,
+    SignedCertificate, SigningKeypair, TrustScore, Verified, RUBRIC_VERSION,
+};
 pub use check::{Category, Check, Finding, Location, Scope, Severity};
 pub use engine::{Engine, RegistryError, RunConfig, Status, Verdict};
 pub use report::{render_json, render_terminal, REPORT_SCHEMA_VERSION};

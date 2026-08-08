@@ -44,19 +44,21 @@ the build plan.
 - [ ] Emit valid Croissant; minimal W3C PROV lineage.
 
 ## M6 — Trust certificate
-- [ ] Certificate schema (content, content-hash binding, rubric_version, issuance metadata).
+- [x] Certificate schema (content, content-hash binding, rubric_version, issuance metadata) —
+      `veridex.certificate/1`, records checks run + categories skipped + provenance coverage.
 - [x] v1 scoring rubric (D7): deterministic score + grade; ship rubric doc (docs/rubric-v1.md).
       Provenance coverage (known/asserted/unknown) is a separate 30% axis so a clean check score
       can't mask missing provenance.
-- [ ] COSE/JWS signing (reuse Invariant, D6); offline `verify`; tamper + transplant rejection tests.
+- [x] Ed25519 signing (JWS-style detached signature over canonical bytes, D6); offline `verify`;
+      tamper + transplant + wrong-issuer rejection tests. (COSE envelope is a later refinement.)
 
 ## M7 — Reporting (MVP)
 - [x] Terminal report + rollup summaries (dataset/episode/stream, worst episodes first).
 - [x] Versioned JSON output (`veridex.report/1`).
 
 ## M8 — CLI + Python parity
-- [~] `veridex check | inspect` implemented end-to-end (ingest → CDM → checks → score → report).
-      `certify | verify | provenance` await signing/Croissant.
+- [~] `veridex check | inspect | certify | verify | keygen` implemented end-to-end. `provenance`
+      awaits Croissant emit.
 - [x] Format autodetect + `--format` override; ambiguity is `IngestError::AmbiguousFormat`, not a
       silent guess.
 - [~] CI exit codes (0 pass · 10 warnings · 20 fail · 2 tool-error). Configurable failure threshold

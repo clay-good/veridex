@@ -1,0 +1,200 @@
+//! Certificate signing and offline verification (design D6).
+//!
+//! A certificate is signed with Ed25519 over the deterministic JSON of its content, mirroring the
+//! signed-verdict pattern shared with Invariant. Verification is fully offline: it recomputes the
+//! canonical bytes, checks the signature against the issuer public key, and confirms the bound CDM
+//! content hash matches the presented dataset — rejecting tampering (signature mismatch) and
+//! transplantation (content-hash mismatch) respectively.
+
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use serde::{Deserialize, Serialize};
+
+use super::document::Certificate;
+
+const SIGN_DOMAIN: &[u8] = b"veridex.certificate.sig.v1\0";
+
+/// Errors from signing or verification.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum CertError {
+    /// A key or signature was not valid lowercase hex of the expected length.
+    #[error("malformed {what}: expected {expected} hex bytes")]
+    Malformed {
+        /// What was malformed (e.g. "public key").
+        what: &'static str,
+        /// Expected byte length.
+        expected: usize,
+    },
+    /// The signature did not verify against the certificate content and public key (tampering).
+    #[error("signature mismatch: the certificate was altered or signed by a different key")]
+    SignatureMismatch,
+    /// The certificate is bound to a different dataset than the one presented (transplant).
+    #[error("content-hash mismatch: certificate is bound to {bound}, but the dataset hashes to {presented}")]
+    ContentHashMismatch {
+        /// The hash the certificate is bound to.
+        bound: String,
+        /// The presented dataset's hash.
+        presented: String,
+    },
+    /// The certificate was signed by a key other than the trusted issuer key provided.
+    #[error("untrusted issuer: certificate key {found} does not match the expected issuer key")]
+    UntrustedIssuer {
+        /// The public key embedded in the certificate.
+        found: String,
+    },
+}
+
+/// An Ed25519 signing keypair.
+pub struct SigningKeypair {
+    key: SigningKey,
+}
+
+impl SigningKeypair {
+    /// Construct from a 32-byte seed (deterministic; useful for tests and reproducible issuance).
+    pub fn from_seed(seed: [u8; 32]) -> Self {
+        SigningKeypair {
+            key: SigningKey::from_bytes(&seed),
+        }
+    }
+
+    /// Construct from a 64-character hex secret seed, trimming surrounding whitespace. Returns
+    /// `None` if the input is not exactly 32 hex-encoded bytes.
+    pub fn from_secret_hex(hex: &str) -> Option<Self> {
+        let seed: [u8; 32] = from_hex(hex.trim())?;
+        Some(SigningKeypair::from_seed(seed))
+    }
+
+    /// Generate a fresh random keypair from the OS CSPRNG.
+    pub fn generate() -> Self {
+        let mut seed = [0u8; 32];
+        getrandom::getrandom(&mut seed).expect("OS randomness");
+        SigningKeypair::from_seed(seed)
+    }
+
+    /// The 32-byte secret seed, hex-encoded. Store this secret; never commit it.
+    pub fn secret_hex(&self) -> String {
+        to_hex(self.key.to_bytes().as_slice())
+    }
+
+    /// The public verifying key, hex-encoded. This is the issuer key id.
+    pub fn public_hex(&self) -> String {
+        to_hex(self.key.verifying_key().to_bytes().as_slice())
+    }
+}
+
+/// A signed certificate: content plus its detached Ed25519 signature and the issuer public key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SignedCertificate {
+    /// The certificate content.
+    pub certificate: Certificate,
+    /// Signature algorithm (always `ed25519` in v0.1).
+    pub algorithm: String,
+    /// Issuer public key, hex-encoded (the key id).
+    pub public_key: String,
+    /// Ed25519 signature over the canonical certificate bytes, hex-encoded.
+    pub signature: String,
+}
+
+/// What a successful verification reports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Verified {
+    /// Issuer key id (public key hex).
+    pub key_id: String,
+    /// Issuance timestamp from the certificate.
+    pub timestamp: String,
+}
+
+/// The exact bytes signed and verified: a domain tag plus the certificate's canonical JSON.
+fn signing_message(certificate: &Certificate) -> Vec<u8> {
+    let json = serde_json::to_vec(certificate).expect("certificate serializes");
+    let mut msg = Vec::with_capacity(SIGN_DOMAIN.len() + json.len());
+    msg.extend_from_slice(SIGN_DOMAIN);
+    msg.extend_from_slice(&json);
+    msg
+}
+
+/// Sign a certificate, producing a portable [`SignedCertificate`].
+pub fn sign(certificate: Certificate, keypair: &SigningKeypair) -> SignedCertificate {
+    let signature: Signature = keypair.key.sign(&signing_message(&certificate));
+    SignedCertificate {
+        certificate,
+        algorithm: "ed25519".to_string(),
+        public_key: keypair.public_hex(),
+        signature: to_hex(&signature.to_bytes()),
+    }
+}
+
+/// Verify a signed certificate offline.
+///
+/// - `presented_cdm_hash`: if `Some`, the certificate must be bound to this hash (transplant check).
+/// - `expected_issuer`: if `Some`, the certificate must be signed by this public key hex.
+pub fn verify(
+    signed: &SignedCertificate,
+    presented_cdm_hash: Option<&str>,
+    expected_issuer: Option<&str>,
+) -> Result<Verified, CertError> {
+    // Issuer identity, if a trusted key was supplied.
+    if let Some(expected) = expected_issuer {
+        if !expected.eq_ignore_ascii_case(&signed.public_key) {
+            return Err(CertError::UntrustedIssuer {
+                found: signed.public_key.clone(),
+            });
+        }
+    }
+
+    // Signature over the canonical content (tamper check).
+    let vk_bytes: [u8; 32] = from_hex(&signed.public_key).ok_or(CertError::Malformed {
+        what: "public key",
+        expected: 32,
+    })?;
+    let verifying_key = VerifyingKey::from_bytes(&vk_bytes).map_err(|_| CertError::Malformed {
+        what: "public key",
+        expected: 32,
+    })?;
+    let sig_bytes: [u8; 64] = from_hex(&signed.signature).ok_or(CertError::Malformed {
+        what: "signature",
+        expected: 64,
+    })?;
+    let signature = Signature::from_bytes(&sig_bytes);
+    verifying_key
+        .verify(&signing_message(&signed.certificate), &signature)
+        .map_err(|_| CertError::SignatureMismatch)?;
+
+    // Binding to the presented dataset (transplant check).
+    if let Some(presented) = presented_cdm_hash {
+        if presented != signed.certificate.cdm_content_hash {
+            return Err(CertError::ContentHashMismatch {
+                bound: signed.certificate.cdm_content_hash.clone(),
+                presented: presented.to_string(),
+            });
+        }
+    }
+
+    Ok(Verified {
+        key_id: signed.public_key.clone(),
+        timestamp: signed.certificate.issuance.timestamp.clone(),
+    })
+}
+
+fn to_hex(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push(char::from_digit((b >> 4) as u32, 16).unwrap());
+        s.push(char::from_digit((b & 0xf) as u32, 16).unwrap());
+    }
+    s
+}
+
+/// Decode lowercase/uppercase hex into a fixed-size array, or `None` on any malformed input.
+fn from_hex<const N: usize>(s: &str) -> Option<[u8; N]> {
+    if s.len() != N * 2 {
+        return None;
+    }
+    let mut out = [0u8; N];
+    let bytes = s.as_bytes();
+    for i in 0..N {
+        let hi = (bytes[2 * i] as char).to_digit(16)?;
+        let lo = (bytes[2 * i + 1] as char).to_digit(16)?;
+        out[i] = (hi * 16 + lo) as u8;
+    }
+    Some(out)
+}

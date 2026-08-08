@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::canonical::ContentHash;
@@ -38,7 +38,7 @@ pub struct RunConfig {
 }
 
 /// The effective configuration, snapshotted into the verdict so a run is reproducible from it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EffectiveConfig {
     /// Selected categories, sorted; `None` means all.
     pub categories: Option<Vec<Category>>,
@@ -62,7 +62,7 @@ impl From<&RunConfig> for EffectiveConfig {
 }
 
 /// Overall verdict status.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Status {
     /// No findings, or only `info`.
@@ -74,7 +74,7 @@ pub enum Status {
 }
 
 /// Counts of findings by severity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct SeverityCounts {
     /// Number of `error` findings.
     pub error: u64,
@@ -85,12 +85,12 @@ pub struct SeverityCounts {
 }
 
 /// A check that was selected to run.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutedCheck {
     /// Check id.
-    pub check_id: &'static str,
+    pub check_id: String,
     /// Check version.
-    pub version: &'static str,
+    pub version: String,
     /// Check category.
     pub category: Category,
 }
@@ -127,6 +127,16 @@ pub struct Verdict {
     pub effective_config: EffectiveConfig,
     /// SHA-256 over the canonical JSON of every other field (hex). Two byte-identical runs share it.
     pub result_content_hash: String,
+}
+
+impl Verdict {
+    /// The distinct categories of the checks that ran (from `executed_checks`).
+    pub fn checks_categories(&self) -> Vec<Category> {
+        let mut cats: Vec<Category> = self.executed_checks.iter().map(|c| c.category).collect();
+        cats.sort();
+        cats.dedup();
+        cats
+    }
 }
 
 /// A subset view of the verdict used to compute [`Verdict::result_content_hash`] — every field
@@ -196,8 +206,8 @@ impl Engine {
                 continue;
             }
             executed_checks.push(ExecutedCheck {
-                check_id: check.id(),
-                version: check.version(),
+                check_id: check.id().to_string(),
+                version: check.version().to_string(),
                 category: check.category(),
             });
 
@@ -232,7 +242,7 @@ impl Engine {
                 .then_with(|| a.message.cmp(&b.message))
                 .then_with(|| a.severity.cmp(&b.severity))
         });
-        executed_checks.sort_by(|a, b| a.check_id.cmp(b.check_id));
+        executed_checks.sort_by(|a, b| a.check_id.cmp(&b.check_id));
         errored_checks.sort_by(|a, b| a.check_id.cmp(b.check_id));
 
         let counts = count_severities(&findings);

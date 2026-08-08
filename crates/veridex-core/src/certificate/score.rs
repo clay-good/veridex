@@ -4,7 +4,7 @@
 //! Deliberately boring and integer-only so it is exactly reproducible. The full rubric text ships
 //! as `docs/rubric-v1.md`. Scores are only comparable **within the same `rubric_version`**.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::check::{Category, Severity};
 use crate::engine::Verdict;
@@ -26,7 +26,7 @@ const DATA_WEIGHT: u32 = 7;
 const PROVENANCE_WEIGHT: u32 = 3;
 
 /// A letter grade.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Grade {
     /// 90–100.
     A,
@@ -65,14 +65,14 @@ impl Grade {
 }
 
 /// The computed trust score, with both sub-scores exposed so the certificate can show its work.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrustScore {
     /// Overall 0–100 score.
     pub score: u8,
     /// Letter grade for `score`.
     pub grade: Grade,
     /// The rubric version used.
-    pub rubric_version: &'static str,
+    pub rubric_version: String,
     /// Data-quality sub-score (0–100), before provenance weighting.
     pub data_score: u8,
     /// Provenance coverage percentage (0–100).
@@ -115,7 +115,7 @@ pub fn score(verdict: &Verdict, coverage: &ProvenanceCoverage) -> TrustScore {
     TrustScore {
         score,
         grade: Grade::from_score(score),
-        rubric_version: RUBRIC_VERSION,
+        rubric_version: RUBRIC_VERSION.to_string(),
         data_score: data_score as u8,
         provenance_pct: provenance_pct as u8,
     }

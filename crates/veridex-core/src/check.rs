@@ -4,13 +4,13 @@
 //! inspects a [`Dataset`](crate::cdm::Dataset), emitting [`Finding`]s. Concrete checks live in
 //! `checks-catalog` (implemented incrementally).
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::cdm::Dataset;
 
 /// Finding severity. Ordered `Info < Warning < Error`; the maximum severity present drives the
 /// verdict [`Status`](crate::engine::Status).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Severity {
     /// Informational; never fails a run.
@@ -22,7 +22,7 @@ pub enum Severity {
 }
 
 /// The category a check belongs to (exactly one).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Category {
     /// Episode/stream/shape integrity.
