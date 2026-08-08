@@ -441,6 +441,35 @@ fn cmd_certify(rest: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Resolve a `--key` argument to a trusted issuer public key. The argument is either a 64-char hex
+/// key given inline, or a path to a file containing one. This is unambiguous: if the value is not
+/// itself a 64-char hex string, it is treated as a file path — and a missing/unreadable file is a
+/// clear tool error, never silently reinterpreted as a (bogus) key that would fail verification.
+fn resolve_public_key(arg: &str) -> Result<String, String> {
+    let trimmed = arg.trim();
+    if is_hex_key(trimmed) {
+        return Ok(trimmed.to_string());
+    }
+    match std::fs::read_to_string(arg) {
+        Ok(s) => {
+            let key = s.trim().to_string();
+            if is_hex_key(&key) {
+                Ok(key)
+            } else {
+                Err(format!(
+                    "key file {arg} does not contain a 64-character hex public key"
+                ))
+            }
+        }
+        Err(e) => Err(format!("cannot read key {arg}: {e}")),
+    }
+}
+
+/// A 64-character lowercase/uppercase hex string, i.e. an Ed25519 public key.
+fn is_hex_key(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 fn cmd_verify(rest: &[String]) -> ExitCode {
     let args = parse_args(rest);
     let Some(cert_path) = &args.certificate else {
@@ -472,12 +501,17 @@ fn cmd_verify(rest: &[String]) -> ExitCode {
         None
     };
 
-    // Optional trusted issuer key (a hex public key, or a file containing one).
-    let expected_issuer = args.key.as_ref().map(|k| {
-        std::fs::read_to_string(k)
-            .map(|s| s.trim().to_string())
-            .unwrap_or_else(|_| k.trim().to_string())
-    });
+    // Optional trusted issuer key: a 64-char hex public key, or a path to a file containing one.
+    let expected_issuer = match &args.key {
+        Some(k) => match resolve_public_key(k) {
+            Ok(key) => Some(key),
+            Err(e) => {
+                eprintln!("veridex: {e}");
+                return ExitCode::from(EXIT_TOOL_ERROR);
+            }
+        },
+        None => None,
+    };
 
     match verify(
         &signed,
@@ -660,5 +694,33 @@ mod tests {
     #[test]
     fn schema_note_is_empty_when_nothing_declared() {
         assert_eq!(describe_schema(&None, &None), "");
+    }
+
+    #[test]
+    fn hex_key_recognized_only_at_64_hex_chars() {
+        assert!(super::is_hex_key(&"a".repeat(64)));
+        assert!(super::is_hex_key(&"F".repeat(64)));
+        assert!(!super::is_hex_key(&"a".repeat(63)));
+        assert!(!super::is_hex_key(&"a".repeat(65)));
+        assert!(!super::is_hex_key(&"g".repeat(64))); // non-hex char
+        assert!(!super::is_hex_key("/tmp/issuer.pub"));
+    }
+
+    #[test]
+    fn resolve_public_key_takes_inline_hex_without_touching_the_filesystem() {
+        let hex = "b".repeat(64);
+        assert_eq!(super::resolve_public_key(&hex).unwrap(), hex);
+        // Surrounding whitespace is tolerated.
+        assert_eq!(
+            super::resolve_public_key(&format!("  {hex}\n")).unwrap(),
+            hex
+        );
+    }
+
+    #[test]
+    fn resolve_public_key_errors_clearly_on_a_missing_file() {
+        // A non-hex value is treated as a path; a missing path is a clear error, never a bogus key.
+        let err = super::resolve_public_key("/no/such/issuer.pub").unwrap_err();
+        assert!(err.contains("cannot read key"), "unexpected: {err}");
     }
 }

@@ -59,6 +59,10 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 - A mistyped or missing dataset path was misreported as `unsupported format: no adapter recognized
   the source`. Ingestion now checks a local path exists first and returns a clear
   `no such file or directory` (`IngestError::SourceNotFound`), distinct from an unrecognized format.
+- `veridex verify --key <path>` with a missing/invalid key file was silently reinterpreting the path
+  string as the key, then reporting `untrusted issuer` (a verification *failure*, exit 20) instead of
+  a tool error. The `--key` value is now resolved unambiguously — a 64-char hex key inline, otherwise
+  a file path — and an unreadable or non-hex key file is a clear exit-2 error, not a false mismatch.
 
 ### Security
 
