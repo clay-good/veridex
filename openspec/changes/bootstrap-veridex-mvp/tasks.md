@@ -4,13 +4,13 @@ Ordered so each milestone is demoable. No code is written until this change is a
 the build plan.
 
 ## M0 — Scaffolding
-- [ ] Create the Rust workspace: `veridex-core`, `veridex-cli`, `veridex-py` (pyo3/maturin).
-- [ ] Wire CI: build, test, clippy/fmt gates; `#![forbid(unsafe_code)]` where feasible.
+- [x] Create the Rust workspace: `veridex-core`, `veridex-cli`. (`veridex-py` pyo3/maturin: deferred to M8.)
+- [ ] Wire CI: build, test, clippy/fmt gates; `#![forbid(unsafe_code)]` where feasible. (`forbid(unsafe_code)` set on `veridex-core`; CI config still to add.)
 - [ ] Decide crypto substrate sharing with Invariant (shared crate vs. mirrored module); record it.
 
 ## M1 — Canonical Dataset Model
-- [ ] Define CDM types (Dataset/Episode/Stream/Frame/Provenance/Label) per design D2.
-- [ ] Implement CDM canonicalization + content hashing (D5); property-test determinism.
+- [x] Define CDM types (Dataset/Episode/Stream/Frame/Provenance/Label) per design D2.
+- [x] Implement CDM canonicalization + content hashing (D5); property-test determinism.
 - [ ] Define the adapter trait (populate CDM; declare supported versions; record unmapped fields).
 
 ## M2 — Ingestion adapters (the neutrality proof)

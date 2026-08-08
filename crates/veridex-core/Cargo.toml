@@ -1,0 +1,17 @@
+[package]
+name = "veridex-core"
+description = "Veridex core: the Canonical Dataset Model, validation engine, and trust-certificate substrate."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+sha2.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+proptest = "1"

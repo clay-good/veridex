@@ -12,9 +12,32 @@ silently poison it.
 
 ## Status
 
-**Spec-only.** This repository currently contains the full [OpenSpec](openspec/) design for
-Veridex — no implementation yet. Start at [openspec/project.md](openspec/project.md), then
-[openspec/AGENTS.md](openspec/AGENTS.md).
+**Early implementation** — building the v0.1 MVP against the full [OpenSpec](openspec/) design.
+
+Done so far:
+
+- **Rust workspace** (`veridex-core`, `veridex-cli`) with `#![forbid(unsafe_code)]`.
+- **Canonical Dataset Model (CDM)** — the cross-format neutrality substrate
+  (`dataset`/`episode`/`stream`/`frame`/`provenance`/`label`), in
+  [`crates/veridex-core/src/cdm.rs`](crates/veridex-core/src/cdm.rs).
+- **Deterministic content hashing** — canonicalization streamed straight into SHA-256, with
+  property tests proving the same dataset always yields the same hash regardless of the ordering
+  of order-insensitive collections
+  ([`canonical.rs`](crates/veridex-core/src/canonical.rs)).
+- **`veridex` CLI skeleton** — the command surface is wired; subcommands land as their core
+  capabilities are implemented.
+
+Next: the format adapters (LeRobot v3, MCAP) that populate the CDM. Track progress in
+[openspec/changes/bootstrap-veridex-mvp/tasks.md](openspec/changes/bootstrap-veridex-mvp/tasks.md).
+For the design, start at [openspec/project.md](openspec/project.md).
+
+## Build & test
+
+```sh
+cargo build            # build the workspace
+cargo test             # unit + property tests (determinism of the CDM hash)
+cargo run -p veridex-cli -- --help
+```
 
 ## Why Veridex exists
 
