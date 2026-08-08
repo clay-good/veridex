@@ -1,5 +1,7 @@
 # Veridex
 
+[![CI](https://github.com/clay-good/veridex/actions/workflows/ci.yml/badge.svg)](https://github.com/clay-good/veridex/actions/workflows/ci.yml)
+
 **Know if your robot data is safe to train on — in one command.**
 
 Physical-AI teams lose weeks (and models) to bad data: mismatched clocks, corrupted episodes,

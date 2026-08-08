@@ -5,7 +5,8 @@ the build plan.
 
 ## M0 — Scaffolding
 - [x] Create the Rust workspace: `veridex-core`, `veridex-cli`. (`veridex-py` pyo3/maturin: deferred to M8.)
-- [ ] Wire CI: build, test, clippy/fmt gates; `#![forbid(unsafe_code)]` where feasible. (`forbid(unsafe_code)` set on `veridex-core`; CI config still to add.)
+- [x] Wire CI: build, test, clippy/fmt gates (`.github/workflows/ci.yml`, `-D warnings`);
+      `#![forbid(unsafe_code)]` on `veridex-core`.
 - [ ] Decide crypto substrate sharing with Invariant (shared crate vs. mirrored module); record it.
 
 ## M1 — Canonical Dataset Model
