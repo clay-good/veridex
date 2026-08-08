@@ -18,6 +18,10 @@ print(report["trust_score"]["grade"], report["verdict"]["status"])
 
 # The deterministic CDM content hash of a dataset.
 print(veridex.content_hash("my-dataset.mcap"))
+
+# The Canonical Dataset Model, without running checks (same as `veridex inspect --json`).
+cdm = json.loads(veridex.inspect("my-dataset.mcap"))
+print(len(cdm["episodes"]), "episodes")
 ```
 
 These bindings add **no logic**: they call the exact same `veridex_core` pipeline the `veridex`

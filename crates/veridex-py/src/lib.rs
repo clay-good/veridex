@@ -58,6 +58,24 @@ fn content_hash(path: &str, format: Option<&str>) -> PyResult<String> {
     Ok(veridex_core::content_hash(&out.ingested.dataset).to_hex())
 }
 
+/// `veridex.inspect(path, format=None) -> str`
+///
+/// Ingest a dataset and return its Canonical Dataset Model as a JSON string, identical to
+/// `veridex inspect --json`. Runs no checks.
+#[pyfunction]
+#[pyo3(signature = (path, format=None))]
+fn inspect(path: &str, format: Option<&str>) -> PyResult<String> {
+    let registry = veridex_core::default_registry();
+    let source = source_for(path);
+    let opts = IngestOptions::default();
+    let ingested = match format {
+        Some(fmt) => registry.ingest_as(fmt, &source, &opts),
+        None => registry.ingest(&source, &opts),
+    }
+    .map_err(to_py_err)?;
+    serde_json::to_string_pretty(&ingested.dataset).map_err(to_py_err)
+}
+
 /// `veridex.version() -> str`
 #[pyfunction]
 fn version() -> &'static str {
@@ -70,6 +88,7 @@ fn veridex(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", veridex_core::VERSION)?;
     m.add_function(wrap_pyfunction!(check, m)?)?;
     m.add_function(wrap_pyfunction!(content_hash, m)?)?;
+    m.add_function(wrap_pyfunction!(inspect, m)?)?;
     m.add_function(wrap_pyfunction!(version, m)?)?;
     Ok(())
 }

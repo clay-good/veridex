@@ -50,6 +50,26 @@ def test_cli_and_python_agree(tmp_path):
     assert py["trust_score"]["rubric_version"] == "v1"
 
 
+def _cli_inspect_json(path):
+    binary = os.environ.get("VERIDEX_BIN", "target/debug/veridex")
+    result = subprocess.run(
+        [binary, "inspect", "--json", str(path)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return json.loads(result.stdout)
+
+
+def test_cli_and_python_inspect_agree(tmp_path):
+    dataset = _demo_dataset(tmp_path)
+
+    py = json.loads(veridex.inspect(str(dataset)))
+    cli = _cli_inspect_json(dataset)
+
+    assert py == cli, "Python and CLI must produce identical CDM inspection"
+
+
 if __name__ == "__main__":
     # Minimal runner when pytest is unavailable.
     import tempfile
