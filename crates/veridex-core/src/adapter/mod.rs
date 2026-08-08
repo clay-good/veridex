@@ -116,6 +116,11 @@ pub enum Detection {
 /// Errors an ingest can produce.
 #[derive(Debug, Error)]
 pub enum IngestError {
+    /// The local source path does not exist. Distinct from [`IngestError::UnsupportedFormat`] so a
+    /// mistyped path is not misreported as an unrecognized format.
+    #[error("no such file or directory: {0}")]
+    SourceNotFound(PathBuf),
+
     /// No registered adapter recognized the source.
     #[error("unsupported format: no adapter recognized the source (supported: {})", .supported.join(", "))]
     UnsupportedFormat {
@@ -209,6 +214,7 @@ impl AdapterRegistry {
         source: &Source,
         options: &IngestOptions,
     ) -> Result<Ingested, IngestError> {
+        check_source_exists(source)?;
         let matches: Vec<&dyn Adapter> = self
             .adapters
             .iter()
@@ -235,6 +241,7 @@ impl AdapterRegistry {
         source: &Source,
         options: &IngestOptions,
     ) -> Result<Ingested, IngestError> {
+        check_source_exists(source)?;
         match self.adapters.iter().find(|a| a.format_id() == format) {
             Some(adapter) => adapter.ingest(source, options),
             None => Err(IngestError::UnsupportedFormat {
@@ -242,6 +249,18 @@ impl AdapterRegistry {
             }),
         }
     }
+}
+
+/// Reject a local source whose path does not exist before format detection, so a mistyped path
+/// yields a clear [`IngestError::SourceNotFound`] instead of a misleading "unsupported format".
+/// Remote sources are not filesystem paths and are left to the adapter.
+fn check_source_exists(source: &Source) -> Result<(), IngestError> {
+    if let Source::Local(path) = source {
+        if !path.exists() {
+            return Err(IngestError::SourceNotFound(path.clone()));
+        }
+    }
+    Ok(())
 }
 
 /// A registry preloaded with the standard v0.1 adapters: LeRobot v3 and MCAP.

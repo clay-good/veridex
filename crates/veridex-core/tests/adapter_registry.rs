@@ -54,12 +54,21 @@ fn registry() -> veridex_core::AdapterRegistry {
     reg
 }
 
+/// Create a real (empty) file with the given name inside a fresh temp dir, returning both so the
+/// dir stays alive for the duration of the test. Ingest now requires the source path to exist.
+fn temp_file(name: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(name);
+    std::fs::write(&path, b"").unwrap();
+    (dir, path)
+}
+
 #[test]
 fn recognized_source_ingests() {
     let reg = registry();
-    let src = Source::Local("dataset.fake".into());
+    let (_dir, path) = temp_file("dataset.fake");
     let out = reg
-        .ingest(&src, &IngestOptions::default())
+        .ingest(&Source::Local(path), &IngestOptions::default())
         .expect("should ingest");
     assert_eq!(out.dataset.id, "fake/ds");
     assert_eq!(out.report.format_id, "fake");
@@ -69,7 +78,8 @@ fn recognized_source_ingests() {
 #[test]
 fn unsupported_format_is_rejected_clearly_and_lists_supported() {
     let reg = registry();
-    let src = Source::Local("dataset.rlds".into());
+    let (_dir, path) = temp_file("dataset.rlds");
+    let src = Source::Local(path);
     let err = reg.ingest(&src, &IngestOptions::default()).unwrap_err();
     match err {
         IngestError::UnsupportedFormat { supported } => {
@@ -86,6 +96,26 @@ fn unsupported_format_is_rejected_clearly_and_lists_supported() {
         msg.contains("fake"),
         "error should list supported formats: {msg}"
     );
+}
+
+#[test]
+fn missing_path_is_reported_as_not_found_not_unsupported_format() {
+    let reg = registry();
+    // A path that does not exist — even with a recognized extension — is a not-found error, so a
+    // mistyped path is not misreported as an unrecognized format.
+    let src = Source::Local("/nonexistent/dataset.fake".into());
+    let err = reg.ingest(&src, &IngestOptions::default()).unwrap_err();
+    match err {
+        IngestError::SourceNotFound(p) => {
+            assert_eq!(p, std::path::PathBuf::from("/nonexistent/dataset.fake"));
+        }
+        other => panic!("expected SourceNotFound, got {other:?}"),
+    }
+    // ingest_as guards the same way.
+    let err2 = reg
+        .ingest_as("fake", &src, &IngestOptions::default())
+        .unwrap_err();
+    assert!(matches!(err2, IngestError::SourceNotFound(_)));
 }
 
 #[test]

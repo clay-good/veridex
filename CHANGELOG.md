@@ -56,6 +56,9 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 - The `veridex-data` wheel could not build: `pyproject.toml` was missing a `version` (now taken
   dynamically from the crate) and referenced a nonexistent package `README.md` (now added). The
   wheel builds and the parity test passes under pyo3 0.29.
+- A mistyped or missing dataset path was misreported as `unsupported format: no adapter recognized
+  the source`. Ingestion now checks a local path exists first and returns a clear
+  `no such file or directory` (`IngestError::SourceNotFound`), distinct from an unrecognized format.
 
 ### Security
 
