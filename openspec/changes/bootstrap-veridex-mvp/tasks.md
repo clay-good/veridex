@@ -39,9 +39,11 @@ the build plan.
 - [x] Each check ships ID + documented risk + remedy.
 
 ## M5 — Provenance & Croissant
-- [ ] Provenance model + known/asserted/unknown classification.
-- [ ] Extract provenance from LeRobot v3 and MCAP sources.
-- [ ] Emit valid Croissant; minimal W3C PROV lineage.
+- [x] Provenance model + known/asserted/unknown classification (in `cdm.rs`).
+- [~] Extract provenance from LeRobot v3 and MCAP sources. (MCAP records source_format; rich
+      extraction — metadata records, calibration — and the LeRobot side land with those adapters.)
+- [x] Emit Croissant (JSON-LD) + minimal W3C PROV lineage from the CDM (honest classes, no
+      fabrication). Wired to `veridex provenance --emit croissant|prov`.
 
 ## M6 — Trust certificate
 - [x] Certificate schema (content, content-hash binding, rubric_version, issuance metadata) —

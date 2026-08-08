@@ -38,7 +38,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("keygen", "generate an Ed25519 issuer keypair"),
     (
         "provenance",
-        "extract provenance and emit Croissant / W3C PROV",
+        "emit extracted provenance (--emit croissant|prov)",
     ),
     (
         "inspect",
@@ -55,6 +55,7 @@ struct Args {
     certificate: Option<String>,
     out: Option<String>,
     timestamp: Option<String>,
+    emit: Option<String>,
 }
 
 fn parse_args(rest: &[String]) -> Args {
@@ -65,6 +66,7 @@ fn parse_args(rest: &[String]) -> Args {
     let mut certificate = None;
     let mut out = None;
     let mut timestamp = None;
+    let mut emit = None;
     let mut it = rest.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -74,6 +76,7 @@ fn parse_args(rest: &[String]) -> Args {
             "--certificate" => certificate = it.next().cloned(),
             "--out" => out = it.next().cloned(),
             "--timestamp" => timestamp = it.next().cloned(),
+            "--emit" => emit = it.next().cloned(),
             other if !other.starts_with('-') => path = Some(other.to_string()),
             _ => {}
         }
@@ -86,6 +89,7 @@ fn parse_args(rest: &[String]) -> Args {
         certificate,
         out,
         timestamp,
+        emit,
     }
 }
 
@@ -105,11 +109,7 @@ fn main() -> ExitCode {
         Some("certify") => cmd_certify(&args[1..]),
         Some("verify") => cmd_verify(&args[1..]),
         Some("keygen") => cmd_keygen(&args[1..]),
-        Some("provenance") => {
-            eprintln!("veridex: `provenance` is not implemented yet in this build.");
-            eprintln!("See openspec/changes/bootstrap-veridex-mvp/tasks.md for the roadmap.");
-            ExitCode::from(EXIT_TOOL_ERROR)
-        }
+        Some("provenance") => cmd_provenance(&args[1..]),
         Some(cmd) => {
             eprintln!("veridex: unknown command `{cmd}`.");
             print_help();
@@ -378,6 +378,44 @@ fn cmd_keygen(rest: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+fn cmd_provenance(rest: &[String]) -> ExitCode {
+    let args = parse_args(rest);
+    let ingested = match ingest(&args) {
+        Ok(i) => i,
+        Err(code) => return code,
+    };
+    let d = &ingested.dataset;
+    let hash = veridex_core::content_hash(d).to_hex();
+
+    let emit = args.emit.as_deref().unwrap_or("croissant");
+    let doc = match emit {
+        "croissant" => veridex_core::to_croissant(d, &hash),
+        "prov" => veridex_core::to_prov(d),
+        other => {
+            eprintln!("veridex: unknown --emit `{other}` (expected `croissant` or `prov`)");
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
+    };
+    let json = match serde_json::to_string_pretty(&doc) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("veridex: {e}");
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
+    };
+    match &args.out {
+        Some(path) => {
+            if let Err(e) = std::fs::write(path, &json) {
+                eprintln!("veridex: cannot write {path}: {e}");
+                return ExitCode::from(EXIT_TOOL_ERROR);
+            }
+            println!("wrote {emit} to {path}");
+        }
+        None => println!("{json}"),
+    }
+    ExitCode::SUCCESS
+}
+
 /// Seconds since the Unix epoch as a string. The CLI is the "caller" that supplies the time; the
 /// core never reads a clock (design D6).
 fn unix_timestamp() -> String {
@@ -408,6 +446,7 @@ fn print_help() {
     println!("    --certificate <file> certificate to verify");
     println!("    --out <file>         certificate output path (certify)");
     println!("    --timestamp <ts>     issuance timestamp (certify; defaults to now)");
+    println!("    --emit <fmt>         provenance format: croissant (default) or prov");
     println!("    --version            print the version");
     println!("    --help               print this help");
     println!();

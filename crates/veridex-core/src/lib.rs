@@ -18,6 +18,7 @@ pub mod cdm;
 pub mod certificate;
 pub mod check;
 pub mod checks;
+pub mod emit;
 pub mod engine;
 pub mod report;
 
@@ -32,6 +33,7 @@ pub use certificate::{
     SignedCertificate, SigningKeypair, TrustScore, Verified, RUBRIC_VERSION,
 };
 pub use check::{Category, Check, Finding, Location, Scope, Severity};
+pub use emit::{to_croissant, to_prov};
 pub use engine::{Engine, RegistryError, RunConfig, Status, Verdict};
 pub use report::{render_json, render_terminal, REPORT_SCHEMA_VERSION};
 
