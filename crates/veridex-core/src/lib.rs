@@ -15,12 +15,16 @@
 pub mod adapter;
 pub mod canonical;
 pub mod cdm;
+pub mod check;
+pub mod engine;
 
 pub use adapter::{
     Adapter, AdapterRegistry, Coverage, Detection, IngestError, IngestOptions, IngestReport,
     Ingested, Sample, Source, UnmappedField,
 };
 pub use canonical::{content_hash, ContentHash, CANONICAL_VERSION};
+pub use check::{Category, Check, Finding, Location, Scope, Severity};
+pub use engine::{Engine, RegistryError, RunConfig, Status, Verdict};
 
 /// The version of `veridex-core`, from Cargo.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -21,8 +21,8 @@ the build plan.
 - [ ] **Gate test:** the same logical dataset as LeRobot v3 and MCAP yields equivalent CDMs.
 
 ## M3 — Validation engine
-- [ ] Check registry, severities, categories, selection/config, run metadata (per spec).
-- [ ] Deterministic ordered verdict; fault isolation for errored checks.
+- [x] Check registry, severities, categories, selection/config, run metadata (per spec).
+- [x] Deterministic ordered verdict; fault isolation for errored checks.
 
 ## M4 — Checks catalog (MVP families)
 - [ ] Structural: episode-boundary integrity (covers lerobot#4143 class), missing shards/streams,

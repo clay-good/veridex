@@ -24,10 +24,18 @@ Done so far:
   property tests proving the same dataset always yields the same hash regardless of the ordering
   of order-insensitive collections
   ([`canonical.rs`](crates/veridex-core/src/canonical.rs)).
+- **Adapter contract** — the `Adapter` trait + registry every format plugs into, with
+  fidelity reporting (mapped/unmapped/omitted fields) and clear rejection of unsupported formats
+  ([`adapter.rs`](crates/veridex-core/src/adapter.rs)).
+- **Validation engine** — a check registry (duplicate-id rejection, category/id selection,
+  severity overrides), deterministic stably-ordered verdicts with a result content hash, fault
+  isolation for panicking checks, and full reproducibility metadata
+  ([`engine.rs`](crates/veridex-core/src/engine.rs)).
 - **`veridex` CLI skeleton** — the command surface is wired; subcommands land as their core
   capabilities are implemented.
 
-Next: the format adapters (LeRobot v3, MCAP) that populate the CDM. Track progress in
+Next: the concrete checks (structural + the headline `TEMPORAL.CLOCK_SKEW`) and the format
+adapters (LeRobot v3, MCAP) that populate the CDM. Track progress in
 [openspec/changes/bootstrap-veridex-mvp/tasks.md](openspec/changes/bootstrap-veridex-mvp/tasks.md).
 For the design, start at [openspec/project.md](openspec/project.md).
 
