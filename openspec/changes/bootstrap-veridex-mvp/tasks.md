@@ -65,15 +65,17 @@ the build plan.
 - [x] Versioned JSON output (`veridex.report/1`).
 
 ## M8 — CLI + Python parity
-- [x] `veridex check | inspect | certify | verify | provenance | keygen` implemented end-to-end.
+- [x] `veridex check | inspect | checks | certify | verify | provenance | keygen | diff` implemented
+      end-to-end (`checks` lists the built-in catalog as text or `--json`).
 - [x] Format autodetect + `--format` override; ambiguity is `IngestError::AmbiguousFormat`, not a
       silent guess.
 - [x] CI exit codes (0 pass · 10 warnings · 20 fail · 2 tool-error) with a configurable failure
       threshold (`--fail-on error|warning`, default error).
-- [x] Python bindings (`veridex-py`, pyo3/abi3) exposing `check`/`content_hash`/`version`; both
-      front-ends call one shared `veridex_core::run_check` pipeline so parity is by construction.
+- [x] Python bindings (`veridex-py`, pyo3/abi3) exposing `check`/`content_hash`/`inspect`/`version`;
+      both front-ends call one shared `veridex_core` pipeline so parity is by construction.
       **Parity test** (`crates/veridex-py/tests/test_parity.py`) asserts CLI and Python produce
-      byte-identical reports — verified live. Wheel builds with maturin (`veridex-data` on PyPI).
+      byte-identical `check` and `inspect` output — run in CI (maturin build + pytest). The
+      `veridex-data` wheel builds with maturin.
 
 ## M9 — Proof & anointer prep
 - [ ] End-to-end demo on a real LeRobot v3 Hub dataset and a real MCAP recording. (Synthetic
