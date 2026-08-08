@@ -29,9 +29,10 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 - **Provenance emit** — MLCommons Croissant (JSON-LD) and minimal W3C PROV, preserving
   known / asserted / unknown classes without fabrication.
 - **Reporting** — human-readable terminal output with worst-episodes-first rollups, a versioned
-  JSON envelope (`veridex.report/1`), SARIF 2.1.0 output (`veridex check --sarif`) for CI
-  code-scanning, and verdict diffing (`veridex diff`) that reports findings introduced / resolved /
-  unchanged and the trust-score movement between two reports.
+  JSON envelope (`veridex.report/1`), SARIF 2.1.0 (`veridex check --sarif`) for CI code-scanning, a
+  self-contained HTML report (`veridex check --html`), and verdict diffing (`veridex diff`) that
+  reports findings introduced / resolved / unchanged and the trust-score movement between two
+  reports.
 - **CLI** — `veridex check | inspect | certify | verify | provenance | keygen | diff`, with format
   autodetection (`--format` override, ambiguity is refused), a configurable failure threshold
   (`--fail-on`), and documented exit codes (0 pass · 10 warnings · 20 fail · 2 tool-error).
@@ -42,4 +43,4 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 ### Not yet included
 
 Streaming / large-than-memory and remote Hub ingestion; stored-vs-recomputed statistics and
-actuator saturation; HTML reports; and publishing to PyPI / crates.io.
+actuator saturation; and publishing to PyPI / crates.io.

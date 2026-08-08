@@ -2,7 +2,9 @@
 
 use veridex_core::cdm::{Dataset, Episode, Frame, Modality, Stream, ValueRef};
 use veridex_core::certificate::{score, ProvenanceCoverage};
-use veridex_core::report::{render_json, render_sarif, render_terminal, REPORT_SCHEMA_VERSION};
+use veridex_core::report::{
+    render_html, render_json, render_sarif, render_terminal, REPORT_SCHEMA_VERSION,
+};
 use veridex_core::{content_hash, RunConfig};
 
 fn stream(name: &str, clock: &str, ts: &[i64]) -> Stream {
@@ -133,6 +135,45 @@ fn sarif_is_valid_2_1_0_and_maps_findings() {
         .contains("episode"));
     // info findings map to SARIF `note`.
     assert!(results.iter().any(|r| r["level"] == "note"));
+}
+
+#[test]
+fn html_is_self_contained_and_shows_findings() {
+    let d = skewed_dataset();
+    let v = verdict_for(&d);
+    let ts = score(&v, &ProvenanceCoverage::of(&d));
+    let html = render_html(&v, Some(ts));
+
+    assert!(html.starts_with("<!DOCTYPE html>"));
+    // Self-contained: styles are inline, no external asset references.
+    assert!(html.contains("<style>"));
+    assert!(!html.contains("http://") && !html.contains("https://"));
+    // Content: the clock-skew finding and the trust score are present.
+    assert!(html.contains("TEMPORAL.CLOCK_SKEW"));
+    assert!(html.contains("Trust "));
+    assert!(html.contains("FAIL"));
+}
+
+#[test]
+fn html_escapes_special_characters() {
+    // A stream name with angle brackets flows into a finding message; it must be escaped.
+    let d = Dataset {
+        id: "t".into(),
+        metadata: vec![],
+        provenance: vec![],
+        episodes: vec![episode(
+            0,
+            vec![
+                stream("a<script>b", "camera", &[0, 1_000_000_000]),
+                stream("robot", "robot", &[0, 1_500_000_000]),
+            ],
+        )],
+    };
+    let v = verdict_for(&d);
+    let html = render_html(&v, None);
+    // The raw injection must not survive; the escaped form must be present.
+    assert!(!html.contains("a<script>b"));
+    assert!(html.contains("a&lt;script&gt;b"));
 }
 
 #[test]

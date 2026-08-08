@@ -198,6 +198,101 @@ pub fn render_terminal(
     out
 }
 
+/// Minimal HTML-escaping for text embedded in the report.
+fn esc(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// Render the verdict as a self-contained HTML report (inline CSS, no external assets), suitable for
+/// sharing or archiving. Derives from the same verdict as every other renderer.
+pub fn render_html(verdict: &Verdict, trust_score: Option<TrustScore>) -> String {
+    let mut body = String::new();
+
+    let _ = write!(
+        body,
+        "<h1>Veridex report</h1><p class=\"meta\">CDM hash: <code>{}</code></p>",
+        esc(&verdict.cdm_content_hash)
+    );
+
+    let status_class = match verdict.status {
+        Status::Pass => "pass",
+        Status::PassWithWarnings => "warn",
+        Status::Fail => "fail",
+    };
+    let _ = write!(
+        body,
+        "<p class=\"status {status_class}\">{}</p>",
+        status_label(verdict.status)
+    );
+    if let Some(ts) = &trust_score {
+        let _ = write!(
+            body,
+            "<p class=\"score\">Trust {} ({}) — data {} · provenance {}%</p>",
+            ts.score,
+            ts.grade.letter(),
+            ts.data_score,
+            ts.provenance_pct
+        );
+    }
+    let _ = write!(
+        body,
+        "<p>{} error · {} warning · {} info</p>",
+        verdict.counts.error, verdict.counts.warning, verdict.counts.info
+    );
+
+    let rollups = worst_episodes(verdict);
+    if !rollups.is_empty() {
+        body.push_str("<h2>Worst episodes</h2><ul>");
+        for r in rollups.iter().take(10) {
+            let _ = write!(
+                body,
+                "<li>episode {} — {} error, {} warning, {} info</li>",
+                r.episode, r.errors, r.warnings, r.info
+            );
+        }
+        body.push_str("</ul>");
+    }
+
+    if verdict.findings.is_empty() {
+        body.push_str("<h2>Findings</h2><p>No findings.</p>");
+    } else {
+        body.push_str(
+            "<h2>Findings</h2><table><thead><tr><th>Severity</th><th>Code</th><th>Location</th>\
+             <th>Message</th><th>Remedy</th></tr></thead><tbody>",
+        );
+        for f in &verdict.findings {
+            let _ = write!(
+                body,
+                "<tr class=\"{}\"><td>{}</td><td><code>{}</code></td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                severity_label(f.severity),
+                severity_label(f.severity),
+                esc(&f.code),
+                esc(&location_label(&f.location)),
+                esc(&f.message),
+                esc(&f.remedy),
+            );
+        }
+        body.push_str("</tbody></table>");
+    }
+
+    const STYLE: &str = "body{font-family:system-ui,sans-serif;max-width:60rem;margin:2rem auto;\
+        padding:0 1rem;color:#1a1a1a}code{background:#f2f2f2;padding:.1em .3em;border-radius:3px}\
+        .status{font-weight:700;display:inline-block;padding:.2em .6em;border-radius:4px;color:#fff}\
+        .pass{background:#1a7f37}.warn{background:#9a6700}.fail{background:#cf222e}\
+        table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:.4em .6em;\
+        text-align:left;vertical-align:top;font-size:.9rem}tr.error td:first-child{color:#cf222e;\
+        font-weight:700}tr.warning td:first-child{color:#9a6700}th{background:#f6f8fa}";
+
+    format!(
+        "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">\
+         <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
+         <title>Veridex report</title><style>{STYLE}</style></head><body>{body}</body></html>"
+    )
+}
+
 /// SARIF severity level for a finding.
 fn sarif_level(sev: Severity) -> &'static str {
     match sev {

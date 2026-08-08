@@ -62,6 +62,7 @@ struct Args {
     emit: Option<String>,
     fail_on: Option<String>,
     sarif: bool,
+    html: bool,
 }
 
 fn parse_args(rest: &[String]) -> Args {
@@ -75,11 +76,13 @@ fn parse_args(rest: &[String]) -> Args {
     let mut emit = None;
     let mut fail_on = None;
     let mut sarif = false;
+    let mut html = false;
     let mut it = rest.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--json" => json = true,
             "--sarif" => sarif = true,
+            "--html" => html = true,
             "--format" => format = it.next().cloned(),
             "--key" => key = it.next().cloned(),
             "--certificate" => certificate = it.next().cloned(),
@@ -102,6 +105,7 @@ fn parse_args(rest: &[String]) -> Args {
         emit,
         fail_on,
         sarif,
+        html,
     }
 }
 
@@ -171,7 +175,12 @@ fn cmd_check(rest: &[String]) -> ExitCode {
         }
     };
 
-    if args.sarif {
+    if args.html {
+        println!(
+            "{}",
+            veridex_core::render_html(&out.verdict, Some(out.trust))
+        );
+    } else if args.sarif {
         println!(
             "{}",
             serde_json::to_string_pretty(&veridex_core::render_sarif(&out.verdict)).unwrap()
@@ -515,6 +524,7 @@ fn print_help() {
     println!("    --format <fmt>       force an adapter (e.g. mcap) instead of autodetecting");
     println!("    --json               machine-readable JSON output (check, inspect, diff)");
     println!("    --sarif              SARIF 2.1.0 output for CI code scanning (check)");
+    println!("    --html               self-contained HTML report (check)");
     println!("    --key <file>         issuer secret key (certify) or trusted public key (verify)");
     println!("    --certificate <file> certificate to verify");
     println!("    --out <file>         certificate output path (certify)");
