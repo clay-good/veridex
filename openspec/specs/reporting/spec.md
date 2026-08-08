@@ -39,6 +39,9 @@ can depend on them. Schema changes SHALL be additive within a major version.
 - **THEN** previously parsed fields remain present with unchanged meaning
 - **AND** any new fields are additive
 
+<!-- Implemented in v0.1: `veridex diff` over two report JSONs (introduced/resolved/unchanged
+     findings + score delta); see crates/veridex-core/src/diff.rs. -->
+
 ### Requirement: Verdict diffing
 Veridex SHALL compare two verdicts for the same dataset lineage and report what changed — findings
 introduced, resolved, or unchanged, and score movement — so users can see whether a dataset

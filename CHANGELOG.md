@@ -28,9 +28,10 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   that rejects tampering, transplantation, and untrusted issuers.
 - **Provenance emit** — MLCommons Croissant (JSON-LD) and minimal W3C PROV, preserving
   known / asserted / unknown classes without fabrication.
-- **Reporting** — human-readable terminal output with worst-episodes-first rollups and a versioned
-  JSON envelope (`veridex.report/1`).
-- **CLI** — `veridex check | inspect | certify | verify | provenance | keygen`, with format
+- **Reporting** — human-readable terminal output with worst-episodes-first rollups, a versioned
+  JSON envelope (`veridex.report/1`), and verdict diffing (`veridex diff`) that reports findings
+  introduced / resolved / unchanged and the trust-score movement between two reports.
+- **CLI** — `veridex check | inspect | certify | verify | provenance | keygen | diff`, with format
   autodetection (`--format` override, ambiguity is refused), a configurable failure threshold
   (`--fail-on`), and documented exit codes (0 pass · 10 warnings · 20 fail · 2 tool-error).
 - **Python bindings** (`import veridex`) that call the same core pipeline as the CLI, with a passing

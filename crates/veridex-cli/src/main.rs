@@ -1,8 +1,9 @@
 //! The `veridex` CLI.
 //!
-//! `check` and `inspect` are wired end-to-end over the core: ingest a dataset into the CDM, run the
-//! standard checks, score it, and report. `certify`, `verify`, and `provenance` land as their core
-//! capabilities (signing, Croissant emit) are implemented.
+//! All commands are wired end-to-end over `veridex-core`: `check` / `inspect` ingest and validate,
+//! `certify` / `verify` / `keygen` handle signed certificates, `provenance` emits Croissant / PROV,
+//! and `diff` compares two reports. `check` and `certify` share the exact `run_check` pipeline the
+//! Python bindings use, so their output is identical.
 //!
 //! Exit codes (documented, CI-friendly):
 //! - `0`  pass
@@ -35,6 +36,10 @@ const COMMANDS: &[(&str, &str)] = &[
         "verify a certificate offline (--certificate <c.json>)",
     ),
     ("keygen", "generate an Ed25519 issuer keypair"),
+    (
+        "diff",
+        "compare two check reports (--json for machine output)",
+    ),
     (
         "provenance",
         "emit extracted provenance (--emit croissant|prov)",
@@ -112,6 +117,7 @@ fn main() -> ExitCode {
         Some("certify") => cmd_certify(&args[1..]),
         Some("verify") => cmd_verify(&args[1..]),
         Some("keygen") => cmd_keygen(&args[1..]),
+        Some("diff") => cmd_diff(&args[1..]),
         Some("provenance") => cmd_provenance(&args[1..]),
         Some(cmd) => {
             eprintln!("veridex: unknown command `{cmd}`.");
@@ -427,6 +433,48 @@ fn cmd_provenance(rest: &[String]) -> ExitCode {
             println!("wrote {emit} to {path}");
         }
         None => println!("{json}"),
+    }
+    ExitCode::SUCCESS
+}
+
+fn cmd_diff(rest: &[String]) -> ExitCode {
+    let json_out = rest.iter().any(|a| a == "--json");
+    let paths: Vec<&String> = rest.iter().filter(|a| !a.starts_with('-')).collect();
+    let [old_path, new_path] = paths.as_slice() else {
+        eprintln!("veridex: diff requires two report files: veridex diff <old.json> <new.json>");
+        return ExitCode::from(EXIT_TOOL_ERROR);
+    };
+
+    let parse = |p: &str| -> Result<serde_json::Value, ExitCode> {
+        let bytes = std::fs::read(p).map_err(|e| {
+            eprintln!("veridex: cannot read {p}: {e}");
+            ExitCode::from(EXIT_TOOL_ERROR)
+        })?;
+        serde_json::from_slice(&bytes).map_err(|e| {
+            eprintln!("veridex: {p} is not valid JSON: {e}");
+            ExitCode::from(EXIT_TOOL_ERROR)
+        })
+    };
+    let old = match parse(old_path) {
+        Ok(v) => v,
+        Err(c) => return c,
+    };
+    let new = match parse(new_path) {
+        Ok(v) => v,
+        Err(c) => return c,
+    };
+
+    let diff = veridex_core::diff_reports(&old, &new);
+    if json_out {
+        let doc = serde_json::json!({
+            "introduced": diff.introduced,
+            "resolved": diff.resolved,
+            "unchanged_count": diff.unchanged.len(),
+            "score_delta": diff.score_delta(),
+        });
+        println!("{}", serde_json::to_string_pretty(&doc).unwrap());
+    } else {
+        print!("{}", veridex_core::render_diff(&diff));
     }
     ExitCode::SUCCESS
 }
