@@ -15,6 +15,7 @@
 pub mod adapter;
 pub mod canonical;
 pub mod cdm;
+pub mod certificate;
 pub mod check;
 pub mod checks;
 pub mod engine;
@@ -24,6 +25,7 @@ pub use adapter::{
     Ingested, Sample, Source, UnmappedField,
 };
 pub use canonical::{content_hash, ContentHash, CANONICAL_VERSION};
+pub use certificate::{score, Grade, ProvenanceCoverage, TrustScore, RUBRIC_VERSION};
 pub use check::{Category, Check, Finding, Location, Scope, Severity};
 pub use engine::{Engine, RegistryError, RunConfig, Status, Verdict};
 

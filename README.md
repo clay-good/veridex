@@ -37,6 +37,10 @@ Done so far:
   (design D4). Plus **provenance-completeness** checks that surface missing/inconsistent
   license, sensor, clock, calibration, annotator, and lineage provenance. Every check ships an id,
   a documented training **risk**, and a **remedy** ([`checks/`](crates/veridex-core/src/checks/)).
+- **Trust score (v1 rubric)** — a deterministic 0–100 score and A–F grade from the verdict and
+  provenance coverage, with provenance weighted as a separate 30% axis so a clean check score can't
+  mask missing provenance. Rubric documented in [`docs/rubric-v1.md`](docs/rubric-v1.md)
+  ([`certificate/`](crates/veridex-core/src/certificate/)).
 - **`veridex` CLI skeleton** — the command surface is wired; subcommands land as their core
   capabilities are implemented.
 

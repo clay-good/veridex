@@ -42,7 +42,9 @@ the build plan.
 
 ## M6 — Trust certificate
 - [ ] Certificate schema (content, content-hash binding, rubric_version, issuance metadata).
-- [ ] v1 scoring rubric (D7): deterministic score + grade; ship rubric doc.
+- [x] v1 scoring rubric (D7): deterministic score + grade; ship rubric doc (docs/rubric-v1.md).
+      Provenance coverage (known/asserted/unknown) is a separate 30% axis so a clean check score
+      can't mask missing provenance.
 - [ ] COSE/JWS signing (reuse Invariant, D6); offline `verify`; tamper + transplant rejection tests.
 
 ## M7 — Reporting (MVP)
