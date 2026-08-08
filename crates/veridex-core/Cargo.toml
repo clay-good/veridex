@@ -15,7 +15,11 @@ serde_json.workspace = true
 mcap = "0.25"
 ed25519-dalek = "2"
 getrandom = "0.2"
+parquet = "59"
+arrow = "59"
 
 [dev-dependencies]
 proptest = "1"
 tempfile = "3"
+arrow = "59"
+parquet = "59"

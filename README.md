@@ -140,11 +140,12 @@ cargo clippy --all-targets
 **Early implementation, runs end-to-end.** Against a full [OpenSpec](openspec/) design, these are
 in and tested: the Canonical Dataset Model with deterministic content hashing; the validation
 engine; the structural / temporal / provenance check catalog (including the headline
-`TEMPORAL.CLOCK_SKEW`); the v1 trust-score rubric; terminal + JSON reporting; the **MCAP adapter**;
-Ed25519 **certificate signing with offline verification** (tamper + transplant rejection); and a
-working CLI (`check`, `inspect`, `certify`, `verify`, `keygen`) — see the
-[Quickstart](#quickstart). Next up: the LeRobot v3 adapter (completing the cross-format neutrality
-proof) and Croissant/PROV emit for `provenance`.
+`TEMPORAL.CLOCK_SKEW`); the v1 trust-score rubric; terminal + JSON reporting; **LeRobot v3 and MCAP
+adapters** with a passing cross-format neutrality gate (the same logical dataset yields equivalent
+CDMs in both formats); Croissant + W3C PROV provenance emit; Ed25519 **certificate signing with
+offline verification** (tamper + transplant rejection); and a working CLI (`check`, `inspect`,
+`certify`, `verify`, `provenance`, `keygen`) — see the [Quickstart](#quickstart). Next up: Python
+bindings and streaming ingestion.
 
 Start with [openspec/project.md](openspec/project.md) for the design, or track progress in
 [openspec/changes/bootstrap-veridex-mvp/tasks.md](openspec/changes/bootstrap-veridex-mvp/tasks.md).

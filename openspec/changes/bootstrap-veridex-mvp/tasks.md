@@ -14,14 +14,15 @@ the build plan.
 - [x] Define the adapter trait (populate CDM; declare supported versions; record unmapped fields).
 
 ## M2 — Ingestion adapters (the neutrality proof)
-- [ ] LeRobot v3 adapter → CDM (episodes, streams, timestamps, tasks, language annotations present
-      as data, provenance extraction).
+- [x] LeRobot v3 adapter → CDM (features→streams, Parquet `timestamp`→frame ts, `episode_index`
+      grouping, fps→rate, robot_type→provenance). Reads only timestamps/structure, not payloads.
+      (Task-string resolution and video decoding are follow-ups.)
 - [x] MCAP adapter → CDM (channels→streams, message timestamps, schemas→modalities). Backed by the
       `mcap` crate; tests write real MCAP files and ingest them.
-- [ ] Streaming/large-than-memory ingestion; remote (Hub) metadata-only ingestion. (MCAP currently
-      reads the whole local file; streaming is a follow-up.)
-- [ ] **Gate test:** the same logical dataset as LeRobot v3 and MCAP yields equivalent CDMs.
-      (Blocked on the LeRobot adapter.)
+- [ ] Streaming/large-than-memory ingestion; remote (Hub) metadata-only ingestion. (Adapters
+      currently read the whole local file; streaming is a follow-up.)
+- [x] **Gate test:** the same logical dataset as LeRobot v3 and MCAP yields equivalent CDMs
+      (`tests/lerobot_adapter.rs::same_logical_dataset_yields_equivalent_cdms_across_formats`).
 
 ## M3 — Validation engine
 - [x] Check registry, severities, categories, selection/config, run metadata (per spec).

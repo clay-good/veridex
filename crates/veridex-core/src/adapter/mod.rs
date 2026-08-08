@@ -12,6 +12,7 @@
 //!   [`IngestError::UnsupportedFormat`], which lists the formats that *are* supported, rather than
 //!   partially parsing.
 
+pub mod lerobot;
 pub mod mcap;
 
 use std::path::PathBuf;
@@ -243,9 +244,10 @@ impl AdapterRegistry {
     }
 }
 
-/// A registry preloaded with the standard v0.1 adapters (currently MCAP; LeRobot v3 follows).
+/// A registry preloaded with the standard v0.1 adapters: LeRobot v3 and MCAP.
 pub fn default_registry() -> AdapterRegistry {
     let mut reg = AdapterRegistry::new();
+    reg.register(Box::new(lerobot::LeRobotAdapter));
     reg.register(Box::new(mcap::McapAdapter));
     reg
 }

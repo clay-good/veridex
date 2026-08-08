@@ -22,6 +22,7 @@ pub mod emit;
 pub mod engine;
 pub mod report;
 
+pub use adapter::lerobot::LeRobotAdapter;
 pub use adapter::mcap::McapAdapter;
 pub use adapter::{
     default_registry, Adapter, AdapterRegistry, Coverage, Detection, IngestError, IngestOptions,
