@@ -128,7 +128,8 @@ impl Check for RateConformance {
                 let Some((lo, hi)) = span_bounds(stream) else {
                     continue;
                 };
-                let seconds = (hi - lo) as f64 / NS_PER_S;
+                // saturating: corrupt timestamps spanning the full i64 range must not overflow.
+                let seconds = hi.saturating_sub(lo) as f64 / NS_PER_S;
                 if seconds <= 0.0 {
                     continue;
                 }
@@ -191,7 +192,7 @@ impl Gaps {
         let mut intervals: Vec<i64> = stream
             .frames
             .windows(2)
-            .map(|w| w[1].ts - w[0].ts)
+            .map(|w| w[1].ts.saturating_sub(w[0].ts))
             .filter(|d| *d > 0)
             .collect();
         if intervals.is_empty() {
@@ -233,7 +234,7 @@ impl Check for Gaps {
                 };
                 let threshold = expected * self.gap_factor;
                 for w in stream.frames.windows(2) {
-                    let interval = (w[1].ts - w[0].ts) as f64;
+                    let interval = w[1].ts.saturating_sub(w[0].ts) as f64;
                     if interval > threshold {
                         findings.push(
                             Finding::new(
@@ -311,7 +312,9 @@ impl Check for ClockSkew {
                 .streams
                 .iter()
                 .filter_map(|s| {
-                    span_bounds(s).map(|(lo, hi)| (s.name.as_str(), s.clock_id.as_str(), hi - lo))
+                    span_bounds(s).map(|(lo, hi)| {
+                        (s.name.as_str(), s.clock_id.as_str(), hi.saturating_sub(lo))
+                    })
                 })
                 .filter(|(_, _, span)| *span > 0)
                 .collect();

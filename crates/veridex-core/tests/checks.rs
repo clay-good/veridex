@@ -271,6 +271,27 @@ fn clock_skew_within_tolerance_is_clean() {
     assert!(temporal::ClockSkew::default().run(&d).is_empty());
 }
 
+#[test]
+fn temporal_checks_do_not_overflow_on_extreme_timestamps() {
+    // Corrupt timestamps spanning the full i64 range must not overflow the interval/span math
+    // (which would panic in debug builds). Veridex's whole job is surviving bad data. The
+    // subtractions saturate, so the checks simply run and report rather than crashing.
+    let cam = stream("cam", "camera", Some(30.0), &[i64::MIN, i64::MAX]);
+    let robot = stream("robot", "robot", Some(30.0), &[i64::MIN, 0]);
+    let d = dataset(vec![episode(0, vec![cam, robot])]);
+
+    // None of these should panic; each returns a (possibly empty) finding list.
+    let _ = temporal::RateConformance::default().run(&d);
+    let _ = temporal::Gaps::default().run(&d);
+    let _ = temporal::ClockSkew::default().run(&d);
+    // A stream with no declared rate exercises the median-interval path (also saturating).
+    let no_rate = dataset(vec![episode(
+        0,
+        vec![stream("s", "c", None, &[i64::MIN, 0, i64::MAX])],
+    )]);
+    let _ = temporal::Gaps::default().run(&no_rate);
+}
+
 // ---- provenance completeness ----
 
 fn dataset_with_provenance(elements: Vec<ProvenanceElement>) -> Dataset {

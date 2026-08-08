@@ -67,6 +67,10 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   It now refuses to clobber an existing secret or public key unless `--force` is passed.
 - `veridex check --fail-on <typo>` silently fell back to the default threshold, quietly disabling the
   strictness a CI user asked for. An unrecognized `--fail-on` value is now an exit-2 error.
+- The temporal checks (rate, gaps, clock-skew) computed timestamp intervals with plain `i64`
+  subtraction, which overflowed on corrupt timestamps spanning the full `i64` range — a panic in
+  debug builds (isolated to an errored check) or a wrapped value in release. They now use saturating
+  subtraction, so pathological timestamps are reported rather than crashing the check.
 
 ### Security
 
