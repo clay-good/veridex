@@ -129,6 +129,20 @@ The certificate binds to the dataset's CDM content hash and is Ed25519-signed: `
 offline, and rejects a tampered certificate (signature mismatch) or one presented against a
 different dataset (content-hash mismatch).
 
+## Python
+
+The same core is available from Python (`pip install veridex-data`, then `import veridex`), with
+verdicts identical to the CLI:
+
+```python
+import veridex, json
+report = json.loads(veridex.check("my-dataset.mcap"))
+print(report["trust_score"]["grade"], report["verdict"]["status"])
+```
+
+Build the extension locally with [maturin](https://github.com/PyO3/maturin):
+`maturin develop -m crates/veridex-py/Cargo.toml`.
+
 ## Build & test
 
 ```sh
@@ -145,9 +159,10 @@ engine; the structural / temporal / provenance check catalog (including the head
 `TEMPORAL.CLOCK_SKEW`); the v1 trust-score rubric; terminal + JSON reporting; **LeRobot v3 and MCAP
 adapters** with a passing cross-format neutrality gate (the same logical dataset yields equivalent
 CDMs in both formats); Croissant + W3C PROV provenance emit; Ed25519 **certificate signing with
-offline verification** (tamper + transplant rejection); and a working CLI (`check`, `inspect`,
-`certify`, `verify`, `provenance`, `keygen`) — see the [Quickstart](#quickstart). Next up: Python
-bindings and streaming ingestion.
+offline verification** (tamper + transplant rejection); a working CLI (`check`, `inspect`,
+`certify`, `verify`, `provenance`, `keygen`) — see the [Quickstart](#quickstart); and **Python
+bindings** (`import veridex`) that call the same core pipeline, with a passing CLI⇄Python parity
+test. Next up: streaming/remote ingestion and statistical checks.
 
 Start with [openspec/project.md](openspec/project.md) for the design, or track progress in
 [openspec/changes/bootstrap-veridex-mvp/tasks.md](openspec/changes/bootstrap-veridex-mvp/tasks.md).

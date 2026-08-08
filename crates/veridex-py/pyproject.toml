@@ -1,0 +1,22 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "veridex-data"
+description = "The open, cross-format trust layer for physical-AI data (import module: veridex)."
+requires-python = ">=3.9"
+license = { text = "MIT" }
+readme = "README.md"
+classifiers = [
+    "Programming Language :: Rust",
+    "License :: OSI Approved :: MIT License",
+]
+
+[project.urls]
+Repository = "https://github.com/clay-good/veridex"
+
+[tool.maturin]
+# The PyPI distribution is `veridex-data`, but the import module and CLI stay `veridex`.
+module-name = "veridex"
+manifest-path = "Cargo.toml"

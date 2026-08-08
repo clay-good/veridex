@@ -20,6 +20,7 @@ pub mod check;
 pub mod checks;
 pub mod emit;
 pub mod engine;
+pub mod pipeline;
 pub mod report;
 
 pub use adapter::lerobot::LeRobotAdapter;
@@ -36,6 +37,7 @@ pub use certificate::{
 pub use check::{Category, Check, Finding, Location, Scope, Severity};
 pub use emit::{to_croissant, to_prov};
 pub use engine::{Engine, RegistryError, RunConfig, Status, Verdict};
+pub use pipeline::{run_check, CheckOutput};
 pub use report::{render_json, render_terminal, REPORT_SCHEMA_VERSION};
 
 /// The version of `veridex-core`, from Cargo.

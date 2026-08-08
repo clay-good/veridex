@@ -67,7 +67,10 @@ the build plan.
       silent guess.
 - [x] CI exit codes (0 pass · 10 warnings · 20 fail · 2 tool-error) with a configurable failure
       threshold (`--fail-on error|warning`, default error).
-- [ ] Python bindings; **parity test:** CLI and Python produce identical verdicts/certificates.
+- [x] Python bindings (`veridex-py`, pyo3/abi3) exposing `check`/`content_hash`/`version`; both
+      front-ends call one shared `veridex_core::run_check` pipeline so parity is by construction.
+      **Parity test** (`crates/veridex-py/tests/test_parity.py`) asserts CLI and Python produce
+      byte-identical reports — verified live. Wheel builds with maturin (`veridex-data` on PyPI).
 
 ## M9 — Proof & anointer prep
 - [ ] End-to-end demo on a real LeRobot v3 Hub dataset and a real MCAP recording.

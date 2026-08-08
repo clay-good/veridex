@@ -15,8 +15,7 @@ use std::process::ExitCode;
 
 use veridex_core::adapter::{IngestOptions, Source};
 use veridex_core::certificate::{
-    score, sign, verify, Certificate, Issuance, ProvenanceCoverage, SignedCertificate,
-    SigningKeypair,
+    sign, verify, Certificate, Issuance, ProvenanceCoverage, SignedCertificate, SigningKeypair,
 };
 use veridex_core::engine::Status;
 
@@ -143,34 +142,40 @@ fn ingest(args: &Args) -> Result<veridex_core::Ingested, ExitCode> {
 
 fn cmd_check(rest: &[String]) -> ExitCode {
     let args = parse_args(rest);
-    let ingested = match ingest(&args) {
-        Ok(i) => i,
-        Err(code) => return code,
+    let Some(path) = &args.path else {
+        eprintln!("veridex: missing dataset path");
+        return ExitCode::from(EXIT_TOOL_ERROR);
     };
-
-    let engine = match veridex_core::checks::default_engine() {
-        Ok(e) => e,
+    let source = Source::Local(PathBuf::from(path));
+    let registry = veridex_core::default_registry();
+    let out = match veridex_core::run_check(
+        &registry,
+        &source,
+        args.format.as_deref(),
+        &IngestOptions::default(),
+    ) {
+        Ok(o) => o,
         Err(e) => {
-            eprintln!("veridex: internal error building checks: {e}");
+            eprintln!("veridex: {e}");
             return ExitCode::from(EXIT_TOOL_ERROR);
         }
     };
-    let hash = veridex_core::content_hash(&ingested.dataset);
-    let verdict = engine.run(&ingested.dataset, hash, &veridex_core::RunConfig::default());
-    let trust = score(&verdict, &ProvenanceCoverage::of(&ingested.dataset));
 
     if args.json {
-        println!("{}", veridex_core::render_json(&verdict, Some(trust)));
+        println!(
+            "{}",
+            veridex_core::render_json(&out.verdict, Some(out.trust))
+        );
     } else {
         print!(
             "{}",
-            veridex_core::render_terminal(&verdict, Some(trust), 10)
+            veridex_core::render_terminal(&out.verdict, Some(out.trust), 10)
         );
     }
 
     // Default failure threshold is `error`; `--fail-on warning` promotes warnings to a failure code.
     let fail_on_warning = args.fail_on.as_deref() == Some("warning");
-    ExitCode::from(match verdict.status {
+    ExitCode::from(match out.verdict.status {
         Status::Pass => EXIT_PASS,
         Status::PassWithWarnings if fail_on_warning => EXIT_FAIL,
         Status::PassWithWarnings => EXIT_WARN,
@@ -234,11 +239,6 @@ fn cmd_inspect(rest: &[String]) -> ExitCode {
 
 fn cmd_certify(rest: &[String]) -> ExitCode {
     let args = parse_args(rest);
-    let ingested = match ingest(&args) {
-        Ok(i) => i,
-        Err(code) => return code,
-    };
-
     let Some(key_path) = &args.key else {
         eprintln!("veridex: certify requires --key <secret-key-file>");
         return ExitCode::from(EXIT_TOOL_ERROR);
@@ -255,24 +255,32 @@ fn cmd_certify(rest: &[String]) -> ExitCode {
         return ExitCode::from(EXIT_TOOL_ERROR);
     };
 
-    let engine = match veridex_core::checks::default_engine() {
-        Ok(e) => e,
+    let Some(path) = &args.path else {
+        eprintln!("veridex: missing dataset path");
+        return ExitCode::from(EXIT_TOOL_ERROR);
+    };
+    let source = Source::Local(PathBuf::from(path));
+    let registry = veridex_core::default_registry();
+    let out = match veridex_core::run_check(
+        &registry,
+        &source,
+        args.format.as_deref(),
+        &IngestOptions::default(),
+    ) {
+        Ok(o) => o,
         Err(e) => {
-            eprintln!("veridex: internal error building checks: {e}");
+            eprintln!("veridex: {e}");
             return ExitCode::from(EXIT_TOOL_ERROR);
         }
     };
-    let hash = veridex_core::content_hash(&ingested.dataset);
-    let verdict = engine.run(&ingested.dataset, hash, &veridex_core::RunConfig::default());
-    let trust = score(&verdict, &ProvenanceCoverage::of(&ingested.dataset));
 
     // Timestamp is caller-supplied (the core never reads a clock). Default to unix seconds.
     let timestamp = args.timestamp.clone().unwrap_or_else(unix_timestamp);
     let cert = Certificate::build(
-        ingested.dataset.id.clone(),
-        &verdict,
-        trust,
-        ProvenanceCoverage::of(&ingested.dataset),
+        out.ingested.dataset.id.clone(),
+        &out.verdict,
+        out.trust.clone(),
+        ProvenanceCoverage::of(&out.ingested.dataset),
         Issuance {
             key_id: keypair.public_hex(),
             timestamp,
@@ -283,7 +291,7 @@ fn cmd_certify(rest: &[String]) -> ExitCode {
     let out_path = args
         .out
         .clone()
-        .unwrap_or_else(|| format!("{}.veridex.json", ingested.dataset.id));
+        .unwrap_or_else(|| format!("{}.veridex.json", out.ingested.dataset.id));
     let json = match serde_json::to_string_pretty(&signed) {
         Ok(s) => s,
         Err(e) => {

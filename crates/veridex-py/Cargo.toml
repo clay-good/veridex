@@ -1,0 +1,17 @@
+[package]
+name = "veridex-py"
+description = "Python bindings for Veridex (import module: veridex)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "veridex"
+crate-type = ["cdylib"]
+
+[dependencies]
+veridex-core = { path = "../veridex-core" }
+serde_json.workspace = true
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py39"] }

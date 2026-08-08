@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/veridex-core",
     "crates/veridex-cli",
+    "crates/veridex-py",
 ]
 
 [workspace.package]
