@@ -23,7 +23,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   degenerate episodes/streams, and cross-episode dtype/shape consistency so a stream that changes
   tensor shape between episodes — an un-batchable dataset — is caught), temporal (monotonicity,
   rate conformance, gaps, and the headline
-  `TEMPORAL.CLOCK_SKEW`), statistical (range/sanity and degeneracy over stored stats), and
+  `TEMPORAL.CLOCK_SKEW`), statistical (range/sanity and degeneracy over stored stats), semantic
+  (task-string quality — present-but-empty and placeholder tasks, verified never modified), and
   provenance-completeness. Every finding carries a training risk and a remedy.
 - **Trust certificate** — a deterministic v1 score and A–F grade (provenance weighted as a separate
   30% axis), a content-bound certificate document, and Ed25519 signing with offline verification

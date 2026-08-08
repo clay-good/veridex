@@ -5,7 +5,7 @@ use veridex_core::cdm::{
     ProvenanceScope, Stream, ValueRef,
 };
 use veridex_core::check::{Check, Severity};
-use veridex_core::checks::{provenance, statistical, structural, temporal};
+use veridex_core::checks::{provenance, semantic, statistical, structural, temporal};
 
 fn vref() -> ValueRef {
     ValueRef {
@@ -346,7 +346,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 9);
+    assert_eq!(verdict.executed_checks.len(), 10);
 }
 
 #[test]
@@ -428,4 +428,41 @@ fn healthy_stats_produce_no_findings() {
         vec![stream_with_stats("s", stats(-1.0, 1.0, 0.0, 0.5))],
     )]);
     assert!(statistical::RangeSanity.run(&d).is_empty());
+}
+
+// ---- semantic ----
+
+/// An episode carrying a specific task string.
+fn episode_with_task(index: u64, task: Option<&str>) -> Episode {
+    let mut ep = episode(index, vec![stream("s", "c", None, &[0, 1])]);
+    ep.task = task.map(Into::into);
+    ep
+}
+
+#[test]
+fn empty_task_string_is_flagged() {
+    let d = dataset(vec![episode_with_task(0, Some("   "))]);
+    let f = semantic::TaskQuality.run(&d);
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].code, "SEMANTIC.EMPTY_TASK");
+    assert_eq!(f[0].severity, Severity::Warning);
+}
+
+#[test]
+fn placeholder_task_is_low_information() {
+    let d = dataset(vec![episode_with_task(0, Some("Hold"))]);
+    let f = semantic::TaskQuality.run(&d);
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].code, "SEMANTIC.PLACEHOLDER_TASK");
+    assert_eq!(f[0].severity, Severity::Info);
+}
+
+#[test]
+fn meaningful_and_absent_tasks_are_not_flagged() {
+    // A real instruction is clean.
+    let good = dataset(vec![episode_with_task(0, Some("pick up the red cube"))]);
+    assert!(semantic::TaskQuality.run(&good).is_empty());
+    // An unresolved (None) task is deliberately not flagged — it means "unknown", not "empty".
+    let absent = dataset(vec![episode_with_task(0, None)]);
+    assert!(semantic::TaskQuality.run(&absent).is_empty());
 }
