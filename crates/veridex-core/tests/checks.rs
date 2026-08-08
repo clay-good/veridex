@@ -349,6 +349,26 @@ fn default_engine_runs_all_families_end_to_end() {
     assert_eq!(verdict.executed_checks.len(), 9);
 }
 
+#[test]
+fn catalog_lists_every_standard_check_with_metadata() {
+    let engine = veridex_core::checks::default_engine().expect("standard checks have unique ids");
+    let catalog = engine.catalog();
+    // One entry per registered check, in registration order.
+    assert_eq!(catalog.len(), engine.check_ids().len());
+    assert_eq!(
+        catalog.iter().map(|c| c.id).collect::<Vec<_>>(),
+        engine.check_ids()
+    );
+    // The new shape-consistency check is present with the expected metadata.
+    let shape = catalog
+        .iter()
+        .find(|c| c.id == "structural.shape-consistency")
+        .expect("shape-consistency is in the catalog");
+    assert_eq!(shape.category, veridex_core::Category::Structural);
+    assert_eq!(shape.default_severity, Severity::Error);
+    assert!(!shape.title.is_empty());
+}
+
 // ---- statistical ----
 
 fn stream_with_stats(name: &str, stats: veridex_core::cdm::StreamStats) -> Stream {

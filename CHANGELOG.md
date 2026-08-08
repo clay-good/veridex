@@ -35,7 +35,9 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   self-contained HTML report (`veridex check --html`), and verdict diffing (`veridex diff`) that
   reports findings introduced / resolved / unchanged and the trust-score movement between two
   reports.
-- **CLI** — `veridex check | inspect | certify | verify | provenance | keygen | diff`, with format
+- **CLI** — `veridex check | inspect | checks | certify | verify | provenance | keygen | diff`
+  (`checks` lists the built-in catalog — id, category, default severity, scope — as text or
+  `--json`), with format
   autodetection (`--format` override, ambiguity is refused), a configurable failure threshold
   (`--fail-on`), and documented exit codes (0 pass · 10 warnings · 20 fail · 2 tool-error).
 - **Python bindings** (`import veridex`) that call the same core pipeline as the CLI, with a passing

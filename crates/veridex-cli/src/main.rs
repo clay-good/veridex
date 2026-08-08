@@ -48,6 +48,7 @@ const COMMANDS: &[(&str, &str)] = &[
         "inspect",
         "summarize the Canonical Dataset Model of a dataset",
     ),
+    ("checks", "list the built-in check catalog"),
 ];
 
 /// Parsed command line for the data-consuming commands.
@@ -126,6 +127,7 @@ fn main() -> ExitCode {
         }
         Some("check") => cmd_check(&args[1..]),
         Some("inspect") => cmd_inspect(&args[1..]),
+        Some("checks") => cmd_checks(&args[1..]),
         Some("certify") => cmd_certify(&args[1..]),
         Some("verify") => cmd_verify(&args[1..]),
         Some("keygen") => cmd_keygen(&args[1..]),
@@ -246,6 +248,45 @@ fn load_config(explicit: Option<&str>) -> Result<veridex_core::CheckConfig, Stri
             veridex_core::CheckConfig::from_toml(&text).map_err(|e| e.to_string())
         }
     }
+}
+
+/// `veridex checks` — list the built-in check catalog (id, category, default severity, scope,
+/// title), so users can discover what runs without validating a dataset. `--json` emits the
+/// structured catalog.
+fn cmd_checks(rest: &[String]) -> ExitCode {
+    let args = parse_args(rest);
+    let engine = match veridex_core::checks::default_engine() {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("veridex: {e}");
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
+    };
+    let catalog = engine.catalog();
+
+    if args.json {
+        match serde_json::to_string_pretty(&catalog) {
+            Ok(s) => println!("{s}"),
+            Err(e) => {
+                eprintln!("veridex: {e}");
+                return ExitCode::from(EXIT_TOOL_ERROR);
+            }
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    println!("{} built-in checks:", catalog.len());
+    for c in &catalog {
+        println!(
+            "  {:<28} {:<11} {:<8} {:<8} {}",
+            c.id,
+            c.category.tag(),
+            c.default_severity.tag(),
+            c.scope.tag(),
+            c.title,
+        );
+    }
+    ExitCode::SUCCESS
 }
 
 /// Render a stream's declared dtype/shape as a trailing `, <dtype> [<dims>]` note for `inspect`.
@@ -582,7 +623,9 @@ fn print_help() {
     println!();
     println!("OPTIONS:");
     println!("    --format <fmt>       force an adapter (e.g. mcap) instead of autodetecting");
-    println!("    --json               machine-readable JSON output (check, inspect, diff)");
+    println!(
+        "    --json               machine-readable JSON output (check, inspect, diff, checks)"
+    );
     println!("    --sarif              SARIF 2.1.0 output for CI code scanning (check)");
     println!("    --html               self-contained HTML report (check)");
     println!("    --key <file>         issuer secret key (certify) or trusted public key (verify)");

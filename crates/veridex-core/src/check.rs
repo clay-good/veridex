@@ -21,6 +21,17 @@ pub enum Severity {
     Error,
 }
 
+impl Severity {
+    /// The stable canonical tag for this severity.
+    pub fn tag(self) -> &'static str {
+        match self {
+            Severity::Info => "info",
+            Severity::Warning => "warning",
+            Severity::Error => "error",
+        }
+    }
+}
+
 /// The category a check belongs to (exactly one).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -39,6 +50,20 @@ pub enum Category {
     Provenance,
 }
 
+impl Category {
+    /// The stable canonical tag for this category.
+    pub fn tag(self) -> &'static str {
+        match self {
+            Category::Structural => "structural",
+            Category::Temporal => "temporal",
+            Category::Statistical => "statistical",
+            Category::Semantic => "semantic",
+            Category::Video => "video",
+            Category::Provenance => "provenance",
+        }
+    }
+}
+
 /// The CDM scope a check applies to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -49,6 +74,17 @@ pub enum Scope {
     Episode,
     /// Each stream.
     Stream,
+}
+
+impl Scope {
+    /// The stable canonical tag for this scope.
+    pub fn tag(self) -> &'static str {
+        match self {
+            Scope::Dataset => "dataset",
+            Scope::Episode => "episode",
+            Scope::Stream => "stream",
+        }
+    }
 }
 
 /// The precise CDM location a finding concerns. Precise enough to navigate to without rerunning.

@@ -93,6 +93,7 @@ veridex certify    <dataset> --key issuer.key                     # issue a sign
 veridex verify     <dataset> --certificate c.json --key pub.key   # verify offline
 veridex provenance <dataset> --emit croissant                     # extract + emit provenance
 veridex inspect    <dataset>                                      # summarize the dataset
+veridex checks                                                    # list the built-in check catalog
 ```
 
 Built on a Rust core (`veridex-core`) with a `veridex` CLI and a Python package

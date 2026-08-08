@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 
 use crate::canonical::ContentHash;
 use crate::cdm::Dataset;
-use crate::check::{Category, Check, Finding, Severity};
+use crate::check::{Category, Check, Finding, Scope, Severity};
 
 /// Error raised while assembling the check registry.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -179,6 +179,24 @@ impl EngineBuilder {
     }
 }
 
+/// Static, run-independent metadata describing one registered check. Emitted by
+/// [`Engine::catalog`] for discoverability (`veridex checks`).
+#[derive(Debug, Clone, Serialize)]
+pub struct CheckInfo {
+    /// The check's stable id (e.g. `structural.shape-consistency`).
+    pub id: &'static str,
+    /// One-line human title.
+    pub title: &'static str,
+    /// The family this check belongs to.
+    pub category: Category,
+    /// The severity the check emits by default (before any config override).
+    pub default_severity: Severity,
+    /// The CDM scope the check reasons over.
+    pub scope: Scope,
+    /// The check's version.
+    pub version: &'static str,
+}
+
 /// A registry of checks that can validate a CDM.
 pub struct Engine {
     checks: Vec<Box<dyn Check>>,
@@ -193,6 +211,22 @@ impl Engine {
     /// Ids of every registered check, in registration order.
     pub fn check_ids(&self) -> Vec<&'static str> {
         self.checks.iter().map(|c| c.id()).collect()
+    }
+
+    /// Static metadata for every registered check, in registration order, without running any of
+    /// them. Powers `veridex checks` (catalog discoverability).
+    pub fn catalog(&self) -> Vec<CheckInfo> {
+        self.checks
+            .iter()
+            .map(|c| CheckInfo {
+                id: c.id(),
+                title: c.title(),
+                category: c.category(),
+                default_severity: c.default_severity(),
+                scope: c.scope(),
+                version: c.version(),
+            })
+            .collect()
     }
 
     /// Validate `dataset` (whose content hash is `cdm_hash`) under `config`.
