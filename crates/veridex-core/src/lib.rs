@@ -12,9 +12,14 @@
 
 #![forbid(unsafe_code)]
 
+pub mod adapter;
 pub mod canonical;
 pub mod cdm;
 
+pub use adapter::{
+    Adapter, AdapterRegistry, Coverage, Detection, IngestError, IngestOptions, IngestReport,
+    Ingested, Sample, Source, UnmappedField,
+};
 pub use canonical::{content_hash, ContentHash, CANONICAL_VERSION};
 
 /// The version of `veridex-core`, from Cargo.

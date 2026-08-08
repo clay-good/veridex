@@ -11,7 +11,7 @@ the build plan.
 ## M1 — Canonical Dataset Model
 - [x] Define CDM types (Dataset/Episode/Stream/Frame/Provenance/Label) per design D2.
 - [x] Implement CDM canonicalization + content hashing (D5); property-test determinism.
-- [ ] Define the adapter trait (populate CDM; declare supported versions; record unmapped fields).
+- [x] Define the adapter trait (populate CDM; declare supported versions; record unmapped fields).
 
 ## M2 — Ingestion adapters (the neutrality proof)
 - [ ] LeRobot v3 adapter → CDM (episodes, streams, timestamps, tasks, language annotations present
