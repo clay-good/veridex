@@ -194,9 +194,13 @@ fn maps_features_to_streams_and_groups_by_episode() {
     assert_eq!(cam.frames.len(), 3);
     // 0.2 s => 200_000_000 ns
     assert_eq!(cam.frames[2].ts, 200_000_000);
+    // Declared dtype/shape are read straight from meta/info.json (the fixture writes shape [1]).
+    assert_eq!(cam.dtype.as_deref(), Some("video"));
+    assert_eq!(cam.shape.as_deref(), Some(&[1u64][..]));
 
     let action = ep0.streams.iter().find(|s| s.name == "action").unwrap();
     assert_eq!(action.modality, Modality::Action);
+    assert_eq!(action.dtype.as_deref(), Some("float32"));
 
     assert_eq!(d.episodes[1].streams[0].frames.len(), 2);
 }
