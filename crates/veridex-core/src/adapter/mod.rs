@@ -12,6 +12,8 @@
 //!   [`IngestError::UnsupportedFormat`], which lists the formats that *are* supported, rather than
 //!   partially parsing.
 
+pub mod mcap;
+
 use std::path::PathBuf;
 
 use thiserror::Error;
@@ -140,6 +142,13 @@ pub enum IngestError {
         message: String,
     },
 
+    /// More than one adapter recognized the source and no `--format` override was given.
+    #[error("ambiguous format: source matches {} adapters ({}); specify one with --format", .candidates.len(), .candidates.join(", "))]
+    AmbiguousFormat {
+        /// The format ids that all recognized the source.
+        candidates: Vec<&'static str>,
+    },
+
     /// An I/O error occurred while reading the source.
     #[error("io error: {0}")]
     Io(String),
@@ -189,22 +198,54 @@ impl AdapterRegistry {
         self.adapters.iter().map(|a| a.format_id()).collect()
     }
 
-    /// Ingest `source`, selecting the first adapter that recognizes it.
+    /// Ingest `source` by autodetection.
     ///
-    /// Returns [`IngestError::UnsupportedFormat`] — listing the supported formats — when no adapter
-    /// recognizes the source, rather than partially parsing it.
+    /// Returns [`IngestError::UnsupportedFormat`] (listing supported formats) when nothing
+    /// recognizes the source, and [`IngestError::AmbiguousFormat`] when more than one adapter does —
+    /// never silently guessing. Use [`AdapterRegistry::ingest_as`] to force a format.
     pub fn ingest(
         &self,
         source: &Source,
         options: &IngestOptions,
     ) -> Result<Ingested, IngestError> {
-        for adapter in &self.adapters {
-            if let Detection::Yes { .. } = adapter.detect(source) {
-                return adapter.ingest(source, options);
-            }
+        let matches: Vec<&dyn Adapter> = self
+            .adapters
+            .iter()
+            .filter(|a| matches!(a.detect(source), Detection::Yes { .. }))
+            .map(|a| a.as_ref())
+            .collect();
+        match matches.as_slice() {
+            [] => Err(IngestError::UnsupportedFormat {
+                supported: self.supported_formats(),
+            }),
+            [only] => only.ingest(source, options),
+            many => Err(IngestError::AmbiguousFormat {
+                candidates: many.iter().map(|a| a.format_id()).collect(),
+            }),
         }
-        Err(IngestError::UnsupportedFormat {
-            supported: self.supported_formats(),
-        })
     }
+
+    /// Ingest `source` with the adapter whose `format_id` matches `format`, bypassing autodetection.
+    ///
+    /// Returns [`IngestError::UnsupportedFormat`] when no registered adapter has that id.
+    pub fn ingest_as(
+        &self,
+        format: &str,
+        source: &Source,
+        options: &IngestOptions,
+    ) -> Result<Ingested, IngestError> {
+        match self.adapters.iter().find(|a| a.format_id() == format) {
+            Some(adapter) => adapter.ingest(source, options),
+            None => Err(IngestError::UnsupportedFormat {
+                supported: self.supported_formats(),
+            }),
+        }
+    }
+}
+
+/// A registry preloaded with the standard v0.1 adapters (currently MCAP; LeRobot v3 follows).
+pub fn default_registry() -> AdapterRegistry {
+    let mut reg = AdapterRegistry::new();
+    reg.register(Box::new(mcap::McapAdapter));
+    reg
 }

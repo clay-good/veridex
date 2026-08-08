@@ -13,3 +13,4 @@ path = "src/main.rs"
 
 [dependencies]
 veridex-core = { path = "../veridex-core" }
+serde_json.workspace = true

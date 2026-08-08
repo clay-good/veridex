@@ -12,6 +12,8 @@ sha2.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+mcap = "0.25"
 
 [dev-dependencies]
 proptest = "1"
+tempfile = "3"

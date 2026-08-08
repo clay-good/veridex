@@ -96,20 +96,45 @@ veridex inspect    <dataset>                                      # summarize th
 Built on a Rust core (`veridex-core`) with a `veridex` CLI and a Python package
 (`pip install veridex-data`, then `import veridex`) that produce identical verdicts.
 
+## Quickstart
+
+```sh
+cargo build
+
+# generate a demo MCAP with a synthetic cross-stream clock skew
+cargo run -p veridex-core --example make_demo_mcap -- /tmp/demo.mcap
+
+# validate it — prints a report and exits non-zero on failure
+cargo run -p veridex-cli -- check /tmp/demo.mcap
+
+# summarize the Canonical Dataset Model
+cargo run -p veridex-cli -- inspect /tmp/demo.mcap
+
+# machine-readable output
+cargo run -p veridex-cli -- check --json /tmp/demo.mcap
+```
+
+`check` catches the headline `TEMPORAL.CLOCK_SKEW` (the camera and robot clocks drift 210 ms apart),
+reports the training risk and remedy, and exits `20` (fail). Exit codes: `0` pass · `10`
+pass-with-warnings · `20` fail · `2` tool-error.
+
 ## Build & test
 
 ```sh
 cargo build            # build the workspace
-cargo test             # unit + property tests
-cargo run -p veridex-cli -- --help
+cargo test             # unit + property + integration tests
+cargo clippy --all-targets
 ```
 
 ## Status
 
-**Early implementation** — the core is landing against a full [OpenSpec](openspec/) design: the
-Canonical Dataset Model, deterministic content hashing, the validation engine, the structural /
-temporal / provenance check catalog, the v1 trust-score rubric, and terminal + JSON reporting are
-in. Next up are the format adapters (LeRobot v3, MCAP) that populate the model from real files.
+**Early implementation, runs end-to-end.** Against a full [OpenSpec](openspec/) design, these are
+in and tested: the Canonical Dataset Model with deterministic content hashing; the validation
+engine; the structural / temporal / provenance check catalog (including the headline
+`TEMPORAL.CLOCK_SKEW`); the v1 trust-score rubric; terminal + JSON reporting; the **MCAP adapter**;
+and a working CLI (`veridex check`, `veridex inspect`) — see the [Quickstart](#quickstart). Next up:
+the LeRobot v3 adapter (completing the cross-format neutrality proof) and certificate signing, so
+`certify` / `verify` / `provenance` come online.
 
 Start with [openspec/project.md](openspec/project.md) for the design, or track progress in
 [openspec/changes/bootstrap-veridex-mvp/tasks.md](openspec/changes/bootstrap-veridex-mvp/tasks.md).

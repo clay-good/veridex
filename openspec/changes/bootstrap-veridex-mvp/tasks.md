@@ -16,9 +16,12 @@ the build plan.
 ## M2 — Ingestion adapters (the neutrality proof)
 - [ ] LeRobot v3 adapter → CDM (episodes, streams, timestamps, tasks, language annotations present
       as data, provenance extraction).
-- [ ] MCAP adapter → CDM (channels→streams, message timestamps, schemas→modalities).
-- [ ] Streaming/large-than-memory ingestion; remote (Hub) metadata-only ingestion.
+- [x] MCAP adapter → CDM (channels→streams, message timestamps, schemas→modalities). Backed by the
+      `mcap` crate; tests write real MCAP files and ingest them.
+- [ ] Streaming/large-than-memory ingestion; remote (Hub) metadata-only ingestion. (MCAP currently
+      reads the whole local file; streaming is a follow-up.)
 - [ ] **Gate test:** the same logical dataset as LeRobot v3 and MCAP yields equivalent CDMs.
+      (Blocked on the LeRobot adapter.)
 
 ## M3 — Validation engine
 - [x] Check registry, severities, categories, selection/config, run metadata (per spec).
@@ -52,9 +55,12 @@ the build plan.
 - [x] Versioned JSON output (`veridex.report/1`).
 
 ## M8 — CLI + Python parity
-- [ ] `veridex check | certify | verify | provenance | inspect`.
-- [ ] Format autodetect + `--format` override; ambiguity is not silently guessed.
-- [ ] CI exit codes + configurable failure thresholds.
+- [~] `veridex check | inspect` implemented end-to-end (ingest → CDM → checks → score → report).
+      `certify | verify | provenance` await signing/Croissant.
+- [x] Format autodetect + `--format` override; ambiguity is `IngestError::AmbiguousFormat`, not a
+      silent guess.
+- [~] CI exit codes (0 pass · 10 warnings · 20 fail · 2 tool-error). Configurable failure threshold
+      is a follow-up.
 - [ ] Python bindings; **parity test:** CLI and Python produce identical verdicts/certificates.
 
 ## M9 — Proof & anointer prep

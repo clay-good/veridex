@@ -21,9 +21,10 @@ pub mod checks;
 pub mod engine;
 pub mod report;
 
+pub use adapter::mcap::McapAdapter;
 pub use adapter::{
-    Adapter, AdapterRegistry, Coverage, Detection, IngestError, IngestOptions, IngestReport,
-    Ingested, Sample, Source, UnmappedField,
+    default_registry, Adapter, AdapterRegistry, Coverage, Detection, IngestError, IngestOptions,
+    IngestReport, Ingested, Sample, Source, UnmappedField,
 };
 pub use canonical::{content_hash, ContentHash, CANONICAL_VERSION};
 pub use certificate::{score, Grade, ProvenanceCoverage, TrustScore, RUBRIC_VERSION};
