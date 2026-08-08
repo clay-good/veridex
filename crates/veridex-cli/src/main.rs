@@ -248,6 +248,24 @@ fn load_config(explicit: Option<&str>) -> Result<veridex_core::CheckConfig, Stri
     }
 }
 
+/// Render a stream's declared dtype/shape as a trailing `, <dtype> [<dims>]` note for `inspect`.
+/// Empty when the source declares neither (Veridex never infers a schema).
+fn describe_schema(dtype: &Option<String>, shape: &Option<Vec<u64>>) -> String {
+    let mut parts = Vec::new();
+    if let Some(d) = dtype {
+        parts.push(d.clone());
+    }
+    if let Some(s) = shape {
+        let dims: Vec<String> = s.iter().map(|d| d.to_string()).collect();
+        parts.push(format!("[{}]", dims.join(",")));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(", {}", parts.join(" "))
+    }
+}
+
 fn cmd_inspect(rest: &[String]) -> ExitCode {
     let args = parse_args(rest);
     let ingested = match ingest(&args) {
@@ -282,11 +300,12 @@ fn cmd_inspect(rest: &[String]) -> ExitCode {
         );
         for s in &ep.streams {
             println!(
-                "      {} [{}] — {} frame(s), clock `{}`",
+                "      {} [{}] — {} frame(s), clock `{}`{}",
                 s.name,
                 s.modality.tag(),
                 s.frames.len(),
-                s.clock_id
+                s.clock_id,
+                describe_schema(&s.dtype, &s.shape),
             );
         }
     }
@@ -577,4 +596,24 @@ fn print_help() {
     println!("    --help               print this help");
     println!();
     println!("EXIT CODES: 0 pass · 10 pass-with-warnings · 20 fail · 2 tool-error");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::describe_schema;
+
+    #[test]
+    fn schema_note_renders_dtype_and_shape() {
+        assert_eq!(
+            describe_schema(&Some("float32".into()), &Some(vec![3, 480, 640])),
+            ", float32 [3,480,640]"
+        );
+        assert_eq!(describe_schema(&None, &Some(vec![6])), ", [6]");
+        assert_eq!(describe_schema(&Some("int64".into()), &None), ", int64");
+    }
+
+    #[test]
+    fn schema_note_is_empty_when_nothing_declared() {
+        assert_eq!(describe_schema(&None, &None), "");
+    }
 }
