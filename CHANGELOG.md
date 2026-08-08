@@ -45,6 +45,13 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   config is recorded in every verdict.
 - **CI** — GitHub Actions running fmt, clippy (`-D warnings`), and the full test suite.
 
+### Security
+
+- Upgraded `pyo3` 0.22 → 0.29, clearing three advisories (RUSTSEC out-of-bounds read in
+  `PyList`/`PyTuple` `nth`/`nth_back`, the missing `Sync` bound on `PyCFunction::new_closure`, and
+  the `PyString::from_object` buffer-overflow risk). The bindings' API surface was already on the
+  `Bound` API, so the bump is source-compatible.
+
 ### Not yet included
 
 Streaming / large-than-memory and remote Hub ingestion; stored-vs-recomputed statistics and
