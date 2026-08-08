@@ -2,7 +2,7 @@
 
 use veridex_core::cdm::{Dataset, Episode, Frame, Modality, Stream, ValueRef};
 use veridex_core::certificate::{score, ProvenanceCoverage};
-use veridex_core::report::{render_json, render_terminal, REPORT_SCHEMA_VERSION};
+use veridex_core::report::{render_json, render_sarif, render_terminal, REPORT_SCHEMA_VERSION};
 use veridex_core::{content_hash, RunConfig};
 
 fn stream(name: &str, clock: &str, ts: &[i64]) -> Stream {
@@ -108,6 +108,31 @@ fn terminal_report_ranks_worst_episode_first() {
             "worst episode (7) must come before clean episode 0"
         );
     }
+}
+
+#[test]
+fn sarif_is_valid_2_1_0_and_maps_findings() {
+    let d = skewed_dataset();
+    let v = verdict_for(&d);
+    let sarif = render_sarif(&v);
+
+    assert_eq!(sarif["version"], "2.1.0");
+    assert_eq!(sarif["runs"][0]["tool"]["driver"]["name"], "Veridex");
+    let results = sarif["runs"][0]["results"].as_array().unwrap();
+    // One SARIF result per finding.
+    assert_eq!(results.len(), v.findings.len());
+    // The clock-skew error maps to a SARIF `error` result with a logical location.
+    let skew = results
+        .iter()
+        .find(|r| r["ruleId"] == "TEMPORAL.CLOCK_SKEW")
+        .unwrap();
+    assert_eq!(skew["level"], "error");
+    assert!(skew["locations"][0]["logicalLocations"][0]["name"]
+        .as_str()
+        .unwrap()
+        .contains("episode"));
+    // info findings map to SARIF `note`.
+    assert!(results.iter().any(|r| r["level"] == "note"));
 }
 
 #[test]

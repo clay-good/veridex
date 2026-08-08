@@ -61,6 +61,7 @@ struct Args {
     timestamp: Option<String>,
     emit: Option<String>,
     fail_on: Option<String>,
+    sarif: bool,
 }
 
 fn parse_args(rest: &[String]) -> Args {
@@ -73,10 +74,12 @@ fn parse_args(rest: &[String]) -> Args {
     let mut timestamp = None;
     let mut emit = None;
     let mut fail_on = None;
+    let mut sarif = false;
     let mut it = rest.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--json" => json = true,
+            "--sarif" => sarif = true,
             "--format" => format = it.next().cloned(),
             "--key" => key = it.next().cloned(),
             "--certificate" => certificate = it.next().cloned(),
@@ -98,6 +101,7 @@ fn parse_args(rest: &[String]) -> Args {
         timestamp,
         emit,
         fail_on,
+        sarif,
     }
 }
 
@@ -167,7 +171,12 @@ fn cmd_check(rest: &[String]) -> ExitCode {
         }
     };
 
-    if args.json {
+    if args.sarif {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&veridex_core::render_sarif(&out.verdict)).unwrap()
+        );
+    } else if args.json {
         println!(
             "{}",
             veridex_core::render_json(&out.verdict, Some(out.trust))
@@ -504,7 +513,8 @@ fn print_help() {
     println!();
     println!("OPTIONS:");
     println!("    --format <fmt>       force an adapter (e.g. mcap) instead of autodetecting");
-    println!("    --json               machine-readable JSON output (check, inspect)");
+    println!("    --json               machine-readable JSON output (check, inspect, diff)");
+    println!("    --sarif              SARIF 2.1.0 output for CI code scanning (check)");
     println!("    --key <file>         issuer secret key (certify) or trusted public key (verify)");
     println!("    --certificate <file> certificate to verify");
     println!("    --out <file>         certificate output path (certify)");

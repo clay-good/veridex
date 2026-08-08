@@ -1,13 +1,14 @@
 //! Reporting: turn a [`Verdict`] (and optional [`TrustScore`]) into output humans read and machines
 //! consume. Both renderers derive from the same verdict, so they never disagree.
 //!
-//! MVP surface: a human-readable terminal report with per-episode rollups (worst episodes first)
-//! and a versioned JSON envelope. HTML, SARIF, and diffing are later changes.
+//! Surface: a human-readable terminal report with per-episode rollups (worst episodes first), a
+//! versioned JSON envelope, and SARIF 2.1.0 for CI code-scanning. HTML is a later change.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use serde::Serialize;
+use serde_json::{json, Value};
 
 use crate::certificate::TrustScore;
 use crate::check::{Location, Severity};
@@ -195,4 +196,77 @@ pub fn render_terminal(
     }
 
     out
+}
+
+/// SARIF severity level for a finding.
+fn sarif_level(sev: Severity) -> &'static str {
+    match sev {
+        Severity::Error => "error",
+        Severity::Warning => "warning",
+        Severity::Info => "note",
+    }
+}
+
+/// Render the verdict as [SARIF 2.1.0](https://sarifweb.azurewebsites.net/) for CI code-scanning
+/// (e.g. GitHub code scanning). Rules are the distinct finding codes; results carry the message and
+/// a logical location (dataset / episode / stream), since Veridex findings are not file positions.
+pub fn render_sarif(verdict: &Verdict) -> Value {
+    // Distinct rule ids (finding codes), sorted for determinism.
+    let mut rule_ids: Vec<&str> = verdict.findings.iter().map(|f| f.code.as_str()).collect();
+    rule_ids.sort_unstable();
+    rule_ids.dedup();
+    let rules: Vec<Value> = rule_ids
+        .iter()
+        .map(|id| json!({ "id": id, "name": id }))
+        .collect();
+
+    let results: Vec<Value> = verdict
+        .findings
+        .iter()
+        .map(|f| {
+            json!({
+                "ruleId": f.code,
+                "level": sarif_level(f.severity),
+                "message": { "text": f.message },
+                "locations": [{
+                    "logicalLocations": [{ "name": location_label(&f.location) }]
+                }],
+                "properties": {
+                    "checkId": f.check_id,
+                    "category": category_tag(f),
+                    "risk": f.risk,
+                    "remedy": f.remedy
+                }
+            })
+        })
+        .collect();
+
+    json!({
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [{
+            "tool": {
+                "driver": {
+                    "name": "Veridex",
+                    "informationUri": "https://github.com/clay-good/veridex",
+                    "version": crate::VERSION,
+                    "rules": rules
+                }
+            },
+            "results": results
+        }]
+    })
+}
+
+/// The finding's category tag (kept local to avoid leaking a formatting helper).
+fn category_tag(f: &crate::check::Finding) -> &'static str {
+    use crate::check::Category::*;
+    match f.category {
+        Structural => "structural",
+        Temporal => "temporal",
+        Statistical => "statistical",
+        Semantic => "semantic",
+        Video => "video",
+        Provenance => "provenance",
+    }
 }
