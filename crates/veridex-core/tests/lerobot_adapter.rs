@@ -16,6 +16,7 @@ use veridex_core::adapter::lerobot::LeRobotAdapter;
 use veridex_core::adapter::mcap::McapAdapter;
 use veridex_core::adapter::{Adapter, Detection, IngestOptions, Source};
 use veridex_core::cdm::{Dataset, Modality};
+use veridex_core::check::Severity;
 
 /// Write a LeRobot v3 dataset directory with the given features and rows.
 /// `rows` are (episode_index, timestamp_seconds).
@@ -287,5 +288,52 @@ fn same_logical_dataset_yields_equivalent_cdms_across_formats() {
         signature(&lerobot_cdm),
         signature(&mcap_cdm),
         "same logical dataset must produce equivalent CDMs across LeRobot and MCAP"
+    );
+}
+
+#[test]
+fn lerobot_dataset_flows_through_the_full_check_pipeline() {
+    // A clean two-episode LeRobot dataset, sampled at the declared rate, should ingest and pass the
+    // standard engine end-to-end (ingest -> CDM -> every check). Exercises the LeRobot -> checks
+    // path as a whole, not just the adapter in isolation.
+    let dir = tempfile::tempdir().unwrap();
+    write_lerobot(
+        dir.path(),
+        &[("observation.state", "float32"), ("action", "float32")],
+        10.0, // 10 Hz => 0.1 s spacing, matching the timestamps below
+        &[(0, 0.0), (0, 0.1), (0, 0.2), (1, 0.0), (1, 0.1), (1, 0.2)],
+    );
+    let d = ingest_lerobot(dir.path());
+
+    let engine = veridex_core::checks::default_engine().expect("standard checks have unique ids");
+    let hash = veridex_core::content_hash(&d);
+    let verdict = engine.run(&d, hash, &veridex_core::RunConfig::default());
+
+    // Every standard check ran, none errored, and clean data yields no failing findings.
+    assert_eq!(verdict.executed_checks.len(), 10);
+    assert!(
+        verdict.errored_checks.is_empty(),
+        "no check should error on a well-formed dataset"
+    );
+    // No structural/temporal errors on clean data — the only non-info finding is the missing
+    // license (a Warning by rubric), so the run passes with warnings rather than failing.
+    assert!(
+        !verdict
+            .findings
+            .iter()
+            .any(|f| f.severity == Severity::Error),
+        "a clean dataset should produce no error findings"
+    );
+    assert_eq!(
+        verdict.status,
+        veridex_core::Status::PassWithWarnings,
+        "clean data with no declared license passes with a license warning"
+    );
+    assert!(
+        verdict
+            .findings
+            .iter()
+            .any(|f| f.code == "PROVENANCE.MISSING_LICENSE"),
+        "the fixture declares no license, so the license warning must appear"
     );
 }
