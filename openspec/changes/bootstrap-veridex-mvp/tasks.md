@@ -61,8 +61,7 @@ the build plan.
 - [x] Versioned JSON output (`veridex.report/1`).
 
 ## M8 — CLI + Python parity
-- [~] `veridex check | inspect | certify | verify | keygen` implemented end-to-end. `provenance`
-      awaits Croissant emit.
+- [x] `veridex check | inspect | certify | verify | provenance | keygen` implemented end-to-end.
 - [x] Format autodetect + `--format` override; ambiguity is `IngestError::AmbiguousFormat`, not a
       silent guess.
 - [x] CI exit codes (0 pass · 10 warnings · 20 fail · 2 tool-error) with a configurable failure
@@ -73,8 +72,13 @@ the build plan.
       byte-identical reports — verified live. Wheel builds with maturin (`veridex-data` on PyPI).
 
 ## M9 — Proof & anointer prep
-- [ ] End-to-end demo on a real LeRobot v3 Hub dataset and a real MCAP recording.
-- [ ] Reproduce detection of a synthetic cross-stream skew and a corrupted episode boundary.
-- [ ] Draft the upstream proposal (LeRobot CI/Hub quality-and-provenance gate) citing lerobot#4143.
-- [ ] Write quickstart docs; publish `veridex-data` to PyPI (import module `veridex`) and the
-      `veridex` CLI / crates.io crates.
+- [ ] End-to-end demo on a real LeRobot v3 Hub dataset and a real MCAP recording. (Synthetic
+      end-to-end demo works today via `examples/make_demo_mcap` + `veridex check`; real Hub datasets
+      need network access.)
+- [~] Reproduce detection of a synthetic cross-stream skew (done: the demo MCAP triggers
+      `TEMPORAL.CLOCK_SKEW`) and a corrupted episode boundary (covered by unit tests; a runnable
+      corrupted-boundary fixture is a follow-up).
+- [x] Draft the upstream proposal (LeRobot CI/Hub quality-and-provenance gate) citing lerobot#4143
+      — [docs/adoption-lerobot-ci-gate.md](../../../docs/adoption-lerobot-ci-gate.md).
+- [~] Quickstart docs written (README). Publishing `veridex-data` to PyPI and the crates to
+      crates.io is a release step (not done here; needs registry credentials).
