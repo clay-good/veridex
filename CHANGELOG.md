@@ -65,6 +65,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   a file path — and an unreadable or non-hex key file is a clear exit-2 error, not a false mismatch.
 - `veridex keygen` silently overwrote an existing key file — an unrecoverable loss of a signing key.
   It now refuses to clobber an existing secret or public key unless `--force` is passed.
+- `veridex check --fail-on <typo>` silently fell back to the default threshold, quietly disabling the
+  strictness a CI user asked for. An unrecognized `--fail-on` value is now an exit-2 error.
 
 ### Security
 

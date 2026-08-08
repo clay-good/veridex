@@ -171,6 +171,15 @@ fn cmd_check(rest: &[String]) -> ExitCode {
         return ExitCode::from(EXIT_TOOL_ERROR);
     };
 
+    // Validate --fail-on up front: an unrecognized value must be an error, never a silent fallback
+    // to the default threshold (a `--fail-on warn` typo would otherwise quietly disable strictness).
+    if let Some(v) = args.fail_on.as_deref() {
+        if v != "error" && v != "warning" {
+            eprintln!("veridex: invalid --fail-on `{v}` (expected `error` or `warning`)");
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
+    }
+
     // Load config from --config, else auto-discover veridex.toml in the cwd.
     let config = match load_config(args.config.as_deref()) {
         Ok(c) => c,
