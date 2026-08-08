@@ -34,8 +34,9 @@ Done so far:
 - **Checks catalog (structural + temporal)** — episode-boundary integrity (the lerobot#4143
   corrupted-boundary class), degenerate episodes/streams, timestamp monotonicity, declared-rate
   conformance, timeline gaps, and the headline **`TEMPORAL.CLOCK_SKEW`** cross-stream drift check
-  (design D4). Every check ships an id, a documented training **risk**, and a **remedy**
-  ([`checks/`](crates/veridex-core/src/checks/)).
+  (design D4). Plus **provenance-completeness** checks that surface missing/inconsistent
+  license, sensor, clock, calibration, annotator, and lineage provenance. Every check ships an id,
+  a documented training **risk**, and a **remedy** ([`checks/`](crates/veridex-core/src/checks/)).
 - **`veridex` CLI skeleton** — the command surface is wired; subcommands land as their core
   capabilities are implemented.
 

@@ -1,8 +1,11 @@
 //! Behavior tests for the MVP checks catalog.
 
-use veridex_core::cdm::{Dataset, Episode, Frame, Modality, Stream, ValueRef};
+use veridex_core::cdm::{
+    Dataset, Episode, Frame, Modality, Provenance, ProvenanceClass, ProvenanceElement,
+    ProvenanceScope, Stream, ValueRef,
+};
 use veridex_core::check::{Check, Severity};
-use veridex_core::checks::{structural, temporal};
+use veridex_core::checks::{provenance, structural, temporal};
 
 fn vref() -> ValueRef {
     ValueRef {
@@ -188,6 +191,67 @@ fn clock_skew_within_tolerance_is_clean() {
     assert!(temporal::ClockSkew::default().run(&d).is_empty());
 }
 
+// ---- provenance completeness ----
+
+fn dataset_with_provenance(elements: Vec<ProvenanceElement>) -> Dataset {
+    let mut d = dataset(vec![episode(0, vec![stream("s", "c", None, &[0, 1])])]);
+    d.provenance = vec![Provenance {
+        scope: ProvenanceScope::Dataset,
+        elements,
+    }];
+    d
+}
+
+fn el(key: &str, value: Option<&str>, class: ProvenanceClass) -> ProvenanceElement {
+    ProvenanceElement {
+        key: key.into(),
+        value: value.map(|v| v.into()),
+        class,
+    }
+}
+
+#[test]
+fn missing_license_and_sensor_are_surfaced() {
+    // No provenance at all: every expected element is missing.
+    let d = dataset(vec![episode(0, vec![stream("s", "c", None, &[0, 1])])]);
+    let f = provenance::ProvenanceCompleteness.run(&d);
+    let codes: Vec<&str> = f.iter().map(|x| x.code.as_str()).collect();
+    assert!(codes.contains(&"PROVENANCE.MISSING_LICENSE"));
+    assert!(codes.contains(&"PROVENANCE.MISSING_SENSOR"));
+    // License absence is a warning; sensor absence is info.
+    let lic = f
+        .iter()
+        .find(|x| x.code == "PROVENANCE.MISSING_LICENSE")
+        .unwrap();
+    assert_eq!(lic.severity, Severity::Warning);
+}
+
+#[test]
+fn present_known_element_is_not_reported_missing() {
+    let d = dataset_with_provenance(vec![el(
+        "license",
+        Some("apache-2.0"),
+        ProvenanceClass::Known,
+    )]);
+    let f = provenance::ProvenanceCompleteness.run(&d);
+    assert!(f.iter().all(|x| x.code != "PROVENANCE.MISSING_LICENSE"));
+}
+
+#[test]
+fn unknown_class_still_counts_as_missing() {
+    let d = dataset_with_provenance(vec![el("license", None, ProvenanceClass::Unknown)]);
+    let f = provenance::ProvenanceCompleteness.run(&d);
+    assert!(f.iter().any(|x| x.code == "PROVENANCE.MISSING_LICENSE"));
+}
+
+#[test]
+fn internally_inconsistent_element_is_flagged() {
+    // known but no value.
+    let d = dataset_with_provenance(vec![el("license", None, ProvenanceClass::Known)]);
+    let f = provenance::ProvenanceCompleteness.run(&d);
+    assert!(f.iter().any(|x| x.code == "PROVENANCE.INCONSISTENT"));
+}
+
 #[test]
 fn default_engine_runs_all_families_end_to_end() {
     // A dataset with a clock-skew problem should fail via the standard engine.
@@ -202,5 +266,5 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 6);
+    assert_eq!(verdict.executed_checks.len(), 7);
 }

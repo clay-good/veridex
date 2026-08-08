@@ -32,7 +32,7 @@ the build plan.
       alignment (D4, headline).
 - [ ] Statistical: stored-vs-recomputed stats, range/sanity, saturation, degenerate distributions.
       (Needs CDM to carry stored/recomputed stats — deferred until adapters populate them.)
-- [ ] Provenance-completeness checks (presence + internal consistency).
+- [x] Provenance-completeness checks (presence + internal consistency).
 - [x] Each check ships ID + documented risk + remedy.
 
 ## M5 — Provenance & Croissant
