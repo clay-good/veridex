@@ -63,6 +63,7 @@ struct Args {
     fail_on: Option<String>,
     sarif: bool,
     html: bool,
+    config: Option<String>,
 }
 
 fn parse_args(rest: &[String]) -> Args {
@@ -77,12 +78,14 @@ fn parse_args(rest: &[String]) -> Args {
     let mut fail_on = None;
     let mut sarif = false;
     let mut html = false;
+    let mut config = None;
     let mut it = rest.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--json" => json = true,
             "--sarif" => sarif = true,
             "--html" => html = true,
+            "--config" => config = it.next().cloned(),
             "--format" => format = it.next().cloned(),
             "--key" => key = it.next().cloned(),
             "--certificate" => certificate = it.next().cloned(),
@@ -106,6 +109,7 @@ fn parse_args(rest: &[String]) -> Args {
         fail_on,
         sarif,
         html,
+        config,
     }
 }
 
@@ -160,13 +164,24 @@ fn cmd_check(rest: &[String]) -> ExitCode {
         eprintln!("veridex: missing dataset path");
         return ExitCode::from(EXIT_TOOL_ERROR);
     };
+
+    // Load config from --config, else auto-discover veridex.toml in the cwd.
+    let config = match load_config(args.config.as_deref()) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("veridex: {e}");
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
+    };
+
     let source = Source::Local(PathBuf::from(path));
     let registry = veridex_core::default_registry();
-    let out = match veridex_core::run_check(
+    let out = match veridex_core::run_check_with(
         &registry,
         &source,
         args.format.as_deref(),
         &IngestOptions::default(),
+        &config.to_run_config(),
     ) {
         Ok(o) => o,
         Err(e) => {
@@ -197,14 +212,40 @@ fn cmd_check(rest: &[String]) -> ExitCode {
         );
     }
 
-    // Default failure threshold is `error`; `--fail-on warning` promotes warnings to a failure code.
-    let fail_on_warning = args.fail_on.as_deref() == Some("warning");
+    // Failure threshold: --fail-on overrides the config, which defaults to `error`.
+    let fail_on_warning = match args.fail_on.as_deref() {
+        Some("warning") => true,
+        Some(_) => false,
+        None => config.fail_on == veridex_core::FailOn::Warning,
+    };
     ExitCode::from(match out.verdict.status {
         Status::Pass => EXIT_PASS,
         Status::PassWithWarnings if fail_on_warning => EXIT_FAIL,
         Status::PassWithWarnings => EXIT_WARN,
         Status::Fail => EXIT_FAIL,
     })
+}
+
+/// Load config from an explicit path, or auto-discover `veridex.toml` in the current directory.
+/// Returns the default config when neither is present.
+fn load_config(explicit: Option<&str>) -> Result<veridex_core::CheckConfig, String> {
+    let path = match explicit {
+        Some(p) => Some(p.to_string()),
+        None => {
+            let default = "veridex.toml";
+            std::path::Path::new(default)
+                .is_file()
+                .then(|| default.to_string())
+        }
+    };
+    match path {
+        None => Ok(veridex_core::CheckConfig::default()),
+        Some(p) => {
+            let text =
+                std::fs::read_to_string(&p).map_err(|e| format!("cannot read config {p}: {e}"))?;
+            veridex_core::CheckConfig::from_toml(&text).map_err(|e| e.to_string())
+        }
+    }
 }
 
 fn cmd_inspect(rest: &[String]) -> ExitCode {
@@ -531,6 +572,7 @@ fn print_help() {
     println!("    --timestamp <ts>     issuance timestamp (certify; defaults to now)");
     println!("    --emit <fmt>         provenance format: croissant (default) or prov");
     println!("    --fail-on <sev>      check failure threshold: error (default) or warning");
+    println!("    --config <file>      veridex.toml (auto-discovered in cwd if present)");
     println!("    --version            print the version");
     println!("    --help               print this help");
     println!();

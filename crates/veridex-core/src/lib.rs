@@ -18,6 +18,7 @@ pub mod cdm;
 pub mod certificate;
 pub mod check;
 pub mod checks;
+pub mod config;
 pub mod diff;
 pub mod emit;
 pub mod engine;
@@ -36,10 +37,11 @@ pub use certificate::{
     SignedCertificate, SigningKeypair, TrustScore, Verified, RUBRIC_VERSION,
 };
 pub use check::{Category, Check, Finding, Location, Scope, Severity};
+pub use config::{CheckConfig, ConfigError, FailOn};
 pub use diff::{diff_reports, render_diff, ReportDiff};
 pub use emit::{to_croissant, to_prov};
 pub use engine::{Engine, RegistryError, RunConfig, Status, Verdict};
-pub use pipeline::{run_check, CheckOutput};
+pub use pipeline::{run_check, run_check_with, CheckOutput};
 pub use report::{render_html, render_json, render_sarif, render_terminal, REPORT_SCHEMA_VERSION};
 
 /// The version of `veridex-core`, from Cargo.

@@ -38,6 +38,9 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   (`--fail-on`), and documented exit codes (0 pass · 10 warnings · 20 fail · 2 tool-error).
 - **Python bindings** (`import veridex`) that call the same core pipeline as the CLI, with a passing
   CLI ⇄ Python parity test.
+- **Configuration** — a `veridex.toml` (auto-discovered, or `--config`) that selects categories,
+  disables checks, overrides per-check severities, and sets the failure threshold; the effective
+  config is recorded in every verdict.
 - **CI** — GitHub Actions running fmt, clippy (`-D warnings`), and the full test suite.
 
 ### Not yet included

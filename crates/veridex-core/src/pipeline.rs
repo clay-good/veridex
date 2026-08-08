@@ -20,13 +20,25 @@ pub struct CheckOutput {
     pub trust: TrustScore,
 }
 
-/// Ingest `source` (autodetecting, or forcing `format`), validate it with the standard checks, and
-/// score it. This is the single pipeline the CLI and the Python bindings both call.
+/// Ingest `source` (autodetecting, or forcing `format`), validate it with the standard checks under
+/// the default configuration, and score it. This is the pipeline the CLI's default `check` and the
+/// Python bindings both call, keeping them in lock-step.
 pub fn run_check(
     registry: &AdapterRegistry,
     source: &Source,
     format: Option<&str>,
     options: &IngestOptions,
+) -> Result<CheckOutput, IngestError> {
+    run_check_with(registry, source, format, options, &RunConfig::default())
+}
+
+/// Like [`run_check`], but with an explicit [`RunConfig`] (from a `veridex.toml`).
+pub fn run_check_with(
+    registry: &AdapterRegistry,
+    source: &Source,
+    format: Option<&str>,
+    options: &IngestOptions,
+    run_config: &RunConfig,
 ) -> Result<CheckOutput, IngestError> {
     let ingested = match format {
         Some(f) => registry.ingest_as(f, source, options)?,
@@ -36,7 +48,7 @@ pub fn run_check(
     let hash = content_hash(&ingested.dataset);
     // The standard check set has unique ids by construction (asserted by tests).
     let engine = default_engine().expect("standard checks have unique ids");
-    let verdict = engine.run(&ingested.dataset, hash, &RunConfig::default());
+    let verdict = engine.run(&ingested.dataset, hash, run_config);
     let trust = score(&verdict, &ProvenanceCoverage::of(&ingested.dataset));
 
     Ok(CheckOutput {

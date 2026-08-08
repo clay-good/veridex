@@ -17,6 +17,7 @@ ed25519-dalek = "2"
 getrandom = "0.2"
 parquet = "59"
 arrow = "59"
+toml = "0.8"
 
 [dev-dependencies]
 proptest = "1"
