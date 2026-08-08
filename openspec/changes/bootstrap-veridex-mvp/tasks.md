@@ -65,8 +65,8 @@ the build plan.
       awaits Croissant emit.
 - [x] Format autodetect + `--format` override; ambiguity is `IngestError::AmbiguousFormat`, not a
       silent guess.
-- [~] CI exit codes (0 pass · 10 warnings · 20 fail · 2 tool-error). Configurable failure threshold
-      is a follow-up.
+- [x] CI exit codes (0 pass · 10 warnings · 20 fail · 2 tool-error) with a configurable failure
+      threshold (`--fail-on error|warning`, default error).
 - [ ] Python bindings; **parity test:** CLI and Python produce identical verdicts/certificates.
 
 ## M9 — Proof & anointer prep

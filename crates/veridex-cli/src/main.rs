@@ -56,6 +56,7 @@ struct Args {
     out: Option<String>,
     timestamp: Option<String>,
     emit: Option<String>,
+    fail_on: Option<String>,
 }
 
 fn parse_args(rest: &[String]) -> Args {
@@ -67,6 +68,7 @@ fn parse_args(rest: &[String]) -> Args {
     let mut out = None;
     let mut timestamp = None;
     let mut emit = None;
+    let mut fail_on = None;
     let mut it = rest.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -77,6 +79,7 @@ fn parse_args(rest: &[String]) -> Args {
             "--out" => out = it.next().cloned(),
             "--timestamp" => timestamp = it.next().cloned(),
             "--emit" => emit = it.next().cloned(),
+            "--fail-on" => fail_on = it.next().cloned(),
             other if !other.starts_with('-') => path = Some(other.to_string()),
             _ => {}
         }
@@ -90,6 +93,7 @@ fn parse_args(rest: &[String]) -> Args {
         out,
         timestamp,
         emit,
+        fail_on,
     }
 }
 
@@ -164,8 +168,11 @@ fn cmd_check(rest: &[String]) -> ExitCode {
         );
     }
 
+    // Default failure threshold is `error`; `--fail-on warning` promotes warnings to a failure code.
+    let fail_on_warning = args.fail_on.as_deref() == Some("warning");
     ExitCode::from(match verdict.status {
         Status::Pass => EXIT_PASS,
+        Status::PassWithWarnings if fail_on_warning => EXIT_FAIL,
         Status::PassWithWarnings => EXIT_WARN,
         Status::Fail => EXIT_FAIL,
     })
@@ -447,6 +454,7 @@ fn print_help() {
     println!("    --out <file>         certificate output path (certify)");
     println!("    --timestamp <ts>     issuance timestamp (certify; defaults to now)");
     println!("    --emit <fmt>         provenance format: croissant (default) or prov");
+    println!("    --fail-on <sev>      check failure threshold: error (default) or warning");
     println!("    --version            print the version");
     println!("    --help               print this help");
     println!();

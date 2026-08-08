@@ -12,6 +12,9 @@ fn main() {
     let path = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "demo.mcap".to_string());
+    // Pass "clean" as the second arg for a single well-synchronized stream (no clock-skew error);
+    // the default writes two streams whose clocks drift apart.
+    let clean = std::env::args().nth(2).as_deref() == Some("clean");
 
     let mut buf = Vec::new();
     {
@@ -29,16 +32,18 @@ fn main() {
             write_msg(&mut w, cam, i as u32, t);
         }
 
-        // Robot state at ~50 Hz but spanning ~1.20 s — a 200 ms clock drift vs the camera.
-        let rob_schema = w
-            .add_schema("sensor_msgs/msg/JointState", "ros2msg", b"")
-            .unwrap();
-        let rob = w
-            .add_channel(rob_schema, "/joint_states", "cdr", &BTreeMap::new())
-            .unwrap();
-        for i in 0..61u64 {
-            let t = i * 20_000_000; // 20 ms => 1.20 s total
-            write_msg(&mut w, rob, i as u32, t);
+        if !clean {
+            // Robot state at ~50 Hz but spanning ~1.20 s — a 200 ms clock drift vs the camera.
+            let rob_schema = w
+                .add_schema("sensor_msgs/msg/JointState", "ros2msg", b"")
+                .unwrap();
+            let rob = w
+                .add_channel(rob_schema, "/joint_states", "cdr", &BTreeMap::new())
+                .unwrap();
+            for i in 0..61u64 {
+                let t = i * 20_000_000; // 20 ms => 1.20 s total
+                write_msg(&mut w, rob, i as u32, t);
+            }
         }
 
         w.finish().expect("finish");
