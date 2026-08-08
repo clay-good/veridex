@@ -1,0 +1,78 @@
+# Veridex
+
+**The open, cross-format trust layer for physical-AI data.**
+
+Veridex verifies that a robot or sensor dataset is clean, correctly time-synchronized, and
+traceable to its origin, then stamps it with a portable, signed **provenance certificate** — so any
+team can tell in seconds whether the data they're about to train on will improve their model or
+silently poison it.
+
+> One line: *the neutral layer that tells you, across any format, whether the data you're about to
+> train on is clean and where it came from.*
+
+## Status
+
+**Spec-only.** This repository currently contains the full [OpenSpec](openspec/) design for
+Veridex — no implementation yet. Start at [openspec/project.md](openspec/project.md), then
+[openspec/AGENTS.md](openspec/AGENTS.md).
+
+## Why Veridex exists
+
+In physical AI / vision-language-action robotics, **data quality — not architecture or compute — is
+the binding constraint**, and today it is unmeasurable across formats:
+
+- A curated ~5% coreset can recover 85–90% of full-dataset performance; pooling heterogeneous robot
+  data can cause measurable *negative transfer*; ~0.3% poisoned episodes can backdoor a policy.
+- Datasets arrive in incompatible containers (LeRobot, MCAP, RLDS, HDF5/Zarr) with no shared way to
+  check timestamp alignment, episode integrity, or **where any of it came from**.
+
+Teams still train on unvetted data because checking it is manual, per-format, and provenance simply
+isn't captured. Veridex makes dataset trust a one-command, cross-format, machine-readable fact.
+
+## The wedge
+
+Every funded player here — Hugging Face/LeRobot, Rerun, LanceDB, NVIDIA — is a **destination**, each
+wanting your data in *their* format. None can be the neutral verifier *across* formats. Veridex owns
+the one position an incumbent structurally cannot: **Switzerland**. Its two differentiators are the
+flanks the nearest tool (Trajlens, LeRobot-only, no provenance) leaves open:
+
+1. **Cross-format** — one validation model over a Canonical Dataset Model (CDM) that MCAP, RLDS,
+   LeRobot, HDF5/Zarr all map into.
+2. **Provenance / lineage / attestation** — which sensor, clock, calibration, annotator, license,
+   and upstream dataset produced each segment, emitted as a signed, portable certificate
+   (Croissant + W3C PROV underneath).
+
+Veridex **interoperates with** Trajlens and LeRobot rather than duplicating them, and it **never
+mutates** your dataset (repair is not its lane).
+
+## Shape of the tool (aspirational CLI)
+
+```sh
+veridex check      <dataset>                      # validate + report
+veridex certify    <dataset> --key issuer.key     # issue a signed trust certificate
+veridex verify     <dataset> --certificate c.json --key issuer.pub   # offline verification
+veridex provenance <dataset> --emit croissant     # extract + emit provenance
+veridex inspect    <dataset>                       # summarize the CDM
+```
+
+A Rust core (`veridex-core`) powers a `veridex` CLI and a Python package
+(`pip install veridex-data`, then `import veridex`) with identical verdicts. The PyPI distribution
+is `veridex-data` (the bare `veridex` name is taken on PyPI); the CLI, import module, and
+GitHub/crates.io project are all `veridex`.
+
+## Specs
+
+The complete design lives under [`openspec/`](openspec/):
+
+- North-star capabilities: [`openspec/specs/`](openspec/specs/)
+- First build (v0.1 MVP): [`openspec/changes/bootstrap-veridex-mvp/`](openspec/changes/bootstrap-veridex-mvp/)
+
+## Relationship to Invariant
+
+Veridex is a separate product from [Invariant](../invariant) (a runtime command-validation
+firewall). Different lifecycle stage (training-time vs. runtime), different users. Veridex reuses
+Invariant's COSE/JWS signed-verdict and audit substrate rather than reinventing it.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

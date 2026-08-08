@@ -1,0 +1,57 @@
+# Rust build artifacts
+/target/
+**/target/
+**/Cargo.lock.bak
+
+# Python / maturin / pyo3
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+venv/
+.venv/
+*.egg-info/
+build/
+dist/
+wheels/
+*.whl
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.bak
+*.orig
+
+# Claude Code / local-only tooling
+.claude/
+.codelicious/
+
+# Secrets and signing keys (never commit)
+.env
+.env.*
+*.pem
+*.key
+keys.json
+
+# Veridex local outputs (do not commit generated artifacts)
+# Signed certificates, exported provenance, and reports produced during local runs.
+*.veridex.json
+*.veridex.cose
+reports/
+out/
+
+# Local datasets / fixtures that are large (keep small committed test fixtures)
+/data/
+!**/tests/fixtures/**
+
+# Downloaded CI log dumps
+logs_*/
+log.log
