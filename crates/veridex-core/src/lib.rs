@@ -16,6 +16,7 @@ pub mod adapter;
 pub mod canonical;
 pub mod cdm;
 pub mod check;
+pub mod checks;
 pub mod engine;
 
 pub use adapter::{

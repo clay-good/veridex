@@ -31,11 +31,15 @@ Done so far:
   severity overrides), deterministic stably-ordered verdicts with a result content hash, fault
   isolation for panicking checks, and full reproducibility metadata
   ([`engine.rs`](crates/veridex-core/src/engine.rs)).
+- **Checks catalog (structural + temporal)** — episode-boundary integrity (the lerobot#4143
+  corrupted-boundary class), degenerate episodes/streams, timestamp monotonicity, declared-rate
+  conformance, timeline gaps, and the headline **`TEMPORAL.CLOCK_SKEW`** cross-stream drift check
+  (design D4). Every check ships an id, a documented training **risk**, and a **remedy**
+  ([`checks/`](crates/veridex-core/src/checks/)).
 - **`veridex` CLI skeleton** — the command surface is wired; subcommands land as their core
   capabilities are implemented.
 
-Next: the concrete checks (structural + the headline `TEMPORAL.CLOCK_SKEW`) and the format
-adapters (LeRobot v3, MCAP) that populate the CDM. Track progress in
+Next: the format adapters (LeRobot v3, MCAP) that populate the CDM from real files. Track progress in
 [openspec/changes/bootstrap-veridex-mvp/tasks.md](openspec/changes/bootstrap-veridex-mvp/tasks.md).
 For the design, start at [openspec/project.md](openspec/project.md).
 

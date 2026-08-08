@@ -134,15 +134,21 @@ pub struct Finding {
     pub category: Category,
     /// Precise CDM location.
     pub location: Location,
-    /// Stable machine-readable code (e.g. `EPISODE.EMPTY`).
+    /// Stable machine-readable code (e.g. `TEMPORAL.CLOCK_SKEW`).
     pub code: String,
     /// Human-readable message.
     pub message: String,
+    /// Why this matters for training (the risk if ignored). Empty if the check declares none.
+    pub risk: String,
+    /// Suggested remedy. Empty if the check declares none. (Veridex never mutates the dataset;
+    /// this is advice, not an action.)
+    pub remedy: String,
 }
 
 impl Finding {
-    /// Convenience constructor; severity defaults are set by the check and may be overridden by the
-    /// engine before the finding lands in the verdict.
+    /// Convenience constructor. `risk`/`remedy` default empty; set them with [`Finding::with_risk`]
+    /// and [`Finding::with_remedy`]. Severities may be overridden by the engine before the finding
+    /// lands in the verdict.
     pub fn new(
         check_id: &'static str,
         category: Category,
@@ -158,7 +164,21 @@ impl Finding {
             location,
             code: code.into(),
             message: message.into(),
+            risk: String::new(),
+            remedy: String::new(),
         }
+    }
+
+    /// Attach the training risk this finding represents.
+    pub fn with_risk(mut self, risk: impl Into<String>) -> Self {
+        self.risk = risk.into();
+        self
+    }
+
+    /// Attach a suggested remedy.
+    pub fn with_remedy(mut self, remedy: impl Into<String>) -> Self {
+        self.remedy = remedy.into();
+        self
     }
 }
 

@@ -25,13 +25,15 @@ the build plan.
 - [x] Deterministic ordered verdict; fault isolation for errored checks.
 
 ## M4 — Checks catalog (MVP families)
-- [ ] Structural: episode-boundary integrity (covers lerobot#4143 class), missing shards/streams,
-      degenerate episodes, dtype/shape consistency.
-- [ ] Temporal: monotonicity, rate conformance, gaps — and **`TEMPORAL.CLOCK_SKEW`** cross-stream
+- [~] Structural: episode-boundary integrity (covers lerobot#4143 class via duplicate-index /
+      inverted-bounds), degenerate episodes/streams. (Missing-shards + dtype/shape consistency need
+      adapter-populated shape metadata — deferred to M2.)
+- [x] Temporal: monotonicity, rate conformance, gaps — and **`TEMPORAL.CLOCK_SKEW`** cross-stream
       alignment (D4, headline).
 - [ ] Statistical: stored-vs-recomputed stats, range/sanity, saturation, degenerate distributions.
+      (Needs CDM to carry stored/recomputed stats — deferred until adapters populate them.)
 - [ ] Provenance-completeness checks (presence + internal consistency).
-- [ ] Each check ships ID + documented risk + remedy.
+- [x] Each check ships ID + documented risk + remedy.
 
 ## M5 — Provenance & Croissant
 - [ ] Provenance model + known/asserted/unknown classification.
