@@ -276,9 +276,11 @@ fn cmd_checks(rest: &[String]) -> ExitCode {
     }
 
     println!("{} built-in checks:", catalog.len());
+    // Size the id column to the longest id so every row aligns regardless of id length.
+    let id_w = catalog.iter().map(|c| c.id.len()).max().unwrap_or(0);
     for c in &catalog {
         println!(
-            "  {:<28} {:<11} {:<8} {:<8} {}",
+            "  {:<id_w$} {:<11} {:<8} {:<8} {}",
             c.id,
             c.category.tag(),
             c.default_severity.tag(),
