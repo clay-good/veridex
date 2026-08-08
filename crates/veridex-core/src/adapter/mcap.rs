@@ -149,6 +149,8 @@ impl Adapter for McapAdapter {
                 modality: b.modality,
                 declared_rate_hz: None,
                 clock_id: CLOCK_ID.to_string(),
+                dtype: None,
+                shape: None,
                 frames: b.frames,
                 stats: None,
             })

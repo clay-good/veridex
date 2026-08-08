@@ -35,6 +35,10 @@ use super::{
 
 const CLOCK_ID: &str = "lerobot";
 
+/// A data feature resolved from `meta/info.json`: its name, inferred modality, and declared
+/// dtype/shape (both preserved so the structural checks can verify cross-episode consistency).
+type FeatureSpec = (String, Modality, Option<String>, Option<Vec<u64>>);
+
 /// Bookkeeping columns that are not data features and never become streams.
 const BOOKKEEPING: &[&str] = &[
     "timestamp",
@@ -60,6 +64,8 @@ struct InfoJson {
 struct FeatureInfo {
     #[serde(default)]
     dtype: Option<String>,
+    #[serde(default)]
+    shape: Option<Vec<u64>>,
 }
 
 /// The LeRobot v3 adapter.
@@ -267,12 +273,20 @@ impl Adapter for LeRobotAdapter {
 
         let fps = info.fps.unwrap_or(0.0);
 
-        // Data features become streams; bookkeeping columns do not.
-        let features: Vec<(String, Modality)> = info
+        // Data features become streams; bookkeeping columns do not. Each carries its declared dtype
+        // and shape from info.json so the structural checks can verify cross-episode consistency.
+        let features: Vec<FeatureSpec> = info
             .features
             .iter()
             .filter(|(name, _)| !BOOKKEEPING.contains(&name.as_str()))
-            .map(|(name, f)| (name.clone(), infer_modality(name, f.dtype.as_deref())))
+            .map(|(name, f)| {
+                (
+                    name.clone(),
+                    infer_modality(name, f.dtype.as_deref()),
+                    f.dtype.clone(),
+                    f.shape.clone(),
+                )
+            })
             .collect();
 
         // Read every data Parquet, grouping row timestamps by episode.
@@ -296,11 +310,13 @@ impl Adapter for LeRobotAdapter {
                 let end_ts = timestamps.iter().copied().max();
                 let streams = features
                     .iter()
-                    .map(|(name, modality)| Stream {
+                    .map(|(name, modality, dtype, shape)| Stream {
                         name: name.clone(),
                         modality: *modality,
                         declared_rate_hz: if fps > 0.0 { Some(fps) } else { None },
                         clock_id: CLOCK_ID.to_string(),
+                        dtype: dtype.clone(),
+                        shape: shape.clone(),
                         frames: timestamps
                             .iter()
                             .map(|ts| Frame {
@@ -370,6 +386,8 @@ impl Adapter for LeRobotAdapter {
                 "timestamp -> frame.ts".into(),
                 "episode_index -> episode".into(),
                 "fps -> stream.declared_rate_hz".into(),
+                "feature.dtype -> stream.dtype".into(),
+                "feature.shape -> stream.shape".into(),
                 "robot_type -> provenance.sensor".into(),
                 "meta/stats.json -> stream.stats".into(),
             ],

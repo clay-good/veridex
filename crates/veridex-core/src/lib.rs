@@ -84,6 +84,8 @@ mod tests {
                         modality: Modality::Video,
                         declared_rate_hz: Some(30.0),
                         clock_id: "camera".into(),
+                        dtype: Some("video".into()),
+                        shape: Some(vec![3, 480, 640]),
                         stats: None,
                         frames: vec![
                             Frame {
@@ -111,6 +113,8 @@ mod tests {
                         modality: Modality::ScalarState,
                         declared_rate_hz: Some(50.0),
                         clock_id: "robot".into(),
+                        dtype: Some("float32".into()),
+                        shape: Some(vec![6]),
                         stats: None,
                         frames: vec![Frame {
                             ts: 1_000,
@@ -258,6 +262,8 @@ mod proptests {
                 modality,
                 declared_rate_hz: rate,
                 clock_id,
+                dtype: None,
+                shape: None,
                 frames,
                 stats: None,
             })

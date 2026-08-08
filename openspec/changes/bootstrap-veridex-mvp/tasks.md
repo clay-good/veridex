@@ -31,8 +31,10 @@ the build plan.
 
 ## M4 — Checks catalog (MVP families)
 - [~] Structural: episode-boundary integrity (covers lerobot#4143 class via duplicate-index /
-      inverted-bounds), degenerate episodes/streams. (Missing-shards + dtype/shape consistency need
-      adapter-populated shape metadata — deferred to M2.)
+      inverted-bounds), degenerate episodes/streams, and **cross-episode dtype/shape consistency**
+      (`STRUCTURAL.SHAPE_MISMATCH`) — the CDM `Stream` now carries declared `dtype`/`shape`, which the
+      LeRobot adapter reads from `meta/info.json`. (Missing-shards still needs adapter-populated shard
+      metadata — deferred to M2.)
 - [x] Temporal: monotonicity, rate conformance, gaps — and **`TEMPORAL.CLOCK_SKEW`** cross-stream
       alignment (D4, headline).
 - [~] Statistical: range/sanity + degenerate distributions over stored stats

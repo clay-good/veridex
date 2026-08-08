@@ -20,7 +20,9 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   severity overrides, deterministic stably-ordered verdicts with a result content hash, fault
   isolation for panicking checks, and reproducibility metadata.
 - **Checks catalog** — structural (episode-boundary integrity covering the lerobot#4143 class,
-  degenerate episodes/streams), temporal (monotonicity, rate conformance, gaps, and the headline
+  degenerate episodes/streams, and cross-episode dtype/shape consistency so a stream that changes
+  tensor shape between episodes — an un-batchable dataset — is caught), temporal (monotonicity,
+  rate conformance, gaps, and the headline
   `TEMPORAL.CLOCK_SKEW`), statistical (range/sanity and degeneracy over stored stats), and
   provenance-completeness. Every finding carries a training risk and a remedy.
 - **Trust certificate** — a deterministic v1 score and A–F grade (provenance weighted as a separate

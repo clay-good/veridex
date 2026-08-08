@@ -31,6 +31,8 @@ fn stream(name: &str, clock: &str, rate: Option<f64>, ts: &[i64]) -> Stream {
         modality: Modality::ScalarState,
         declared_rate_hz: rate,
         clock_id: clock.into(),
+        dtype: None,
+        shape: None,
         stats: None,
         frames: frames_at(ts),
     }
@@ -122,6 +124,83 @@ fn episode_with_no_streams_is_empty() {
     let f = structural::DegenerateEpisode.run(&dataset(vec![episode(0, vec![])]));
     assert_eq!(f.len(), 1);
     assert_eq!(f[0].code, "STRUCTURAL.EMPTY_EPISODE");
+}
+
+fn shaped(name: &str, dtype: Option<&str>, shape: Option<Vec<u64>>, ts: &[i64]) -> Stream {
+    Stream {
+        name: name.into(),
+        modality: Modality::ScalarState,
+        declared_rate_hz: None,
+        clock_id: "c".into(),
+        dtype: dtype.map(Into::into),
+        shape,
+        stats: None,
+        frames: frames_at(ts),
+    }
+}
+
+#[test]
+fn shape_mismatch_across_episodes_is_flagged() {
+    let d = dataset(vec![
+        episode(
+            0,
+            vec![shaped(
+                "observation.state",
+                Some("float32"),
+                Some(vec![6]),
+                &[0],
+            )],
+        ),
+        episode(
+            1,
+            vec![shaped(
+                "observation.state",
+                Some("float32"),
+                Some(vec![7]),
+                &[0],
+            )],
+        ),
+    ]);
+    let f = structural::ShapeConsistency.run(&d);
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].code, "STRUCTURAL.SHAPE_MISMATCH");
+    assert_eq!(f[0].severity, Severity::Error);
+}
+
+#[test]
+fn dtype_mismatch_across_episodes_is_flagged() {
+    let d = dataset(vec![
+        episode(0, vec![shaped("action", Some("float32"), None, &[0])]),
+        episode(1, vec![shaped("action", Some("int64"), None, &[0])]),
+    ]);
+    let f = structural::ShapeConsistency.run(&d);
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].code, "STRUCTURAL.SHAPE_MISMATCH");
+}
+
+#[test]
+fn consistent_shapes_produce_no_finding_and_drift_reports_once() {
+    // Consistent across episodes → clean.
+    let clean = dataset(vec![
+        episode(0, vec![shaped("s", Some("float32"), Some(vec![4]), &[0])]),
+        episode(1, vec![shaped("s", Some("float32"), Some(vec![4]), &[0])]),
+    ]);
+    assert!(structural::ShapeConsistency.run(&clean).is_empty());
+
+    // A stream that never declares a schema is skipped (Veridex never infers).
+    let undeclared = dataset(vec![
+        episode(0, vec![shaped("s", None, None, &[0])]),
+        episode(1, vec![shaped("s", None, None, &[0])]),
+    ]);
+    assert!(structural::ShapeConsistency.run(&undeclared).is_empty());
+
+    // Drift spanning three episodes yields exactly one finding, not two.
+    let drift = dataset(vec![
+        episode(0, vec![shaped("s", Some("float32"), Some(vec![4]), &[0])]),
+        episode(1, vec![shaped("s", Some("float32"), Some(vec![5]), &[0])]),
+        episode(2, vec![shaped("s", Some("float32"), Some(vec![6]), &[0])]),
+    ]);
+    assert_eq!(structural::ShapeConsistency.run(&drift).len(), 1);
 }
 
 // ---- temporal ----
@@ -267,7 +346,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 8);
+    assert_eq!(verdict.executed_checks.len(), 9);
 }
 
 // ---- statistical ----

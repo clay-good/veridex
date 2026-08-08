@@ -173,6 +173,8 @@ impl Stream {
         e.str(self.modality.tag());
         e.opt(&self.declared_rate_hz, |e, r| e.f64(*r));
         e.str(&self.clock_id);
+        e.opt(&self.dtype, |e, d| e.str(d));
+        e.opt(&self.shape, |e, sh| e.seq(sh, |e, d| e.u64(*d)));
         e.opt(&self.stats, |e, s| {
             e.f64(s.min);
             e.f64(s.max);

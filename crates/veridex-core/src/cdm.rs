@@ -94,6 +94,13 @@ pub struct Stream {
     /// `clock_id` are directly comparable; differing ids require alignment (the `TEMPORAL.CLOCK_SKEW`
     /// check, design D4).
     pub clock_id: String,
+    /// Declared element data type of each value (e.g. `float32`, `uint8`, `video`), if the source
+    /// states one. Checks compare it across a stream's appearances; Veridex never infers it.
+    pub dtype: Option<String>,
+    /// Declared per-frame value shape (tensor dimensions), if the source states one. A stream that
+    /// keeps a different `shape` in different episodes cannot be batched — the
+    /// `structural.shape-consistency` check flags that. `None` when the source declares no shape.
+    pub shape: Option<Vec<u64>>,
     /// The frames, in recorded order. Frame order is data-defined and is preserved (not sorted).
     pub frames: Vec<Frame>,
     /// Stored per-stream summary statistics, if the source records them (e.g. LeRobot's

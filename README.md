@@ -156,7 +156,8 @@ cargo clippy --all-targets
 **Early implementation, runs end-to-end.** Against a full [OpenSpec](openspec/) design, these are
 in and tested: the Canonical Dataset Model with deterministic content hashing; the validation
 engine; the structural / temporal / statistical / provenance check catalog (including the headline
-`TEMPORAL.CLOCK_SKEW`); the v1 trust-score rubric; terminal + JSON reporting; **LeRobot v3 and MCAP
+`TEMPORAL.CLOCK_SKEW` and cross-episode dtype/shape consistency); the v1 trust-score rubric;
+terminal + JSON reporting; **LeRobot v3 and MCAP
 adapters** with a passing cross-format neutrality gate (the same logical dataset yields equivalent
 CDMs in both formats); Croissant + W3C PROV provenance emit; Ed25519 **certificate signing with
 offline verification** (tamper + transplant rejection); a working CLI (`check`, `inspect`,
