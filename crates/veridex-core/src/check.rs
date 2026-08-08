@@ -94,6 +94,18 @@ pub enum Location {
 }
 
 impl Location {
+    /// The episode index this location concerns, if any (dataset-scope locations have none). Used
+    /// by reporting to roll findings up per episode.
+    pub fn episode(&self) -> Option<u64> {
+        match self {
+            Location::Dataset => None,
+            Location::Episode { episode }
+            | Location::Stream { episode, .. }
+            | Location::FrameRange { episode, .. }
+            | Location::TimeRange { episode, .. } => Some(*episode),
+        }
+    }
+
     /// A total-order sort key so findings order deterministically regardless of execution order.
     /// Tuple shape: (variant rank, episode, stream, a, b).
     pub(crate) fn sort_key(&self) -> (u8, u64, &str, i64, i64) {

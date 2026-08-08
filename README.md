@@ -41,6 +41,9 @@ Done so far:
   provenance coverage, with provenance weighted as a separate 30% axis so a clean check score can't
   mask missing provenance. Rubric documented in [`docs/rubric-v1.md`](docs/rubric-v1.md)
   ([`certificate/`](crates/veridex-core/src/certificate/)).
+- **Reporting** — a human-readable terminal report with per-episode rollups (worst episodes
+  first) and a versioned machine-readable JSON envelope (`veridex.report/1`), both derived from the
+  same verdict ([`report.rs`](crates/veridex-core/src/report.rs)).
 - **`veridex` CLI skeleton** — the command surface is wired; subcommands land as their core
   capabilities are implemented.
 

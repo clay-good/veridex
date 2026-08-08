@@ -19,6 +19,7 @@ pub mod certificate;
 pub mod check;
 pub mod checks;
 pub mod engine;
+pub mod report;
 
 pub use adapter::{
     Adapter, AdapterRegistry, Coverage, Detection, IngestError, IngestOptions, IngestReport,
@@ -28,6 +29,7 @@ pub use canonical::{content_hash, ContentHash, CANONICAL_VERSION};
 pub use certificate::{score, Grade, ProvenanceCoverage, TrustScore, RUBRIC_VERSION};
 pub use check::{Category, Check, Finding, Location, Scope, Severity};
 pub use engine::{Engine, RegistryError, RunConfig, Status, Verdict};
+pub use report::{render_json, render_terminal, REPORT_SCHEMA_VERSION};
 
 /// The version of `veridex-core`, from Cargo.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

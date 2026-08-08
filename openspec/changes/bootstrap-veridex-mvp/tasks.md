@@ -48,8 +48,8 @@ the build plan.
 - [ ] COSE/JWS signing (reuse Invariant, D6); offline `verify`; tamper + transplant rejection tests.
 
 ## M7 — Reporting (MVP)
-- [ ] Terminal report + rollup summaries (dataset/episode/stream, worst episodes first).
-- [ ] Versioned JSON output.
+- [x] Terminal report + rollup summaries (dataset/episode/stream, worst episodes first).
+- [x] Versioned JSON output (`veridex.report/1`).
 
 ## M8 — CLI + Python parity
 - [ ] `veridex check | certify | verify | provenance | inspect`.
