@@ -1,11 +1,14 @@
 //! Generate a small demo LeRobot v3 dataset for trying the CLI end-to-end.
 //!
 //! Writes a minimal on-disk LeRobot v3 layout (`meta/info.json` + one Parquet shard) with two
-//! episodes. By default the second episode has an out-of-order timestamp — a real data corruption
-//! that `veridex check` catches as `TEMPORAL.NON_MONOTONIC` — so there is something to find. Pass
-//! `clean` as the second argument for a well-formed dataset.
+//! episodes. Pick a variant with the second argument:
 //!
-//! Usage: `cargo run -p veridex-core --example make_demo_lerobot -- <output-dir> [clean]`
+//! - (default) `broken` — episode 1 has an out-of-order timestamp → `TEMPORAL.NON_MONOTONIC`.
+//! - `clean` — a well-formed dataset with no findings.
+//! - `truncated` — the manifest declares 20 frames but episode 1 was cut short (only 6 written),
+//!   a realistic interrupted export → `STRUCTURAL.FRAME_COUNT_MISMATCH`.
+//!
+//! Usage: `cargo run -p veridex-core --example make_demo_lerobot -- <output-dir> [clean|truncated]`
 //!
 //! Then: `veridex check <output-dir>`.
 
@@ -18,26 +21,39 @@ use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use parquet::arrow::ArrowWriter;
 
+/// Which demo dataset to write.
+#[derive(Clone, Copy, PartialEq)]
+enum Mode {
+    Clean,
+    NonMonotonic,
+    Truncated,
+}
+
 fn main() {
     let dir = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "demo-lerobot".to_string());
-    // Pass "clean" for a well-formed dataset; the default injects a non-monotonic timestamp.
-    let clean = std::env::args().nth(2).as_deref() == Some("clean");
+    let mode = match std::env::args().nth(2).as_deref() {
+        Some("clean") => Mode::Clean,
+        Some("truncated") => Mode::Truncated,
+        _ => Mode::NonMonotonic,
+    };
     let dir = Path::new(&dir);
 
-    write_dataset(dir, clean);
+    write_dataset(dir, mode);
 
-    let what = if clean {
-        "clean (well-formed)"
-    } else {
-        "broken (episode 1 has an out-of-order timestamp → TEMPORAL.NON_MONOTONIC)"
+    let what = match mode {
+        Mode::Clean => "clean (well-formed)",
+        Mode::NonMonotonic => "broken (episode 1 has an out-of-order timestamp → TEMPORAL.NON_MONOTONIC)",
+        Mode::Truncated => {
+            "truncated (manifest declares 20 frames, episode 1 cut short → STRUCTURAL.FRAME_COUNT_MISMATCH)"
+        }
     };
     println!("Wrote {what} LeRobot v3 dataset to {}", dir.display());
     println!("Try:  veridex check {}", dir.display());
 }
 
-fn write_dataset(dir: &Path, clean: bool) {
+fn write_dataset(dir: &Path, mode: Mode) {
     fs::create_dir_all(dir.join("meta")).expect("create meta/");
     fs::create_dir_all(dir.join("data/chunk-000")).expect("create data/");
 
@@ -67,16 +83,17 @@ fn write_dataset(dir: &Path, clean: bool) {
     )
     .expect("write tasks.jsonl");
 
-    // Two episodes of 10 frames each at ~30 Hz. In the broken variant, one frame in episode 1 is
-    // pushed before its predecessor, breaking timestamp monotonicity within that episode.
+    // Two episodes at ~30 Hz. Episode 0 always has 10 frames. Episode 1 has 10 too, except in the
+    // truncated variant where it was cut short to 6 — fewer than the 20 frames info.json declares.
+    let ep1_frames = if mode == Mode::Truncated { 6 } else { 10 };
     let mut rows: Vec<(i64, f64)> = Vec::new();
-    for ep in 0..2i64 {
-        for f in 0..10i64 {
-            let t = f as f64 / fps;
-            rows.push((ep, t));
-        }
+    for f in 0..10i64 {
+        rows.push((0, f as f64 / fps));
     }
-    if !clean {
+    for f in 0..ep1_frames {
+        rows.push((1, f as f64 / fps));
+    }
+    if mode == Mode::NonMonotonic {
         // Episode 1, frame 5: rewind the clock behind frame 4 (an out-of-order/duplicated frame).
         let idx = 10 + 5;
         rows[idx].1 = rows[idx - 1].1 - 0.010;
