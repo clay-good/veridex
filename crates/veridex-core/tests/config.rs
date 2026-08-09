@@ -56,6 +56,7 @@ fn run(d: &Dataset, cfg: &RunConfig) -> veridex_core::Verdict {
 fn parses_full_config() {
     let toml = r#"
         fail_on = "warning"
+        min_score = 80
         categories = ["temporal"]
         disabled_checks = ["temporal.gap"]
         [severity_overrides]
@@ -63,6 +64,7 @@ fn parses_full_config() {
     "#;
     let cfg = CheckConfig::from_toml(toml).expect("parses");
     assert_eq!(cfg.fail_on, FailOn::Warning);
+    assert_eq!(cfg.min_score, Some(80));
     assert_eq!(cfg.categories, Some(vec![Category::Temporal]));
     assert_eq!(cfg.disabled_checks, vec!["temporal.gap".to_string()]);
     assert_eq!(
@@ -81,6 +83,16 @@ fn empty_config_is_the_default() {
 #[test]
 fn unknown_keys_are_rejected() {
     assert!(CheckConfig::from_toml("nonsense_key = 1").is_err());
+}
+
+#[test]
+fn min_score_out_of_range_is_rejected() {
+    assert!(CheckConfig::from_toml("min_score = 101").is_err());
+    // The valid boundary is accepted.
+    assert_eq!(
+        CheckConfig::from_toml("min_score = 100").unwrap().min_score,
+        Some(100)
+    );
 }
 
 #[test]

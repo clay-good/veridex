@@ -55,8 +55,9 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   calling the same core pipeline as the CLI, with a passing CLI ⇄ Python parity test over both
   `check` and `inspect`.
 - **Configuration** — a `veridex.toml` (auto-discovered, or `--config`) that selects categories,
-  disables checks, overrides per-check severities, and sets the failure threshold; the effective
-  config is recorded in every verdict.
+  disables checks, overrides per-check severities, and sets the failure threshold and minimum trust
+  score (`min_score`, overridable by `--min-score`); the effective config is recorded in every
+  verdict.
 - **Runnable demos** — `examples/make_demo_mcap` (synthetic cross-stream clock skew) and
   `examples/make_demo_lerobot` (a LeRobot v3 dataset with an out-of-order timestamp), each with a
   `clean` variant, so `veridex check` has something to find end-to-end in **both** formats.

@@ -42,12 +42,24 @@ pub struct CheckConfig {
     pub disabled_checks: Vec<String>,
     /// Per-check severity overrides, id → severity.
     pub severity_overrides: BTreeMap<String, Severity>,
+    /// Minimum trust score (0–100) required to pass; a lower score fails the run. `None` disables
+    /// the gate. The `--min-score` CLI flag overrides this.
+    pub min_score: Option<u8>,
 }
 
 impl CheckConfig {
     /// Parse a config from TOML text.
     pub fn from_toml(text: &str) -> Result<Self, ConfigError> {
-        toml::from_str(text).map_err(|e| ConfigError::Parse(e.to_string()))
+        let config: CheckConfig =
+            toml::from_str(text).map_err(|e| ConfigError::Parse(e.to_string()))?;
+        if let Some(n) = config.min_score {
+            if n > 100 {
+                return Err(ConfigError::Parse(format!(
+                    "min_score must be between 0 and 100, got {n}"
+                )));
+            }
+        }
+        Ok(config)
     }
 
     /// The engine [`RunConfig`] this configuration implies (everything except the exit threshold,

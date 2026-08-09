@@ -197,7 +197,7 @@ fn cmd_check(rest: &[String]) -> ExitCode {
 
     // Validate --min-score up front: an out-of-range or non-numeric value must be a tool error, not
     // a silently-ignored gate that would let low-scoring data through CI.
-    let min_score: Option<u8> = match args.min_score.as_deref().map(parse_min_score) {
+    let cli_min_score: Option<u8> = match args.min_score.as_deref().map(parse_min_score) {
         None => None,
         Some(Ok(n)) => Some(n),
         Some(Err(e)) => {
@@ -214,6 +214,9 @@ fn cmd_check(rest: &[String]) -> ExitCode {
             return ExitCode::from(EXIT_TOOL_ERROR);
         }
     };
+
+    // The CLI flag overrides the config's min_score (which defaults to no gate).
+    let min_score = cli_min_score.or(config.min_score);
 
     let source = Source::Local(PathBuf::from(path));
     let registry = veridex_core::default_registry();
