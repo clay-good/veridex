@@ -21,13 +21,15 @@ fn collect_elements(dataset: &Dataset) -> Vec<&ProvenanceElement> {
     out
 }
 
-/// Find the value of a known-or-asserted provenance element by key.
+/// Find the value of a known-or-asserted provenance element by key. Placeholder values (`unknown`,
+/// `n/a`, …) are skipped: emitting them into a mapped schema.org field like `license` would present
+/// fake provenance as real. The classified `veridex:provenance` list still carries every element.
 fn known_value<'a>(dataset: &'a Dataset, key: &str) -> Option<&'a str> {
     dataset
         .provenance
         .iter()
         .flat_map(|r| &r.elements)
-        .find(|e| e.key == key && e.class != ProvenanceClass::Unknown && e.value.is_some())
+        .find(|e| e.key == key && e.class != ProvenanceClass::Unknown && e.has_real_value())
         .and_then(|e| e.value.as_deref())
 }
 

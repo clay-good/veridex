@@ -80,6 +80,24 @@ fn croissant_preserves_provenance_classes_and_does_not_fabricate() {
 }
 
 #[test]
+fn placeholder_license_is_not_emitted_as_a_schema_org_field() {
+    // A license "known" as the literal "unknown" is fake provenance: it must not populate the mapped
+    // schema.org `license` field, though it still appears (classified) in the honest list.
+    let d = dataset_with(vec![el("license", Some("unknown"), ProvenanceClass::Known)]);
+    let doc = to_croissant(&d, "x");
+    assert!(
+        doc.get("license").is_none(),
+        "a placeholder license must not be emitted as a real schema.org license"
+    );
+    let prov = doc["veridex:provenance"].as_array().unwrap();
+    let license = prov.iter().find(|e| e["key"] == "license").unwrap();
+    assert_eq!(
+        license["value"], "unknown",
+        "the honest list still records it"
+    );
+}
+
+#[test]
 fn prov_attributes_and_derives_from_known_elements() {
     let d = dataset_with(vec![
         el("annotator", Some("alice"), ProvenanceClass::Known),
