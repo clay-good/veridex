@@ -203,6 +203,34 @@ fn declared_frame_count_matching_or_absent_is_clean() {
     assert!(structural::DeclaredFrameCount.run(&plain).is_empty());
 }
 
+#[test]
+fn missing_episode_index_is_a_continuity_gap() {
+    // Episodes 0, 1, 3 → episode 2 was dropped.
+    let d = dataset(vec![
+        episode(0, vec![stream("s", "c", None, &[0, 1])]),
+        episode(1, vec![stream("s", "c", None, &[0, 1])]),
+        episode(3, vec![stream("s", "c", None, &[0, 1])]),
+    ]);
+    let f = structural::EpisodeContinuity.run(&d);
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].code, "STRUCTURAL.EPISODE_INDEX_GAP");
+    assert_eq!(f[0].severity, Severity::Warning);
+    assert!(f[0].message.contains('2'));
+}
+
+#[test]
+fn contiguous_episode_indices_have_no_gap() {
+    let d = dataset(vec![
+        episode(0, vec![stream("s", "c", None, &[0, 1])]),
+        episode(1, vec![stream("s", "c", None, &[0, 1])]),
+        episode(2, vec![stream("s", "c", None, &[0, 1])]),
+    ]);
+    assert!(structural::EpisodeContinuity.run(&d).is_empty());
+    // A single episode (or none) can't have a gap.
+    let one = dataset(vec![episode(7, vec![stream("s", "c", None, &[0, 1])])]);
+    assert!(structural::EpisodeContinuity.run(&one).is_empty());
+}
+
 fn shaped(name: &str, dtype: Option<&str>, shape: Option<Vec<u64>>, ts: &[i64]) -> Stream {
     Stream {
         name: name.into(),
@@ -504,7 +532,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 14);
+    assert_eq!(verdict.executed_checks.len(), 15);
 }
 
 #[test]

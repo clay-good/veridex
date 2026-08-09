@@ -462,3 +462,79 @@ impl Check for DegenerateEpisode {
         findings
     }
 }
+
+/// Episode-index continuity. Frame-aligned datasets number episodes contiguously; a gap in the
+/// indices (e.g. `0, 1, 3` — episode 2 absent) means an episode was silently dropped between export
+/// and here. Unlike the declared-count check this needs no manifest, and unlike the boundary check it
+/// catches *absent* episodes rather than duplicated ones. A warning, since a few datasets legitimately
+/// use non-contiguous ids.
+pub struct EpisodeContinuity;
+
+impl Check for EpisodeContinuity {
+    fn id(&self) -> &'static str {
+        "structural.episode-continuity"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["STRUCTURAL.EPISODE_INDEX_GAP"]
+    }
+    fn title(&self) -> &'static str {
+        "Episode-index continuity"
+    }
+    fn category(&self) -> Category {
+        Category::Structural
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Warning
+    }
+    fn scope(&self) -> Scope {
+        Scope::Dataset
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        // Distinct, sorted indices. (Duplicates are the episode-boundary check's concern.)
+        let mut indices: Vec<u64> = dataset.episodes.iter().map(|ep| ep.index).collect();
+        indices.sort_unstable();
+        indices.dedup();
+        if indices.len() < 2 {
+            return Vec::new();
+        }
+
+        // Any index missing between the smallest and largest observed is a dropped episode.
+        let (lo, hi) = (indices[0], indices[indices.len() - 1]);
+        let present: std::collections::HashSet<u64> = indices.iter().copied().collect();
+        let missing: Vec<u64> = (lo..=hi).filter(|i| !present.contains(i)).collect();
+        if missing.is_empty() {
+            return Vec::new();
+        }
+
+        // Summarize the gap compactly; list the first few missing indices.
+        let shown: Vec<String> = missing.iter().take(8).map(|i| i.to_string()).collect();
+        let more = if missing.len() > shown.len() {
+            format!(", … ({} more)", missing.len() - shown.len())
+        } else {
+            String::new()
+        };
+        vec![Finding::new(
+            self.id(),
+            Category::Structural,
+            Severity::Warning,
+            Location::Dataset,
+            "STRUCTURAL.EPISODE_INDEX_GAP",
+            format!(
+                "episode indices span {lo}..={hi} but {} are missing: {}{more}",
+                missing.len(),
+                shown.join(", ")
+            ),
+        )
+        .with_risk(
+            "A gap in episode indices means an episode was dropped between export and ingest; you \
+             train on less data than the numbering implies, and per-episode joins can misalign.",
+        )
+        .with_remedy(
+            "Recover the missing episode(s), or re-export so the surviving episodes are renumbered \
+             contiguously.",
+        )]
+    }
+}

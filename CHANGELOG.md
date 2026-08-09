@@ -25,7 +25,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   isolation for panicking checks, and reproducibility metadata.
 - **Checks catalog** — structural (episode-boundary integrity covering the lerobot#4143 class,
   degenerate episodes/streams — including a dataset with zero episodes, which would otherwise pass
-  silently — declared-vs-actual episode- and frame-count checks that catch a truncated export
+  silently — episode-index continuity (a gap like `0, 1, 3` means a dropped episode, caught without
+  any manifest), declared-vs-actual episode- and frame-count checks that catch a truncated export
   (LeRobot `total_episodes` / `total_frames` vs what was ingested), and cross-episode dtype/shape
   consistency so a stream
   that changes
