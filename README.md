@@ -61,7 +61,8 @@ flowchart LR
 A single flow: whatever format your data arrives in, an **adapter** maps it into the Canonical
 Dataset Model. The **validation engine** runs the same checks over that neutral shape, a **trust
 score** summarizes the result, and a **signed certificate** makes it portable — anyone can verify
-it later without re-running Veridex.
+it later without re-running Veridex. Every check and the findings it can emit are cataloged in
+[docs/checks.md](docs/checks.md).
 
 ```mermaid
 sequenceDiagram
