@@ -40,7 +40,9 @@ impl ProvenanceCoverage {
             let mut best: Option<ProvenanceClass> = None;
             for record in &dataset.provenance {
                 for el in &record.elements {
-                    if el.key == *key && el.value.is_some() {
+                    // A placeholder value (`unknown`, `n/a`, …) is present in form but empty in
+                    // substance, so it must not inflate coverage — treat it as if absent.
+                    if el.key == *key && el.has_real_value() {
                         best = Some(match (best, el.class) {
                             (Some(ProvenanceClass::Known), _) | (_, ProvenanceClass::Known) => {
                                 ProvenanceClass::Known

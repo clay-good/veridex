@@ -6,31 +6,6 @@ use std::collections::HashMap;
 use crate::cdm::{Dataset, ProvenanceClass};
 use crate::check::{Category, Check, Finding, Location, Scope, Severity};
 
-/// Low-information values that are present in form but empty in substance — provenance that satisfies
-/// a presence check yet tells you nothing. Compared case-insensitively after trimming.
-const PLACEHOLDER_VALUES: &[&str] = &[
-    "",
-    "unknown",
-    "n/a",
-    "na",
-    "none",
-    "null",
-    "nil",
-    "todo",
-    "tbd",
-    "unspecified",
-    "placeholder",
-    "-",
-    "--",
-    "?",
-];
-
-/// Whether a provenance value is an effectively-empty placeholder.
-fn is_placeholder(value: &str) -> bool {
-    let norm = value.trim().to_ascii_lowercase();
-    PLACEHOLDER_VALUES.contains(&norm.as_str())
-}
-
 /// A provenance element Veridex expects a trustworthy dataset to carry, with the severity of its
 /// absence.
 struct Expected {
@@ -155,9 +130,8 @@ impl Check for ProvenanceCompleteness {
                 // A known/asserted element whose value is a placeholder ("unknown", "n/a", …) is
                 // present in form but empty in substance — it would otherwise silently satisfy the
                 // presence check below. Flag it, and don't count it as real provenance.
-                let placeholder = has_value
-                    && el.class != ProvenanceClass::Unknown
-                    && el.value.as_deref().is_some_and(is_placeholder);
+                let placeholder =
+                    has_value && el.class != ProvenanceClass::Unknown && !el.has_real_value();
                 // One finding per key even if the placeholder recurs across records.
                 let first_placeholder = placeholder
                     && !placeholder_seen

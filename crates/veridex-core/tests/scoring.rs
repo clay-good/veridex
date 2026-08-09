@@ -146,6 +146,25 @@ fn coverage_counts_known_and_asserted_separately() {
 }
 
 #[test]
+fn placeholder_value_does_not_count_toward_coverage() {
+    // A license "known" as the literal string "unknown" is present in form but empty in substance;
+    // it must not inflate coverage, or fake provenance would mask a missing origin in the score.
+    let placeholder = ProvenanceElement {
+        key: "license".into(),
+        value: Some("unknown".into()),
+        class: ProvenanceClass::Known,
+    };
+    let d = dataset(vec![stream("s", "c", None, &[0, 1])], vec![placeholder]);
+    let cov = ProvenanceCoverage::of(&d);
+    assert_eq!(cov.known, 0, "a placeholder license is not real coverage");
+    assert_eq!(
+        cov.unknown, 6,
+        "all six expected keys are effectively unknown"
+    );
+    assert_eq!(cov.covered_pct(), 0);
+}
+
+#[test]
 fn scoring_is_reproducible() {
     let cam = stream("cam", "camera", None, &[0, 1_500_000_000]);
     let robot = stream("robot", "robot", None, &[0, 1_000_000_000]);

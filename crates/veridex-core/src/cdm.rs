@@ -221,3 +221,39 @@ pub struct ProvenanceElement {
     /// How well this element is known.
     pub class: ProvenanceClass,
 }
+
+impl ProvenanceElement {
+    /// True when the element carries a value that isn't a low-information placeholder. Placeholder
+    /// values (`unknown`, `n/a`, `none`, …) are present in form but empty in substance, so they must
+    /// not count as real provenance — for either the completeness check or the coverage score.
+    pub fn has_real_value(&self) -> bool {
+        self.value
+            .as_deref()
+            .is_some_and(|v| !is_placeholder_value(v))
+    }
+}
+
+/// Low-information provenance values that are present in form but empty in substance. Compared
+/// case-insensitively after trimming.
+const PLACEHOLDER_VALUES: &[&str] = &[
+    "",
+    "unknown",
+    "n/a",
+    "na",
+    "none",
+    "null",
+    "nil",
+    "todo",
+    "tbd",
+    "unspecified",
+    "placeholder",
+    "-",
+    "--",
+    "?",
+];
+
+/// Whether a provenance value is an effectively-empty placeholder.
+pub fn is_placeholder_value(value: &str) -> bool {
+    let norm = value.trim().to_ascii_lowercase();
+    PLACEHOLDER_VALUES.contains(&norm.as_str())
+}
