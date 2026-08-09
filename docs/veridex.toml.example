@@ -1,0 +1,29 @@
+# Example veridex.toml — copy to your project root (or point at it with `--config`).
+#
+# Veridex auto-discovers a `veridex.toml` in the current directory. Every key is optional; the
+# defaults below match Veridex's built-in behavior. Unknown keys and check ids that name no real
+# check are rejected with an error (run `veridex checks` for the catalog), so a typo can't silently
+# change what runs. The effective configuration is recorded in every verdict.
+
+# Failure threshold for the `veridex check` exit code: "error" (default) exits 20 only on error
+# findings; "warning" also fails on warnings. The `--fail-on` flag overrides this.
+fail_on = "error"
+
+# Minimum trust score (0–100) required to pass; a lower score fails the run regardless of finding
+# severities. Omit to disable the gate. The `--min-score` flag overrides this.
+# min_score = 80
+
+# Run only these categories. Omit to run all. Valid: structural, temporal, statistical, semantic,
+# provenance.
+# categories = ["structural", "temporal"]
+
+# Run only these specific checks (by id). Omit to run all selected categories.
+# only_checks = ["temporal.clock-skew", "structural.episode-boundary"]
+
+# Disable specific checks by id, even within a selected category.
+disabled_checks = []
+
+# Override a check's default severity. Keys are check ids; values are info | warning | error.
+# For example, treat cross-stream clock skew as a warning rather than an error:
+# [severity_overrides]
+# "temporal.clock-skew" = "warning"

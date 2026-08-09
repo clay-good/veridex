@@ -122,6 +122,39 @@ fn unknown_check_id_in_config_is_rejected() {
 }
 
 #[test]
+fn example_config_parses_and_references_only_real_checks() {
+    // docs/veridex.toml.example is the copy-paste starting point; guard it against drifting from the
+    // real config surface and check catalog. Path is relative to this crate's manifest.
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/veridex.toml.example"
+    );
+    let text = std::fs::read_to_string(path).expect("example config is readable");
+
+    // It parses cleanly: valid TOML, no unknown keys (deny_unknown_fields).
+    let cfg = CheckConfig::from_toml(&text).expect("example config parses");
+    let engine = veridex_core::checks::default_engine().unwrap();
+    cfg.validate_check_ids(engine.check_ids())
+        .expect("active ids are real");
+
+    // Every check-id-shaped token anywhere in the file — including the commented-out examples — must
+    // name a real check, so the sample can't advertise an id the catalog no longer has.
+    let known: std::collections::BTreeSet<&str> = engine.check_ids().into_iter().collect();
+    for quoted in text.split('"').skip(1).step_by(2) {
+        let looks_like_id = quoted.contains('.')
+            && quoted
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c == '.' || c == '-');
+        if looks_like_id {
+            assert!(
+                known.contains(quoted),
+                "example config references `{quoted}`, which is not a registered check id"
+            );
+        }
+    }
+}
+
+#[test]
 fn category_selection_scopes_the_run() {
     let cfg = CheckConfig::from_toml("categories = [\"temporal\"]").unwrap();
     let v = run(&skewed(), &cfg.to_run_config());
