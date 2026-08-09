@@ -17,7 +17,9 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   mapped / unmapped / omitted fields. A cross-format gate test proves the same logical dataset
   yields equivalent CDMs in both formats. The LeRobot adapter resolves task strings
   (`task_index` + `meta/tasks.jsonl` → `episode.task`), so the semantic task-quality check runs on
-  real datasets; the omission is reported honestly when no `meta/tasks.jsonl` is present.
+  real datasets; the omission is reported honestly when no `meta/tasks.jsonl` is present. The MCAP
+  adapter extracts the file header's writing `library` (as a `recorder` provenance element) and
+  `profile`, so provenance reflects who produced the recording.
 - **Validation engine** — check registry with duplicate-id rejection, category/id selection,
   severity overrides, deterministic stably-ordered verdicts with a result content hash, fault
   isolation for panicking checks, and reproducibility metadata.

@@ -13,8 +13,9 @@
 //! - MCAP has no episode concept, so the whole file maps to a single episode (index 0). The
 //!   [`IngestReport`] records this and the MCAP fields the CDM does not carry.
 //!
-//! Rich provenance extraction (metadata records, calibration) is deferred to the provenance
-//! milestone; this adapter records only the source format.
+//! Provenance: the adapter records the source format and extracts the MCAP header's writing
+//! `library` (as a `recorder` element) and `profile`. Richer extraction from Metadata/Attachment
+//! records and calibration is deferred to the provenance milestone.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -69,6 +70,17 @@ struct StreamBuilder {
     frames: Vec<Frame>,
 }
 
+/// The MCAP Header record (`profile`, `library`), if present. The header is the first record after
+/// the magic bytes, so a short linear pass reads it cheaply. Errors and absence yield `None` — the
+/// header is honest-if-present, never fabricated.
+fn read_header(bytes: &[u8]) -> Option<mcap::records::Header> {
+    // The header is the first record after the magic; anything else means there is none.
+    match mcap::read::LinearReader::new(bytes).ok()?.next()? {
+        Ok(mcap::records::Record::Header(h)) => Some(h),
+        _ => None,
+    }
+}
+
 impl Adapter for McapAdapter {
     fn format_id(&self) -> &'static str {
         "mcap"
@@ -99,6 +111,9 @@ impl Adapter for McapAdapter {
         };
 
         let bytes = std::fs::read(path).map_err(|e| IngestError::Io(e.to_string()))?;
+
+        // The MCAP header records the writing library and profile — honest origin metadata.
+        let header = read_header(&bytes);
 
         // Accumulate streams by topic (BTreeMap keeps a deterministic order before canonicalization).
         let mut streams: BTreeMap<String, StreamBuilder> = BTreeMap::new();
@@ -156,20 +171,40 @@ impl Adapter for McapAdapter {
             })
             .collect();
 
+        // Dataset metadata and provenance: the format plus whatever the header honestly records.
+        let mut metadata = vec![("source_format".into(), "mcap".into())];
+        let mut elements = vec![ProvenanceElement {
+            key: "source_format".into(),
+            value: Some("mcap".into()),
+            class: ProvenanceClass::Known,
+        }];
+        if let Some(h) = &header {
+            // The writing library (e.g. "mcap-rs 0.25") is recorded provenance about who produced
+            // the file. Empty strings are treated as absent, never fabricated.
+            if !h.library.trim().is_empty() {
+                metadata.push(("mcap_library".into(), h.library.clone()));
+                elements.push(ProvenanceElement {
+                    key: "recorder".into(),
+                    value: Some(h.library.clone()),
+                    class: ProvenanceClass::Known,
+                });
+            }
+            // The profile (e.g. "ros2") identifies the message ecosystem.
+            if !h.profile.trim().is_empty() {
+                metadata.push(("mcap_profile".into(), h.profile.clone()));
+            }
+        }
+
         let dataset = Dataset {
             id: path
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("mcap")
                 .to_string(),
-            metadata: vec![("source_format".into(), "mcap".into())],
+            metadata,
             provenance: vec![Provenance {
                 scope: ProvenanceScope::Dataset,
-                elements: vec![ProvenanceElement {
-                    key: "source_format".into(),
-                    value: Some("mcap".into()),
-                    class: ProvenanceClass::Known,
-                }],
+                elements,
             }],
             episodes: vec![Episode {
                 index: 0,
@@ -185,12 +220,21 @@ impl Adapter for McapAdapter {
             format_id: "mcap",
             source_version: Some("0".into()),
             coverage: Coverage::Full,
-            mapped_fields: vec![
-                "channel.topic -> stream.name".into(),
-                "message.log_time -> frame.ts".into(),
-                "schema.name -> stream.modality".into(),
-                "message.data.len -> frame.value_ref.byte_len".into(),
-            ],
+            mapped_fields: {
+                let mut m = vec![
+                    "channel.topic -> stream.name".into(),
+                    "message.log_time -> frame.ts".into(),
+                    "schema.name -> stream.modality".into(),
+                    "message.data.len -> frame.value_ref.byte_len".into(),
+                ];
+                if header
+                    .as_ref()
+                    .is_some_and(|h| !h.library.trim().is_empty())
+                {
+                    m.push("header.library -> provenance.recorder".into());
+                }
+                m
+            },
             unmapped_fields: vec![
                 UnmappedField {
                     source_path: "message.publish_time".into(),

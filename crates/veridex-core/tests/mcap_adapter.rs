@@ -124,6 +124,43 @@ fn maps_channels_to_streams_and_messages_to_frames() {
 }
 
 #[test]
+fn header_library_is_extracted_as_recorder_provenance() {
+    // The `mcap` writer stamps its library into the header; the adapter surfaces it as honest
+    // `recorder` provenance (class Known) and as `mcap_library` dataset metadata.
+    let bytes = build_mcap(&[Chan {
+        schema: "sensor_msgs/msg/Image",
+        topic: "/cam",
+        times: vec![0, 1],
+    }]);
+    let path = write_temp_mcap(&bytes);
+    let ingested = McapAdapter
+        .ingest(
+            &Source::Local(path.to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest");
+
+    let recorder = ingested
+        .dataset
+        .provenance
+        .iter()
+        .flat_map(|r| &r.elements)
+        .find(|e| e.key == "recorder")
+        .expect("recorder provenance extracted from header");
+    assert!(recorder.value.as_deref().unwrap_or("").contains("mcap"));
+    assert!(ingested
+        .dataset
+        .metadata
+        .iter()
+        .any(|(k, _)| k == "mcap_library"));
+    assert!(ingested
+        .report
+        .mapped_fields
+        .iter()
+        .any(|f| f.contains("header.library -> provenance.recorder")));
+}
+
+#[test]
 fn report_declares_fidelity_and_omissions() {
     let bytes = build_mcap(&[Chan {
         schema: "sensor_msgs/msg/Image",
