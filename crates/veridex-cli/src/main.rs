@@ -215,6 +215,20 @@ fn cmd_check(rest: &[String]) -> ExitCode {
         }
     };
 
+    // Reject a config that names checks that don't exist (a typo in disabled_checks or a severity
+    // override would otherwise silently no-op), before running anything.
+    let engine = match veridex_core::checks::default_engine() {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("veridex: {e}");
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
+    };
+    if let Err(e) = config.validate_check_ids(engine.check_ids()) {
+        eprintln!("veridex: {e}");
+        return ExitCode::from(EXIT_TOOL_ERROR);
+    }
+
     // The CLI flag overrides the config's min_score (which defaults to no gate).
     let min_score = cli_min_score.or(config.min_score);
 

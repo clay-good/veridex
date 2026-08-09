@@ -96,6 +96,32 @@ fn min_score_out_of_range_is_rejected() {
 }
 
 #[test]
+fn unknown_check_id_in_config_is_rejected() {
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let known = engine.check_ids();
+
+    // A typo in disabled_checks must be rejected, not silently ignored.
+    let cfg = CheckConfig::from_toml("disabled_checks = [\"temporal.clock-skwe\"]").unwrap();
+    let err = cfg.validate_check_ids(known.clone()).unwrap_err();
+    assert!(
+        err.to_string().contains("temporal.clock-skwe"),
+        "error must name the offending id: {err}"
+    );
+
+    // A typo in a severity override key is likewise rejected.
+    let cfg2 =
+        CheckConfig::from_toml("[severity_overrides]\n\"nope.not-real\" = \"warning\"\n").unwrap();
+    assert!(cfg2.validate_check_ids(known.clone()).is_err());
+
+    // A config that only references real checks validates cleanly.
+    let cfg3 = CheckConfig::from_toml(
+        "disabled_checks = [\"temporal.gap\"]\nonly_checks = [\"temporal.clock-skew\"]\n",
+    )
+    .unwrap();
+    assert!(cfg3.validate_check_ids(known).is_ok());
+}
+
+#[test]
 fn category_selection_scopes_the_run() {
     let cfg = CheckConfig::from_toml("categories = [\"temporal\"]").unwrap();
     let v = run(&skewed(), &cfg.to_run_config());

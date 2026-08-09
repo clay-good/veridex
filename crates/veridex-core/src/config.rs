@@ -62,6 +62,32 @@ impl CheckConfig {
         Ok(config)
     }
 
+    /// Validate that every check id this config references — `only_checks`, `disabled_checks`, and
+    /// the keys of `severity_overrides` — names a real check in `known`. A typo would otherwise
+    /// silently no-op (a "disabled" check that keeps running, or a severity override that never
+    /// applies), so an unknown id is a hard error per the configuration spec. Returns the first
+    /// unknown id encountered, in a stable order (only-checks, then disabled, then overrides).
+    pub fn validate_check_ids<'a, I>(&self, known: I) -> Result<(), ConfigError>
+    where
+        I: IntoIterator<Item = &'a str>,
+    {
+        let known: BTreeSet<&str> = known.into_iter().collect();
+        let referenced = self
+            .only_checks
+            .iter()
+            .flatten()
+            .chain(self.disabled_checks.iter())
+            .chain(self.severity_overrides.keys());
+        for id in referenced {
+            if !known.contains(id.as_str()) {
+                return Err(ConfigError::Parse(format!(
+                    "unknown check id `{id}` in config (run `veridex checks` to list valid ids)"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// The engine [`RunConfig`] this configuration implies (everything except the exit threshold,
     /// which the CLI applies).
     pub fn to_run_config(&self) -> RunConfig {

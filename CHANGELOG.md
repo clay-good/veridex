@@ -71,7 +71,9 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 - **Configuration** — a `veridex.toml` (auto-discovered, or `--config`) that selects categories,
   disables checks, overrides per-check severities, and sets the failure threshold and minimum trust
   score (`min_score`, overridable by `--min-score`); the effective config is recorded in every
-  verdict.
+  verdict. Unknown TOML keys are rejected, and a check id that names no real check (a typo in
+  `disabled_checks`, `only_checks`, or a `severity_overrides` key) is a hard error rather than a
+  silent no-op.
 - **Runnable demos** — `examples/make_demo_mcap` (synthetic cross-stream clock skew) and
   `examples/make_demo_lerobot` (a LeRobot v3 dataset with an out-of-order timestamp, plus a
   `truncated` variant whose manifest over-declares its frame count → `STRUCTURAL.FRAME_COUNT_MISMATCH`),
