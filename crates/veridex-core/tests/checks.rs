@@ -604,3 +604,20 @@ fn meaningful_and_absent_tasks_are_not_flagged() {
     let absent = dataset(vec![episode_with_task(0, None)]);
     assert!(semantic::TaskQuality.run(&absent).is_empty());
 }
+
+// ---- documentation drift guard ----
+
+#[test]
+fn every_registered_check_is_documented_in_docs_checks_md() {
+    // docs/checks.md is the user-facing catalog reference; guard it against silently drifting when a
+    // check is added. Path is relative to this crate's manifest (repo-root/docs/checks.md).
+    let doc = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/checks.md"))
+        .expect("docs/checks.md is readable");
+    let engine = veridex_core::checks::default_engine().expect("standard checks have unique ids");
+    for id in engine.check_ids() {
+        assert!(
+            doc.contains(id),
+            "check `{id}` is registered but missing from docs/checks.md"
+        );
+    }
+}
