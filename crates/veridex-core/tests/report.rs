@@ -137,6 +137,24 @@ fn sarif_is_valid_2_1_0_and_maps_findings() {
         .contains("episode"));
     // info findings map to SARIF `note`.
     assert!(results.iter().any(|r| r["level"] == "note"));
+
+    // Rules are enriched: each carries a description and a help link to the check catalog.
+    let rules = sarif["runs"][0]["tool"]["driver"]["rules"]
+        .as_array()
+        .unwrap();
+    let skew_rule = rules
+        .iter()
+        .find(|r| r["id"] == "TEMPORAL.CLOCK_SKEW")
+        .unwrap();
+    assert_eq!(skew_rule["shortDescription"]["text"], "TEMPORAL.CLOCK_SKEW");
+    assert!(!skew_rule["fullDescription"]["text"]
+        .as_str()
+        .unwrap()
+        .is_empty());
+    assert!(skew_rule["helpUri"]
+        .as_str()
+        .unwrap()
+        .contains("docs/checks.md"));
 }
 
 #[test]

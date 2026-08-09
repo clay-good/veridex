@@ -310,9 +310,25 @@ pub fn render_sarif(verdict: &Verdict) -> Value {
     let mut rule_ids: Vec<&str> = verdict.findings.iter().map(|f| f.code.as_str()).collect();
     rule_ids.sort_unstable();
     rule_ids.dedup();
+    // Enrich each rule with a description (the risk of a representative finding) and a link to the
+    // check catalog, so GitHub code scanning shows what each rule means rather than a bare id.
     let rules: Vec<Value> = rule_ids
         .iter()
-        .map(|id| json!({ "id": id, "name": id }))
+        .map(|id| {
+            let risk = verdict
+                .findings
+                .iter()
+                .find(|f| f.code == *id)
+                .map(|f| f.risk.as_str())
+                .unwrap_or("");
+            json!({
+                "id": id,
+                "name": id,
+                "shortDescription": { "text": id },
+                "fullDescription": { "text": risk },
+                "helpUri": "https://github.com/clay-good/veridex/blob/main/docs/checks.md"
+            })
+        })
         .collect();
 
     let results: Vec<Value> = verdict
