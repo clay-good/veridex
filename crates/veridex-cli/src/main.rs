@@ -429,7 +429,48 @@ fn cmd_inspect(rest: &[String]) -> ExitCode {
             println!("      omitted:  {o}");
         }
     }
+    print!("{}", provenance_summary(d));
     ExitCode::SUCCESS
+}
+
+/// Render the dataset's provenance coverage: the count known/asserted/unknown (the certificate's 30%
+/// axis) followed by each expected element's real value and class, or `missing`. Placeholder values
+/// don't count and are shown as missing, matching how the score treats them.
+fn provenance_summary(d: &veridex_core::cdm::Dataset) -> String {
+    use std::fmt::Write;
+    use veridex_core::cdm::ProvenanceClass;
+    let cov = veridex_core::ProvenanceCoverage::of(d);
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "  provenance: {}/{} covered ({}% — known {}, asserted {}, unknown {})",
+        cov.known + cov.asserted,
+        cov.total(),
+        cov.covered_pct(),
+        cov.known,
+        cov.asserted,
+        cov.unknown,
+    );
+    for key in veridex_core::certificate::EXPECTED_PROVENANCE_KEYS {
+        let best =
+            d.provenance.iter().flat_map(|r| &r.elements).find(|e| {
+                e.key == *key && e.class != ProvenanceClass::Unknown && e.has_real_value()
+            });
+        match best {
+            Some(e) => {
+                let _ = writeln!(
+                    out,
+                    "      {key}: {} [{}]",
+                    e.value.as_deref().unwrap_or_default(),
+                    e.class.tag()
+                );
+            }
+            None => {
+                let _ = writeln!(out, "      {key}: missing");
+            }
+        }
+    }
+    out
 }
 
 fn cmd_certify(rest: &[String]) -> ExitCode {
@@ -864,6 +905,35 @@ mod tests {
         // A non-hex value is treated as a path; a missing path is a clear error, never a bogus key.
         let err = super::resolve_public_key("/no/such/issuer.pub").unwrap_err();
         assert!(err.contains("cannot read key"), "unexpected: {err}");
+    }
+
+    #[test]
+    fn provenance_summary_reports_coverage_and_treats_placeholders_as_missing() {
+        use veridex_core::cdm::{Dataset, ProvenanceClass, ProvenanceElement, ProvenanceScope};
+        let element = |key: &str, value: Option<&str>, class| ProvenanceElement {
+            key: key.into(),
+            value: value.map(Into::into),
+            class,
+        };
+        let d = Dataset {
+            id: "t".into(),
+            metadata: vec![],
+            provenance: vec![veridex_core::cdm::Provenance {
+                scope: ProvenanceScope::Dataset,
+                elements: vec![
+                    element("license", Some("apache-2.0"), ProvenanceClass::Known),
+                    // A placeholder sensor must be treated as missing, not counted.
+                    element("sensor", Some("unknown"), ProvenanceClass::Known),
+                ],
+            }],
+            episodes: vec![],
+        };
+        let s = super::provenance_summary(&d);
+        // One real element (license) out of six expected.
+        assert!(s.contains("1/6 covered"), "unexpected: {s}");
+        assert!(s.contains("license: apache-2.0 [known]"));
+        // The placeholder sensor is shown as missing, matching the coverage score.
+        assert!(s.contains("sensor: missing"), "unexpected: {s}");
     }
 
     #[test]

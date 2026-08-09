@@ -111,7 +111,7 @@ cargo run -p veridex-core --example make_demo_mcap -- /tmp/demo.mcap
 # validate it — prints a report and exits non-zero on failure
 cargo run -p veridex-cli -- check /tmp/demo.mcap
 
-# summarize the Canonical Dataset Model
+# summarize the Canonical Dataset Model (structure + provenance coverage)
 cargo run -p veridex-cli -- inspect /tmp/demo.mcap
 
 # machine-readable output

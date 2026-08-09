@@ -55,7 +55,9 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   reports — with `--fail-on-regression` to fail CI when the new report introduces findings or a
   lower score.
 - **CLI** — `veridex check | inspect | checks | certify | verify | provenance | keygen | diff`
-  (`checks` lists the built-in catalog — id, category, default severity, scope, and the finding
+  (`inspect` summarizes the CDM structure and the provenance coverage — known/asserted/unknown per
+  expected element, with placeholders shown as missing; `checks` lists the built-in catalog — id,
+  category, default severity, scope, and the finding
   codes each check can emit — as text or
   `--json`; tests guard those codes against the doc catalog in both directions, so a code can't
   ship undocumented and a stale doc row can't outlive its code),
