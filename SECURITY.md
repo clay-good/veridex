@@ -11,7 +11,8 @@ document states what Veridex guarantees, what it does **not**, and how signing k
   issued for. Presenting it against a different dataset fails verification (transplant rejection).
 - **Offline verification.** Certificates are Ed25519-signed and verify against the issuer public key
   with no network dependency. Any change to a signed certificate fails signature verification
-  (tamper rejection). Verification also rejects a certificate signed by an untrusted issuer key.
+  (tamper rejection). Verification also rejects a certificate signed by an untrusted issuer key, and
+  one that declares a signature algorithm this build cannot verify (rather than assuming Ed25519).
 - **Non-mutation.** Veridex only reads datasets and writes its own outputs to caller-specified
   paths. It never modifies, repairs, or deletes a user's dataset.
 - **No wall-clock in core.** Issuance timestamps are caller-supplied, so signing is reproducible and

@@ -111,6 +111,19 @@ fn tampering_with_content_is_rejected() {
 }
 
 #[test]
+fn an_unsupported_algorithm_is_rejected() {
+    let d = dataset(vec![stream("s", "c", &[0, 1_000_000])]);
+    let (cert, hash) = issue_cert(&d);
+    let mut signed = sign(cert, &keypair());
+
+    // A certificate claiming an algorithm this build cannot verify must be rejected explicitly,
+    // not silently verified as ed25519.
+    signed.algorithm = "rsa-pss".into();
+    let err = verify(&signed, Some(&hash.to_hex()), None).unwrap_err();
+    assert!(matches!(err, CertError::UnsupportedAlgorithm { .. }));
+}
+
+#[test]
 fn transplanting_onto_a_different_dataset_is_rejected() {
     let d1 = dataset(vec![stream("s", "c", &[0, 1_000_000])]);
     let (cert, _h1) = issue_cert(&d1);

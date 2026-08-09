@@ -35,7 +35,7 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   provenance-completeness. Every finding carries a training risk and a remedy.
 - **Trust certificate** — a deterministic v1 score and A–F grade (provenance weighted as a separate
   30% axis), a content-bound certificate document, and Ed25519 signing with offline verification
-  that rejects tampering, transplantation, and untrusted issuers.
+  that rejects tampering, transplantation, untrusted issuers, and unsupported signature algorithms.
 - **Provenance emit** — MLCommons Croissant (JSON-LD) and minimal W3C PROV, preserving
   known / asserted / unknown classes without fabrication. The PROV graph attributes the dataset to
   every known agent (recorder as a `prov:SoftwareAgent`, annotator as a `prov:Person`, sensor as a

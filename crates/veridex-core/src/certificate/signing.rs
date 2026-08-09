@@ -41,7 +41,16 @@ pub enum CertError {
         /// The public key embedded in the certificate.
         found: String,
     },
+    /// The certificate declares a signature algorithm this build cannot verify.
+    #[error("unsupported signature algorithm `{found}` (expected `ed25519`)")]
+    UnsupportedAlgorithm {
+        /// The algorithm named in the certificate.
+        found: String,
+    },
 }
+
+/// The only signature algorithm v0.1 issues and verifies.
+const ALGORITHM: &str = "ed25519";
 
 /// An Ed25519 signing keypair.
 pub struct SigningKeypair {
@@ -117,7 +126,7 @@ pub fn sign(certificate: Certificate, keypair: &SigningKeypair) -> SignedCertifi
     let signature: Signature = keypair.key.sign(&signing_message(&certificate));
     SignedCertificate {
         certificate,
-        algorithm: "ed25519".to_string(),
+        algorithm: ALGORITHM.to_string(),
         public_key: keypair.public_hex(),
         signature: to_hex(&signature.to_bytes()),
     }
@@ -132,6 +141,13 @@ pub fn verify(
     presented_cdm_hash: Option<&str>,
     expected_issuer: Option<&str>,
 ) -> Result<Verified, CertError> {
+    // Reject an algorithm this build cannot verify, rather than silently assuming ed25519.
+    if !signed.algorithm.eq_ignore_ascii_case(ALGORITHM) {
+        return Err(CertError::UnsupportedAlgorithm {
+            found: signed.algorithm.clone(),
+        });
+    }
+
     // Issuer identity, if a trusted key was supplied.
     if let Some(expected) = expected_issuer {
         if !expected.eq_ignore_ascii_case(&signed.public_key) {
