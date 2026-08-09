@@ -33,6 +33,11 @@ Veridex expects six provenance elements: `license`, `sensor`, `clock`, `calibrat
 provenance_pct = round_down( (known + asserted) / 6 * 100 )
 ```
 
+An element whose value is a low-information placeholder (`unknown`, `n/a`, `none`, …) is present in
+form but empty in substance, so it does **not** count as known or asserted — it is treated as
+`unknown` here and flagged as `PROVENANCE.PLACEHOLDER_VALUE`. This keeps fake provenance from
+inflating the score.
+
 ## Overall score and grade
 
 ```
