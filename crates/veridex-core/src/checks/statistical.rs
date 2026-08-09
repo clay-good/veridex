@@ -123,6 +123,30 @@ impl Check for RangeSanity {
                     continue;
                 }
 
+                // Popoviciu's inequality: for values bounded in [min, max], the standard
+                // deviation cannot exceed (max - min) / 2. A stored std above that bound is
+                // mathematically impossible — the min/max and std cannot describe the same values.
+                let bound = (stats.max - stats.min) / 2.0;
+                let tol = 1e-9 + bound.abs() * 1e-6;
+                if stats.std > bound + tol {
+                    findings.push(
+                        Finding::new(
+                            self.id(),
+                            Category::Statistical,
+                            Severity::Error,
+                            at(),
+                            "STATISTICAL.STD_IMPLAUSIBLE",
+                            format!(
+                                "stream `{}` in episode {}: std {} exceeds the maximum possible {} for range [{}, {}]",
+                                stream.name, ep.index, stats.std, bound, stats.min, stats.max
+                            ),
+                        )
+                        .with_risk("An impossibly large std means the stored statistics don't match the data (often computed on the wrong dtype or stream); normalization built on them will be wrong.")
+                        .with_remedy("Re-derive the statistics from the data."),
+                    );
+                    continue;
+                }
+
                 // Degenerate (constant) distribution: no signal to learn from.
                 if is_degenerate(&stats) {
                     findings.push(

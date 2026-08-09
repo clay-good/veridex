@@ -37,6 +37,7 @@ Severities below are the defaults.
 | `statistical.range-sanity` | `STATISTICAL.RANGE_INVERTED` | error | Stored `min > max`. |
 | `statistical.range-sanity` | `STATISTICAL.NEGATIVE_STD` | error | Stored standard deviation is negative. |
 | `statistical.range-sanity` | `STATISTICAL.MEAN_OUT_OF_RANGE` | error | The stored mean lies outside `[min, max]`. |
+| `statistical.range-sanity` | `STATISTICAL.STD_IMPLAUSIBLE` | error | The stored `std` exceeds `(max − min) / 2`, the largest value possible for that range (Popoviciu's inequality) — the stats don't match the data. |
 | `statistical.range-sanity` | `STATISTICAL.DEGENERATE` | warning | The stream is constant (`min == max`, `std == 0`). |
 
 ## Semantic — are labels and keys usable?

@@ -520,6 +520,30 @@ fn mean_outside_range_is_an_error() {
 }
 
 #[test]
+fn std_exceeding_popoviciu_bound_is_an_error() {
+    // For values in [0, 10] the std cannot exceed (10-0)/2 = 5; a stored std of 8 is impossible.
+    let d = dataset(vec![episode(
+        0,
+        vec![stream_with_stats("s", stats(0.0, 10.0, 5.0, 8.0))],
+    )]);
+    let f = statistical::RangeSanity.run(&d);
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].code, "STATISTICAL.STD_IMPLAUSIBLE");
+    assert_eq!(f[0].severity, Severity::Error);
+}
+
+#[test]
+fn std_at_the_popoviciu_bound_is_accepted() {
+    // std exactly (max-min)/2 is the extremal two-point distribution — valid, no finding.
+    let d = dataset(vec![episode(
+        0,
+        vec![stream_with_stats("s", stats(0.0, 10.0, 5.0, 5.0))],
+    )]);
+    let f = statistical::RangeSanity.run(&d);
+    assert!(f.is_empty());
+}
+
+#[test]
 fn constant_stream_is_a_degenerate_warning() {
     let d = dataset(vec![episode(
         0,

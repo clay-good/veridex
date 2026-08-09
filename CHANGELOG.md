@@ -32,7 +32,7 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   tensor shape between episodes — an un-batchable dataset — is caught), temporal (monotonicity,
   rate conformance, gaps, and the headline
   `TEMPORAL.CLOCK_SKEW`), statistical (range/sanity — inverted range, non-finite, negative std, mean-outside-range, and
-  degeneracy — over stored stats), semantic
+  degeneracy, and an implausibly-large std that violates Popoviciu's bound `(max−min)/2` — over stored stats), semantic
   (task-string quality — present-but-empty and placeholder tasks — and stream-key clarity, which
   flags camera/stream keys that collide by case or whitespace; verified, never modified), and
   provenance-completeness. Every finding carries a training risk and a remedy.
