@@ -14,6 +14,16 @@ impl Check for RangeSanity {
     fn id(&self) -> &'static str {
         "statistical.range-sanity"
     }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &[
+            "STATISTICAL.NON_FINITE",
+            "STATISTICAL.RANGE_INVERTED",
+            "STATISTICAL.NEGATIVE_STD",
+            "STATISTICAL.MEAN_OUT_OF_RANGE",
+            "STATISTICAL.STD_IMPLAUSIBLE",
+            "STATISTICAL.DEGENERATE",
+        ]
+    }
     fn title(&self) -> &'static str {
         "Stored-statistics range and sanity"
     }

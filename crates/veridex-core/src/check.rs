@@ -244,6 +244,11 @@ pub trait Check: Send + Sync {
     fn scope(&self) -> Scope;
     /// The check's version, recorded in the verdict for reproducibility.
     fn version(&self) -> &'static str;
+    /// Every finding `code` this check can emit (e.g. `TEMPORAL.CLOCK_SKEW`). Declaring the codes
+    /// makes the catalog self-describing — `veridex checks` lists them and tests guard them against
+    /// the doc catalog — so a code can't silently drift from its documentation. Every code a check's
+    /// [`Check::run`] emits must appear here.
+    fn finding_codes(&self) -> &'static [&'static str];
     /// Inspect the dataset and emit findings. Findings should use [`Check::default_severity`]
     /// unless the check intentionally varies severity by finding.
     fn run(&self, dataset: &Dataset) -> Vec<Finding>;

@@ -61,6 +61,17 @@ impl Check for ProvenanceCompleteness {
     fn id(&self) -> &'static str {
         "provenance.completeness"
     }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &[
+            "PROVENANCE.INCONSISTENT",
+            "PROVENANCE.MISSING_LICENSE",
+            "PROVENANCE.MISSING_SENSOR",
+            "PROVENANCE.MISSING_CLOCK",
+            "PROVENANCE.MISSING_CALIBRATION",
+            "PROVENANCE.MISSING_ANNOTATOR",
+            "PROVENANCE.MISSING_UPSTREAM",
+        ]
+    }
     fn title(&self) -> &'static str {
         "Provenance completeness and consistency"
     }

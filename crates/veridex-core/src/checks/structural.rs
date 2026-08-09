@@ -16,6 +16,9 @@ impl Check for EpisodeBoundary {
     fn id(&self) -> &'static str {
         "structural.episode-boundary"
     }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["STRUCTURAL.EPISODE_BOUNDARY"]
+    }
     fn title(&self) -> &'static str {
         "Episode boundary integrity"
     }
@@ -102,6 +105,9 @@ impl Check for DeclaredEpisodeCount {
     fn id(&self) -> &'static str {
         "structural.declared-episode-count"
     }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["STRUCTURAL.EPISODE_COUNT_MISMATCH"]
+    }
     fn title(&self) -> &'static str {
         "Declared episode count matches the data"
     }
@@ -158,6 +164,9 @@ pub struct DeclaredFrameCount;
 impl Check for DeclaredFrameCount {
     fn id(&self) -> &'static str {
         "structural.declared-frame-count"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["STRUCTURAL.FRAME_COUNT_MISMATCH"]
     }
     fn title(&self) -> &'static str {
         "Declared frame count matches the data"
@@ -233,6 +242,9 @@ struct Baseline<'a> {
 impl Check for ShapeConsistency {
     fn id(&self) -> &'static str {
         "structural.shape-consistency"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["STRUCTURAL.SHAPE_MISMATCH"]
     }
     fn title(&self) -> &'static str {
         "Cross-episode dtype/shape consistency"
@@ -344,6 +356,14 @@ pub struct DegenerateEpisode;
 impl Check for DegenerateEpisode {
     fn id(&self) -> &'static str {
         "structural.degenerate-episode"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &[
+            "STRUCTURAL.EMPTY_DATASET",
+            "STRUCTURAL.EMPTY_EPISODE",
+            "STRUCTURAL.EMPTY_STREAM",
+            "STRUCTURAL.SINGLE_FRAME_STREAM",
+        ]
     }
     fn title(&self) -> &'static str {
         "Degenerate episodes and streams"

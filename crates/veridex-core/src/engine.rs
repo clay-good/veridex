@@ -195,6 +195,8 @@ pub struct CheckInfo {
     pub scope: Scope,
     /// The check's version.
     pub version: &'static str,
+    /// Every finding `code` this check can emit.
+    pub finding_codes: &'static [&'static str],
 }
 
 /// A registry of checks that can validate a CDM.
@@ -225,6 +227,7 @@ impl Engine {
                 default_severity: c.default_severity(),
                 scope: c.scope(),
                 version: c.version(),
+                finding_codes: c.finding_codes(),
             })
             .collect()
     }

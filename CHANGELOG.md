@@ -52,8 +52,10 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   reports — with `--fail-on-regression` to fail CI when the new report introduces findings or a
   lower score.
 - **CLI** — `veridex check | inspect | checks | certify | verify | provenance | keygen | diff`
-  (`checks` lists the built-in catalog — id, category, default severity, scope — as text or
-  `--json`), with format
+  (`checks` lists the built-in catalog — id, category, default severity, scope, and the finding
+  codes each check can emit — as text or
+  `--json`; a test guards those codes against the doc catalog so a code can't ship undocumented),
+  with format
   autodetection (`--format` override, ambiguity is refused), a configurable failure threshold
   (`--fail-on`), a trust-score gate for CI (`--min-score 0-100`, fails below the threshold), and
   documented exit codes (0 pass · 10 warnings · 20 fail · 2 tool-error).

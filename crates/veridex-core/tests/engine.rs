@@ -31,6 +31,9 @@ impl Check for FlagEpisodes {
     fn version(&self) -> &'static str {
         "1"
     }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["EPISODE.FLAGGED"]
+    }
     fn run(&self, dataset: &Dataset) -> Vec<Finding> {
         dataset
             .episodes
@@ -69,6 +72,9 @@ impl Check for Crasher {
     }
     fn version(&self) -> &'static str {
         "1"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["TEST.CRASH"]
     }
     fn run(&self, _dataset: &Dataset) -> Vec<Finding> {
         panic!("boom");

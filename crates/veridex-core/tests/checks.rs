@@ -677,4 +677,36 @@ fn every_registered_check_is_documented_in_docs_checks_md() {
             "check `{id}` is registered but missing from docs/checks.md"
         );
     }
+    // Every finding code a check declares must also appear in the catalog page — so a newly emitted
+    // code can't ship undocumented.
+    for c in engine.catalog() {
+        for code in c.finding_codes {
+            assert!(
+                doc.contains(code),
+                "finding code `{code}` (check `{}`) is missing from docs/checks.md",
+                c.id
+            );
+        }
+    }
+}
+
+#[test]
+fn every_check_declares_at_least_one_unique_finding_code() {
+    // Each check must own a non-empty, globally-unique set of finding codes; a code belongs to
+    // exactly one check so findings trace back unambiguously.
+    let engine = veridex_core::checks::default_engine().expect("standard checks have unique ids");
+    let mut seen = std::collections::HashSet::new();
+    for c in engine.catalog() {
+        assert!(
+            !c.finding_codes.is_empty(),
+            "check `{}` declares no finding codes",
+            c.id
+        );
+        for code in c.finding_codes {
+            assert!(
+                seen.insert(*code),
+                "finding code `{code}` is declared by more than one check"
+            );
+        }
+    }
 }

@@ -26,6 +26,9 @@ impl Check for Monotonicity {
     fn id(&self) -> &'static str {
         "temporal.monotonicity"
     }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["TEMPORAL.NON_MONOTONIC"]
+    }
     fn title(&self) -> &'static str {
         "Timestamp monotonicity"
     }
@@ -100,6 +103,9 @@ impl Default for RateConformance {
 impl Check for RateConformance {
     fn id(&self) -> &'static str {
         "temporal.rate-conformance"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["TEMPORAL.RATE"]
     }
     fn title(&self) -> &'static str {
         "Declared-rate conformance"
@@ -208,6 +214,9 @@ impl Check for Gaps {
     fn id(&self) -> &'static str {
         "temporal.gap"
     }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["TEMPORAL.GAP"]
+    }
     fn title(&self) -> &'static str {
         "Timeline gaps"
     }
@@ -289,6 +298,9 @@ impl Default for ClockSkew {
 impl Check for ClockSkew {
     fn id(&self) -> &'static str {
         "temporal.clock-skew"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["TEMPORAL.CLOCK_SKEW"]
     }
     fn title(&self) -> &'static str {
         "Cross-stream clock skew"
@@ -384,6 +396,9 @@ impl Default for StartOffset {
 impl Check for StartOffset {
     fn id(&self) -> &'static str {
         "temporal.start-offset"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["TEMPORAL.START_OFFSET"]
     }
     fn title(&self) -> &'static str {
         "Cross-stream start offset (shared clock)"

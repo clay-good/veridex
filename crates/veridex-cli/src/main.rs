@@ -341,6 +341,8 @@ fn cmd_checks(rest: &[String]) -> ExitCode {
             c.scope.tag(),
             c.title,
         );
+        // The finding codes this check can emit, indented under it.
+        println!("  {:<id_w$} {}", "", c.finding_codes.join(", "));
     }
     ExitCode::SUCCESS
 }

@@ -29,6 +29,9 @@ impl Check for TaskQuality {
     fn id(&self) -> &'static str {
         "semantic.task-quality"
     }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["SEMANTIC.EMPTY_TASK", "SEMANTIC.PLACEHOLDER_TASK"]
+    }
     fn title(&self) -> &'static str {
         "Task-string quality"
     }
@@ -110,6 +113,9 @@ pub struct StreamKeyClarity;
 impl Check for StreamKeyClarity {
     fn id(&self) -> &'static str {
         "semantic.stream-key-clarity"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["SEMANTIC.AMBIGUOUS_STREAM_KEY"]
     }
     fn title(&self) -> &'static str {
         "Stream-key clarity"

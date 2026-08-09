@@ -1,7 +1,8 @@
 # Veridex check catalog
 
-Every finding Veridex can emit, by check. Run `veridex checks` for the live list (add `--json` for a
-machine-readable catalog), and `veridex check <dataset>` to run them. Each finding carries a training
+Every finding Veridex can emit, by check. Run `veridex checks` for the live list — each check lists
+the finding codes it can emit (add `--json` for a machine-readable catalog) — and
+`veridex check <dataset>` to run them. Each finding carries a training
 **risk** and a **remedy**; this page is the quick reference for the codes you'll see.
 
 Checks are selected, disabled, or re-severitied via [`veridex.toml`](../openspec/specs/configuration/spec.md).
