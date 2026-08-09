@@ -274,12 +274,19 @@ fn cmd_check(rest: &[String]) -> ExitCode {
         Some(_) => false,
         None => config.fail_on == veridex_core::FailOn::Warning,
     };
-    ExitCode::from(match out.verdict.status {
+    ExitCode::from(exit_code_for_status(out.verdict.status, fail_on_warning))
+}
+
+/// Map a verdict status to a CI exit code under the configured failure threshold: `0` pass, `10`
+/// pass-with-warnings, `20` fail. When `fail_on_warning` is set, warnings escalate to the fail code.
+/// This is the CI contract, kept as a pure function so it is unit-tested directly.
+fn exit_code_for_status(status: Status, fail_on_warning: bool) -> u8 {
+    match status {
         Status::Pass => EXIT_PASS,
         Status::PassWithWarnings if fail_on_warning => EXIT_FAIL,
         Status::PassWithWarnings => EXIT_WARN,
         Status::Fail => EXIT_FAIL,
-    })
+    }
 }
 
 /// Load config from an explicit path, or auto-discover `veridex.toml` in the current directory.
@@ -857,5 +864,25 @@ mod tests {
         // A non-hex value is treated as a path; a missing path is a clear error, never a bogus key.
         let err = super::resolve_public_key("/no/such/issuer.pub").unwrap_err();
         assert!(err.contains("cannot read key"), "unexpected: {err}");
+    }
+
+    #[test]
+    fn exit_codes_follow_the_ci_contract() {
+        use super::{exit_code_for_status, EXIT_FAIL, EXIT_PASS, EXIT_WARN};
+        use veridex_core::Status;
+        // Default threshold (error): pass=0, warnings=10, fail=20.
+        assert_eq!(exit_code_for_status(Status::Pass, false), EXIT_PASS);
+        assert_eq!(
+            exit_code_for_status(Status::PassWithWarnings, false),
+            EXIT_WARN
+        );
+        assert_eq!(exit_code_for_status(Status::Fail, false), EXIT_FAIL);
+        // --fail-on warning: warnings escalate to the fail code; pass and fail are unchanged.
+        assert_eq!(exit_code_for_status(Status::Pass, true), EXIT_PASS);
+        assert_eq!(
+            exit_code_for_status(Status::PassWithWarnings, true),
+            EXIT_FAIL
+        );
+        assert_eq!(exit_code_for_status(Status::Fail, true), EXIT_FAIL);
     }
 }

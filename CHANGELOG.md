@@ -76,7 +76,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   each with a `clean` variant, so `veridex check` has something to find end-to-end in **both** formats.
 - **CI** — GitHub Actions running fmt, clippy (`-D warnings`), and the full test suite, plus a
   Python job that builds the extension with maturin and runs the CLI ⇄ Python parity test on every
-  push.
+  push. The `veridex` binary has its own integration tests (`crates/veridex-cli/tests/cli.rs`)
+  asserting command dispatch, argument validation, and the CI exit-code contract (0 · 10 · 20 · 2).
 
 ### Fixed
 
