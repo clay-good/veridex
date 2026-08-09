@@ -91,3 +91,47 @@ fn invalid_min_score_is_rejected() {
     assert_eq!(code, 2);
     assert!(stderr.contains("invalid --min-score"));
 }
+
+/// Write `content` to a uniquely-named temp file and return its path.
+fn temp_report(tag: &str, content: &str) -> std::path::PathBuf {
+    let mut p = std::env::temp_dir();
+    p.push(format!(
+        "veridex-cli-test-{tag}-{}.json",
+        std::process::id()
+    ));
+    std::fs::write(&p, content).expect("write temp report");
+    p
+}
+
+#[test]
+fn diff_regression_fails_only_with_the_flag() {
+    // new has a finding old didn't and a lower score → a regression.
+    let old = temp_report(
+        "old",
+        r#"{"verdict":{"findings":[]},"trust_score":{"score":90}}"#,
+    );
+    let new = temp_report(
+        "new",
+        r#"{"verdict":{"findings":[{"code":"TEMPORAL.CLOCK_SKEW","severity":"error","message":"x"}]},"trust_score":{"score":70}}"#,
+    );
+    let (o, n) = (old.to_str().unwrap(), new.to_str().unwrap());
+
+    // Without the flag, diff is purely informational → exit 0.
+    let (code, _, _) = run(&["diff", o, n]);
+    assert_eq!(code, 0);
+
+    // With --fail-on-regression, the regression fails the run → exit 20.
+    let (code, _, stderr) = run(&["diff", "--fail-on-regression", o, n]);
+    assert_eq!(code, 20);
+    assert!(stderr.contains("regression"));
+
+    let _ = std::fs::remove_file(&old);
+    let _ = std::fs::remove_file(&new);
+}
+
+#[test]
+fn diff_requires_two_report_files() {
+    let (code, _, stderr) = run(&["diff", "only-one.json"]);
+    assert_eq!(code, 2);
+    assert!(stderr.contains("two report files"));
+}

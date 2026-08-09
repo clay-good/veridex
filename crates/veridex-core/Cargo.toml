@@ -24,3 +24,4 @@ proptest = "1"
 tempfile = "3"
 arrow = "59"
 parquet = "59"
+serde_json.workspace = true
