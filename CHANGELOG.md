@@ -30,8 +30,9 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   consistency so a stream
   that changes
   tensor shape between episodes — an un-batchable dataset — is caught), temporal (monotonicity,
-  rate conformance, gaps, and the headline
-  `TEMPORAL.CLOCK_SKEW`), statistical (range/sanity — inverted range, non-finite, negative std, mean-outside-range, and
+  rate conformance, gaps, the headline
+  `TEMPORAL.CLOCK_SKEW`, and a shared-clock start-offset check that catches a stream which comes
+  online late — a misalignment the duration-based skew check can miss), statistical (range/sanity — inverted range, non-finite, negative std, mean-outside-range, and
   degeneracy, and an implausibly-large std that violates Popoviciu's bound `(max−min)/2` — over stored stats), semantic
   (task-string quality — present-but-empty and placeholder tasks — and stream-key clarity, which
   flags camera/stream keys that collide by case or whitespace; verified, never modified), and

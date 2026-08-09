@@ -349,6 +349,38 @@ fn clock_skew_within_tolerance_is_clean() {
 }
 
 #[test]
+fn start_offset_flags_a_late_starting_stream_on_the_same_clock() {
+    // Both on clock `wall`; the arm starts 200 ms after the camera — beyond the 50 ms default.
+    let cam = stream("cam", "wall", None, &[0, 1_000_000_000]);
+    let arm = stream("arm", "wall", None, &[200_000_000, 1_200_000_000]);
+    let d = dataset(vec![episode(0, vec![cam, arm])]);
+    let f = temporal::StartOffset::default().run(&d);
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].code, "TEMPORAL.START_OFFSET");
+    assert_eq!(f[0].severity, Severity::Warning);
+    assert!(f[0].message.contains("arm"));
+}
+
+#[test]
+fn start_offset_ignores_streams_on_different_clocks() {
+    // Same 200 ms start gap, but on different clocks → absolute times aren't comparable, so no
+    // finding. (Cross-clock drift is CLOCK_SKEW's job, not this check's.)
+    let cam = stream("cam", "cam_clock", None, &[0, 1_000_000_000]);
+    let arm = stream("arm", "arm_clock", None, &[200_000_000, 1_200_000_000]);
+    let d = dataset(vec![episode(0, vec![cam, arm])]);
+    assert!(temporal::StartOffset::default().run(&d).is_empty());
+}
+
+#[test]
+fn start_offset_within_tolerance_is_clean() {
+    // 20 ms start gap on a shared clock, under the 50 ms default tolerance.
+    let cam = stream("cam", "wall", None, &[0, 1_000_000_000]);
+    let arm = stream("arm", "wall", None, &[20_000_000, 1_020_000_000]);
+    let d = dataset(vec![episode(0, vec![cam, arm])]);
+    assert!(temporal::StartOffset::default().run(&d).is_empty());
+}
+
+#[test]
 fn temporal_checks_do_not_overflow_on_extreme_timestamps() {
     // Corrupt timestamps spanning the full i64 range must not overflow the interval/span math
     // (which would panic in debug builds). Veridex's whole job is surviving bad data. The
@@ -361,6 +393,7 @@ fn temporal_checks_do_not_overflow_on_extreme_timestamps() {
     let _ = temporal::RateConformance::default().run(&d);
     let _ = temporal::Gaps::default().run(&d);
     let _ = temporal::ClockSkew::default().run(&d);
+    let _ = temporal::StartOffset::default().run(&d);
     // A stream with no declared rate exercises the median-interval path (also saturating).
     let no_rate = dataset(vec![episode(
         0,
@@ -444,7 +477,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 13);
+    assert_eq!(verdict.executed_checks.len(), 14);
 }
 
 #[test]

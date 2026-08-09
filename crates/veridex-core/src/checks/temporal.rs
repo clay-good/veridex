@@ -2,6 +2,7 @@
 
 use crate::cdm::{Dataset, Stream};
 use crate::check::{Category, Check, Finding, Location, Scope, Severity};
+use std::collections::BTreeMap;
 
 const NS_PER_S: f64 = 1_000_000_000.0;
 
@@ -352,6 +353,100 @@ impl Check for ClockSkew {
                             ),
                         );
                     }
+                }
+            }
+        }
+        findings
+    }
+}
+
+/// Cross-stream **start-time offset within a shared clock**. Two streams recorded on the same
+/// `clock_id` over one episode should begin at nearly the same absolute time; one that starts
+/// materially later than its peers — a sensor that came online late, or a truncated head — mis-aligns
+/// the very first observations from actions. Absolute timestamps are only comparable within a single
+/// clock, so streams are grouped by `clock_id` and compared only inside a group. This is the same
+/// no-shared-epoch discipline as [`ClockSkew`], which instead compares *durations* across clocks;
+/// the two are complementary — a late start can leave durations equal yet the alignment wrong.
+pub struct StartOffset {
+    /// Maximum tolerated difference between the earliest and latest stream start on one clock, in
+    /// nanoseconds.
+    pub tolerance_ns: i64,
+}
+
+impl Default for StartOffset {
+    fn default() -> Self {
+        StartOffset {
+            tolerance_ns: 50_000_000, // 50 ms
+        }
+    }
+}
+
+impl Check for StartOffset {
+    fn id(&self) -> &'static str {
+        "temporal.start-offset"
+    }
+    fn title(&self) -> &'static str {
+        "Cross-stream start offset (shared clock)"
+    }
+    fn category(&self) -> Category {
+        Category::Temporal
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Warning
+    }
+    fn scope(&self) -> Scope {
+        Scope::Episode
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        for ep in &dataset.episodes {
+            // Group each stream's start (min ts) by clock_id; BTreeMap keeps clocks in a stable
+            // order so findings are deterministic.
+            let mut by_clock: BTreeMap<&str, Vec<(&str, i64)>> = BTreeMap::new();
+            for s in &ep.streams {
+                if let Some((lo, _hi)) = span_bounds(s) {
+                    by_clock
+                        .entry(s.clock_id.as_str())
+                        .or_default()
+                        .push((s.name.as_str(), lo));
+                }
+            }
+            for (clock, mut starts) in by_clock {
+                if starts.len() < 2 {
+                    continue;
+                }
+                // Earliest and latest starting streams on this clock.
+                starts.sort_by_key(|(_, start)| *start);
+                let (early_name, early_start) = starts[0];
+                let (late_name, late_start) = starts[starts.len() - 1];
+                let offset = late_start.saturating_sub(early_start);
+                if offset > self.tolerance_ns {
+                    findings.push(
+                        Finding::new(
+                            self.id(),
+                            Category::Temporal,
+                            Severity::Warning,
+                            Location::Episode { episode: ep.index },
+                            "TEMPORAL.START_OFFSET",
+                            format!(
+                                "episode {}: on clock `{clock}`, stream `{late_name}` starts \
+                                 {:.1} ms after `{early_name}`",
+                                ep.index,
+                                offset as f64 / 1e6,
+                            ),
+                        )
+                        .with_risk(
+                            "A late-starting stream leaves the first observations unpaired with \
+                             their actions, so early frames train on missing or stale context.",
+                        )
+                        .with_remedy(
+                            "Confirm all sensors start together, or trim each episode to the \
+                             common time window.",
+                        ),
+                    );
                 }
             }
         }

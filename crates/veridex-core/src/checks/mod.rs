@@ -25,6 +25,7 @@ pub fn standard_checks() -> Vec<Box<dyn Check>> {
         Box::new(temporal::RateConformance::default()),
         Box::new(temporal::Gaps::default()),
         Box::new(temporal::ClockSkew::default()),
+        Box::new(temporal::StartOffset::default()),
         Box::new(statistical::RangeSanity),
         Box::new(semantic::TaskQuality),
         Box::new(semantic::StreamKeyClarity),
