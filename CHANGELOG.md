@@ -54,7 +54,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 - **CLI** — `veridex check | inspect | checks | certify | verify | provenance | keygen | diff`
   (`checks` lists the built-in catalog — id, category, default severity, scope, and the finding
   codes each check can emit — as text or
-  `--json`; a test guards those codes against the doc catalog so a code can't ship undocumented),
+  `--json`; tests guard those codes against the doc catalog in both directions, so a code can't
+  ship undocumented and a stale doc row can't outlive its code),
   with format
   autodetection (`--format` override, ambiguity is refused), a configurable failure threshold
   (`--fail-on`), a trust-score gate for CI (`--min-score 0-100`, fails below the threshold), and

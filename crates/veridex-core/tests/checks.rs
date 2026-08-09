@@ -691,6 +691,43 @@ fn every_registered_check_is_documented_in_docs_checks_md() {
 }
 
 #[test]
+fn docs_checks_md_lists_no_unknown_finding_codes() {
+    // The reverse guard: every `FAMILY.CODE`-shaped token in docs/checks.md must be a code some
+    // registered check actually emits, so a stale row for a renamed/removed code can't linger.
+    let doc = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/checks.md"))
+        .expect("docs/checks.md is readable");
+    let engine = veridex_core::checks::default_engine().expect("standard checks have unique ids");
+    let registered: std::collections::HashSet<&str> = engine
+        .catalog()
+        .into_iter()
+        .flat_map(|c| c.finding_codes.iter().copied())
+        .collect();
+
+    // A finding code looks like FAMILY.CODE — uppercase family, '.', then uppercase/underscore.
+    let is_finding_code = |s: &str| -> bool {
+        match s.split_once('.') {
+            Some((family, code)) => {
+                !family.is_empty()
+                    && family.chars().all(|c| c.is_ascii_uppercase())
+                    && !code.is_empty()
+                    && code.chars().all(|c| c.is_ascii_uppercase() || c == '_')
+            }
+            None => false,
+        }
+    };
+
+    // Backtick-delimited spans are the odd-indexed pieces when splitting on '`'.
+    for token in doc.split('`').skip(1).step_by(2) {
+        if is_finding_code(token) {
+            assert!(
+                registered.contains(token),
+                "docs/checks.md lists `{token}`, which no registered check emits"
+            );
+        }
+    }
+}
+
+#[test]
 fn every_check_declares_at_least_one_unique_finding_code() {
     // Each check must own a non-empty, globally-unique set of finding codes; a code belongs to
     // exactly one check so findings trace back unambiguously.
