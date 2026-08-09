@@ -80,8 +80,8 @@ the build plan.
 
 ## M9 — Proof & anointer prep
 - [ ] End-to-end demo on a real LeRobot v3 Hub dataset and a real MCAP recording. (Synthetic
-      end-to-end demo works today via `examples/make_demo_mcap` + `veridex check`; real Hub datasets
-      need network access.)
+      end-to-end demos work today for **both** formats via `examples/make_demo_mcap` and
+      `examples/make_demo_lerobot` + `veridex check`; real Hub datasets need network access.)
 - [~] Reproduce detection of a synthetic cross-stream skew (done: the demo MCAP triggers
       `TEMPORAL.CLOCK_SKEW`) and a corrupted episode boundary (covered by unit tests; a runnable
       corrupted-boundary fixture is a follow-up).

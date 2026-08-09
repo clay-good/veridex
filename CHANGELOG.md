@@ -49,6 +49,9 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 - **Configuration** — a `veridex.toml` (auto-discovered, or `--config`) that selects categories,
   disables checks, overrides per-check severities, and sets the failure threshold; the effective
   config is recorded in every verdict.
+- **Runnable demos** — `examples/make_demo_mcap` (synthetic cross-stream clock skew) and
+  `examples/make_demo_lerobot` (a LeRobot v3 dataset with an out-of-order timestamp), each with a
+  `clean` variant, so `veridex check` has something to find end-to-end in **both** formats.
 - **CI** — GitHub Actions running fmt, clippy (`-D warnings`), and the full test suite, plus a
   Python job that builds the extension with maturin and runs the CLI ⇄ Python parity test on every
   push.

@@ -126,6 +126,15 @@ cargo run -p veridex-cli -- verify  /tmp/demo.mcap --certificate /tmp/demo.verid
 reports the training risk and remedy, and exits `20` (fail). Exit codes: `0` pass · `10`
 pass-with-warnings · `20` fail · `2` tool-error.
 
+The same command works on a LeRobot v3 dataset — proof of the cross-format claim. Generate a demo
+one (its second episode carries an out-of-order timestamp) and check it the same way:
+
+```sh
+# generate a demo LeRobot v3 dataset; append `clean` for a well-formed one
+cargo run -p veridex-core --example make_demo_lerobot -- /tmp/demo-lerobot
+cargo run -p veridex-cli -- check /tmp/demo-lerobot   # fires TEMPORAL.NON_MONOTONIC, exits 20
+```
+
 The certificate binds to the dataset's CDM content hash and is Ed25519-signed: `verify` succeeds
 offline, and rejects a tampered certificate (signature mismatch) or one presented against a
 different dataset (content-hash mismatch).
