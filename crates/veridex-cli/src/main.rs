@@ -664,8 +664,14 @@ fn cmd_provenance(rest: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// A diff is a regression when the new report introduced any finding or its trust score dropped.
+fn is_regression(diff: &veridex_core::ReportDiff) -> bool {
+    !diff.introduced.is_empty() || diff.score_delta().is_some_and(|d| d < 0)
+}
+
 fn cmd_diff(rest: &[String]) -> ExitCode {
     let json_out = rest.iter().any(|a| a == "--json");
+    let fail_on_regression = rest.iter().any(|a| a == "--fail-on-regression");
     let paths: Vec<&String> = rest.iter().filter(|a| !a.starts_with('-')).collect();
     let [old_path, new_path] = paths.as_slice() else {
         eprintln!("veridex: diff requires two report files: veridex diff <old.json> <new.json>");
@@ -702,6 +708,19 @@ fn cmd_diff(rest: &[String]) -> ExitCode {
         println!("{}", serde_json::to_string_pretty(&doc).unwrap());
     } else {
         print!("{}", veridex_core::render_diff(&diff));
+    }
+
+    // For CI: optionally fail when the new report regressed — any finding introduced, or a lower
+    // trust score. Without the flag, diff is purely informational and always exits 0.
+    if fail_on_regression && is_regression(&diff) {
+        eprintln!(
+            "veridex: regression — {} finding(s) introduced, score delta {}",
+            diff.introduced.len(),
+            diff.score_delta()
+                .map(|d| d.to_string())
+                .unwrap_or_else(|| "n/a".to_string())
+        );
+        return ExitCode::from(EXIT_FAIL);
     }
     ExitCode::SUCCESS
 }
@@ -743,7 +762,8 @@ fn print_help() {
     println!("    --emit <fmt>         provenance format: croissant (default) or prov");
     println!(
         "    --fail-on <sev>      check failure threshold: error (default) or warning
-    --min-score <0-100>  fail (exit 20) if the trust score is below this (check)"
+    --min-score <0-100>  fail (exit 20) if the trust score is below this (check)
+    --fail-on-regression fail (exit 20) if the new report introduced findings or a lower score (diff)"
     );
     println!("    --config <file>      veridex.toml (auto-discovered in cwd if present)");
     println!("    --force              overwrite existing key files (keygen)");
@@ -791,6 +811,32 @@ mod tests {
             super::resolve_public_key(&format!("  {hex}\n")).unwrap(),
             hex
         );
+    }
+
+    #[test]
+    fn regression_is_introduced_findings_or_a_lower_score() {
+        use serde_json::json;
+        let base = veridex_core::ReportDiff {
+            introduced: vec![],
+            resolved: vec![],
+            unchanged: vec![],
+            old_score: Some(80),
+            new_score: Some(80),
+        };
+        // No change → not a regression.
+        assert!(!super::is_regression(&base));
+        // An introduced finding → regression, even at an unchanged score.
+        let mut with_finding = base.clone();
+        with_finding.introduced = vec![json!({"code": "X"})];
+        assert!(super::is_regression(&with_finding));
+        // A score drop with no new findings → regression (e.g. lost provenance coverage).
+        let mut lower_score = base.clone();
+        lower_score.new_score = Some(70);
+        assert!(super::is_regression(&lower_score));
+        // A score improvement → not a regression.
+        let mut higher_score = base.clone();
+        higher_score.new_score = Some(90);
+        assert!(!super::is_regression(&higher_score));
     }
 
     #[test]

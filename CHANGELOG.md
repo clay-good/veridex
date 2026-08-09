@@ -44,7 +44,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   JSON envelope (`veridex.report/1`), SARIF 2.1.0 (`veridex check --sarif`) for CI code-scanning, a
   self-contained HTML report (`veridex check --html`), and verdict diffing (`veridex diff`) that
   reports findings introduced / resolved / unchanged and the trust-score movement between two
-  reports.
+  reports — with `--fail-on-regression` to fail CI when the new report introduces findings or a
+  lower score.
 - **CLI** — `veridex check | inspect | checks | certify | verify | provenance | keygen | diff`
   (`checks` lists the built-in catalog — id, category, default severity, scope — as text or
   `--json`), with format
