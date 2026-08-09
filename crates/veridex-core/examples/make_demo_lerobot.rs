@@ -47,6 +47,7 @@ fn write_dataset(dir: &Path, clean: bool) {
         "codebase_version": "v3.0",
         "fps": fps,
         "robot_type": "so100",
+        "total_episodes": 2,
         "features": {
             "observation.state": { "dtype": "float32", "shape": [1] },
             "action": { "dtype": "float32", "shape": [1] },

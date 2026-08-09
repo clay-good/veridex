@@ -25,7 +25,9 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   isolation for panicking checks, and reproducibility metadata.
 - **Checks catalog** — structural (episode-boundary integrity covering the lerobot#4143 class,
   degenerate episodes/streams — including a dataset with zero episodes, which would otherwise pass
-  silently — and cross-episode dtype/shape consistency so a stream that changes
+  silently — a declared-vs-actual episode-count check that catches a truncated export (LeRobot
+  `total_episodes` vs the episodes ingested), and cross-episode dtype/shape consistency so a stream
+  that changes
   tensor shape between episodes — an un-batchable dataset — is caught), temporal (monotonicity,
   rate conformance, gaps, and the headline
   `TEMPORAL.CLOCK_SKEW`), statistical (range/sanity — inverted range, non-finite, negative std, mean-outside-range, and

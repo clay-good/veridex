@@ -134,6 +134,39 @@ fn dataset_with_no_episodes_is_flagged() {
     assert_eq!(f[0].severity, Severity::Error);
 }
 
+#[test]
+fn declared_episode_count_mismatch_is_flagged() {
+    // Manifest says 3 episodes; only 2 were ingested → truncated export.
+    let mut d = dataset(vec![
+        episode(0, vec![stream("s", "c", None, &[0, 1])]),
+        episode(1, vec![stream("s", "c", None, &[0, 1])]),
+    ]);
+    d.metadata
+        .push((veridex_core::cdm::META_DECLARED_EPISODES.into(), "3".into()));
+    let f = structural::DeclaredEpisodeCount.run(&d);
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].code, "STRUCTURAL.EPISODE_COUNT_MISMATCH");
+    assert_eq!(f[0].severity, Severity::Error);
+}
+
+#[test]
+fn declared_episode_count_matching_or_absent_is_clean() {
+    let base = vec![
+        episode(0, vec![stream("s", "c", None, &[0, 1])]),
+        episode(1, vec![stream("s", "c", None, &[0, 1])]),
+    ];
+    // Matching declared count → no finding.
+    let mut matches = dataset(base.clone());
+    matches
+        .metadata
+        .push((veridex_core::cdm::META_DECLARED_EPISODES.into(), "2".into()));
+    assert!(structural::DeclaredEpisodeCount.run(&matches).is_empty());
+    // No declared count at all → check is skipped.
+    assert!(structural::DeclaredEpisodeCount
+        .run(&dataset(base))
+        .is_empty());
+}
+
 fn shaped(name: &str, dtype: Option<&str>, shape: Option<Vec<u64>>, ts: &[i64]) -> Stream {
     Stream {
         name: name.into(),
@@ -375,7 +408,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 11);
+    assert_eq!(verdict.executed_checks.len(), 12);
 }
 
 #[test]

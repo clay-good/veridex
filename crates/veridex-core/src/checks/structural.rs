@@ -92,6 +92,62 @@ impl Check for EpisodeBoundary {
     }
 }
 
+/// Declared-vs-actual episode count. When a source manifest declares how many episodes the dataset
+/// contains (e.g. LeRobot `meta/info.json` `total_episodes`), the number ingested must match. A
+/// shortfall is the signature of a truncated or partially-downloaded export — training silently on
+/// less data than the manifest promises. Datasets that declare no count are skipped.
+pub struct DeclaredEpisodeCount;
+
+impl Check for DeclaredEpisodeCount {
+    fn id(&self) -> &'static str {
+        "structural.declared-episode-count"
+    }
+    fn title(&self) -> &'static str {
+        "Declared episode count matches the data"
+    }
+    fn category(&self) -> Category {
+        Category::Structural
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Error
+    }
+    fn scope(&self) -> Scope {
+        Scope::Dataset
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        let Some(declared) = dataset
+            .metadata
+            .iter()
+            .find(|(k, _)| k == crate::cdm::META_DECLARED_EPISODES)
+            .and_then(|(_, v)| v.parse::<u64>().ok())
+        else {
+            return Vec::new();
+        };
+        let actual = dataset.episodes.len() as u64;
+        if declared == actual {
+            return Vec::new();
+        }
+        vec![Finding::new(
+            self.id(),
+            Category::Structural,
+            Severity::Error,
+            Location::Dataset,
+            "STRUCTURAL.EPISODE_COUNT_MISMATCH",
+            format!("manifest declares {declared} episodes but {actual} were ingested"),
+        )
+        .with_risk(
+            "A mismatch between the manifest and the data means the export is truncated or corrupt; \
+             training would use fewer (or more) episodes than intended.",
+        )
+        .with_remedy(
+            "Re-download or re-export the dataset, or fix the manifest's total_episodes to match.",
+        )]
+    }
+}
+
 /// Cross-episode dtype/shape consistency. A stream name that keeps a different declared element
 /// dtype or per-frame shape in different episodes cannot be stacked into a single training batch:
 /// the loader will either error or silently truncate/pad. This surfaces that drift, which arises

@@ -33,6 +33,11 @@ zero-length or single-frame) unless explicitly permitted.
 - **WHEN** ingestion yields a dataset with zero episodes (e.g. an empty or unreadable export)
 - **THEN** a structural check fails rather than letting an empty dataset pass silently
 
+#### Scenario: Declared episode count disagrees with the data
+- **WHEN** a source manifest declares an episode count (e.g. LeRobot `total_episodes`) that differs
+  from the number of episodes actually ingested
+- **THEN** a structural check fails and reports the declared-vs-actual mismatch (a truncated export)
+
 ### Requirement: Temporal and synchronization checks
 Veridex SHALL check the time base of a dataset: per-stream timestamp monotonicity; sampling-rate
 conformance to the declared rate; gaps and dropouts; and — the differentiator — **cross-stream

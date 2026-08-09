@@ -57,6 +57,8 @@ struct InfoJson {
     #[serde(default)]
     robot_type: Option<String>,
     #[serde(default)]
+    total_episodes: Option<u64>,
+    #[serde(default)]
     features: BTreeMap<String, FeatureInfo>,
 }
 
@@ -406,13 +408,23 @@ impl Adapter for LeRobotAdapter {
                 .and_then(|s| s.to_str())
                 .unwrap_or("lerobot")
                 .to_string(),
-            metadata: vec![
-                ("source_format".into(), "lerobot".into()),
-                (
-                    "codebase_version".into(),
-                    info.codebase_version.clone().unwrap_or_default(),
-                ),
-            ],
+            metadata: {
+                let mut m = vec![
+                    ("source_format".into(), "lerobot".into()),
+                    (
+                        "codebase_version".into(),
+                        info.codebase_version.clone().unwrap_or_default(),
+                    ),
+                ];
+                // Record the declared episode count so a check can catch a truncated export.
+                if let Some(total) = info.total_episodes {
+                    m.push((
+                        crate::cdm::META_DECLARED_EPISODES.to_string(),
+                        total.to_string(),
+                    ));
+                }
+                m
+            },
             provenance: vec![Provenance {
                 scope: ProvenanceScope::Dataset,
                 elements,
@@ -437,6 +449,9 @@ impl Adapter for LeRobotAdapter {
             omitted_fields.push("task strings (no meta/tasks.jsonl to resolve task_index)".into());
         } else {
             mapped_fields.push("task_index + meta/tasks.jsonl -> episode.task".into());
+        }
+        if info.total_episodes.is_some() {
+            mapped_fields.push("total_episodes -> declared episode-count check".into());
         }
 
         let report = IngestReport {

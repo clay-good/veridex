@@ -21,6 +21,11 @@ use serde::{Deserialize, Serialize};
 /// portable across platforms.
 pub type TimestampNs = i64;
 
+/// Metadata key under which an adapter records the source-declared episode count (e.g. LeRobot's
+/// `meta/info.json` `total_episodes`), so a check can compare it against the episodes actually
+/// ingested. Kept as metadata rather than a typed field to stay adapter-agnostic.
+pub const META_DECLARED_EPISODES: &str = "declared_total_episodes";
+
 /// A dataset: the top of the CDM tree.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Dataset {
