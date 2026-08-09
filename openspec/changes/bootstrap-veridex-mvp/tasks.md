@@ -17,7 +17,8 @@ the build plan.
 ## M2 — Ingestion adapters (the neutrality proof)
 - [x] LeRobot v3 adapter → CDM (features→streams, Parquet `timestamp`→frame ts, `episode_index`
       grouping, fps→rate, robot_type→provenance). Reads only timestamps/structure, not payloads.
-      (Task-string resolution and video decoding are follow-ups.)
+      Task strings are resolved (`task_index` + `meta/tasks.jsonl` → `episode.task`); video decoding
+      remains a follow-up.
 - [x] MCAP adapter → CDM (channels→streams, message timestamps, schemas→modalities). Backed by the
       `mcap` crate; tests write real MCAP files and ingest them.
 - [ ] Streaming/large-than-memory ingestion; remote (Hub) metadata-only ingestion. (Adapters

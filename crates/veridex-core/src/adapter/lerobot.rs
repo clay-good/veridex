@@ -178,8 +178,12 @@ fn column_f64(array: &dyn Array, row: usize) -> Option<f64> {
     }
 }
 
-/// Read (episode_index, timestamp_ns) for every row of a Parquet file, in row order.
-fn read_rows(path: &Path, fps: f64) -> Result<Vec<(u64, i64)>, IngestError> {
+/// One row of a LeRobot data Parquet: its episode index, frame timestamp (ns), and `task_index`
+/// if the column is present (unresolved to a string here — see [`load_tasks`]).
+type Row = (u64, i64, Option<i64>);
+
+/// Read (episode_index, timestamp_ns, task_index) for every row of a Parquet file, in row order.
+fn read_rows(path: &Path, fps: f64) -> Result<Vec<Row>, IngestError> {
     let file = File::open(path).map_err(|e| IngestError::Io(e.to_string()))?;
     let reader = ParquetRecordBatchReaderBuilder::try_new(file)
         .and_then(|b| b.build())
@@ -202,6 +206,7 @@ fn read_rows(path: &Path, fps: f64) -> Result<Vec<(u64, i64)>, IngestError> {
             })?;
         let ts_col = batch.column_by_name("timestamp");
         let frame_col = batch.column_by_name("frame_index");
+        let task_col = batch.column_by_name("task_index");
 
         for row in 0..batch.num_rows() {
             let ep = column_i64(ep_col.as_ref(), row).ok_or_else(|| IngestError::Parse {
@@ -228,10 +233,35 @@ fn read_rows(path: &Path, fps: f64) -> Result<Vec<(u64, i64)>, IngestError> {
                     message: format!("{}: no `timestamp` or `frame_index` column", path.display()),
                 });
             };
-            rows.push((ep, ts_ns));
+            let task_index = task_col.as_ref().and_then(|c| column_i64(c.as_ref(), row));
+            rows.push((ep, ts_ns, task_index));
         }
     }
     Ok(rows)
+}
+
+/// Load `meta/tasks.jsonl`, mapping each `task_index` to its natural-language task string. Absent or
+/// unreadable file yields an empty map (tasks simply stay unresolved). Malformed lines are skipped.
+fn load_tasks(dir: &Path) -> BTreeMap<i64, String> {
+    #[derive(Deserialize)]
+    struct TaskRow {
+        task_index: i64,
+        task: String,
+    }
+    let mut out = BTreeMap::new();
+    let Ok(contents) = std::fs::read_to_string(dir.join("meta").join("tasks.jsonl")) else {
+        return out;
+    };
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(row) = serde_json::from_str::<TaskRow>(line) {
+            out.insert(row.task_index, row.task);
+        }
+    }
+    out
 }
 
 impl Adapter for LeRobotAdapter {
@@ -294,13 +324,21 @@ impl Adapter for LeRobotAdapter {
         find_parquet(&dir.join("data"), &mut parquet_files);
 
         let mut episode_ts: BTreeMap<u64, Vec<i64>> = BTreeMap::new();
+        // First `task_index` seen per episode (row order is deterministic: files are sorted). Most
+        // episodes are single-task; if the task changes mid-episode we take the first, honestly.
+        let mut episode_task_index: BTreeMap<u64, i64> = BTreeMap::new();
         for path in &parquet_files {
-            for (ep, ts) in read_rows(path, fps)? {
+            for (ep, ts, task_index) in read_rows(path, fps)? {
                 episode_ts.entry(ep).or_default().push(ts);
+                if let Some(ti) = task_index {
+                    episode_task_index.entry(ep).or_insert(ti);
+                }
             }
         }
 
         let stats = load_stats(dir);
+        // Resolve `task_index` -> task string via meta/tasks.jsonl (empty map if the file is absent).
+        let tasks = load_tasks(dir);
 
         // Build episodes: one stream per feature, frames at the episode's row timestamps.
         let episodes: Vec<Episode> = episode_ts
@@ -332,12 +370,17 @@ impl Adapter for LeRobotAdapter {
                         stats: stats.get(name).copied(),
                     })
                     .collect();
+                // Resolve this episode's task string, if its task_index maps to one.
+                let task = episode_task_index
+                    .get(&index)
+                    .and_then(|ti| tasks.get(ti))
+                    .cloned();
                 Episode {
                     index,
                     start_ts,
                     end_ts,
                     streams,
-                    task: None,
+                    task,
                     labels: vec![],
                 }
             })
@@ -377,28 +420,35 @@ impl Adapter for LeRobotAdapter {
             episodes,
         };
 
+        let mut mapped_fields = vec![
+            "features -> streams".into(),
+            "timestamp -> frame.ts".into(),
+            "episode_index -> episode".into(),
+            "fps -> stream.declared_rate_hz".into(),
+            "feature.dtype -> stream.dtype".into(),
+            "feature.shape -> stream.shape".into(),
+            "robot_type -> provenance.sensor".into(),
+            "meta/stats.json -> stream.stats".into(),
+        ];
+        let mut omitted_fields =
+            vec!["video frame decoding (frames are timestamps, not pixels)".into()];
+        // Task-string resolution is reported honestly by whether meta/tasks.jsonl was present.
+        if tasks.is_empty() {
+            omitted_fields.push("task strings (no meta/tasks.jsonl to resolve task_index)".into());
+        } else {
+            mapped_fields.push("task_index + meta/tasks.jsonl -> episode.task".into());
+        }
+
         let report = IngestReport {
             format_id: "lerobot",
             source_version: info.codebase_version.clone(),
             coverage: Coverage::Full,
-            mapped_fields: vec![
-                "features -> streams".into(),
-                "timestamp -> frame.ts".into(),
-                "episode_index -> episode".into(),
-                "fps -> stream.declared_rate_hz".into(),
-                "feature.dtype -> stream.dtype".into(),
-                "feature.shape -> stream.shape".into(),
-                "robot_type -> provenance.sensor".into(),
-                "meta/stats.json -> stream.stats".into(),
-            ],
+            mapped_fields,
             unmapped_fields: vec![UnmappedField {
                 source_path: "feature array values".into(),
                 note: "Veridex reads timestamps and structure, not feature payloads".into(),
             }],
-            omitted_fields: vec![
-                "task strings (task_index is not resolved against meta/tasks in v0.1)".into(),
-                "video frame decoding (frames are timestamps, not pixels)".into(),
-            ],
+            omitted_fields,
         };
 
         Ok(Ingested { dataset, report })

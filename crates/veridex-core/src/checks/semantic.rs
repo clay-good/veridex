@@ -5,10 +5,11 @@
 //! present-but-degenerate placeholder task carries little training signal for language-conditioned
 //! policies.
 //!
-//! An **absent** task (`Episode::task == None`) is deliberately *not* flagged: the v0.1 adapters do
-//! not yet resolve task strings (LeRobot `task_index` → `meta/tasks` is a follow-up), so `None`
-//! means "unresolved", not "the source has no task". Flagging it would fire on every episode and
-//! carry no signal. This check therefore judges only tasks that are actually present.
+//! An **absent** task (`Episode::task == None`) is deliberately *not* flagged: it means the source
+//! carried no resolvable task for that episode (e.g. a LeRobot dataset without `meta/tasks.jsonl`,
+//! or a format with no task concept), which is "unresolved", not "the source has an empty task".
+//! Flagging it would fire on every such episode and carry no signal. This check therefore judges
+//! only tasks that are actually present.
 
 use std::collections::BTreeMap;
 

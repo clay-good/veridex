@@ -58,6 +58,13 @@ fn write_dataset(dir: &Path, clean: bool) {
     )
     .expect("write info.json");
 
+    // A tasks table so the CLI shows resolved task strings; both episodes share task 0.
+    fs::write(
+        dir.join("meta/tasks.jsonl"),
+        serde_json::json!({ "task_index": 0, "task": "pick up the red cube" }).to_string(),
+    )
+    .expect("write tasks.jsonl");
+
     // Two episodes of 10 frames each at ~30 Hz. In the broken variant, one frame in episode 1 is
     // pushed before its predecessor, breaking timestamp monotonicity within that episode.
     let mut rows: Vec<(i64, f64)> = Vec::new();
@@ -82,16 +89,19 @@ fn write_parquet(path: &Path, rows: &[(i64, f64)]) {
         Field::new("episode_index", DataType::Int64, false),
         Field::new("frame_index", DataType::Int64, false),
         Field::new("timestamp", DataType::Float64, false),
+        Field::new("task_index", DataType::Int64, false),
     ]));
     let eps: Vec<i64> = rows.iter().map(|(e, _)| *e).collect();
     let frames: Vec<i64> = (0..rows.len() as i64).collect();
     let ts: Vec<f64> = rows.iter().map(|(_, t)| *t).collect();
+    let task_index: Vec<i64> = vec![0; rows.len()];
     let batch = RecordBatch::try_new(
         schema.clone(),
         vec![
             Arc::new(Int64Array::from(eps)),
             Arc::new(Int64Array::from(frames)),
             Arc::new(Float64Array::from(ts)),
+            Arc::new(Int64Array::from(task_index)),
         ],
     )
     .expect("build record batch");

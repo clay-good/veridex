@@ -337,3 +337,117 @@ fn lerobot_dataset_flows_through_the_full_check_pipeline() {
         "the fixture declares no license, so the license warning must appear"
     );
 }
+
+/// Write a LeRobot v3 dataset whose data Parquet carries a `task_index` column, plus a
+/// `meta/tasks.jsonl` mapping those indices to task strings. `rows` are (episode, ts_s, task_index).
+fn write_lerobot_with_tasks(dir: &Path, fps: f64, rows: &[(i64, f64, i64)], tasks: &[(i64, &str)]) {
+    fs::create_dir_all(dir.join("meta")).unwrap();
+    fs::create_dir_all(dir.join("data/chunk-000")).unwrap();
+
+    let info = serde_json::json!({
+        "codebase_version": "v3.0",
+        "fps": fps,
+        "robot_type": "so100",
+        "features": { "action": { "dtype": "float32", "shape": [1] } },
+    });
+    fs::write(
+        dir.join("meta/info.json"),
+        serde_json::to_string_pretty(&info).unwrap(),
+    )
+    .unwrap();
+
+    let tasks_jsonl: String = tasks
+        .iter()
+        .map(|(i, t)| serde_json::json!({ "task_index": i, "task": t }).to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(dir.join("meta/tasks.jsonl"), tasks_jsonl).unwrap();
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("episode_index", DataType::Int64, false),
+        Field::new("frame_index", DataType::Int64, false),
+        Field::new("timestamp", DataType::Float64, false),
+        Field::new("task_index", DataType::Int64, false),
+    ]));
+    let eps: Vec<i64> = rows.iter().map(|(e, _, _)| *e).collect();
+    let frames: Vec<i64> = (0..rows.len() as i64).collect();
+    let ts: Vec<f64> = rows.iter().map(|(_, t, _)| *t).collect();
+    let tix: Vec<i64> = rows.iter().map(|(_, _, ti)| *ti).collect();
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int64Array::from(eps)),
+            Arc::new(Int64Array::from(frames)),
+            Arc::new(Float64Array::from(ts)),
+            Arc::new(Int64Array::from(tix)),
+        ],
+    )
+    .unwrap();
+    let file = fs::File::create(dir.join("data/chunk-000/file-000.parquet")).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
+#[test]
+fn task_index_is_resolved_to_episode_task_via_tasks_jsonl() {
+    let dir = tempfile::tempdir().unwrap();
+    write_lerobot_with_tasks(
+        dir.path(),
+        10.0,
+        &[(0, 0.0, 0), (0, 0.1, 0), (1, 0.0, 1), (1, 0.1, 1)],
+        &[(0, "pick up the red cube"), (1, "hold")],
+    );
+    let ingested = LeRobotAdapter
+        .ingest(
+            &Source::Local(dir.path().to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("lerobot ingest");
+    let d = &ingested.dataset;
+
+    // Each episode's task_index resolved to its string.
+    assert_eq!(d.episodes[0].task.as_deref(), Some("pick up the red cube"));
+    assert_eq!(d.episodes[1].task.as_deref(), Some("hold"));
+
+    // The fidelity report records the resolution as a mapped field, not omitted.
+    assert!(ingested
+        .report
+        .mapped_fields
+        .iter()
+        .any(|f| f.contains("meta/tasks.jsonl -> episode.task")));
+
+    // The placeholder task ("hold") is surfaced by the semantic check via the real adapter path.
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let hash = veridex_core::content_hash(d);
+    let verdict = engine.run(d, hash, &veridex_core::RunConfig::default());
+    assert!(verdict
+        .findings
+        .iter()
+        .any(|f| f.code == "SEMANTIC.PLACEHOLDER_TASK"));
+}
+
+#[test]
+fn missing_tasks_jsonl_leaves_tasks_unresolved() {
+    // The standard fixture writes no task_index column and no tasks.jsonl: tasks stay None and the
+    // omission is reported honestly rather than fabricated.
+    let dir = tempfile::tempdir().unwrap();
+    write_lerobot(
+        dir.path(),
+        &[("action", "float32")],
+        10.0,
+        &[(0, 0.0), (0, 0.1)],
+    );
+    let ingested = LeRobotAdapter
+        .ingest(
+            &Source::Local(dir.path().to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("lerobot ingest");
+    assert!(ingested.dataset.episodes[0].task.is_none());
+    assert!(ingested
+        .report
+        .omitted_fields
+        .iter()
+        .any(|f| f.contains("no meta/tasks.jsonl")));
+}

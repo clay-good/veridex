@@ -15,7 +15,9 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   streamed into SHA-256 and property-tested determinism.
 - **Adapters** — LeRobot v3 (Parquet) and MCAP, each populating the CDM with a fidelity report of
   mapped / unmapped / omitted fields. A cross-format gate test proves the same logical dataset
-  yields equivalent CDMs in both formats.
+  yields equivalent CDMs in both formats. The LeRobot adapter resolves task strings
+  (`task_index` + `meta/tasks.jsonl` → `episode.task`), so the semantic task-quality check runs on
+  real datasets; the omission is reported honestly when no `meta/tasks.jsonl` is present.
 - **Validation engine** — check registry with duplicate-id rejection, category/id selection,
   severity overrides, deterministic stably-ordered verdicts with a result content hash, fault
   isolation for panicking checks, and reproducibility metadata.
