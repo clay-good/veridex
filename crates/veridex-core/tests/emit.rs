@@ -88,12 +88,51 @@ fn prov_attributes_and_derives_from_known_elements() {
     let doc = to_prov(&d);
     let entity = &doc["@graph"][0];
     assert_eq!(entity["@type"], "prov:Entity");
-    assert!(entity["prov:wasAttributedTo"]["@id"]
-        .as_str()
-        .unwrap()
-        .contains("alice"));
+    // Attribution is a list of agent references (a dataset can have several agents).
+    let attributed = entity["prov:wasAttributedTo"].as_array().unwrap();
+    assert!(attributed
+        .iter()
+        .any(|a| a["@id"].as_str().unwrap().contains("alice")));
     assert!(entity["prov:wasDerivedFrom"]["@id"]
         .as_str()
         .unwrap()
         .contains("open-x"));
+}
+
+#[test]
+fn prov_attributes_the_recorder_as_a_software_agent() {
+    // The MCAP header's writing library surfaces as a `recorder` element; PROV must attribute the
+    // dataset to it as a prov:SoftwareAgent, and the agent node must appear in the graph.
+    let d = dataset_with(vec![el(
+        "recorder",
+        Some("mcap-rust/0.25.0"),
+        ProvenanceClass::Known,
+    )]);
+    let doc = to_prov(&d);
+    let graph = doc["@graph"].as_array().unwrap();
+
+    let attributed = doc["@graph"][0]["prov:wasAttributedTo"].as_array().unwrap();
+    let recorder_id = attributed[0]["@id"].as_str().unwrap();
+    assert!(recorder_id.contains("recorder"));
+
+    let agent = graph
+        .iter()
+        .find(|n| n["@id"] == recorder_id)
+        .expect("recorder agent node present in graph");
+    assert_eq!(agent["@type"], "prov:SoftwareAgent");
+    assert_eq!(agent["veridex:label"], "mcap-rust/0.25.0");
+}
+
+#[test]
+fn prov_omits_attribution_when_no_agents_are_known() {
+    // A dataset with only source_format (no agent elements) yields a bare entity — no fabricated
+    // attribution.
+    let d = dataset_with(vec![el(
+        "source_format",
+        Some("mcap"),
+        ProvenanceClass::Known,
+    )]);
+    let doc = to_prov(&d);
+    assert!(doc["@graph"][0].get("prov:wasAttributedTo").is_none());
+    assert_eq!(doc["@graph"].as_array().unwrap().len(), 1);
 }

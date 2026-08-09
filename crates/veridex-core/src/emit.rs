@@ -99,30 +99,54 @@ pub fn to_croissant(dataset: &Dataset, cdm_content_hash: &str) -> Value {
     Value::Object(doc)
 }
 
-/// Emit a minimal W3C PROV document: the dataset as a `prov:Entity`, attributed to known
-/// annotator/upstream elements.
+/// Known provenance elements that name an agent the dataset can be honestly attributed to, each
+/// paired with the PROV agent subtype that fits it. Iterated in this order for deterministic output.
+const PROV_AGENTS: &[(&str, &str)] = &[
+    ("recorder", "prov:SoftwareAgent"),
+    ("annotator", "prov:Person"),
+    ("sensor", "prov:Agent"),
+];
+
+/// Emit a minimal W3C PROV document: the dataset as a `prov:Entity`, attributed to each known agent
+/// (recorder / annotator / sensor) and derived from a known upstream dataset. Agents and the
+/// upstream appear as nodes in the graph so the attributions resolve; nothing is fabricated.
 pub fn to_prov(dataset: &Dataset) -> Value {
     let entity_id = format!("veridex:dataset/{}", dataset.id);
+
+    // Build agent nodes and the entity's attribution references from known provenance.
+    let mut agent_nodes: Vec<Value> = Vec::new();
+    let mut attributed: Vec<Value> = Vec::new();
+    for (key, prov_type) in PROV_AGENTS {
+        if let Some(value) = known_value(dataset, key) {
+            let id = format!("veridex:agent/{key}/{value}");
+            agent_nodes.push(json!({
+                "@id": id,
+                "@type": prov_type,
+                "veridex:role": key,
+                "veridex:label": value,
+            }));
+            attributed.push(json!({ "@id": id }));
+        }
+    }
 
     let mut entity = Map::new();
     entity.insert("@id".into(), json!(entity_id));
     entity.insert("@type".into(), json!("prov:Entity"));
-
-    if let Some(annotator) = known_value(dataset, "annotator") {
-        entity.insert(
-            "prov:wasAttributedTo".into(),
-            json!({ "@id": format!("veridex:agent/{annotator}"), "@type": "prov:Agent" }),
-        );
+    if !attributed.is_empty() {
+        entity.insert("prov:wasAttributedTo".into(), json!(attributed));
     }
     if let Some(upstream) = known_value(dataset, "upstream") {
-        entity.insert(
-            "prov:wasDerivedFrom".into(),
-            json!({ "@id": format!("veridex:dataset/{upstream}"), "@type": "prov:Entity" }),
-        );
+        let upstream_id = format!("veridex:dataset/{upstream}");
+        entity.insert("prov:wasDerivedFrom".into(), json!({ "@id": upstream_id }));
+        agent_nodes.push(json!({ "@id": upstream_id, "@type": "prov:Entity" }));
     }
+
+    // Entity first, then the agents/upstream it references.
+    let mut graph = vec![Value::Object(entity)];
+    graph.extend(agent_nodes);
 
     json!({
         "@context": { "prov": "http://www.w3.org/ns/prov#", "veridex": "https://veridex.dev/ns#" },
-        "@graph": [ Value::Object(entity) ]
+        "@graph": graph
     })
 }

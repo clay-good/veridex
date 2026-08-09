@@ -36,7 +36,9 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   30% axis), a content-bound certificate document, and Ed25519 signing with offline verification
   that rejects tampering, transplantation, and untrusted issuers.
 - **Provenance emit** — MLCommons Croissant (JSON-LD) and minimal W3C PROV, preserving
-  known / asserted / unknown classes without fabrication.
+  known / asserted / unknown classes without fabrication. The PROV graph attributes the dataset to
+  every known agent (recorder as a `prov:SoftwareAgent`, annotator as a `prov:Person`, sensor as a
+  `prov:Agent`) and derives it from a known upstream, with each agent resolvable as a graph node.
 - **Reporting** — human-readable terminal output with worst-episodes-first rollups, a versioned
   JSON envelope (`veridex.report/1`), SARIF 2.1.0 (`veridex check --sarif`) for CI code-scanning, a
   self-contained HTML report (`veridex check --html`), and verdict diffing (`veridex diff`) that
