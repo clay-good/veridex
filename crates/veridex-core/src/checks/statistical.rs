@@ -102,6 +102,27 @@ impl Check for RangeSanity {
                     continue;
                 }
 
+                // The mean must lie within the observed range; otherwise the statistics are
+                // internally inconsistent (min/max and mean cannot describe the same values).
+                if stats.mean < stats.min || stats.mean > stats.max {
+                    findings.push(
+                        Finding::new(
+                            self.id(),
+                            Category::Statistical,
+                            Severity::Error,
+                            at(),
+                            "STATISTICAL.MEAN_OUT_OF_RANGE",
+                            format!(
+                                "stream `{}` in episode {}: mean {} lies outside range [{}, {}]",
+                                stream.name, ep.index, stats.mean, stats.min, stats.max
+                            ),
+                        )
+                        .with_risk("A mean outside its own min/max means the stored statistics are corrupt; normalization built on them will be wrong.")
+                        .with_remedy("Re-derive the statistics from the data."),
+                    );
+                    continue;
+                }
+
                 // Degenerate (constant) distribution: no signal to learn from.
                 if is_degenerate(&stats) {
                     findings.push(

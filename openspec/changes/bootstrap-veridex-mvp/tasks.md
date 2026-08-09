@@ -38,7 +38,8 @@ the build plan.
 - [x] Temporal: monotonicity, rate conformance, gaps — and **`TEMPORAL.CLOCK_SKEW`** cross-stream
       alignment (D4, headline).
 - [~] Statistical: range/sanity + degenerate distributions over stored stats
-      (`statistical.range-sanity`: inverted range, non-finite, negative std, constant). CDM now
+      (`statistical.range-sanity`: inverted range, non-finite, negative std, mean-outside-range,
+      constant). CDM now
       carries `Stream.stats`; the LeRobot adapter reads `meta/stats.json`. Stored-vs-recomputed and
       saturation need streamed values — a follow-up.
 - [x] Provenance-completeness checks (presence + internal consistency).

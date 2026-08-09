@@ -431,6 +431,18 @@ fn non_finite_stats_are_an_error() {
 }
 
 #[test]
+fn mean_outside_range_is_an_error() {
+    let d = dataset(vec![episode(
+        0,
+        vec![stream_with_stats("s", stats(0.0, 10.0, 12.0, 1.0))],
+    )]);
+    let f = statistical::RangeSanity.run(&d);
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].code, "STATISTICAL.MEAN_OUT_OF_RANGE");
+    assert_eq!(f[0].severity, Severity::Error);
+}
+
+#[test]
 fn constant_stream_is_a_degenerate_warning() {
     let d = dataset(vec![episode(
         0,

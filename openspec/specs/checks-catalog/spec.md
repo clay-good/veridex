@@ -59,6 +59,11 @@ degenerate distributions (constant streams, saturated actuators, extreme outlier
 - **WHEN** a dataset's stored per-stream statistics do not match values recomputed from the data
 - **THEN** a statistical check fails and reports the mismatch per stream
 
+#### Scenario: Stored statistics are internally inconsistent
+- **WHEN** a stream's stored statistics contradict each other (inverted min/max, negative std,
+  non-finite values, or a mean outside the recorded [min, max] range)
+- **THEN** a statistical check fails and reports the specific inconsistency per stream
+
 #### Scenario: Actuator saturation is flagged
 - **WHEN** an action stream is pinned at its limit for a sustained fraction of an episode
 - **THEN** a statistical check emits a finding describing the saturation and its extent
