@@ -261,17 +261,18 @@ pub fn render_html(verdict: &Verdict, trust_score: Option<TrustScore>) -> String
     } else {
         body.push_str(
             "<h2>Findings</h2><table><thead><tr><th>Severity</th><th>Code</th><th>Location</th>\
-             <th>Message</th><th>Remedy</th></tr></thead><tbody>",
+             <th>Message</th><th>Risk</th><th>Remedy</th></tr></thead><tbody>",
         );
         for f in &verdict.findings {
             let _ = write!(
                 body,
-                "<tr class=\"{}\"><td>{}</td><td><code>{}</code></td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                "<tr class=\"{}\"><td>{}</td><td><code>{}</code></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
                 severity_label(f.severity),
                 severity_label(f.severity),
                 esc(&f.code),
                 esc(&location_label(&f.location)),
                 esc(&f.message),
+                esc(&f.risk),
                 esc(&f.remedy),
             );
         }

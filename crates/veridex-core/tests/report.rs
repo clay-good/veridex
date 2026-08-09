@@ -172,6 +172,16 @@ fn html_is_self_contained_and_shows_findings() {
     assert!(html.contains("TEMPORAL.CLOCK_SKEW"));
     assert!(html.contains("Trust "));
     assert!(html.contains("FAIL"));
+    // The training risk is surfaced (the shareable report's whole point), not just the remedy.
+    assert!(html.contains("<th>Risk</th>"));
+    let skew_risk = v
+        .findings
+        .iter()
+        .find(|f| f.code == "TEMPORAL.CLOCK_SKEW")
+        .unwrap()
+        .risk
+        .clone();
+    assert!(!skew_risk.is_empty() && html.contains(&skew_risk));
 }
 
 #[test]
