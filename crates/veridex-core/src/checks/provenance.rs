@@ -6,6 +6,31 @@ use std::collections::HashMap;
 use crate::cdm::{Dataset, ProvenanceClass};
 use crate::check::{Category, Check, Finding, Location, Scope, Severity};
 
+/// Low-information values that are present in form but empty in substance — provenance that satisfies
+/// a presence check yet tells you nothing. Compared case-insensitively after trimming.
+const PLACEHOLDER_VALUES: &[&str] = &[
+    "",
+    "unknown",
+    "n/a",
+    "na",
+    "none",
+    "null",
+    "nil",
+    "todo",
+    "tbd",
+    "unspecified",
+    "placeholder",
+    "-",
+    "--",
+    "?",
+];
+
+/// Whether a provenance value is an effectively-empty placeholder.
+fn is_placeholder(value: &str) -> bool {
+    let norm = value.trim().to_ascii_lowercase();
+    PLACEHOLDER_VALUES.contains(&norm.as_str())
+}
+
 /// A provenance element Veridex expects a trustworthy dataset to carry, with the severity of its
 /// absence.
 struct Expected {
@@ -64,6 +89,7 @@ impl Check for ProvenanceCompleteness {
     fn finding_codes(&self) -> &'static [&'static str] {
         &[
             "PROVENANCE.INCONSISTENT",
+            "PROVENANCE.PLACEHOLDER_VALUE",
             "PROVENANCE.MISSING_LICENSE",
             "PROVENANCE.MISSING_SENSOR",
             "PROVENANCE.MISSING_CLOCK",
@@ -93,6 +119,7 @@ impl Check for ProvenanceCompleteness {
         // Collect the best-known class per provenance key across all records, and check each
         // element's internal consistency as we go.
         let mut known_value: HashMap<&str, bool> = HashMap::new();
+        let mut placeholder_seen: HashMap<&str, bool> = HashMap::new();
         for record in &dataset.provenance {
             for el in &record.elements {
                 let has_value = el.value.is_some();
@@ -125,7 +152,41 @@ impl Check for ProvenanceCompleteness {
                     );
                 }
 
-                let is_present = has_value && el.class != ProvenanceClass::Unknown;
+                // A known/asserted element whose value is a placeholder ("unknown", "n/a", …) is
+                // present in form but empty in substance — it would otherwise silently satisfy the
+                // presence check below. Flag it, and don't count it as real provenance.
+                let placeholder = has_value
+                    && el.class != ProvenanceClass::Unknown
+                    && el.value.as_deref().is_some_and(is_placeholder);
+                // One finding per key even if the placeholder recurs across records.
+                let first_placeholder = placeholder
+                    && !placeholder_seen
+                        .insert(el.key.as_str(), true)
+                        .unwrap_or(false);
+                if first_placeholder {
+                    findings.push(
+                        Finding::new(
+                            self.id(),
+                            Category::Provenance,
+                            Severity::Info,
+                            Location::Dataset,
+                            "PROVENANCE.PLACEHOLDER_VALUE",
+                            format!(
+                                "provenance element `{}` is `{}` but its value `{}` is a placeholder",
+                                el.key,
+                                el.class.tag(),
+                                el.value.as_deref().unwrap_or_default()
+                            ),
+                        )
+                        .with_risk(
+                            "A placeholder value looks like provenance but records nothing; it can \
+                             mask that the real origin is unknown.",
+                        )
+                        .with_remedy("Record the actual value, or classify the element as `unknown`."),
+                    );
+                }
+
+                let is_present = has_value && el.class != ProvenanceClass::Unknown && !placeholder;
                 let entry = known_value.entry(el.key.as_str()).or_insert(false);
                 *entry = *entry || is_present;
             }

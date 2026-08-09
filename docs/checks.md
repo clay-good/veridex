@@ -55,6 +55,7 @@ Severities below are the defaults.
 | Check id | Finding code | Severity | Fires when |
 |---|---|---|---|
 | `provenance.completeness` | `PROVENANCE.INCONSISTENT` | warning | A provenance element's class and value disagree (known/asserted without a value, or unknown with one). |
+| `provenance.completeness` | `PROVENANCE.PLACEHOLDER_VALUE` | info | A known/asserted element's value is a low-information placeholder (`unknown`, `n/a`, `none`, …) — present in form but empty in substance, so it doesn't count as real provenance. |
 | `provenance.completeness` | `PROVENANCE.MISSING_LICENSE` | warning | No license is known. |
 | `provenance.completeness` | `PROVENANCE.MISSING_SENSOR` | info | No sensor/device is known. |
 | `provenance.completeness` | `PROVENANCE.MISSING_CLOCK` | info | No clock source is known. |

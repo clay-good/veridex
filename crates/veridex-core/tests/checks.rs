@@ -456,6 +456,33 @@ fn unknown_class_still_counts_as_missing() {
 }
 
 #[test]
+fn placeholder_value_is_flagged_and_not_counted_as_present() {
+    // A license "known" as the string "unknown" is present in form but empty in substance.
+    let d = dataset_with_provenance(vec![el("license", Some("unknown"), ProvenanceClass::Known)]);
+    let f = provenance::ProvenanceCompleteness.run(&d);
+    let codes: Vec<&str> = f.iter().map(|x| x.code.as_str()).collect();
+    // The placeholder is called out, and the element does not satisfy the presence check.
+    assert!(codes.contains(&"PROVENANCE.PLACEHOLDER_VALUE"));
+    assert!(codes.contains(&"PROVENANCE.MISSING_LICENSE"));
+    let ph = f
+        .iter()
+        .find(|x| x.code == "PROVENANCE.PLACEHOLDER_VALUE")
+        .unwrap();
+    assert_eq!(ph.severity, Severity::Info);
+}
+
+#[test]
+fn real_value_is_not_flagged_as_placeholder() {
+    let d = dataset_with_provenance(vec![el(
+        "license",
+        Some("apache-2.0"),
+        ProvenanceClass::Known,
+    )]);
+    let f = provenance::ProvenanceCompleteness.run(&d);
+    assert!(f.iter().all(|x| x.code != "PROVENANCE.PLACEHOLDER_VALUE"));
+}
+
+#[test]
 fn internally_inconsistent_element_is_flagged() {
     // known but no value.
     let d = dataset_with_provenance(vec![el("license", None, ProvenanceClass::Known)]);

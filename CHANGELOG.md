@@ -36,7 +36,9 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   degeneracy, and an implausibly-large std that violates Popoviciu's bound `(max−min)/2` — over stored stats), semantic
   (task-string quality — present-but-empty and placeholder tasks — and stream-key clarity, which
   flags camera/stream keys that collide by case or whitespace; verified, never modified), and
-  provenance-completeness. Every finding carries a training risk and a remedy.
+  provenance-completeness (presence, internal consistency, and placeholder values — a `license` of
+  `"unknown"` is present in form but empty in substance, so it's flagged and not counted as real
+  provenance). Every finding carries a training risk and a remedy.
 - **Trust certificate** — a deterministic v1 score and A–F grade (provenance weighted as a separate
   30% axis), a content-bound certificate document, and Ed25519 signing with offline verification
   that rejects tampering, transplantation, untrusted issuers, and unsupported signature algorithms.
