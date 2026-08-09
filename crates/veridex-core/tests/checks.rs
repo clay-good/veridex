@@ -367,7 +367,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 10);
+    assert_eq!(verdict.executed_checks.len(), 11);
 }
 
 #[test]
@@ -488,6 +488,34 @@ fn placeholder_task_is_low_information() {
     assert_eq!(f.len(), 1);
     assert_eq!(f[0].code, "SEMANTIC.PLACEHOLDER_TASK");
     assert_eq!(f[0].severity, Severity::Info);
+}
+
+#[test]
+fn stream_keys_colliding_by_case_are_ambiguous() {
+    let d = dataset(vec![episode(
+        0,
+        vec![
+            stream("observation.images.top", "c", None, &[0, 1]),
+            stream("observation.images.Top", "c", None, &[0, 1]),
+        ],
+    )]);
+    let f = semantic::StreamKeyClarity.run(&d);
+    // Both members of the colliding group are reported.
+    assert_eq!(f.len(), 2);
+    assert!(f.iter().all(|x| x.code == "SEMANTIC.AMBIGUOUS_STREAM_KEY"));
+    assert!(f.iter().all(|x| x.severity == Severity::Warning));
+}
+
+#[test]
+fn distinct_stream_keys_are_not_flagged() {
+    let d = dataset(vec![episode(
+        0,
+        vec![
+            stream("observation.images.top", "c", None, &[0, 1]),
+            stream("observation.images.wrist", "c", None, &[0, 1]),
+        ],
+    )]);
+    assert!(semantic::StreamKeyClarity.run(&d).is_empty());
 }
 
 #[test]

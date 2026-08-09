@@ -310,7 +310,7 @@ fn lerobot_dataset_flows_through_the_full_check_pipeline() {
     let verdict = engine.run(&d, hash, &veridex_core::RunConfig::default());
 
     // Every standard check ran, none errored, and clean data yields no failing findings.
-    assert_eq!(verdict.executed_checks.len(), 10);
+    assert_eq!(verdict.executed_checks.len(), 11);
     assert!(
         verdict.errored_checks.is_empty(),
         "no check should error on a well-formed dataset"

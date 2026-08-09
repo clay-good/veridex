@@ -1,7 +1,7 @@
 //! The checks catalog: concrete [`Check`](crate::check::Check) implementations grouped by family.
 //!
 //! MVP families: [`structural`], [`temporal`] (including the headline `TEMPORAL.CLOCK_SKEW`),
-//! [`statistical`] (range/sanity over stored stats), [`semantic`] (task-string quality), and
+//! [`statistical`] (range/sanity over stored stats), [`semantic`] (task-string quality, stream-key clarity), and
 //! [`provenance`] completeness.
 
 pub mod provenance;
@@ -25,6 +25,7 @@ pub fn standard_checks() -> Vec<Box<dyn Check>> {
         Box::new(temporal::ClockSkew::default()),
         Box::new(statistical::RangeSanity),
         Box::new(semantic::TaskQuality),
+        Box::new(semantic::StreamKeyClarity),
         Box::new(provenance::ProvenanceCompleteness),
     ]
 }

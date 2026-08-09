@@ -10,6 +10,8 @@
 //! means "unresolved", not "the source has no task". Flagging it would fire on every episode and
 //! carry no signal. This check therefore judges only tasks that are actually present.
 
+use std::collections::BTreeMap;
+
 use crate::cdm::Dataset;
 use crate::check::{Category, Check, Finding, Location, Scope, Severity};
 
@@ -89,6 +91,86 @@ impl Check for TaskQuality {
                         "Replace the placeholder with the actual instruction for this episode.",
                     ),
                 );
+            }
+        }
+        findings
+    }
+}
+
+/// Stream-key clarity: camera/stream keys that are ambiguous within an episode.
+///
+/// The CDM requires stream names to be unique within an episode, but names that differ only by
+/// letter case or surrounding whitespace (e.g. `observation.images.top` vs `observation.images.Top`)
+/// are still ambiguous — humans and downstream tooling routinely confuse them, and a policy keyed on
+/// the wrong one silently trains on the wrong camera. This check flags such near-collisions without
+/// altering any key.
+pub struct StreamKeyClarity;
+
+impl Check for StreamKeyClarity {
+    fn id(&self) -> &'static str {
+        "semantic.stream-key-clarity"
+    }
+    fn title(&self) -> &'static str {
+        "Stream-key clarity"
+    }
+    fn category(&self) -> Category {
+        Category::Semantic
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Warning
+    }
+    fn scope(&self) -> Scope {
+        Scope::Stream
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        for ep in &dataset.episodes {
+            // Group stream names by a normalized key (trimmed + lowercased). More than one distinct
+            // name under the same key is an ambiguous collision. BTreeMap keeps output deterministic.
+            let mut groups: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+            for stream in &ep.streams {
+                let norm = stream.name.trim().to_ascii_lowercase();
+                groups.entry(norm).or_default().push(&stream.name);
+            }
+            for (_, names) in groups.iter().filter(|(_, n)| n.len() > 1) {
+                for name in names {
+                    let mut others: Vec<&str> =
+                        names.iter().copied().filter(|n| n != name).collect();
+                    others.sort_unstable();
+                    findings.push(
+                        Finding::new(
+                            self.id(),
+                            Category::Semantic,
+                            Severity::Warning,
+                            Location::Stream {
+                                episode: ep.index,
+                                stream: (*name).to_string(),
+                            },
+                            "SEMANTIC.AMBIGUOUS_STREAM_KEY",
+                            format!(
+                                "stream `{}` in episode {} is ambiguous with {} (differs only by case/whitespace)",
+                                name,
+                                ep.index,
+                                others
+                                    .iter()
+                                    .map(|o| format!("`{o}`"))
+                                    .collect::<Vec<_>>()
+                                    .join(", "),
+                            ),
+                        )
+                        .with_risk(
+                            "Near-identical stream keys are easily confused; a policy or check keyed \
+                             on the wrong one trains on or validates the wrong sensor.",
+                        )
+                        .with_remedy(
+                            "Rename the keys so they are unambiguous, or consolidate them if they \
+                             refer to the same stream.",
+                        ),
+                    );
+                }
             }
         }
         findings

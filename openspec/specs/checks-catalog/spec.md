@@ -80,6 +80,12 @@ uniqueness, valid structure) without producing or editing them.
 - **THEN** a semantic check emits findings identifying those episodes
 - **AND** the finding distinguishes "missing" from "present but low-information"
 
+#### Scenario: Ambiguous stream/camera keys are flagged
+- **WHEN** two stream keys within an episode differ only by letter case or surrounding whitespace
+  (e.g. `observation.images.top` and `observation.images.Top`)
+- **THEN** a semantic check emits a finding for each colliding key naming the others it conflicts with
+- **AND** Veridex never renames or edits the keys
+
 #### Scenario: Language annotations are verified, never modified
 - **WHEN** a dataset carries language-event annotations
 - **THEN** semantic checks verify their timestamp alignment and structural validity
