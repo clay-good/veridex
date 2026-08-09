@@ -26,6 +26,10 @@ pub type TimestampNs = i64;
 /// ingested. Kept as metadata rather than a typed field to stay adapter-agnostic.
 pub const META_DECLARED_EPISODES: &str = "declared_total_episodes";
 
+/// Metadata key under which an adapter records the source-declared frame count (e.g. LeRobot's
+/// `meta/info.json` `total_frames`), so a check can compare it against the frames actually ingested.
+pub const META_DECLARED_FRAMES: &str = "declared_total_frames";
+
 /// A dataset: the top of the CDM tree.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Dataset {

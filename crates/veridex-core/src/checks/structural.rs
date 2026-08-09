@@ -148,6 +148,74 @@ impl Check for DeclaredEpisodeCount {
     }
 }
 
+/// Declared-vs-actual frame count. When a source manifest declares a total frame count (e.g.
+/// LeRobot `meta/info.json` `total_frames`), the frames ingested must match. This catches truncation
+/// that leaves every episode present but some episodes short — which the episode-count check misses.
+/// The actual count per episode is its longest stream (in a frame-aligned source, every stream in an
+/// episode has the same length). Datasets that declare no frame count are skipped.
+pub struct DeclaredFrameCount;
+
+impl Check for DeclaredFrameCount {
+    fn id(&self) -> &'static str {
+        "structural.declared-frame-count"
+    }
+    fn title(&self) -> &'static str {
+        "Declared frame count matches the data"
+    }
+    fn category(&self) -> Category {
+        Category::Structural
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Error
+    }
+    fn scope(&self) -> Scope {
+        Scope::Dataset
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        let Some(declared) = dataset
+            .metadata
+            .iter()
+            .find(|(k, _)| k == crate::cdm::META_DECLARED_FRAMES)
+            .and_then(|(_, v)| v.parse::<u64>().ok())
+        else {
+            return Vec::new();
+        };
+        // Per episode, the longest stream is the episode length (streams are frame-aligned).
+        let actual: u64 = dataset
+            .episodes
+            .iter()
+            .map(|ep| {
+                ep.streams
+                    .iter()
+                    .map(|s| s.frames.len() as u64)
+                    .max()
+                    .unwrap_or(0)
+            })
+            .sum();
+        if declared == actual {
+            return Vec::new();
+        }
+        vec![Finding::new(
+            self.id(),
+            Category::Structural,
+            Severity::Error,
+            Location::Dataset,
+            "STRUCTURAL.FRAME_COUNT_MISMATCH",
+            format!("manifest declares {declared} frames but {actual} were ingested"),
+        )
+        .with_risk(
+            "A frame-count mismatch means the export is truncated or corrupt; episodes may be cut \
+             short, breaking trajectories even when every episode is present.",
+        )
+        .with_remedy(
+            "Re-download or re-export the dataset, or fix the manifest's total_frames to match.",
+        )]
+    }
+}
+
 /// Cross-episode dtype/shape consistency. A stream name that keeps a different declared element
 /// dtype or per-frame shape in different episodes cannot be stacked into a single training batch:
 /// the loader will either error or silently truncate/pad. This surfaces that drift, which arises

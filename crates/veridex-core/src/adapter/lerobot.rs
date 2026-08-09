@@ -59,6 +59,8 @@ struct InfoJson {
     #[serde(default)]
     total_episodes: Option<u64>,
     #[serde(default)]
+    total_frames: Option<u64>,
+    #[serde(default)]
     features: BTreeMap<String, FeatureInfo>,
 }
 
@@ -416,10 +418,16 @@ impl Adapter for LeRobotAdapter {
                         info.codebase_version.clone().unwrap_or_default(),
                     ),
                 ];
-                // Record the declared episode count so a check can catch a truncated export.
+                // Record the declared counts so checks can catch a truncated export.
                 if let Some(total) = info.total_episodes {
                     m.push((
                         crate::cdm::META_DECLARED_EPISODES.to_string(),
+                        total.to_string(),
+                    ));
+                }
+                if let Some(total) = info.total_frames {
+                    m.push((
+                        crate::cdm::META_DECLARED_FRAMES.to_string(),
                         total.to_string(),
                     ));
                 }
@@ -452,6 +460,9 @@ impl Adapter for LeRobotAdapter {
         }
         if info.total_episodes.is_some() {
             mapped_fields.push("total_episodes -> declared episode-count check".into());
+        }
+        if info.total_frames.is_some() {
+            mapped_fields.push("total_frames -> declared frame-count check".into());
         }
 
         let report = IngestReport {

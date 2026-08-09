@@ -38,6 +38,11 @@ zero-length or single-frame) unless explicitly permitted.
   from the number of episodes actually ingested
 - **THEN** a structural check fails and reports the declared-vs-actual mismatch (a truncated export)
 
+#### Scenario: Declared frame count disagrees with the data
+- **WHEN** a source manifest declares a frame count (e.g. LeRobot `total_frames`) that differs from
+  the frames actually ingested
+- **THEN** a structural check fails and reports the mismatch (episodes present but cut short)
+
 ### Requirement: Temporal and synchronization checks
 Veridex SHALL check the time base of a dataset: per-stream timestamp monotonicity; sampling-rate
 conformance to the declared rate; gaps and dropouts; and — the differentiator — **cross-stream

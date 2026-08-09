@@ -48,6 +48,7 @@ fn write_dataset(dir: &Path, clean: bool) {
         "fps": fps,
         "robot_type": "so100",
         "total_episodes": 2,
+        "total_frames": 20,
         "features": {
             "observation.state": { "dtype": "float32", "shape": [1] },
             "action": { "dtype": "float32", "shape": [1] },

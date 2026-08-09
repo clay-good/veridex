@@ -167,6 +167,42 @@ fn declared_episode_count_matching_or_absent_is_clean() {
         .is_empty());
 }
 
+#[test]
+fn declared_frame_count_mismatch_is_flagged() {
+    // Manifest says 5 frames; episodes hold 2 + 2 = 4 → truncated (episodes present but short).
+    let mut d = dataset(vec![
+        episode(0, vec![stream("s", "c", None, &[0, 1])]),
+        episode(1, vec![stream("s", "c", None, &[0, 1])]),
+    ]);
+    d.metadata
+        .push((veridex_core::cdm::META_DECLARED_FRAMES.into(), "5".into()));
+    let f = structural::DeclaredFrameCount.run(&d);
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].code, "STRUCTURAL.FRAME_COUNT_MISMATCH");
+    assert_eq!(f[0].severity, Severity::Error);
+}
+
+#[test]
+fn declared_frame_count_matching_or_absent_is_clean() {
+    // 2 + 2 = 4 actual frames; the longest stream per episode defines its length.
+    let mut d = dataset(vec![
+        episode(
+            0,
+            vec![
+                stream("a", "c", None, &[0, 1]),
+                stream("b", "c", None, &[0, 1]),
+            ],
+        ),
+        episode(1, vec![stream("a", "c", None, &[0, 1])]),
+    ]);
+    d.metadata
+        .push((veridex_core::cdm::META_DECLARED_FRAMES.into(), "4".into()));
+    assert!(structural::DeclaredFrameCount.run(&d).is_empty());
+    // No declared frame count → skipped.
+    let plain = dataset(vec![episode(0, vec![stream("s", "c", None, &[0, 1])])]);
+    assert!(structural::DeclaredFrameCount.run(&plain).is_empty());
+}
+
 fn shaped(name: &str, dtype: Option<&str>, shape: Option<Vec<u64>>, ts: &[i64]) -> Stream {
     Stream {
         name: name.into(),
@@ -408,7 +444,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 12);
+    assert_eq!(verdict.executed_checks.len(), 13);
 }
 
 #[test]

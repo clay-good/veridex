@@ -19,6 +19,7 @@ pub fn standard_checks() -> Vec<Box<dyn Check>> {
         Box::new(structural::EpisodeBoundary),
         Box::new(structural::DegenerateEpisode),
         Box::new(structural::DeclaredEpisodeCount),
+        Box::new(structural::DeclaredFrameCount),
         Box::new(structural::ShapeConsistency),
         Box::new(temporal::Monotonicity),
         Box::new(temporal::RateConformance::default()),
