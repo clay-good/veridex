@@ -124,7 +124,8 @@ cargo run -p veridex-cli -- verify  /tmp/demo.mcap --certificate /tmp/demo.verid
 
 `check` catches the headline `TEMPORAL.CLOCK_SKEW` (the camera and robot clocks drift 210 ms apart),
 reports the training risk and remedy, and exits `20` (fail). Exit codes: `0` pass · `10`
-pass-with-warnings · `20` fail · `2` tool-error.
+pass-with-warnings · `20` fail · `2` tool-error. For CI you can gate on severity (`--fail-on
+warning`) or on the trust score directly (`--min-score 80` fails when the score is below 80).
 
 The same command works on a LeRobot v3 dataset — proof of the cross-format claim. Generate a demo
 one (its second episode carries an out-of-order timestamp) and check it the same way:

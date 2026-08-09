@@ -62,6 +62,7 @@ struct Args {
     timestamp: Option<String>,
     emit: Option<String>,
     fail_on: Option<String>,
+    min_score: Option<String>,
     sarif: bool,
     html: bool,
     config: Option<String>,
@@ -78,6 +79,7 @@ fn parse_args(rest: &[String]) -> Args {
     let mut timestamp = None;
     let mut emit = None;
     let mut fail_on = None;
+    let mut min_score = None;
     let mut sarif = false;
     let mut html = false;
     let mut config = None;
@@ -97,6 +99,7 @@ fn parse_args(rest: &[String]) -> Args {
             "--timestamp" => timestamp = it.next().cloned(),
             "--emit" => emit = it.next().cloned(),
             "--fail-on" => fail_on = it.next().cloned(),
+            "--min-score" => min_score = it.next().cloned(),
             other if !other.starts_with('-') => path = Some(other.to_string()),
             _ => {}
         }
@@ -111,6 +114,7 @@ fn parse_args(rest: &[String]) -> Args {
         timestamp,
         emit,
         fail_on,
+        min_score,
         sarif,
         html,
         config,
@@ -164,6 +168,17 @@ fn ingest(args: &Args) -> Result<veridex_core::Ingested, ExitCode> {
     })
 }
 
+/// Parse and range-check a `--min-score` value: an integer 0–100. Returns a human-readable error
+/// (without the `veridex:` prefix) on anything else.
+fn parse_min_score(v: &str) -> Result<u8, String> {
+    match v.parse::<u8>() {
+        Ok(n) if n <= 100 => Ok(n),
+        _ => Err(format!(
+            "invalid --min-score `{v}` (expected an integer 0-100)"
+        )),
+    }
+}
+
 fn cmd_check(rest: &[String]) -> ExitCode {
     let args = parse_args(rest);
     let Some(path) = &args.path else {
@@ -179,6 +194,17 @@ fn cmd_check(rest: &[String]) -> ExitCode {
             return ExitCode::from(EXIT_TOOL_ERROR);
         }
     }
+
+    // Validate --min-score up front: an out-of-range or non-numeric value must be a tool error, not
+    // a silently-ignored gate that would let low-scoring data through CI.
+    let min_score: Option<u8> = match args.min_score.as_deref().map(parse_min_score) {
+        None => None,
+        Some(Ok(n)) => Some(n),
+        Some(Err(e)) => {
+            eprintln!("veridex: {e}");
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
+    };
 
     // Load config from --config, else auto-discover veridex.toml in the cwd.
     let config = match load_config(args.config.as_deref()) {
@@ -205,6 +231,9 @@ fn cmd_check(rest: &[String]) -> ExitCode {
         }
     };
 
+    // Capture the score before rendering, which consumes `out.trust`.
+    let trust_score = out.trust.score;
+
     if args.html {
         println!(
             "{}",
@@ -225,6 +254,15 @@ fn cmd_check(rest: &[String]) -> ExitCode {
             "{}",
             veridex_core::render_terminal(&out.verdict, Some(out.trust), 10)
         );
+    }
+
+    // A trust score below --min-score fails the run regardless of finding severities, so CI can
+    // enforce a minimum score directly. Reported on stderr so it is visible above the exit code.
+    if let Some(min) = min_score {
+        if trust_score < min {
+            eprintln!("veridex: trust score {trust_score} is below the required minimum {min}");
+            return ExitCode::from(EXIT_FAIL);
+        }
     }
 
     // Failure threshold: --fail-on overrides the config, which defaults to `error`.
@@ -700,7 +738,10 @@ fn print_help() {
     println!("    --out <file>         certificate output path (certify)");
     println!("    --timestamp <ts>     issuance timestamp (certify; defaults to now)");
     println!("    --emit <fmt>         provenance format: croissant (default) or prov");
-    println!("    --fail-on <sev>      check failure threshold: error (default) or warning");
+    println!(
+        "    --fail-on <sev>      check failure threshold: error (default) or warning
+    --min-score <0-100>  fail (exit 20) if the trust score is below this (check)"
+    );
     println!("    --config <file>      veridex.toml (auto-discovered in cwd if present)");
     println!("    --force              overwrite existing key files (keygen)");
     println!("    --version            print the version");
@@ -747,6 +788,17 @@ mod tests {
             super::resolve_public_key(&format!("  {hex}\n")).unwrap(),
             hex
         );
+    }
+
+    #[test]
+    fn min_score_accepts_0_to_100_and_rejects_the_rest() {
+        assert_eq!(super::parse_min_score("0").unwrap(), 0);
+        assert_eq!(super::parse_min_score("100").unwrap(), 100);
+        assert_eq!(super::parse_min_score("82").unwrap(), 82);
+        assert!(super::parse_min_score("101").is_err()); // above range
+        assert!(super::parse_min_score("-1").is_err()); // negative
+        assert!(super::parse_min_score("bad").is_err()); // non-numeric
+        assert!(super::parse_min_score("").is_err()); // empty
     }
 
     #[test]
