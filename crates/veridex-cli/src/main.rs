@@ -348,11 +348,16 @@ fn cmd_inspect(rest: &[String]) -> ExitCode {
     println!("  episodes: {}", d.episodes.len());
     for ep in &d.episodes {
         let frames: usize = ep.streams.iter().map(|s| s.frames.len()).sum();
+        let task = match &ep.task {
+            Some(t) => format!("  task: \"{t}\""),
+            None => String::new(),
+        };
         println!(
-            "  · episode {} — {} stream(s), {} frame(s)",
+            "  · episode {} — {} stream(s), {} frame(s){}",
             ep.index,
             ep.streams.len(),
-            frames
+            frames,
+            task
         );
         for s in &ep.streams {
             println!(
