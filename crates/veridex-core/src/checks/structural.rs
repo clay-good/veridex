@@ -238,6 +238,25 @@ impl Check for DegenerateEpisode {
     }
     fn run(&self, dataset: &Dataset) -> Vec<Finding> {
         let mut findings = Vec::new();
+        // A dataset with no episodes at all is degenerate: nothing to train on. Without this guard
+        // the per-episode loop below is empty and the dataset would silently pass every check.
+        if dataset.episodes.is_empty() {
+            findings.push(
+                Finding::new(
+                    self.id(),
+                    Category::Structural,
+                    Severity::Error,
+                    Location::Dataset,
+                    "STRUCTURAL.EMPTY_DATASET",
+                    "dataset has no episodes".to_string(),
+                )
+                .with_risk("A dataset with no episodes contains no data to train on or verify.")
+                .with_remedy(
+                    "Check the source path and the ingest: the export may be empty or unreadable.",
+                ),
+            );
+            return findings;
+        }
         for ep in &dataset.episodes {
             if ep.streams.is_empty() {
                 findings.push(

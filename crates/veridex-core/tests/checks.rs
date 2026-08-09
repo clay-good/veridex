@@ -126,6 +126,14 @@ fn episode_with_no_streams_is_empty() {
     assert_eq!(f[0].code, "STRUCTURAL.EMPTY_EPISODE");
 }
 
+#[test]
+fn dataset_with_no_episodes_is_flagged() {
+    let f = structural::DegenerateEpisode.run(&dataset(vec![]));
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].code, "STRUCTURAL.EMPTY_DATASET");
+    assert_eq!(f[0].severity, Severity::Error);
+}
+
 fn shaped(name: &str, dtype: Option<&str>, shape: Option<Vec<u64>>, ts: &[i64]) -> Stream {
     Stream {
         name: name.into(),
