@@ -2,7 +2,8 @@
 //! consume. Both renderers derive from the same verdict, so they never disagree.
 //!
 //! Surface: a human-readable terminal report with per-episode rollups (worst episodes first), a
-//! versioned JSON envelope, and SARIF 2.1.0 for CI code-scanning. HTML is a later change.
+//! versioned JSON envelope, SARIF 2.1.0 for CI code-scanning, a self-contained HTML report, and the
+//! machine-readable check catalog (shared with the CLI and Python bindings).
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;

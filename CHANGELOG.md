@@ -54,7 +54,9 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   degeneracy, an implausibly-large std that violates Popoviciu's bound `(max−min)/2`, and stored
   min/max outside the declared integer dtype's representable range — over stored stats), semantic
   (task-string quality — present-but-empty and placeholder tasks — and stream-key clarity, which
-  flags camera/stream keys that collide by case or whitespace; verified, never modified), and
+  flags an exact-duplicate stream key within an episode as an error (`SEMANTIC.DUPLICATE_STREAM_KEY`,
+  a uniqueness-invariant violation) and camera/stream keys that merely collide by case or whitespace
+  as a warning (`SEMANTIC.AMBIGUOUS_STREAM_KEY`); verified, never modified), and
   provenance-completeness (presence, internal consistency, and placeholder values — a `license` of
   `"unknown"` is present in form but empty in substance, so it's flagged and not counted as real
   provenance). Every finding carries a training risk and a remedy.

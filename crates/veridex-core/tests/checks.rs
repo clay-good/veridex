@@ -952,6 +952,27 @@ fn distinct_stream_keys_are_not_flagged() {
 }
 
 #[test]
+fn exact_duplicate_stream_key_is_an_error_not_a_broken_ambiguity() {
+    // Two streams with the identical name in one episode violate the CDM's uniqueness invariant.
+    // This must be a single, well-formed DUPLICATE_STREAM_KEY error — not the malformed
+    // "ambiguous with " (empty list) that the case/whitespace path would otherwise produce.
+    let d = dataset(vec![episode(
+        0,
+        vec![
+            stream("cam", "c", None, &[0, 1]),
+            stream("cam", "c", None, &[0, 1]),
+        ],
+    )]);
+    let f = semantic::StreamKeyClarity.run(&d);
+    assert_eq!(f.len(), 1, "one finding per duplicated name, not per occurrence");
+    assert_eq!(f[0].code, "SEMANTIC.DUPLICATE_STREAM_KEY");
+    assert_eq!(f[0].severity, Severity::Error);
+    assert!(f[0].message.contains("appears 2 times"));
+    // The ambiguity path must not fire for an exact duplicate (no empty "ambiguous with" clause).
+    assert!(f.iter().all(|x| x.code != "SEMANTIC.AMBIGUOUS_STREAM_KEY"));
+}
+
+#[test]
 fn meaningful_and_absent_tasks_are_not_flagged() {
     // A real instruction is clean.
     let good = dataset(vec![episode_with_task(0, Some("pick up the red cube"))]);

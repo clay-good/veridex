@@ -55,7 +55,8 @@ Severities below are the defaults.
 |---|---|---|---|
 | `semantic.task-quality` | `SEMANTIC.EMPTY_TASK` | warning | An episode has a present-but-empty task string. |
 | `semantic.task-quality` | `SEMANTIC.PLACEHOLDER_TASK` | info | An episode's task is a low-information placeholder (e.g. "Hold"). |
-| `semantic.stream-key-clarity` | `SEMANTIC.AMBIGUOUS_STREAM_KEY` | warning | Two stream keys in an episode differ only by case or whitespace. |
+| `semantic.stream-key-clarity` | `SEMANTIC.DUPLICATE_STREAM_KEY` | error | A stream key appears more than once in one episode — a violation of the "unique within an episode" invariant that makes the name an unusable identifier. |
+| `semantic.stream-key-clarity` | `SEMANTIC.AMBIGUOUS_STREAM_KEY` | warning | Two *distinct* stream keys in an episode differ only by case or whitespace. |
 
 ## Provenance — do we know where the data came from?
 

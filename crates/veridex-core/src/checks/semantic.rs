@@ -11,7 +11,7 @@
 //! Flagging it would fire on every such episode and carry no signal. This check therefore judges
 //! only tasks that are actually present.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::cdm::Dataset;
 use crate::check::{Category, Check, Finding, Location, Scope, Severity};
@@ -115,7 +115,10 @@ impl Check for StreamKeyClarity {
         "semantic.stream-key-clarity"
     }
     fn finding_codes(&self) -> &'static [&'static str] {
-        &["SEMANTIC.AMBIGUOUS_STREAM_KEY"]
+        &[
+            "SEMANTIC.DUPLICATE_STREAM_KEY",
+            "SEMANTIC.AMBIGUOUS_STREAM_KEY",
+        ]
     }
     fn title(&self) -> &'static str {
         "Stream-key clarity"
@@ -135,18 +138,56 @@ impl Check for StreamKeyClarity {
     fn run(&self, dataset: &Dataset) -> Vec<Finding> {
         let mut findings = Vec::new();
         for ep in &dataset.episodes {
-            // Group stream names by a normalized key (trimmed + lowercased). More than one distinct
-            // name under the same key is an ambiguous collision. BTreeMap keeps output deterministic.
-            let mut groups: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+            // (1) Exact-duplicate stream names — a violation of the CDM's "unique within its episode"
+            // invariant. A repeated key is not a usable identifier at all, so this is the harder
+            // fault (error) and is reported separately from a mere case/whitespace collision. One
+            // finding per duplicated name (not per occurrence). BTreeMap keeps output deterministic.
+            let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+            for stream in &ep.streams {
+                *counts.entry(stream.name.as_str()).or_default() += 1;
+            }
+            for (name, count) in counts.iter().filter(|(_, c)| **c > 1) {
+                findings.push(
+                    Finding::new(
+                        self.id(),
+                        Category::Semantic,
+                        Severity::Error,
+                        Location::Stream {
+                            episode: ep.index,
+                            stream: (*name).to_string(),
+                        },
+                        "SEMANTIC.DUPLICATE_STREAM_KEY",
+                        format!(
+                            "stream key `{}` appears {} times in episode {} — stream names must be \
+                             unique within an episode",
+                            name, count, ep.index
+                        ),
+                    )
+                    .with_risk(
+                        "A repeated stream key is not a usable identifier: code keyed on it silently \
+                         picks one arbitrary stream, so a policy or check can train on or validate \
+                         the wrong sensor.",
+                    )
+                    .with_remedy(
+                        "Give each stream a unique name, or merge the duplicates if they are the \
+                         same stream.",
+                    ),
+                );
+            }
+
+            // (2) Ambiguous collisions among *distinct* names (case/whitespace only). Group the
+            // distinct names by a normalized (trimmed + lowercased) key; more than one distinct name
+            // under a key is an ambiguous collision. Using a set of distinct names keeps exact
+            // duplicates (handled above) out of this path, so the "others" list is never empty.
+            let mut groups: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();
             for stream in &ep.streams {
                 let norm = stream.name.trim().to_ascii_lowercase();
-                groups.entry(norm).or_default().push(&stream.name);
+                groups.entry(norm).or_default().insert(&stream.name);
             }
             for (_, names) in groups.iter().filter(|(_, n)| n.len() > 1) {
                 for name in names {
-                    let mut others: Vec<&str> =
-                        names.iter().copied().filter(|n| n != name).collect();
-                    others.sort_unstable();
+                    // `names` is a sorted set of distinct names, so `others` is non-empty and stable.
+                    let others: Vec<&str> = names.iter().copied().filter(|n| n != name).collect();
                     findings.push(
                         Finding::new(
                             self.id(),
