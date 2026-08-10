@@ -45,6 +45,9 @@ pub struct TolerancesConfig {
     pub gap_factor: Option<f64>,
     /// `TEMPORAL.JITTER` max coefficient of variation (std / mean) of inter-frame intervals.
     pub jitter_cv: Option<f64>,
+    /// `TEMPORAL.EPISODE_DURATION_OUTLIER` multiple-of-median past which an episode duration is an
+    /// outlier. Must be greater than 1.0 (a factor of 1.0 or less would flag every episode).
+    pub episode_duration_factor: Option<f64>,
 }
 
 /// A parsed `veridex.toml`.
@@ -156,6 +159,13 @@ impl TolerancesConfig {
                 )));
             }
         }
+        if let Some(f) = self.episode_duration_factor {
+            if !f.is_finite() || f <= 1.0 {
+                return Err(ConfigError::Parse(format!(
+                    "episode_duration_factor must be a finite number greater than 1.0, got {f}"
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -179,6 +189,9 @@ impl TolerancesConfig {
             rate_deviation: self.rate_deviation.unwrap_or(d.rate_deviation),
             gap_factor: self.gap_factor.unwrap_or(d.gap_factor),
             jitter_cv: self.jitter_cv.unwrap_or(d.jitter_cv),
+            episode_duration_factor: self
+                .episode_duration_factor
+                .unwrap_or(d.episode_duration_factor),
         }
     }
 }

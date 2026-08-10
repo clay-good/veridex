@@ -152,6 +152,9 @@ fn non_default_tolerances(t: &crate::Tolerances) -> Vec<String> {
     if t.jitter_cv != d.jitter_cv {
         out.push(format!("jitter cv {}", t.jitter_cv));
     }
+    if t.episode_duration_factor != d.episode_duration_factor {
+        out.push(format!("episode-duration {}x", t.episode_duration_factor));
+    }
     out
 }
 

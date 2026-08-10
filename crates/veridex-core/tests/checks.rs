@@ -538,6 +538,69 @@ fn rate_consistency_ignores_uniform_noise_and_absent_rates() {
     assert!(temporal::RateConsistency.run(&absent).is_empty());
 }
 
+/// An episode whose single stream spans `dur_ns` (frames at 0 and `dur_ns`), so
+/// `episode_duration_ns` measures exactly `dur_ns`.
+fn episode_lasting(index: u64, dur_ns: i64) -> Episode {
+    episode(index, vec![stream("s", "c", None, &[0, dur_ns])])
+}
+
+#[test]
+fn episode_duration_flags_a_truncated_episode() {
+    // Four ~1 s episodes and one 10 ms fragment: median 1 s, so 10 ms is 100x shorter (> 10x).
+    let d = dataset(vec![
+        episode_lasting(0, 1_000_000_000),
+        episode_lasting(1, 1_000_000_000),
+        episode_lasting(2, 1_000_000_000),
+        episode_lasting(3, 1_000_000_000),
+        episode_lasting(4, 10_000_000),
+    ]);
+    let f = temporal::EpisodeDuration::default().run(&d);
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].code, "TEMPORAL.EPISODE_DURATION_OUTLIER");
+    assert!(matches!(
+        f[0].location,
+        veridex_core::check::Location::Episode { episode: 4 }
+    ));
+}
+
+#[test]
+fn episode_duration_flags_a_stuck_recorder() {
+    // One 20 s episode against four 1 s episodes: median 1 s, so 20 s is 20x longer (> 10x).
+    let d = dataset(vec![
+        episode_lasting(0, 1_000_000_000),
+        episode_lasting(1, 1_000_000_000),
+        episode_lasting(2, 1_000_000_000),
+        episode_lasting(3, 1_000_000_000),
+        episode_lasting(4, 20_000_000_000),
+    ]);
+    let f = temporal::EpisodeDuration::default().run(&d);
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].code, "TEMPORAL.EPISODE_DURATION_OUTLIER");
+}
+
+#[test]
+fn episode_duration_abstains_below_the_minimum_episode_count() {
+    // Only three episodes — too few for a stable median — so even a wild outlier is not flagged.
+    let d = dataset(vec![
+        episode_lasting(0, 1_000_000_000),
+        episode_lasting(1, 1_000_000_000),
+        episode_lasting(2, 1_000_000),
+    ]);
+    assert!(temporal::EpisodeDuration::default().run(&d).is_empty());
+}
+
+#[test]
+fn episode_duration_ignores_natural_variation_within_factor() {
+    // Durations 1–5 s all sit within 10x of the ~2.5 s median: normal task-length variation.
+    let d = dataset(vec![
+        episode_lasting(0, 1_000_000_000),
+        episode_lasting(1, 2_000_000_000),
+        episode_lasting(2, 3_000_000_000),
+        episode_lasting(3, 5_000_000_000),
+    ]);
+    assert!(temporal::EpisodeDuration::default().run(&d).is_empty());
+}
+
 #[test]
 fn gaps_are_detected_against_declared_rate() {
     // 10 Hz declared (100 ms expected); a 500 ms jump between frame 2 and 3 is a gap.
@@ -829,7 +892,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 21);
+    assert_eq!(verdict.executed_checks.len(), 22);
 }
 
 #[test]

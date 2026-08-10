@@ -57,7 +57,10 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   configurable tolerance) even when the mean rate looks correct and no single interval is a gap, and
   a cross-episode declared-rate consistency check (`TEMPORAL.RATE_INCONSISTENT`) that flags a stream
   whose declared sampling rate changes between episodes — differently-configured sources pooled under
-  one key — which every per-episode check passes over),
+  one key — which every per-episode check passes over, and a cross-episode duration-outlier check
+  (`TEMPORAL.EPISODE_DURATION_OUTLIER`) that flags an episode whose length is a large multiple away
+  from the dataset's median — a truncated capture or a stuck recorder that still counts as a full
+  labeled trajectory — using a median baseline robust to the outliers it hunts),
   statistical (range/sanity — inverted range, non-finite, negative std, mean-outside-range, and
   degeneracy, an implausibly-large std that violates Popoviciu's bound `(max−min)/2`, and stored
   min/max outside the declared integer dtype's representable range — over stored stats), semantic

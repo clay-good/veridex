@@ -37,6 +37,7 @@ Severities below are the defaults.
 | `temporal.start-offset` | `TEMPORAL.START_OFFSET` | warning | Two streams sharing a `clock_id` start at materially different absolute times (a sensor that came online late) — a misalignment `CLOCK_SKEW`'s duration comparison can miss. |
 | `temporal.end-offset` | `TEMPORAL.END_OFFSET` | warning | Two streams sharing a `clock_id` end at materially different absolute times (a sensor that dropped out early, or a truncated tail) — the mirror of `START_OFFSET`; because `end = start + duration`, a tail misalignment can slip past both `START_OFFSET` and `CLOCK_SKEW`. |
 | `temporal.rate-consistency` | `TEMPORAL.RATE_INCONSISTENT` | warning | A stream declares one sampling rate in some episodes and a materially different one in others — differently-configured sources pooled under one key, or wrong rate metadata. Every per-episode check passes, but a global fixed-rate assumption is wrong for part of the data. The temporal sibling of `STRUCTURAL.SHAPE_MISMATCH`. |
+| `temporal.episode-duration` | `TEMPORAL.EPISODE_DURATION_OUTLIER` | warning | An episode's total duration is a large multiple (default 10×, configurable) away from the dataset's *median* episode duration — a truncated capture cut short, or a recorder left running, not natural task variation. The median baseline is robust to the outliers it hunts; the check abstains below 4 measurable-duration episodes (no stable "typical"). |
 
 ## Statistical — do the stored per-stream statistics hold together?
 

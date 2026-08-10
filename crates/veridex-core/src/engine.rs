@@ -42,6 +42,9 @@ pub struct Tolerances {
     /// `TEMPORAL.JITTER` fires when a stream's inter-frame intervals have a coefficient of variation
     /// (std / mean) above this — an irregular timeline whose mean rate can still look correct.
     pub jitter_cv: f64,
+    /// `TEMPORAL.EPISODE_DURATION_OUTLIER` fires on an episode whose duration is more than this
+    /// multiple away (either direction) from the dataset's median episode duration.
+    pub episode_duration_factor: f64,
 }
 
 impl Default for Tolerances {
@@ -53,6 +56,7 @@ impl Default for Tolerances {
             rate_deviation: 0.10,        // 10%
             gap_factor: 3.0,
             jitter_cv: 0.5,
+            episode_duration_factor: 10.0,
         }
     }
 }

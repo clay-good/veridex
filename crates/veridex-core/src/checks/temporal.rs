@@ -1,6 +1,6 @@
 //! Temporal checks: per-stream timeline health and the headline cross-stream clock-skew check.
 
-use crate::cdm::{Dataset, Stream};
+use crate::cdm::{Dataset, Episode, Stream};
 use crate::check::{Category, Check, Finding, Location, Scope, Severity};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -16,6 +16,33 @@ fn span_bounds(stream: &Stream) -> Option<(i64, i64)> {
         hi = hi.max(ts);
     }
     Some((lo, hi))
+}
+
+/// An episode's overall wall-clock duration in nanoseconds, if measurable. Prefers the adapter's
+/// declared `[start_ts, end_ts]`; otherwise falls back to the longest single-stream span — a
+/// clock-safe proxy, since one stream's frames share a clock so the subtraction never mixes clocks.
+/// `None` when neither is available or positive.
+fn episode_duration_ns(ep: &Episode) -> Option<i64> {
+    if let (Some(start), Some(end)) = (ep.start_ts, ep.end_ts) {
+        if end > start {
+            return Some(end - start);
+        }
+    }
+    ep.streams
+        .iter()
+        .filter_map(|s| span_bounds(s).map(|(lo, hi)| hi.saturating_sub(lo)))
+        .filter(|d| *d > 0)
+        .max()
+}
+
+/// Median of an already-sorted, non-empty slice.
+fn median_sorted(sorted: &[i64]) -> f64 {
+    let n = sorted.len();
+    if n % 2 == 1 {
+        sorted[n / 2] as f64
+    } else {
+        (sorted[n / 2 - 1] as f64 + sorted[n / 2] as f64) / 2.0
+    }
 }
 
 /// Timestamp monotonicity: within a stream, timestamps must strictly increase. A decrease or repeat
@@ -838,6 +865,117 @@ impl Check for RateConsistency {
                         }
                     }
                 }
+            }
+        }
+        findings
+    }
+}
+
+/// Cross-episode **duration outlier**. Robot episodes legitimately vary in length, but an episode
+/// whose total duration is a large multiple away from the dataset's *typical* duration is almost
+/// always a recording fault — a capture cut short, or a recorder left running — not natural task
+/// variation. Such an episode trains a policy on a fragment (or a frozen scene) while still counting
+/// as a full labeled trajectory. The baseline is the **median** episode duration, robust to the very
+/// outliers it is looking for; an episode is flagged when its duration is below `median / factor` or
+/// above `median * factor`. Needs at least [`EpisodeDuration::MIN_EPISODES`] episodes with a
+/// measurable duration, or there is no stable "typical" to compare against.
+pub struct EpisodeDuration {
+    /// An episode is an outlier when its duration is more than this multiple away (in either
+    /// direction) from the dataset's median episode duration.
+    pub factor: f64,
+}
+
+impl EpisodeDuration {
+    /// Minimum number of measurable-duration episodes before the check runs. Below this a median is
+    /// not a meaningful "typical", so the check abstains rather than flag on thin evidence.
+    const MIN_EPISODES: usize = 4;
+}
+
+impl Default for EpisodeDuration {
+    fn default() -> Self {
+        EpisodeDuration { factor: 10.0 }
+    }
+}
+
+impl Check for EpisodeDuration {
+    fn id(&self) -> &'static str {
+        "temporal.episode-duration"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["TEMPORAL.EPISODE_DURATION_OUTLIER"]
+    }
+    fn title(&self) -> &'static str {
+        "Cross-episode duration outlier"
+    }
+    fn category(&self) -> Category {
+        Category::Temporal
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Warning
+    }
+    fn scope(&self) -> Scope {
+        Scope::Dataset
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        // (episode index, duration ns) for every episode with a measurable duration, in ascending
+        // index order (episodes are canonicalized that way), so findings come out deterministic.
+        let durations: Vec<(u64, i64)> = dataset
+            .episodes
+            .iter()
+            .filter_map(|ep| episode_duration_ns(ep).map(|d| (ep.index, d)))
+            .collect();
+        // A guard factor of <= 1.0 would flag every episode; treat it as "disabled" defensively (the
+        // config layer already rejects it) and skip on too few episodes to form a baseline.
+        if durations.len() < Self::MIN_EPISODES || self.factor <= 1.0 {
+            return Vec::new();
+        }
+
+        let mut sorted: Vec<i64> = durations.iter().map(|(_, d)| *d).collect();
+        sorted.sort_unstable();
+        let median = median_sorted(&sorted);
+        if median <= 0.0 {
+            return Vec::new();
+        }
+        let low = median / self.factor;
+        let high = median * self.factor;
+
+        let mut findings = Vec::new();
+        for (index, dur) in durations {
+            let d = dur as f64;
+            if d < low || d > high {
+                let (ratio, direction) = if d < median {
+                    (median / d, "shorter")
+                } else {
+                    (d / median, "longer")
+                };
+                findings.push(
+                    Finding::new(
+                        self.id(),
+                        Category::Temporal,
+                        Severity::Warning,
+                        Location::Episode { episode: index },
+                        "TEMPORAL.EPISODE_DURATION_OUTLIER",
+                        format!(
+                            "episode {index} lasts {:.1} ms — {ratio:.1}x {direction} than the \
+                             dataset median of {:.1} ms",
+                            d / 1e6,
+                            median / 1e6,
+                        ),
+                    )
+                    .with_risk(
+                        "An episode far shorter or longer than the rest is usually a truncated \
+                         capture or a stuck recorder, not a real trajectory; training on it teaches \
+                         the policy from a fragment or a frozen scene while it still counts as a \
+                         full labeled episode.",
+                    )
+                    .with_remedy(
+                        "Inspect the outlier episode: drop it if it is a broken recording, or split \
+                         it if two trajectories were merged.",
+                    ),
+                );
             }
         }
         findings

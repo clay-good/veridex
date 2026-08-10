@@ -130,7 +130,7 @@ warning`) or on the trust score directly (`--min-score 80` fails when the score 
 
 Drop a [`veridex.toml`](docs/veridex.toml.example) in your repo (or pass `--config`) to select
 categories, disable checks, override per-check severities, tune numeric tolerances (clock-skew,
-rate, gap, jitter, start-offset, end-offset), and set the failure threshold — the effective config
+rate, gap, jitter, start-offset, end-offset, episode-duration), and set the failure threshold — the effective config
 is recorded in every
 verdict, and unknown keys, check ids, or invalid tolerances are rejected, not silently ignored.
 
