@@ -37,6 +37,9 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   presence so a stream that appears in only some episodes — a sensor that dropped out, or two
   exports pooled together — is flagged (`STRUCTURAL.STREAM_PRESENCE_INCONSISTENT`)), temporal (monotonicity,
   rate conformance, gaps, the headline
+  a declared-rate validity check (`TEMPORAL.INVALID_RATE`) that flags a corrupt declared rate
+  (`0`, negative, `NaN`, `inf`) which the rate- and gap-conformance checks would otherwise skip
+  silently, the headline
   `TEMPORAL.CLOCK_SKEW`, a shared-clock start-offset check that catches a stream which comes
   online late — a misalignment the duration-based skew check can miss — its mirror
   `TEMPORAL.END_OFFSET` that catches a stream which drops out early or runs long (a truncated tail;

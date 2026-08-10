@@ -176,6 +176,76 @@ impl Check for RateConformance {
     }
 }
 
+/// Declared-rate validity. A source that states a sampling rate must state a *usable* one: a
+/// positive, finite number. A declared rate of `0`, a negative value, or `NaN`/`inf` is corrupt
+/// metadata — and, crucially, [`RateConformance`] and [`Gaps`] both *skip* such a stream (they guard
+/// `rate > 0.0`), so without this check a nonsensical declared rate passes silently. This surfaces it
+/// as the metadata error it is. Streams that declare no rate are fine and are not flagged.
+pub struct RateValidity;
+
+impl Check for RateValidity {
+    fn id(&self) -> &'static str {
+        "temporal.rate-validity"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["TEMPORAL.INVALID_RATE"]
+    }
+    fn title(&self) -> &'static str {
+        "Declared-rate validity"
+    }
+    fn category(&self) -> Category {
+        Category::Temporal
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Error
+    }
+    fn scope(&self) -> Scope {
+        Scope::Stream
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        for ep in &dataset.episodes {
+            for stream in &ep.streams {
+                let Some(declared) = stream.declared_rate_hz else {
+                    continue;
+                };
+                if declared.is_finite() && declared > 0.0 {
+                    continue;
+                }
+                findings.push(
+                    Finding::new(
+                        self.id(),
+                        Category::Temporal,
+                        Severity::Error,
+                        Location::Stream {
+                            episode: ep.index,
+                            stream: stream.name.clone(),
+                        },
+                        "TEMPORAL.INVALID_RATE",
+                        format!(
+                            "stream `{}` in episode {}: declared rate {declared} Hz is not a \
+                             positive, finite number",
+                            stream.name, ep.index
+                        ),
+                    )
+                    .with_risk(
+                        "A corrupt declared rate is silently ignored by the rate and gap checks, so \
+                         the timing metadata downstream tools rely on is wrong and unverified.",
+                    )
+                    .with_remedy(
+                        "Correct the declared sampling rate at the source, or omit it so the \
+                         observed rate is used.",
+                    ),
+                );
+            }
+        }
+        findings
+    }
+}
+
 /// Gaps: an inter-frame interval far larger than expected indicates dropped frames.
 pub struct Gaps {
     /// A gap is an interval greater than `gap_factor` times the expected interval.

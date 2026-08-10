@@ -390,6 +390,33 @@ fn rate_conformance_flags_wrong_declared_rate() {
 }
 
 #[test]
+fn rate_validity_flags_a_corrupt_declared_rate() {
+    // Zero, negative, and non-finite declared rates are each corrupt metadata. Frames are provided
+    // so this isn't confused with a degenerate stream; the fault is the declared rate itself.
+    let ts = [0i64, 100_000_000, 200_000_000];
+    for bad in [0.0, -30.0, f64::NAN, f64::INFINITY] {
+        let d = dataset(vec![episode(0, vec![stream("s", "c", Some(bad), &ts)])]);
+        let f = temporal::RateValidity.run(&d);
+        assert_eq!(f.len(), 1, "declared rate {bad} should be flagged");
+        assert_eq!(f[0].code, "TEMPORAL.INVALID_RATE");
+        assert_eq!(f[0].severity, Severity::Error);
+        // The rate/gap checks skip a corrupt rate silently — this is the check that catches it.
+        assert!(temporal::RateConformance::default().run(&d).is_empty());
+    }
+}
+
+#[test]
+fn rate_validity_ignores_valid_and_absent_rates() {
+    let ts = [0i64, 100_000_000, 200_000_000];
+    // A positive, finite declared rate is fine.
+    let good = dataset(vec![episode(0, vec![stream("s", "c", Some(10.0), &ts)])]);
+    assert!(temporal::RateValidity.run(&good).is_empty());
+    // No declared rate at all is fine — the check only judges a rate the source actually states.
+    let absent = dataset(vec![episode(0, vec![stream("s", "c", None, &ts)])]);
+    assert!(temporal::RateValidity.run(&absent).is_empty());
+}
+
+#[test]
 fn gaps_are_detected_against_declared_rate() {
     // 10 Hz declared (100 ms expected); a 500 ms jump between frame 2 and 3 is a gap.
     let ts = [0i64, 100_000_000, 200_000_000, 700_000_000, 800_000_000];
@@ -680,7 +707,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 18);
+    assert_eq!(verdict.executed_checks.len(), 19);
 }
 
 #[test]
