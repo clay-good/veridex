@@ -1,6 +1,6 @@
 //! Temporal checks: per-stream timeline health and the headline cross-stream clock-skew check.
 
-use crate::cdm::{Dataset, Episode, Stream};
+use crate::cdm::{Dataset, Stream};
 use crate::check::{Category, Check, Finding, Location, Scope, Severity};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -16,23 +16,6 @@ fn span_bounds(stream: &Stream) -> Option<(i64, i64)> {
         hi = hi.max(ts);
     }
     Some((lo, hi))
-}
-
-/// An episode's overall wall-clock duration in nanoseconds, if measurable. Prefers the adapter's
-/// declared `[start_ts, end_ts]`; otherwise falls back to the longest single-stream span — a
-/// clock-safe proxy, since one stream's frames share a clock so the subtraction never mixes clocks.
-/// `None` when neither is available or positive.
-fn episode_duration_ns(ep: &Episode) -> Option<i64> {
-    if let (Some(start), Some(end)) = (ep.start_ts, ep.end_ts) {
-        if end > start {
-            return Some(end - start);
-        }
-    }
-    ep.streams
-        .iter()
-        .filter_map(|s| span_bounds(s).map(|(lo, hi)| hi.saturating_sub(lo)))
-        .filter(|d| *d > 0)
-        .max()
 }
 
 /// Median of an already-sorted, non-empty slice.
@@ -925,7 +908,7 @@ impl Check for EpisodeDuration {
         let durations: Vec<(u64, i64)> = dataset
             .episodes
             .iter()
-            .filter_map(|ep| episode_duration_ns(ep).map(|d| (ep.index, d)))
+            .filter_map(|ep| ep.duration_ns().map(|d| (ep.index, d)))
             .collect();
         // A guard factor of <= 1.0 would flag every episode; treat it as "disabled" defensively (the
         // config layer already rejects it) and skip on too few episodes to form a baseline.

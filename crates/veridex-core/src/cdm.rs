@@ -61,6 +61,34 @@ pub struct Episode {
     pub labels: Vec<Label>,
 }
 
+impl Episode {
+    /// The episode's overall wall-clock duration in nanoseconds, if measurable. Prefers the declared
+    /// `[start_ts, end_ts]`; otherwise falls back to the longest single-stream frame span — a
+    /// clock-safe proxy, since one stream's frames share a clock so the subtraction never mixes
+    /// clocks. `None` when neither is available or positive.
+    pub fn duration_ns(&self) -> Option<TimestampNs> {
+        if let (Some(start), Some(end)) = (self.start_ts, self.end_ts) {
+            if end > start {
+                return Some(end - start);
+            }
+        }
+        self.streams
+            .iter()
+            .filter_map(|s| {
+                let mut it = s.frames.iter().map(|f| f.ts);
+                let first = it.next()?;
+                let (mut lo, mut hi) = (first, first);
+                for ts in it {
+                    lo = lo.min(ts);
+                    hi = hi.max(ts);
+                }
+                Some(hi.saturating_sub(lo))
+            })
+            .filter(|d| *d > 0)
+            .max()
+    }
+}
+
 /// A modality of recorded data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
