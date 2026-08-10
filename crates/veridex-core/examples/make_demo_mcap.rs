@@ -46,6 +46,26 @@ fn main() {
             }
         }
 
+        // Producer-written provenance: a Metadata record and a calibration attachment, which the
+        // adapter surfaces (license/sensor/operator → typed provenance, calibration from the file).
+        let mut meta = std::collections::BTreeMap::new();
+        meta.insert("license".to_string(), "CC-BY-4.0".to_string());
+        meta.insert("sensor".to_string(), "ZED2i stereo camera".to_string());
+        meta.insert("operator".to_string(), "demo-operator".to_string());
+        w.write_metadata(&mcap::records::Metadata {
+            name: "recording_info".to_string(),
+            metadata: meta,
+        })
+        .expect("write metadata");
+        w.attach(&mcap::Attachment {
+            log_time: 0,
+            create_time: 0,
+            name: "calibration.yaml".to_string(),
+            media_type: "application/yaml".to_string(),
+            data: (b"# demo calibration\n" as &[u8]).into(),
+        })
+        .expect("attach");
+
         w.finish().expect("finish");
     }
 
