@@ -16,6 +16,12 @@ struct Chan {
 
 /// Build an in-memory MCAP file from the given channels and return its bytes.
 fn build_mcap(channels: &[Chan]) -> Vec<u8> {
+    build_mcap_payload(channels, b"payload")
+}
+
+/// Like [`build_mcap`], but every message carries `payload` as its data bytes — so tests can vary
+/// frame *content* while holding structure (channels, timestamps) fixed.
+fn build_mcap_payload(channels: &[Chan], payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
     {
         let mut writer = mcap::Writer::new(Cursor::new(&mut out)).expect("writer");
@@ -35,7 +41,7 @@ fn build_mcap(channels: &[Chan]) -> Vec<u8> {
                             log_time: t,
                             publish_time: t,
                         },
-                        b"payload",
+                        payload,
                     )
                     .expect("write message");
             }
@@ -260,6 +266,11 @@ fn report_declares_fidelity_and_omissions() {
     assert_eq!(r.format_id, "mcap");
     assert_eq!(r.coverage, Coverage::Full);
     assert!(!r.mapped_fields.is_empty());
+    // The message bytes are fingerprinted into the frame content hash — disclosed as mapped.
+    assert!(r
+        .mapped_fields
+        .iter()
+        .any(|m| m.contains("content_hash")));
     // MCAP has no episode concept or declared rates — these must be disclosed as omitted.
     assert!(r.omitted_fields.iter().any(|f| f.contains("episode")));
     assert!(r.omitted_fields.iter().any(|f| f.contains("rate")));
@@ -327,5 +338,57 @@ fn re_ingesting_the_same_bytes_yields_the_same_content_hash() {
     assert_eq!(
         veridex_core::content_hash(&a),
         veridex_core::content_hash(&b)
+    );
+}
+
+#[test]
+fn frames_carry_a_content_hash_of_the_message_bytes() {
+    let bytes = build_mcap(&[Chan {
+        schema: "sensor_msgs/msg/JointState",
+        topic: "/j",
+        times: vec![0, 10, 20],
+    }]);
+    let path = write_temp_mcap(&bytes);
+    let d = McapAdapter
+        .ingest(&Source::Local(path.to_path_buf()), &IngestOptions::default())
+        .unwrap()
+        .dataset;
+    // Every frame is fingerprinted, and identical message bytes hash identically.
+    let hashes: Vec<[u8; 32]> = d.episodes[0].streams[0]
+        .frames
+        .iter()
+        .map(|f| f.value_ref.content_hash.expect("frame carries a content hash"))
+        .collect();
+    assert_eq!(hashes.len(), 3);
+    assert!(hashes.iter().all(|h| *h == hashes[0]), "same payload → same hash");
+}
+
+#[test]
+fn different_frame_content_changes_the_cdm_hash() {
+    // Structure held fixed (same channels + timestamps); only the message payload differs. Because
+    // frames now carry a content hash that feeds canonicalization, the CDM content hash must differ —
+    // so a tampered recording can no longer verify against a certificate bound to the original.
+    let chans = [Chan {
+        schema: "sensor_msgs/msg/JointState",
+        topic: "/j",
+        times: vec![0, 10, 20],
+    }];
+    let p1 = write_temp_mcap(&build_mcap_payload(&chans, b"original"));
+    let p2 = write_temp_mcap(&build_mcap_payload(&chans, b"tampered"));
+    let mut a = McapAdapter
+        .ingest(&Source::Local(p1.to_path_buf()), &IngestOptions::default())
+        .unwrap()
+        .dataset;
+    let mut b = McapAdapter
+        .ingest(&Source::Local(p2.to_path_buf()), &IngestOptions::default())
+        .unwrap()
+        .dataset;
+    // Normalize the id (from the temp file stem) so only frame content differs.
+    a.id = "fixed".into();
+    b.id = "fixed".into();
+    assert_ne!(
+        veridex_core::content_hash(&a),
+        veridex_core::content_hash(&b),
+        "differing frame content must change the CDM hash"
     );
 }

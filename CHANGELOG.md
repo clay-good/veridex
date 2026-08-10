@@ -22,7 +22,11 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   `profile`, every producer-written **Metadata** record (preserved in dataset metadata, with
   well-known keys — license/sensor/calibration/operator/upstream — mapped to typed provenance), and
   **Attachment** summaries (a calibration-looking attachment supplies the `calibration` element), so
-  provenance reflects who produced the recording and how.
+  provenance reflects who produced the recording and how. Each message's raw bytes are fingerprinted
+  into `frame.value_ref.content_hash` (a SHA-256 of the bytes, not a decode), so the CDM content hash
+  — and thus certificate binding — is sensitive to actual frame content: a tampered recording with
+  identical topics and timestamps no longer hashes the same, and content-level checks (duplicate
+  episodes) have something exact to compare.
 - **Validation engine** — check registry with duplicate-id rejection, category/id selection,
   severity overrides, deterministic stably-ordered verdicts with a result content hash, fault
   isolation for panicking checks, and reproducibility metadata.

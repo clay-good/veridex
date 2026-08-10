@@ -31,6 +31,7 @@ use super::{
     Adapter, Coverage, Detection, IngestError, IngestOptions, IngestReport, Ingested, Source,
     UnmappedField,
 };
+use sha2::{Digest, Sha256};
 
 const CLOCK_ID: &str = "mcap-log";
 
@@ -195,7 +196,10 @@ impl Adapter for McapAdapter {
                     uri: topic,
                     byte_offset: None,
                     byte_len: Some(message.data.len() as u64),
-                    content_hash: None,
+                    // Fingerprint the raw message bytes (a hash, not a decode — Veridex never
+                    // interprets the payload). This gives content-level checks (e.g. duplicate-episode
+                    // detection) something exact to compare, and records provenance of the bytes.
+                    content_hash: Some(Sha256::digest(&message.data).into()),
                 },
             });
         }
@@ -303,6 +307,7 @@ impl Adapter for McapAdapter {
                     "message.log_time -> frame.ts".into(),
                     "schema.name -> stream.modality".into(),
                     "message.data.len -> frame.value_ref.byte_len".into(),
+                    "message.data -> frame.value_ref.content_hash (SHA-256)".into(),
                 ];
                 if header
                     .as_ref()
