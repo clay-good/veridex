@@ -137,13 +137,15 @@ The same command works on a LeRobot v3 dataset — proof of the cross-format cla
 one (its second episode carries an out-of-order timestamp) and check it the same way:
 
 ```sh
-# generate a demo LeRobot v3 dataset; append `clean`, or `truncated` for a cut-short export
+# generate a demo LeRobot v3 dataset; append `clean`, `truncated`, or `jitter` for other variants
 cargo run -p veridex-core --example make_demo_lerobot -- /tmp/demo-lerobot
 cargo run -p veridex-cli -- check /tmp/demo-lerobot   # fires TEMPORAL.NON_MONOTONIC, exits 20
 ```
 
 The `truncated` variant writes a dataset whose manifest declares more frames than were exported —
-a realistic interrupted upload — and `check` catches it as `STRUCTURAL.FRAME_COUNT_MISMATCH`.
+a realistic interrupted upload — and `check` catches it as `STRUCTURAL.FRAME_COUNT_MISMATCH`. The
+`jitter` variant spaces one episode's frames unevenly so its mean rate still looks right, and
+`check` flags the irregular timeline as `TEMPORAL.JITTER`.
 
 The certificate binds to the dataset's CDM content hash and is Ed25519-signed: `verify` succeeds
 offline, and rejects a tampered certificate (signature mismatch) or one presented against a

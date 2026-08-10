@@ -90,8 +90,9 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   tolerances the run used are recorded in the verdict's effective config, so a result is fully
   reproducible from what it reports.
 - **Runnable demos** — `examples/make_demo_mcap` (synthetic cross-stream clock skew) and
-  `examples/make_demo_lerobot` (a LeRobot v3 dataset with an out-of-order timestamp, plus a
-  `truncated` variant whose manifest over-declares its frame count → `STRUCTURAL.FRAME_COUNT_MISMATCH`),
+  `examples/make_demo_lerobot` (a LeRobot v3 dataset with an out-of-order timestamp, a
+  `truncated` variant whose manifest over-declares its frame count → `STRUCTURAL.FRAME_COUNT_MISMATCH`,
+  and a `jitter` variant whose one episode has an irregular inter-frame spacing → `TEMPORAL.JITTER`),
   each with a `clean` variant, so `veridex check` has something to find end-to-end in **both** formats.
 - **CI** — GitHub Actions running fmt, clippy (`-D warnings`), and the full test suite, plus a
   Python job that builds the extension with maturin and runs the CLI ⇄ Python parity test on every

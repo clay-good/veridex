@@ -7,8 +7,11 @@
 //! - `clean` — a well-formed dataset with no findings.
 //! - `truncated` — the manifest declares 20 frames but episode 1 was cut short (only 6 written),
 //!   a realistic interrupted export → `STRUCTURAL.FRAME_COUNT_MISMATCH`.
+//! - `jitter` — episode 1 has an irregular inter-frame spacing (alternating ~13 ms / ~53 ms) so its
+//!   mean rate still looks like ~30 Hz and no single gap is large, yet the timeline is jittery →
+//!   `TEMPORAL.JITTER`.
 //!
-//! Usage: `cargo run -p veridex-core --example make_demo_lerobot -- <output-dir> [clean|truncated]`
+//! Usage: `cargo run -p veridex-core --example make_demo_lerobot -- <output-dir> [clean|truncated|jitter]`
 //!
 //! Then: `veridex check <output-dir>`.
 
@@ -27,6 +30,7 @@ enum Mode {
     Clean,
     NonMonotonic,
     Truncated,
+    Jitter,
 }
 
 fn main() {
@@ -36,6 +40,7 @@ fn main() {
     let mode = match std::env::args().nth(2).as_deref() {
         Some("clean") => Mode::Clean,
         Some("truncated") => Mode::Truncated,
+        Some("jitter") => Mode::Jitter,
         _ => Mode::NonMonotonic,
     };
     let dir = Path::new(&dir);
@@ -47,6 +52,9 @@ fn main() {
         Mode::NonMonotonic => "broken (episode 1 has an out-of-order timestamp → TEMPORAL.NON_MONOTONIC)",
         Mode::Truncated => {
             "truncated (manifest declares 20 frames, episode 1 cut short → STRUCTURAL.FRAME_COUNT_MISMATCH)"
+        }
+        Mode::Jitter => {
+            "jitter (episode 1 has an irregular inter-frame spacing → TEMPORAL.JITTER)"
         }
     };
     println!("Wrote {what} LeRobot v3 dataset to {}", dir.display());
@@ -90,8 +98,19 @@ fn write_dataset(dir: &Path, mode: Mode) {
     for f in 0..10i64 {
         rows.push((0, f as f64 / fps));
     }
-    for f in 0..ep1_frames {
-        rows.push((1, f as f64 / fps));
+    if mode == Mode::Jitter {
+        // Episode 1: irregular spacing (alternating ~13 ms / ~53 ms). The mean rate stays ~30 Hz
+        // (so TEMPORAL.RATE is quiet) and no single interval reaches the gap threshold, but the
+        // coefficient of variation is high → TEMPORAL.JITTER.
+        let mut t = 0.0f64;
+        for f in 0..10i64 {
+            rows.push((1, t));
+            t += if f % 2 == 0 { 0.013 } else { 0.053 };
+        }
+    } else {
+        for f in 0..ep1_frames {
+            rows.push((1, f as f64 / fps));
+        }
     }
     if mode == Mode::NonMonotonic {
         // Episode 1, frame 5: rewind the clock behind frame 4 (an out-of-order/duplicated frame).
