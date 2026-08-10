@@ -7,7 +7,7 @@ use std::io::Cursor;
 use std::path::Path;
 use std::sync::Arc;
 
-use arrow::array::{Float64Array, Int64Array};
+use arrow::array::{Float32Array, Float64Array, Int64Array};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use parquet::arrow::ArrowWriter;
@@ -80,6 +80,50 @@ fn ingest_lerobot(dir: &Path) -> Dataset {
         .ingest(&Source::Local(dir.to_path_buf()), &IngestOptions::default())
         .expect("lerobot ingest")
         .dataset
+}
+
+/// Write a LeRobot dataset with a single `float32` feature column carrying real per-row values, so
+/// the adapter's content-hash fingerprinting is exercised. `rows` are (episode_index, timestamp_s,
+/// feature_value).
+fn write_lerobot_with_values(dir: &Path, feature: &str, fps: f64, rows: &[(i64, f64, f32)]) {
+    fs::create_dir_all(dir.join("meta")).unwrap();
+    fs::create_dir_all(dir.join("data/chunk-000")).unwrap();
+    let info = serde_json::json!({
+        "codebase_version": "v3.0",
+        "fps": fps,
+        "robot_type": "so100",
+        "features": { feature: { "dtype": "float32", "shape": [1] } },
+    });
+    fs::write(
+        dir.join("meta/info.json"),
+        serde_json::to_string_pretty(&info).unwrap(),
+    )
+    .unwrap();
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("episode_index", DataType::Int64, false),
+        Field::new("frame_index", DataType::Int64, false),
+        Field::new("timestamp", DataType::Float64, false),
+        Field::new(feature, DataType::Float32, false),
+    ]));
+    let eps: Vec<i64> = rows.iter().map(|(e, _, _)| *e).collect();
+    let frames: Vec<i64> = (0..rows.len() as i64).collect();
+    let ts: Vec<f64> = rows.iter().map(|(_, t, _)| *t).collect();
+    let vals: Vec<f32> = rows.iter().map(|(_, _, v)| *v).collect();
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int64Array::from(eps)),
+            Arc::new(Int64Array::from(frames)),
+            Arc::new(Float64Array::from(ts)),
+            Arc::new(Float32Array::from(vals)),
+        ],
+    )
+    .unwrap();
+    let file = fs::File::create(dir.join("data/chunk-000/file-000.parquet")).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
 }
 
 /// Build an MCAP with the same logical streams and timestamps.
@@ -523,4 +567,85 @@ fn missing_tasks_jsonl_leaves_tasks_unresolved() {
         .omitted_fields
         .iter()
         .any(|f| f.contains("no meta/tasks.jsonl")));
+}
+
+#[test]
+fn feature_cells_are_fingerprinted_into_frame_content_hashes() {
+    let dir = tempfile::tempdir().unwrap();
+    write_lerobot_with_values(
+        dir.path(),
+        "observation.state",
+        10.0,
+        &[(0, 0.0, 1.0), (0, 0.1, 2.0), (0, 0.2, 3.0)],
+    );
+    let d = ingest_lerobot(dir.path());
+    let stream = &d.episodes[0].streams[0];
+    assert_eq!(stream.name, "observation.state");
+    // Every frame carries a content hash, and distinct feature values hash distinctly.
+    let hashes: Vec<[u8; 32]> = stream
+        .frames
+        .iter()
+        .map(|f| {
+            f.value_ref
+                .content_hash
+                .expect("frame carries a content hash")
+        })
+        .collect();
+    assert_eq!(hashes.len(), 3);
+    assert!(
+        hashes[0] != hashes[1] && hashes[1] != hashes[2],
+        "different feature values must hash differently"
+    );
+}
+
+#[test]
+fn duplicate_episodes_are_detected_end_to_end_via_lerobot_content_hashes() {
+    // Episodes 0 and 2 have identical timestamps AND feature values (a re-upload); episode 1 shares
+    // the timing but has different values. Only the true content duplicates are flagged.
+    let dir = tempfile::tempdir().unwrap();
+    write_lerobot_with_values(
+        dir.path(),
+        "observation.state",
+        10.0,
+        &[
+            (0, 0.0, 1.0),
+            (0, 0.1, 2.0),
+            (1, 0.0, 9.0),
+            (1, 0.1, 8.0),
+            (2, 0.0, 1.0),
+            (2, 0.1, 2.0),
+        ],
+    );
+    let d = ingest_lerobot(dir.path());
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let hash = veridex_core::content_hash(&d);
+    let verdict = engine.run(&d, hash, &veridex_core::RunConfig::default());
+    let dup: Vec<_> = verdict
+        .findings
+        .iter()
+        .filter(|f| f.code == "STRUCTURAL.DUPLICATE_EPISODE")
+        .collect();
+    assert_eq!(dup.len(), 1, "the re-uploaded episode pair is flagged once");
+    assert!(dup[0].message.contains('0') && dup[0].message.contains('2'));
+    assert!(!dup[0].message.contains('1'));
+}
+
+#[test]
+fn tampering_a_feature_value_changes_the_lerobot_cdm_hash() {
+    // Two datasets identical in structure and timestamps; one feature value differs. Because feature
+    // cells are fingerprinted into the CDM, the content hash must differ — so a tampered dataset can
+    // no longer verify against a certificate bound to the original.
+    let d0 = tempfile::tempdir().unwrap();
+    write_lerobot_with_values(d0.path(), "action", 10.0, &[(0, 0.0, 1.0), (0, 0.1, 2.0)]);
+    let d1 = tempfile::tempdir().unwrap();
+    write_lerobot_with_values(d1.path(), "action", 10.0, &[(0, 0.0, 1.0), (0, 0.1, 2.5)]);
+    let mut a = ingest_lerobot(d0.path());
+    let mut b = ingest_lerobot(d1.path());
+    a.id = "fixed".into();
+    b.id = "fixed".into();
+    assert_ne!(
+        veridex_core::content_hash(&a),
+        veridex_core::content_hash(&b),
+        "a changed feature value must change the CDM hash"
+    );
 }

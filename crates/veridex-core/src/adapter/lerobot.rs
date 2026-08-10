@@ -12,16 +12,23 @@
 //!   stream shares the same frame timestamps and the single LeRobot clock (`clock_id = "lerobot"`);
 //! - `fps` → each stream's declared rate.
 //!
-//! Veridex reads timestamps and structure, not feature payloads, so the feature array columns are
-//! never decoded — only `episode_index` and `timestamp` are read from the Parquet.
+//! Veridex reads timestamps and structure and **fingerprints** feature payloads — it hashes each
+//! feature cell's raw value bytes into `frame.value_ref.content_hash` (a SHA-256, never an
+//! interpretation of the values), so the CDM content hash is sensitive to actual frame content and
+//! content-level checks (duplicate episodes) work. Cells whose type isn't a supported numeric
+//! feature (e.g. an image feature stored outside the Parquet) are left unhashed, honestly.
 
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
-use arrow::array::{Array, Float32Array, Float64Array, Int32Array, Int64Array};
+use arrow::array::{
+    Array, BooleanArray, FixedSizeListArray, Float32Array, Float64Array, Int32Array, Int64Array,
+    ListArray,
+};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 use crate::cdm::{
     Dataset, Episode, Frame, Modality, Provenance, ProvenanceClass, ProvenanceElement,
@@ -182,9 +189,59 @@ fn column_f64(array: &dyn Array, row: usize) -> Option<f64> {
     }
 }
 
-/// One row of a LeRobot data Parquet: its episode index, frame timestamp (ns), and `task_index`
-/// if the column is present (unresolved to a string here — see [`load_tasks`]).
-type Row = (u64, i64, Option<i64>);
+/// Fingerprint one feature cell into a stable 32-byte digest, or `None` when the cell's type isn't a
+/// supported numeric feature (e.g. an image feature stored outside the Parquet, or an encoded blob).
+/// This is a hash of the raw value bytes — Veridex never interprets them.
+fn hash_cell(array: &dyn Array, row: usize) -> Option<[u8; 32]> {
+    let mut hasher = Sha256::new();
+    feed_cell(array, row, &mut hasher).then(|| hasher.finalize().into())
+}
+
+/// Feed a cell's canonical little-endian bytes into `hasher`. Returns `false` for an unsupported
+/// type, so the caller can abstain rather than fabricate a hash. Nested lists recurse; a null cell
+/// contributes a distinct marker byte.
+fn feed_cell(array: &dyn Array, row: usize, hasher: &mut Sha256) -> bool {
+    let any = array.as_any();
+    if array.is_null(row) {
+        hasher.update([0xffu8]);
+        return true;
+    }
+    if let Some(a) = any.downcast_ref::<Float32Array>() {
+        hasher.update(a.value(row).to_le_bytes());
+    } else if let Some(a) = any.downcast_ref::<Float64Array>() {
+        hasher.update(a.value(row).to_le_bytes());
+    } else if let Some(a) = any.downcast_ref::<Int64Array>() {
+        hasher.update(a.value(row).to_le_bytes());
+    } else if let Some(a) = any.downcast_ref::<Int32Array>() {
+        hasher.update(a.value(row).to_le_bytes());
+    } else if let Some(a) = any.downcast_ref::<BooleanArray>() {
+        hasher.update([a.value(row) as u8]);
+    } else if let Some(a) = any.downcast_ref::<FixedSizeListArray>() {
+        let child = a.value(row);
+        for i in 0..child.len() {
+            if !feed_cell(child.as_ref(), i, hasher) {
+                return false;
+            }
+        }
+    } else if let Some(a) = any.downcast_ref::<ListArray>() {
+        let child = a.value(row);
+        // Length-prefix variable-length lists so [[a],[b]] and [[a,b]] can't collide.
+        hasher.update((child.len() as u64).to_le_bytes());
+        for i in 0..child.len() {
+            if !feed_cell(child.as_ref(), i, hasher) {
+                return false;
+            }
+        }
+    } else {
+        return false;
+    }
+    true
+}
+
+/// One row of a LeRobot data Parquet: episode index, frame timestamp (ns), `task_index` (if the
+/// column is present; unresolved to a string here — see [`load_tasks`]), and a content hash per
+/// feature-value column present in the Parquet (`None` for a column whose type isn't hashable).
+type Row = (u64, i64, Option<i64>, Vec<(String, Option<[u8; 32]>)>);
 
 /// Read (episode_index, timestamp_ns, task_index) for every row of a Parquet file, in row order.
 fn read_rows(path: &Path, fps: f64) -> Result<Vec<Row>, IngestError> {
@@ -212,6 +269,17 @@ fn read_rows(path: &Path, fps: f64) -> Result<Vec<Row>, IngestError> {
         let frame_col = batch.column_by_name("frame_index");
         let task_col = batch.column_by_name("task_index");
 
+        // Feature-value columns are every column that isn't bookkeeping; their cells are fingerprinted
+        // per row so content-level checks and the CDM hash reflect actual frame content.
+        let feature_cols: Vec<(String, &dyn Array)> = batch
+            .schema()
+            .fields()
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| !BOOKKEEPING.contains(&f.name().as_str()))
+            .map(|(i, f)| (f.name().clone(), batch.column(i).as_ref()))
+            .collect();
+
         for row in 0..batch.num_rows() {
             let ep = column_i64(ep_col.as_ref(), row).ok_or_else(|| IngestError::Parse {
                 format_id: "lerobot",
@@ -238,7 +306,11 @@ fn read_rows(path: &Path, fps: f64) -> Result<Vec<Row>, IngestError> {
                 });
             };
             let task_index = task_col.as_ref().and_then(|c| column_i64(c.as_ref(), row));
-            rows.push((ep, ts_ns, task_index));
+            let feature_hashes: Vec<(String, Option<[u8; 32]>)> = feature_cols
+                .iter()
+                .map(|(name, col)| (name.clone(), hash_cell(*col, row)))
+                .collect();
+            rows.push((ep, ts_ns, task_index, feature_hashes));
         }
     }
     Ok(rows)
@@ -327,13 +399,18 @@ impl Adapter for LeRobotAdapter {
         let mut parquet_files = Vec::new();
         find_parquet(&dir.join("data"), &mut parquet_files);
 
-        let mut episode_ts: BTreeMap<u64, Vec<i64>> = BTreeMap::new();
+        // Per episode: rows in read order, each a (timestamp, feature-name -> content hash) pair.
+        type RowContent = (i64, BTreeMap<String, Option<[u8; 32]>>);
+        let mut episode_rows: BTreeMap<u64, Vec<RowContent>> = BTreeMap::new();
         // First `task_index` seen per episode (row order is deterministic: files are sorted). Most
         // episodes are single-task; if the task changes mid-episode we take the first, honestly.
         let mut episode_task_index: BTreeMap<u64, i64> = BTreeMap::new();
         for path in &parquet_files {
-            for (ep, ts, task_index) in read_rows(path, fps)? {
-                episode_ts.entry(ep).or_default().push(ts);
+            for (ep, ts, task_index, feature_hashes) in read_rows(path, fps)? {
+                episode_rows
+                    .entry(ep)
+                    .or_default()
+                    .push((ts, feature_hashes.into_iter().collect()));
                 if let Some(ti) = task_index {
                     episode_task_index.entry(ep).or_insert(ti);
                 }
@@ -344,12 +421,13 @@ impl Adapter for LeRobotAdapter {
         // Resolve `task_index` -> task string via meta/tasks.jsonl (empty map if the file is absent).
         let tasks = load_tasks(dir);
 
-        // Build episodes: one stream per feature, frames at the episode's row timestamps.
-        let episodes: Vec<Episode> = episode_ts
+        // Build episodes: one stream per feature, frames at the episode's row timestamps, each frame
+        // carrying that feature's per-row content hash (when the feature is a hashable Parquet column).
+        let episodes: Vec<Episode> = episode_rows
             .into_iter()
-            .map(|(index, timestamps)| {
-                let start_ts = timestamps.iter().copied().min();
-                let end_ts = timestamps.iter().copied().max();
+            .map(|(index, rows)| {
+                let start_ts = rows.iter().map(|(ts, _)| *ts).min();
+                let end_ts = rows.iter().map(|(ts, _)| *ts).max();
                 let streams = features
                     .iter()
                     .map(|(name, modality, dtype, shape)| Stream {
@@ -359,15 +437,15 @@ impl Adapter for LeRobotAdapter {
                         clock_id: CLOCK_ID.to_string(),
                         dtype: dtype.clone(),
                         shape: shape.clone(),
-                        frames: timestamps
+                        frames: rows
                             .iter()
-                            .map(|ts| Frame {
+                            .map(|(ts, hashes)| Frame {
                                 ts: *ts,
                                 value_ref: ValueRef {
                                     uri: name.clone(),
                                     byte_offset: None,
                                     byte_len: None,
-                                    content_hash: None,
+                                    content_hash: hashes.get(name).copied().flatten(),
                                 },
                             })
                             .collect(),
@@ -449,6 +527,7 @@ impl Adapter for LeRobotAdapter {
             "feature.shape -> stream.shape".into(),
             "robot_type -> provenance.sensor".into(),
             "meta/stats.json -> stream.stats".into(),
+            "feature cell bytes -> frame.value_ref.content_hash (SHA-256)".into(),
         ];
         let mut omitted_fields =
             vec!["video frame decoding (frames are timestamps, not pixels)".into()];
@@ -472,7 +551,10 @@ impl Adapter for LeRobotAdapter {
             mapped_fields,
             unmapped_fields: vec![UnmappedField {
                 source_path: "feature array values".into(),
-                note: "Veridex reads timestamps and structure, not feature payloads".into(),
+                note:
+                    "feature payloads are fingerprinted (hashed) into content_hash, never decoded \
+                       or interpreted"
+                        .into(),
             }],
             omitted_fields,
         };
