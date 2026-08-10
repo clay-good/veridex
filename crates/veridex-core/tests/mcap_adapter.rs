@@ -267,10 +267,7 @@ fn report_declares_fidelity_and_omissions() {
     assert_eq!(r.coverage, Coverage::Full);
     assert!(!r.mapped_fields.is_empty());
     // The message bytes are fingerprinted into the frame content hash — disclosed as mapped.
-    assert!(r
-        .mapped_fields
-        .iter()
-        .any(|m| m.contains("content_hash")));
+    assert!(r.mapped_fields.iter().any(|m| m.contains("content_hash")));
     // MCAP has no episode concept or declared rates — these must be disclosed as omitted.
     assert!(r.omitted_fields.iter().any(|f| f.contains("episode")));
     assert!(r.omitted_fields.iter().any(|f| f.contains("rate")));
@@ -350,17 +347,27 @@ fn frames_carry_a_content_hash_of_the_message_bytes() {
     }]);
     let path = write_temp_mcap(&bytes);
     let d = McapAdapter
-        .ingest(&Source::Local(path.to_path_buf()), &IngestOptions::default())
+        .ingest(
+            &Source::Local(path.to_path_buf()),
+            &IngestOptions::default(),
+        )
         .unwrap()
         .dataset;
     // Every frame is fingerprinted, and identical message bytes hash identically.
     let hashes: Vec<[u8; 32]> = d.episodes[0].streams[0]
         .frames
         .iter()
-        .map(|f| f.value_ref.content_hash.expect("frame carries a content hash"))
+        .map(|f| {
+            f.value_ref
+                .content_hash
+                .expect("frame carries a content hash")
+        })
         .collect();
     assert_eq!(hashes.len(), 3);
-    assert!(hashes.iter().all(|h| *h == hashes[0]), "same payload → same hash");
+    assert!(
+        hashes.iter().all(|h| *h == hashes[0]),
+        "same payload → same hash"
+    );
 }
 
 #[test]

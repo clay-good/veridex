@@ -505,7 +505,11 @@ fn rate_consistency_flags_a_stream_whose_rate_changes_between_episodes() {
         episode(2, vec![stream("cam", "c", Some(10.0), &ts)]),
     ]);
     let f = temporal::RateConsistency.run(&d);
-    assert_eq!(f.len(), 1, "one finding per drifting stream, not per episode");
+    assert_eq!(
+        f.len(),
+        1,
+        "one finding per drifting stream, not per episode"
+    );
     assert_eq!(f[0].code, "TEMPORAL.RATE_INCONSISTENT");
     assert_eq!(f[0].severity, Severity::Warning);
     assert!(f[0].message.contains("30.000") && f[0].message.contains("10.000"));
@@ -1041,7 +1045,11 @@ fn exact_duplicate_stream_key_is_an_error_not_a_broken_ambiguity() {
         ],
     )]);
     let f = semantic::StreamKeyClarity.run(&d);
-    assert_eq!(f.len(), 1, "one finding per duplicated name, not per occurrence");
+    assert_eq!(
+        f.len(),
+        1,
+        "one finding per duplicated name, not per occurrence"
+    );
     assert_eq!(f[0].code, "SEMANTIC.DUPLICATE_STREAM_KEY");
     assert_eq!(f[0].severity, Severity::Error);
     assert!(f[0].message.contains("appears 2 times"));

@@ -158,7 +158,10 @@ fn check_on_a_real_dataset_reports_and_exits_on_findings() {
     assert_eq!(code, 20, "a dataset with an error finding must exit 20");
     assert!(stdout.contains("Veridex report"), "unexpected: {stdout}");
     assert!(stdout.contains("Trust:"), "report must carry a trust score");
-    assert!(stdout.contains("TEMPORAL.CLOCK_SKEW"), "unexpected: {stdout}");
+    assert!(
+        stdout.contains("TEMPORAL.CLOCK_SKEW"),
+        "unexpected: {stdout}"
+    );
 
     // JSON report: same run, machine-readable, with the versioned schema and a bound content hash.
     let (code, stdout, _) = run(&["check", &dataset, "--json"]);
