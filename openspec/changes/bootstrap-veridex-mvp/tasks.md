@@ -86,7 +86,8 @@ the build plan.
       end-to-end demos work today for **both** formats via `examples/make_demo_mcap` and
       `examples/make_demo_lerobot` + `veridex check`; real Hub datasets need network access.)
 - [~] Reproduce detection of a synthetic cross-stream skew (done: the demo MCAP triggers
-      `TEMPORAL.CLOCK_SKEW`) and a corrupted episode boundary (covered by unit tests). A runnable
+      `TEMPORAL.CLOCK_SKEW` + `TEMPORAL.END_OFFSET`, and `make_demo_mcap -- <out> late-start` triggers
+      `TEMPORAL.START_OFFSET`) and a corrupted episode boundary (covered by unit tests). A runnable
       structural-corruption fixture now exists: `make_demo_lerobot -- <dir> truncated` writes a
       cut-short export that `veridex check` flags as `STRUCTURAL.FRAME_COUNT_MISMATCH`, and
       `make_demo_lerobot -- <dir> short-episode` writes a five-episode dataset with one truncated

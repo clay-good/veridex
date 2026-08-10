@@ -105,7 +105,8 @@ Built on a Rust core (`veridex-core`) with a `veridex` CLI and a Python package
 ```sh
 cargo build
 
-# generate a demo MCAP with a synthetic cross-stream clock skew
+# generate a demo MCAP with a synthetic cross-stream clock skew (append `clean` or
+# `late-start` for a well-synced recording or a sensor that comes online late)
 cargo run -p veridex-core --example make_demo_mcap -- /tmp/demo.mcap
 
 # validate it — prints a report and exits non-zero on failure
@@ -123,8 +124,10 @@ cargo run -p veridex-cli -- certify /tmp/demo.mcap --key /tmp/issuer --out /tmp/
 cargo run -p veridex-cli -- verify  /tmp/demo.mcap --certificate /tmp/demo.veridex.json --key /tmp/issuer.pub
 ```
 
-`check` catches the headline `TEMPORAL.CLOCK_SKEW` (the camera and robot clocks drift 210 ms apart),
-reports the training risk and remedy, and exits `20` (fail). Exit codes: `0` pass · `10`
+`check` catches the headline `TEMPORAL.CLOCK_SKEW` (the camera and robot clocks drift 210 ms apart,
+which also diverges their tails as `TEMPORAL.END_OFFSET`), reports the training risk and remedy, and
+exits `20` (fail). The `late-start` variant instead trips `TEMPORAL.START_OFFSET` — a sensor that
+came online late on the shared clock. Exit codes: `0` pass · `10`
 pass-with-warnings · `20` fail · `2` tool-error. For CI you can gate on severity (`--fail-on
 warning`) or on the trust score directly (`--min-score 80` fails when the score is below 80).
 

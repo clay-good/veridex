@@ -1,9 +1,15 @@
-//! Generate a small demo MCAP recording for trying the CLI end-to-end.
+//! Generate a small demo MCAP recording for trying the CLI end-to-end. Pick a variant with the
+//! second argument:
 //!
-//! Writes a two-stream recording where the camera and robot clocks drift apart (a synthetic
-//! `TEMPORAL.CLOCK_SKEW`), so `veridex check` has something to find.
+//! - (default) `skew` — a camera (~30 Hz over ~1.0 s) and a robot stream (~50 Hz over ~1.2 s) that
+//!   span different durations from a shared start, so their clocks drift → `TEMPORAL.CLOCK_SKEW`
+//!   (and, because the tails also diverge, `TEMPORAL.END_OFFSET`).
+//! - `clean` — a single well-synchronized camera stream, no findings.
+//! - `late-start` — a camera from t=0 and a robot of the *same* ~1.0 s duration that comes online
+//!   ~0.30 s late; the durations match (no clock skew) but the shared-clock start and end diverge →
+//!   `TEMPORAL.START_OFFSET` (and its mirror `TEMPORAL.END_OFFSET`).
 //!
-//! Usage: `cargo run -p veridex-core --example make_demo_mcap -- <output.mcap>`
+//! Usage: `cargo run -p veridex-core --example make_demo_mcap -- <output.mcap> [clean|late-start]`
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
@@ -12,9 +18,9 @@ fn main() {
     let path = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "demo.mcap".to_string());
-    // Pass "clean" as the second arg for a single well-synchronized stream (no clock-skew error);
-    // the default writes two streams whose clocks drift apart.
-    let clean = std::env::args().nth(2).as_deref() == Some("clean");
+    let mode = std::env::args().nth(2);
+    let clean = mode.as_deref() == Some("clean");
+    let late_start = mode.as_deref() == Some("late-start");
 
     let mut buf = Vec::new();
     {
@@ -33,16 +39,25 @@ fn main() {
         }
 
         if !clean {
-            // Robot state at ~50 Hz but spanning ~1.20 s — a 200 ms clock drift vs the camera.
             let rob_schema = w
                 .add_schema("sensor_msgs/msg/JointState", "ros2msg", b"")
                 .unwrap();
             let rob = w
                 .add_channel(rob_schema, "/joint_states", "cdr", &BTreeMap::new())
                 .unwrap();
-            for i in 0..61u64 {
-                let t = i * 20_000_000; // 20 ms => 1.20 s total
-                write_msg(&mut w, rob, i as u32, t);
+            if late_start {
+                // Same ~1.00 s duration as the camera (31 msgs @ 33 ms) but shifted ~0.30 s later —
+                // equal spans (no clock skew) with a diverging shared-clock start/end.
+                for i in 0..31u64 {
+                    let t = 300_000_000 + i * 33_000_000;
+                    write_msg(&mut w, rob, i as u32, t);
+                }
+            } else {
+                // Robot state at ~50 Hz spanning ~1.20 s — a 200 ms clock drift vs the camera.
+                for i in 0..61u64 {
+                    let t = i * 20_000_000; // 20 ms => 1.20 s total
+                    write_msg(&mut w, rob, i as u32, t);
+                }
             }
         }
 

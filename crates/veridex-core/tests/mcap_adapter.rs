@@ -311,6 +311,47 @@ fn ingested_mcap_flows_through_the_engine() {
 }
 
 #[test]
+fn a_late_starting_channel_trips_start_offset_not_clock_skew() {
+    // Both channels span the same 1000 ms, but the robot comes online 300 ms late. All MCAP channels
+    // share the `mcap-log` clock, so the diverging start is a START_OFFSET; equal durations mean no
+    // CLOCK_SKEW. Proves the shared-clock assignment makes START_OFFSET reachable end-to-end.
+    let bytes = build_mcap(&[
+        Chan {
+            schema: "sensor_msgs/msg/Image",
+            topic: "/cam",
+            times: vec![0, 1_000_000_000],
+        },
+        Chan {
+            schema: "sensor_msgs/msg/JointState",
+            topic: "/robot",
+            times: vec![300_000_000, 1_300_000_000],
+        },
+    ]);
+    let path = write_temp_mcap(&bytes);
+    let ingested = McapAdapter
+        .ingest(
+            &Source::Local(path.to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest");
+
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let hash = veridex_core::content_hash(&ingested.dataset);
+    let verdict = engine.run(&ingested.dataset, hash, &veridex_core::RunConfig::default());
+    assert!(verdict
+        .findings
+        .iter()
+        .any(|f| f.code == "TEMPORAL.START_OFFSET"));
+    assert!(
+        !verdict
+            .findings
+            .iter()
+            .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"),
+        "equal durations must not trip clock skew"
+    );
+}
+
+#[test]
 fn re_ingesting_the_same_bytes_yields_the_same_content_hash() {
     let bytes = build_mcap(&[Chan {
         schema: "sensor_msgs/msg/JointState",
