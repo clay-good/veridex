@@ -652,6 +652,34 @@ fn healthy_stats_produce_no_findings() {
     assert!(statistical::RangeSanity.run(&d).is_empty());
 }
 
+#[test]
+fn stats_outside_declared_dtype_range_is_an_error() {
+    // A uint8 stream cannot hold 300; stored max 300 means the dtype or the stats are wrong.
+    let mut s = stream_with_stats("img", stats(0.0, 300.0, 128.0, 40.0));
+    s.dtype = Some("uint8".into());
+    let f = statistical::RangeSanity.run(&dataset(vec![episode(0, vec![s])]));
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].code, "STATISTICAL.DTYPE_RANGE");
+    assert_eq!(f[0].severity, Severity::Error);
+}
+
+#[test]
+fn stats_within_declared_dtype_range_are_clean() {
+    // uint8 stats within [0, 255] are fine.
+    let mut s = stream_with_stats("img", stats(0.0, 255.0, 128.0, 40.0));
+    s.dtype = Some("uint8".into());
+    assert!(statistical::RangeSanity
+        .run(&dataset(vec![episode(0, vec![s])]))
+        .is_empty());
+
+    // A float dtype has no integer bound to exceed, so nothing fires even for large values.
+    let mut f32s = stream_with_stats("state", stats(-1000.0, 1000.0, 0.0, 100.0));
+    f32s.dtype = Some("float32".into());
+    assert!(statistical::RangeSanity
+        .run(&dataset(vec![episode(0, vec![f32s])]))
+        .is_empty());
+}
+
 // ---- semantic ----
 
 /// An episode carrying a specific task string.

@@ -21,6 +21,7 @@ impl Check for RangeSanity {
             "STATISTICAL.NEGATIVE_STD",
             "STATISTICAL.MEAN_OUT_OF_RANGE",
             "STATISTICAL.STD_IMPLAUSIBLE",
+            "STATISTICAL.DTYPE_RANGE",
             "STATISTICAL.DEGENERATE",
         ]
     }
@@ -157,6 +158,32 @@ impl Check for RangeSanity {
                     continue;
                 }
 
+                // Stored stats must fit the stream's declared integer dtype: a `uint8` stream can't
+                // hold a value of 300, so min/max outside the dtype's representable range means the
+                // stats don't match the data (wrong dtype, or stats computed on rescaled values).
+                if let Some((lo, hi)) = stream.dtype.as_deref().and_then(integer_dtype_range) {
+                    if stats.min < lo || stats.max > hi {
+                        let dtype = stream.dtype.as_deref().unwrap_or_default();
+                        findings.push(
+                            Finding::new(
+                                self.id(),
+                                Category::Statistical,
+                                Severity::Error,
+                                at(),
+                                "STATISTICAL.DTYPE_RANGE",
+                                format!(
+                                    "stream `{}` in episode {}: stored range [{}, {}] falls outside \
+                                     what `{dtype}` can represent [{lo}, {hi}]",
+                                    stream.name, ep.index, stats.min, stats.max
+                                ),
+                            )
+                            .with_risk("Stats outside the declared dtype's range mean the dtype or the stats are wrong; normalization and any dtype-based decoding will be incorrect.")
+                            .with_remedy("Reconcile the declared dtype with the data, or re-derive the statistics."),
+                        );
+                        continue;
+                    }
+                }
+
                 // Degenerate (constant) distribution: no signal to learn from.
                 if is_degenerate(&stats) {
                     findings.push(
@@ -187,4 +214,21 @@ impl Check for RangeSanity {
 
 fn is_degenerate(stats: &StreamStats) -> bool {
     stats.min == stats.max && stats.std == 0.0
+}
+
+/// The representable `[min, max]` of a declared integer dtype, as f64. Returns `None` for float,
+/// non-integer, or unrecognized dtypes (nothing to bound), and for 64-bit integers whose extremes
+/// f64 can't represent exactly (a bound there would risk false positives). Matched case-insensitively
+/// against common spellings (`uint8`, `u8`, `int16`, `i16`, `bool`).
+fn integer_dtype_range(dtype: &str) -> Option<(f64, f64)> {
+    match dtype.trim().to_ascii_lowercase().as_str() {
+        "bool" => Some((0.0, 1.0)),
+        "uint8" | "u8" => Some((0.0, 255.0)),
+        "int8" | "i8" => Some((-128.0, 127.0)),
+        "uint16" | "u16" => Some((0.0, 65_535.0)),
+        "int16" | "i16" => Some((-32_768.0, 32_767.0)),
+        "uint32" | "u32" => Some((0.0, 4_294_967_295.0)),
+        "int32" | "i32" => Some((-2_147_483_648.0, 2_147_483_647.0)),
+        _ => None,
+    }
 }

@@ -34,7 +34,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   rate conformance, gaps, the headline
   `TEMPORAL.CLOCK_SKEW`, and a shared-clock start-offset check that catches a stream which comes
   online late — a misalignment the duration-based skew check can miss), statistical (range/sanity — inverted range, non-finite, negative std, mean-outside-range, and
-  degeneracy, and an implausibly-large std that violates Popoviciu's bound `(max−min)/2` — over stored stats), semantic
+  degeneracy, an implausibly-large std that violates Popoviciu's bound `(max−min)/2`, and stored
+  min/max outside the declared integer dtype's representable range — over stored stats), semantic
   (task-string quality — present-but-empty and placeholder tasks — and stream-key clarity, which
   flags camera/stream keys that collide by case or whitespace; verified, never modified), and
   provenance-completeness (presence, internal consistency, and placeholder values — a `license` of
