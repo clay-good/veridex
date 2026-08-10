@@ -33,7 +33,9 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   (LeRobot `total_episodes` / `total_frames` vs what was ingested), and cross-episode dtype/shape
   consistency so a stream
   that changes
-  tensor shape between episodes — an un-batchable dataset — is caught), temporal (monotonicity,
+  tensor shape between episodes — an un-batchable dataset — is caught, and cross-episode stream
+  presence so a stream that appears in only some episodes — a sensor that dropped out, or two
+  exports pooled together — is flagged (`STRUCTURAL.STREAM_PRESENCE_INCONSISTENT`)), temporal (monotonicity,
   rate conformance, gaps, the headline
   `TEMPORAL.CLOCK_SKEW`, and a shared-clock start-offset check that catches a stream which comes
   online late — a misalignment the duration-based skew check can miss), statistical (range/sanity — inverted range, non-finite, negative std, mean-outside-range, and

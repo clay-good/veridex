@@ -1,6 +1,6 @@
 //! Structural checks: episode/stream integrity.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::cdm::Dataset;
 use crate::check::{Category, Check, Finding, Location, Scope, Severity};
@@ -346,6 +346,110 @@ fn describe(dtype: &Option<String>, shape: &Option<Vec<u64>>) -> String {
         "an undeclared schema".into()
     } else {
         parts.join(" ")
+    }
+}
+
+/// Cross-episode stream presence. A stream key that appears in some episodes but is absent from
+/// others yields a heterogeneous feature set: whether a sensor dropped out mid-collection or two
+/// exports with different feature sets were pooled, the loader either errors on the missing feature
+/// or silently fills it. Unlike [`ShapeConsistency`] (which compares the *schema* of streams that are
+/// present), this catches streams that are *missing* entirely from some episodes. A warning, since a
+/// few datasets legitimately record different streams per episode.
+///
+/// Episodes with no streams are excluded from the comparison — an empty episode is the
+/// [`DegenerateEpisode`] check's concern, and counting it here would make every stream look
+/// inconsistent.
+pub struct StreamPresence;
+
+impl Check for StreamPresence {
+    fn id(&self) -> &'static str {
+        "structural.stream-presence"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["STRUCTURAL.STREAM_PRESENCE_INCONSISTENT"]
+    }
+    fn title(&self) -> &'static str {
+        "Cross-episode stream presence"
+    }
+    fn category(&self) -> Category {
+        Category::Structural
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Warning
+    }
+    fn scope(&self) -> Scope {
+        Scope::Dataset
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        // Consider only episodes that actually carry streams (empty ones are DegenerateEpisode's
+        // concern). The comparison needs at least two such episodes to mean anything.
+        let episodes: Vec<&crate::cdm::Episode> = dataset
+            .episodes
+            .iter()
+            .filter(|ep| !ep.streams.is_empty())
+            .collect();
+        if episodes.len() < 2 {
+            return Vec::new();
+        }
+        let total = episodes.len();
+
+        // For each stream name, the distinct episode indices that carry it. BTreeMap/BTreeSet keep
+        // the output deterministic regardless of episode/stream ordering.
+        let mut presence: BTreeMap<&str, BTreeSet<u64>> = BTreeMap::new();
+        for ep in &episodes {
+            for stream in &ep.streams {
+                presence
+                    .entry(stream.name.as_str())
+                    .or_default()
+                    .insert(ep.index);
+            }
+        }
+
+        let mut findings = Vec::new();
+        for (name, present_in) in &presence {
+            if present_in.len() >= total {
+                continue; // present in every episode — consistent.
+            }
+            // Which episodes lack it. Compact the list like the episode-continuity check does.
+            let missing: Vec<u64> = episodes
+                .iter()
+                .map(|ep| ep.index)
+                .filter(|idx| !present_in.contains(idx))
+                .collect();
+            let shown: Vec<String> = missing.iter().take(8).map(|i| i.to_string()).collect();
+            let more = if missing.len() > shown.len() {
+                format!(", … ({} more)", missing.len() - shown.len())
+            } else {
+                String::new()
+            };
+            findings.push(
+                Finding::new(
+                    self.id(),
+                    Category::Structural,
+                    Severity::Warning,
+                    Location::Dataset,
+                    "STRUCTURAL.STREAM_PRESENCE_INCONSISTENT",
+                    format!(
+                        "stream `{name}` is present in {} of {total} episodes; missing from {}{more}",
+                        present_in.len(),
+                        shown.join(", "),
+                    ),
+                )
+                .with_risk(
+                    "A stream present in only some episodes yields a heterogeneous feature set: \
+                     batched training errors on the missing feature or silently fills it, and a \
+                     sensor that drops out mid-collection often signals a hardware or export fault.",
+                )
+                .with_remedy(
+                    "Confirm whether the stream is meant to be present everywhere; if so, recover or \
+                     re-export the episodes missing it, otherwise document the intentional variation.",
+                ),
+            );
+        }
+        findings
     }
 }
 

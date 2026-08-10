@@ -308,6 +308,52 @@ fn consistent_shapes_produce_no_finding_and_drift_reports_once() {
     assert_eq!(structural::ShapeConsistency.run(&drift).len(), 1);
 }
 
+#[test]
+fn stream_missing_from_some_episodes_is_flagged() {
+    // `wrist` is present in episode 0 but absent from episode 1.
+    let d = dataset(vec![
+        episode(
+            0,
+            vec![
+                stream("base", "c", None, &[0, 1]),
+                stream("wrist", "c", None, &[0, 1]),
+            ],
+        ),
+        episode(1, vec![stream("base", "c", None, &[0, 1])]),
+    ]);
+    let findings = structural::StreamPresence.run(&d);
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].code, "STRUCTURAL.STREAM_PRESENCE_INCONSISTENT");
+    assert_eq!(findings[0].severity, Severity::Warning);
+    assert!(findings[0].message.contains("wrist"));
+    assert!(findings[0].message.contains("1 of 2"));
+    assert!(findings[0].message.contains("missing from 1"));
+}
+
+#[test]
+fn stream_present_in_every_episode_is_clean() {
+    let d = dataset(vec![
+        episode(0, vec![stream("base", "c", None, &[0, 1])]),
+        episode(1, vec![stream("base", "c", None, &[0, 1])]),
+    ]);
+    assert!(structural::StreamPresence.run(&d).is_empty());
+}
+
+#[test]
+fn stream_presence_needs_two_populated_episodes_and_ignores_empty_ones() {
+    // A single populated episode has nothing to compare against.
+    let single = dataset(vec![episode(0, vec![stream("base", "c", None, &[0, 1])])]);
+    assert!(structural::StreamPresence.run(&single).is_empty());
+
+    // An empty episode is DegenerateEpisode's concern; it must not make `base` look inconsistent,
+    // and with only one populated episode remaining there is nothing to compare.
+    let with_empty = dataset(vec![
+        episode(0, vec![stream("base", "c", None, &[0, 1])]),
+        episode(1, vec![]),
+    ]);
+    assert!(structural::StreamPresence.run(&with_empty).is_empty());
+}
+
 // ---- temporal ----
 
 #[test]
@@ -532,7 +578,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 15);
+    assert_eq!(verdict.executed_checks.len(), 16);
 }
 
 #[test]
