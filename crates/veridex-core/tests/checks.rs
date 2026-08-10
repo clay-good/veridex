@@ -231,6 +231,47 @@ fn contiguous_episode_indices_have_no_gap() {
     assert!(structural::EpisodeContinuity.run(&one).is_empty());
 }
 
+#[test]
+fn exact_duplicate_episodes_are_grouped() {
+    // Episodes 0, 1, 2 where 0 and 2 are byte-identical in content (a re-upload). The check groups
+    // them and reports both indices; the distinct episode 1 is not implicated.
+    let dup = || vec![stream("cam", "wall", Some(10.0), &[0, 100, 200])];
+    let distinct = vec![stream("cam", "wall", Some(10.0), &[0, 100, 300])];
+    let d = dataset(vec![
+        episode(0, dup()),
+        episode(1, distinct),
+        episode(2, dup()),
+    ]);
+    let f = structural::DuplicateEpisode.run(&d);
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].code, "STRUCTURAL.DUPLICATE_EPISODE");
+    assert_eq!(f[0].severity, Severity::Warning);
+    // Both duplicate indices are named; the distinct episode is not.
+    assert!(f[0].message.contains('0') && f[0].message.contains('2'));
+    assert!(!f[0].message.contains('1'));
+}
+
+#[test]
+fn distinct_episodes_are_not_flagged_as_duplicates() {
+    // Same streams and timestamps but different stored stats → not a duplicate.
+    let mut a = stream("cam", "wall", Some(10.0), &[0, 100, 200]);
+    a.stats = Some(veridex_core::cdm::StreamStats {
+        min: 0.0,
+        max: 1.0,
+        mean: 0.5,
+        std: 0.1,
+    });
+    let mut b = stream("cam", "wall", Some(10.0), &[0, 100, 200]);
+    b.stats = Some(veridex_core::cdm::StreamStats {
+        min: 0.0,
+        max: 2.0, // differs
+        mean: 0.5,
+        std: 0.1,
+    });
+    let d = dataset(vec![episode(0, vec![a]), episode(1, vec![b])]);
+    assert!(structural::DuplicateEpisode.run(&d).is_empty());
+}
+
 fn shaped(name: &str, dtype: Option<&str>, shape: Option<Vec<u64>>, ts: &[i64]) -> Stream {
     Stream {
         name: name.into(),
@@ -707,7 +748,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 19);
+    assert_eq!(verdict.executed_checks.len(), 20);
 }
 
 #[test]

@@ -22,6 +22,7 @@ Severities below are the defaults.
 | `structural.declared-frame-count` | `STRUCTURAL.FRAME_COUNT_MISMATCH` | error | The manifest's declared frame count (e.g. LeRobot `total_frames`) differs from the frames ingested (episodes present but cut short). |
 | `structural.shape-consistency` | `STRUCTURAL.SHAPE_MISMATCH` | error | A stream keeps a different declared dtype/shape across episodes (un-batchable). |
 | `structural.stream-presence` | `STRUCTURAL.STREAM_PRESENCE_INCONSISTENT` | warning | A stream key is present in some episodes but missing from others — a heterogeneous feature set (a sensor that dropped out, or two exports pooled together). |
+| `structural.duplicate-episode` | `STRUCTURAL.DUPLICATE_EPISODE` | warning | Two or more episodes are exact duplicates (identical streams, per-frame timestamps, and stored stats) — a re-upload or a bad merge that over-weights the repeated trajectories. Detects *exact* duplicates from the CDM; near-duplicate detection needs frame payloads and is out of MVP scope. |
 
 ## Temporal — is the time base sound?
 

@@ -35,7 +35,10 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   that changes
   tensor shape between episodes — an un-batchable dataset — is caught, and cross-episode stream
   presence so a stream that appears in only some episodes — a sensor that dropped out, or two
-  exports pooled together — is flagged (`STRUCTURAL.STREAM_PRESENCE_INCONSISTENT`)), temporal (monotonicity,
+  exports pooled together — is flagged (`STRUCTURAL.STREAM_PRESENCE_INCONSISTENT`), and exact-duplicate
+  episode detection (`STRUCTURAL.DUPLICATE_EPISODE`) that groups episodes carrying identical streams,
+  timestamps, and stored stats — a re-upload or a bad merge that over-weights the repeated
+  trajectories), temporal (monotonicity,
   rate conformance, gaps, the headline
   a declared-rate validity check (`TEMPORAL.INVALID_RATE`) that flags a corrupt declared rate
   (`0`, negative, `NaN`, `inf`) which the rate- and gap-conformance checks would otherwise skip

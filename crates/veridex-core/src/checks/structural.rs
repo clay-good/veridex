@@ -642,3 +642,135 @@ impl Check for EpisodeContinuity {
         )]
     }
 }
+
+/// Exact-duplicate episodes. A dataset that carries the *same episode more than once* — a re-upload,
+/// a bad merge of two exports, or a copy-paste in a manifest — over-weights those trajectories and
+/// inflates the apparent dataset size, biasing training toward the repeated data. This groups
+/// episodes by an exact structural signature (their streams, per-frame timestamps, and stored
+/// statistics — everything but the episode index) and flags any group holding more than one episode.
+///
+/// Scope note: this catches *exact* duplicates from the CDM alone. *Near*-duplicate detection (the
+/// same trajectory re-recorded with small differences) needs frame-payload similarity, which the MVP
+/// design does not decode, so it is deliberately out of scope here.
+pub struct DuplicateEpisode;
+
+impl DuplicateEpisode {
+    /// A deterministic, exact signature of an episode's content, excluding its index. Two episodes
+    /// with equal signatures are byte-for-byte equivalent in every field a duplicate would share.
+    /// Floats are captured by their bit pattern so equality is exact (and `NaN`-stable); the
+    /// modality enum is captured by its `Debug` form.
+    fn signature(ep: &crate::cdm::Episode) -> String {
+        use std::fmt::Write as _;
+        let mut sig = String::new();
+        // task and labels (labels sorted for order-insensitivity).
+        let _ = write!(sig, "task={:?};", ep.task);
+        let mut labels: Vec<&crate::cdm::Label> = ep.labels.iter().collect();
+        labels.sort_by(|a, b| a.key.cmp(&b.key).then_with(|| a.value.cmp(&b.value)));
+        for l in labels {
+            let _ = write!(sig, "L[{}={}];", l.key, l.value);
+        }
+        // streams, sorted by name (a duplicate has the same set regardless of listing order).
+        let mut streams: Vec<&crate::cdm::Stream> = ep.streams.iter().collect();
+        streams.sort_by(|a, b| a.name.cmp(&b.name));
+        for s in streams {
+            let _ = write!(
+                sig,
+                "S[name={};mod={:?};rate={:?};clock={};dtype={:?};shape={:?};ts=",
+                s.name,
+                s.modality,
+                s.declared_rate_hz.map(f64::to_bits),
+                s.clock_id,
+                s.dtype,
+                s.shape,
+            );
+            for f in &s.frames {
+                let _ = write!(sig, "{},", f.ts);
+            }
+            if let Some(st) = s.stats {
+                let _ = write!(
+                    sig,
+                    ";stats={},{},{},{}",
+                    st.min.to_bits(),
+                    st.max.to_bits(),
+                    st.mean.to_bits(),
+                    st.std.to_bits()
+                );
+            }
+            sig.push_str("];");
+        }
+        sig
+    }
+}
+
+impl Check for DuplicateEpisode {
+    fn id(&self) -> &'static str {
+        "structural.duplicate-episode"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["STRUCTURAL.DUPLICATE_EPISODE"]
+    }
+    fn title(&self) -> &'static str {
+        "Duplicate episodes"
+    }
+    fn category(&self) -> Category {
+        Category::Structural
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Warning
+    }
+    fn scope(&self) -> Scope {
+        Scope::Dataset
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        // signature -> episode indices, in first-seen order within each group.
+        let mut groups: HashMap<String, Vec<u64>> = HashMap::new();
+        for ep in &dataset.episodes {
+            groups
+                .entry(Self::signature(ep))
+                .or_default()
+                .push(ep.index);
+        }
+        // Keep only groups with more than one episode; sort each group's indices, then order the
+        // groups by their smallest index so the report is deterministic.
+        let mut dup_groups: Vec<Vec<u64>> = groups
+            .into_values()
+            .filter(|idxs| idxs.len() > 1)
+            .map(|mut idxs| {
+                idxs.sort_unstable();
+                idxs
+            })
+            .collect();
+        dup_groups.sort_by_key(|idxs| idxs[0]);
+
+        dup_groups
+            .into_iter()
+            .map(|idxs| {
+                let list = idxs
+                    .iter()
+                    .map(u64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Finding::new(
+                    self.id(),
+                    Category::Structural,
+                    Severity::Warning,
+                    Location::Dataset,
+                    "STRUCTURAL.DUPLICATE_EPISODE",
+                    format!(
+                        "episodes {list} are exact duplicates (identical streams, timestamps, and \
+                         stored statistics)"
+                    ),
+                )
+                .with_risk(
+                    "Duplicate episodes over-weight their trajectories and inflate the apparent \
+                     dataset size — a re-upload or a bad merge — biasing training toward the \
+                     repeated data.",
+                )
+                .with_remedy("De-duplicate the dataset so each episode appears once.")
+            })
+            .collect()
+    }
+}
