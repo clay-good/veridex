@@ -37,6 +37,8 @@ pub struct TolerancesConfig {
     pub clock_skew_ms: Option<f64>,
     /// `TEMPORAL.START_OFFSET` max shared-clock start offset, in milliseconds.
     pub start_offset_ms: Option<f64>,
+    /// `TEMPORAL.END_OFFSET` max shared-clock end offset, in milliseconds.
+    pub end_offset_ms: Option<f64>,
     /// `TEMPORAL.RATE` allowed relative rate deviation (0.10 = 10%).
     pub rate_deviation: Option<f64>,
     /// `TEMPORAL.GAP` gap factor: an interval this many times the expected one is a gap.
@@ -134,6 +136,7 @@ impl TolerancesConfig {
         let non_negative = [
             ("clock_skew_ms", self.clock_skew_ms),
             ("start_offset_ms", self.start_offset_ms),
+            ("end_offset_ms", self.end_offset_ms),
             ("rate_deviation", self.rate_deviation),
             ("jitter_cv", self.jitter_cv),
         ];
@@ -169,6 +172,10 @@ impl TolerancesConfig {
                 .start_offset_ms
                 .map(|ms| (ms * 1_000_000.0) as i64)
                 .unwrap_or(d.start_offset_ns),
+            end_offset_ns: self
+                .end_offset_ms
+                .map(|ms| (ms * 1_000_000.0) as i64)
+                .unwrap_or(d.end_offset_ns),
             rate_deviation: self.rate_deviation.unwrap_or(d.rate_deviation),
             gap_factor: self.gap_factor.unwrap_or(d.gap_factor),
             jitter_cv: self.jitter_cv.unwrap_or(d.jitter_cv),

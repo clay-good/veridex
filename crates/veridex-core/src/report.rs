@@ -132,6 +132,9 @@ fn non_default_tolerances(t: &crate::Tolerances) -> Vec<String> {
     if t.start_offset_ns != d.start_offset_ns {
         out.push(format!("start-offset {}ms", t.start_offset_ns / 1_000_000));
     }
+    if t.end_offset_ns != d.end_offset_ns {
+        out.push(format!("end-offset {}ms", t.end_offset_ns / 1_000_000));
+    }
     if t.rate_deviation != d.rate_deviation {
         out.push(format!("rate {:.0}%", t.rate_deviation * 100.0));
     }

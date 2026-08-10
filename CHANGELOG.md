@@ -38,7 +38,10 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   exports pooled together — is flagged (`STRUCTURAL.STREAM_PRESENCE_INCONSISTENT`)), temporal (monotonicity,
   rate conformance, gaps, the headline
   `TEMPORAL.CLOCK_SKEW`, a shared-clock start-offset check that catches a stream which comes
-  online late — a misalignment the duration-based skew check can miss — and a timeline-jitter check
+  online late — a misalignment the duration-based skew check can miss — its mirror
+  `TEMPORAL.END_OFFSET` that catches a stream which drops out early or runs long (a truncated tail;
+  because `end = start + duration`, a tail misalignment can slip past both the start-offset and
+  clock-skew checks), and a timeline-jitter check
   (`TEMPORAL.JITTER`) that flags an irregular inter-frame spacing (coefficient of variation above a
   configurable tolerance) even when the mean rate looks correct and no single interval is a gap),
   statistical (range/sanity — inverted range, non-finite, negative std, mean-outside-range, and

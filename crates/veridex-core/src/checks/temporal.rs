@@ -574,3 +574,102 @@ impl Check for StartOffset {
         findings
     }
 }
+
+/// Cross-stream **end-time offset within a shared clock**. The mirror of [`StartOffset`]: two streams
+/// recorded on the same `clock_id` over one episode should also *end* at nearly the same absolute
+/// time. One that ends materially earlier than its peers — a sensor that dropped out mid-episode, or
+/// a truncated tail — leaves the final observations unpaired with their actions. This completes the
+/// start / duration / end alignment triple: because `end = start + duration`, a stream can slip past
+/// both [`StartOffset`] (|Δstart| ≤ tol) and [`ClockSkew`] (|Δduration| ≤ tol) yet still be misaligned
+/// at the tail by up to twice the tolerance, so neither of those checks would catch it. Absolute
+/// timestamps are only comparable within a single clock, so streams are grouped by `clock_id` and
+/// compared only inside a group.
+pub struct EndOffset {
+    /// Maximum tolerated difference between the earliest and latest stream end on one clock, in
+    /// nanoseconds.
+    pub tolerance_ns: i64,
+}
+
+impl Default for EndOffset {
+    fn default() -> Self {
+        EndOffset {
+            tolerance_ns: 50_000_000, // 50 ms
+        }
+    }
+}
+
+impl Check for EndOffset {
+    fn id(&self) -> &'static str {
+        "temporal.end-offset"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["TEMPORAL.END_OFFSET"]
+    }
+    fn title(&self) -> &'static str {
+        "Cross-stream end offset (shared clock)"
+    }
+    fn category(&self) -> Category {
+        Category::Temporal
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Warning
+    }
+    fn scope(&self) -> Scope {
+        Scope::Episode
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        for ep in &dataset.episodes {
+            // Group each stream's end (max ts) by clock_id; BTreeMap keeps clocks in a stable
+            // order so findings are deterministic.
+            let mut by_clock: BTreeMap<&str, Vec<(&str, i64)>> = BTreeMap::new();
+            for s in &ep.streams {
+                if let Some((_lo, hi)) = span_bounds(s) {
+                    by_clock
+                        .entry(s.clock_id.as_str())
+                        .or_default()
+                        .push((s.name.as_str(), hi));
+                }
+            }
+            for (clock, mut ends) in by_clock {
+                if ends.len() < 2 {
+                    continue;
+                }
+                // Earliest- and latest-ending streams on this clock.
+                ends.sort_by_key(|(_, end)| *end);
+                let (early_name, early_end) = ends[0];
+                let (late_name, late_end) = ends[ends.len() - 1];
+                let offset = late_end.saturating_sub(early_end);
+                if offset > self.tolerance_ns {
+                    findings.push(
+                        Finding::new(
+                            self.id(),
+                            Category::Temporal,
+                            Severity::Warning,
+                            Location::Episode { episode: ep.index },
+                            "TEMPORAL.END_OFFSET",
+                            format!(
+                                "episode {}: on clock `{clock}`, stream `{early_name}` ends \
+                                 {:.1} ms before `{late_name}`",
+                                ep.index,
+                                offset as f64 / 1e6,
+                            ),
+                        )
+                        .with_risk(
+                            "An early-ending stream leaves the last observations unpaired with \
+                             their actions, so late frames train on missing or stale context.",
+                        )
+                        .with_remedy(
+                            "Confirm all sensors stop together, or trim each episode to the \
+                             common time window.",
+                        ),
+                    );
+                }
+            }
+        }
+        findings
+    }
+}

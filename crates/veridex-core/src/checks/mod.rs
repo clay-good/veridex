@@ -45,6 +45,9 @@ pub fn standard_checks_with(t: &Tolerances) -> Vec<Box<dyn Check>> {
         Box::new(temporal::StartOffset {
             tolerance_ns: t.start_offset_ns,
         }),
+        Box::new(temporal::EndOffset {
+            tolerance_ns: t.end_offset_ns,
+        }),
         Box::new(statistical::RangeSanity),
         Box::new(semantic::TaskQuality),
         Box::new(semantic::StreamKeyClarity),

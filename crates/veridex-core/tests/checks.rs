@@ -498,6 +498,64 @@ fn start_offset_within_tolerance_is_clean() {
 }
 
 #[test]
+fn end_offset_flags_an_early_ending_stream_on_the_same_clock() {
+    // Both on clock `wall`, same start; the arm stops 200 ms before the camera — beyond the 50 ms
+    // default. Same-start means CLOCK_SKEW would also catch it, but the check that owns a tail
+    // misalignment is END_OFFSET.
+    let cam = stream("cam", "wall", None, &[0, 1_200_000_000]);
+    let arm = stream("arm", "wall", None, &[0, 1_000_000_000]);
+    let d = dataset(vec![episode(0, vec![cam, arm])]);
+    let f = temporal::EndOffset::default().run(&d);
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].code, "TEMPORAL.END_OFFSET");
+    assert_eq!(f[0].severity, Severity::Warning);
+    assert!(f[0].message.contains("arm"));
+}
+
+#[test]
+fn end_offset_catches_a_tail_misalignment_start_and_skew_both_miss() {
+    // The gap END_OFFSET exists to close: because end = start + duration, a stream can pass both
+    // START_OFFSET (|Δstart| ≤ tol) and CLOCK_SKEW (|Δduration| ≤ tol) yet be misaligned at the tail
+    // by up to 2·tol. cam spans [0, 1000ms]; arm spans [40ms, 1040ms]: Δstart = 40 ms (< 50),
+    // Δduration = 0 (< 50), but Δend = 40 ms... push it past tolerance with a 60 ms tail gap while
+    // keeping start and duration within tolerance.
+    let cam = stream("cam", "wall", None, &[0, 1_000_000_000]);
+    // arm starts 40 ms late (under tol) and runs 20 ms longer (duration drift 20 ms, under tol), so
+    // it ends 60 ms after cam — over the 50 ms tolerance.
+    let arm = stream("arm", "wall", None, &[40_000_000, 1_060_000_000]);
+    let d = dataset(vec![episode(0, vec![cam, arm])]);
+    assert!(
+        temporal::StartOffset::default().run(&d).is_empty(),
+        "start offset (40 ms) is within tolerance"
+    );
+    assert!(
+        temporal::ClockSkew::default().run(&d).is_empty(),
+        "duration drift (20 ms) is within tolerance"
+    );
+    let f = temporal::EndOffset::default().run(&d);
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].code, "TEMPORAL.END_OFFSET");
+}
+
+#[test]
+fn end_offset_ignores_streams_on_different_clocks() {
+    // Same 200 ms end gap, but on different clocks → absolute times aren't comparable, so no finding.
+    let cam = stream("cam", "cam_clock", None, &[0, 1_200_000_000]);
+    let arm = stream("arm", "arm_clock", None, &[0, 1_000_000_000]);
+    let d = dataset(vec![episode(0, vec![cam, arm])]);
+    assert!(temporal::EndOffset::default().run(&d).is_empty());
+}
+
+#[test]
+fn end_offset_within_tolerance_is_clean() {
+    // 20 ms end gap on a shared clock, under the 50 ms default tolerance.
+    let cam = stream("cam", "wall", None, &[0, 1_020_000_000]);
+    let arm = stream("arm", "wall", None, &[0, 1_000_000_000]);
+    let d = dataset(vec![episode(0, vec![cam, arm])]);
+    assert!(temporal::EndOffset::default().run(&d).is_empty());
+}
+
+#[test]
 fn temporal_checks_do_not_overflow_on_extreme_timestamps() {
     // Corrupt timestamps spanning the full i64 range must not overflow the interval/span math
     // (which would panic in debug builds). Veridex's whole job is surviving bad data. The
@@ -511,6 +569,7 @@ fn temporal_checks_do_not_overflow_on_extreme_timestamps() {
     let _ = temporal::Gaps::default().run(&d);
     let _ = temporal::ClockSkew::default().run(&d);
     let _ = temporal::StartOffset::default().run(&d);
+    let _ = temporal::EndOffset::default().run(&d);
     // A stream with no declared rate exercises the median-interval path (also saturating).
     let no_rate = dataset(vec![episode(
         0,
@@ -621,7 +680,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 17);
+    assert_eq!(verdict.executed_checks.len(), 18);
 }
 
 #[test]

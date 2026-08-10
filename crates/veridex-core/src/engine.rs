@@ -33,6 +33,8 @@ pub struct Tolerances {
     pub clock_skew_ns: i64,
     /// Max tolerated shared-clock start offset for `TEMPORAL.START_OFFSET`, in nanoseconds.
     pub start_offset_ns: i64,
+    /// Max tolerated shared-clock end offset for `TEMPORAL.END_OFFSET`, in nanoseconds.
+    pub end_offset_ns: i64,
     /// Allowed relative rate deviation for `TEMPORAL.RATE` (0.10 = 10%).
     pub rate_deviation: f64,
     /// A `TEMPORAL.GAP` fires on an interval greater than this multiple of the expected interval.
@@ -47,6 +49,7 @@ impl Default for Tolerances {
         Tolerances {
             clock_skew_ns: 50_000_000,   // 50 ms
             start_offset_ns: 50_000_000, // 50 ms
+            end_offset_ns: 50_000_000,   // 50 ms
             rate_deviation: 0.10,        // 10%
             gap_factor: 3.0,
             jitter_cv: 0.5,
