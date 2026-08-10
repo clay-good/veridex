@@ -172,7 +172,7 @@ fn tolerances_parse_resolve_and_validate() {
     // Provided values resolve; unset ones fall back to the defaults.
     let cfg = CheckConfig::from_toml(
         "[tolerances]\nclock_skew_ms = 250\nstart_offset_ms = 120\nend_offset_ms = 90\n\
-         rate_deviation = 0.2\ngap_factor = 5\njitter_cv = 0.8\n",
+         rate_deviation = 0.2\ngap_factor = 5\njitter_cv = 0.8\nepisode_duration_factor = 6\n",
     )
     .expect("parses");
     let rc = cfg.to_run_config();
@@ -182,6 +182,7 @@ fn tolerances_parse_resolve_and_validate() {
     assert_eq!(rc.tolerances.rate_deviation, 0.2);
     assert_eq!(rc.tolerances.gap_factor, 5.0);
     assert_eq!(rc.tolerances.jitter_cv, 0.8);
+    assert_eq!(rc.tolerances.episode_duration_factor, 6.0);
 
     // Unset time tolerances fall back to the 50 ms default.
     let defaults = CheckConfig::from_toml("[tolerances]\nclock_skew_ms = 250\n")
@@ -189,6 +190,8 @@ fn tolerances_parse_resolve_and_validate() {
         .to_run_config();
     assert_eq!(defaults.tolerances.start_offset_ns, 50_000_000);
     assert_eq!(defaults.tolerances.end_offset_ns, 50_000_000);
+    // An unset episode-duration factor falls back to the 10x default.
+    assert_eq!(defaults.tolerances.episode_duration_factor, 10.0);
 
     // Invalid values are rejected, not silently ignored.
     assert!(CheckConfig::from_toml("[tolerances]\nclock_skew_ms = -1\n").is_err());
@@ -196,6 +199,9 @@ fn tolerances_parse_resolve_and_validate() {
     assert!(CheckConfig::from_toml("[tolerances]\ngap_factor = 0\n").is_err());
     assert!(CheckConfig::from_toml("[tolerances]\nrate_deviation = -0.5\n").is_err());
     assert!(CheckConfig::from_toml("[tolerances]\njitter_cv = -0.1\n").is_err());
+    // A duration factor of 1.0 or less would flag every episode — rejected.
+    assert!(CheckConfig::from_toml("[tolerances]\nepisode_duration_factor = 1.0\n").is_err());
+    assert!(CheckConfig::from_toml("[tolerances]\nepisode_duration_factor = 0.5\n").is_err());
 }
 
 #[test]
