@@ -48,7 +48,9 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   known / asserted / unknown classes without fabrication. The PROV graph attributes the dataset to
   every known agent (recorder as a `prov:SoftwareAgent`, annotator as a `prov:Person`, sensor as a
   `prov:Agent`) and derives it from a known upstream, with each agent resolvable as a graph node.
-- **Reporting** — human-readable terminal output with worst-episodes-first rollups, a versioned
+- **Reporting** — human-readable terminal output with worst-episodes-first rollups (and a note of
+  any non-default tolerance the run applied, so a "no findings" result is read against the right
+  thresholds), a versioned
   JSON envelope (`veridex.report/1`), SARIF 2.1.0 (`veridex check --sarif`) for CI code-scanning
   (rules carry a description and a link to the check catalog), a
   self-contained HTML report (`veridex check --html`), and verdict diffing (`veridex diff`) that

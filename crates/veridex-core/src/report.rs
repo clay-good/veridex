@@ -121,6 +121,26 @@ fn worst_episodes(verdict: &Verdict) -> Vec<EpisodeRollup> {
     rollups
 }
 
+/// The tolerances that differ from the built-in defaults, as short human labels. Empty when the run
+/// used every default.
+fn non_default_tolerances(t: &crate::Tolerances) -> Vec<String> {
+    let d = crate::Tolerances::default();
+    let mut out = Vec::new();
+    if t.clock_skew_ns != d.clock_skew_ns {
+        out.push(format!("clock-skew {}ms", t.clock_skew_ns / 1_000_000));
+    }
+    if t.start_offset_ns != d.start_offset_ns {
+        out.push(format!("start-offset {}ms", t.start_offset_ns / 1_000_000));
+    }
+    if t.rate_deviation != d.rate_deviation {
+        out.push(format!("rate {:.0}%", t.rate_deviation * 100.0));
+    }
+    if t.gap_factor != d.gap_factor {
+        out.push(format!("gap {}x", t.gap_factor));
+    }
+    out
+}
+
 /// Render a human-readable terminal report. `max_episodes` bounds the worst-episodes rollup.
 pub fn render_terminal(
     verdict: &Verdict,
@@ -148,6 +168,13 @@ pub fn render_terminal(
         "  Findings: {} error · {} warning · {} info",
         verdict.counts.error, verdict.counts.warning, verdict.counts.info
     );
+
+    // Surface any tolerance that was loosened/tightened from its default, so a reader knows a
+    // "no findings" result reflects the thresholds actually applied. Silent when all are default.
+    let overrides = non_default_tolerances(&verdict.effective_config.tolerances);
+    if !overrides.is_empty() {
+        let _ = writeln!(out, "  Tolerances (non-default): {}", overrides.join(", "));
+    }
 
     // Worst-episodes rollup.
     let rollups = worst_episodes(verdict);

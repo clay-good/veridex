@@ -115,6 +115,29 @@ fn terminal_report_ranks_worst_episode_first() {
 }
 
 #[test]
+fn terminal_report_notes_non_default_tolerances_only_when_set() {
+    let d = skewed_dataset();
+
+    // Default tolerances: no tolerance line.
+    let default = verdict_for(&d);
+    assert!(!render_terminal(&default, None, 5).contains("Tolerances"));
+
+    // A loosened clock-skew tolerance is surfaced so a reader knows what threshold applied.
+    let cfg = RunConfig {
+        tolerances: veridex_core::Tolerances {
+            clock_skew_ns: 800_000_000,
+            ..veridex_core::Tolerances::default()
+        },
+        ..RunConfig::default()
+    };
+    let engine = veridex_core::checks::default_engine_with(&cfg.tolerances).unwrap();
+    let v = engine.run(&d, content_hash(&d), &cfg);
+    let text = render_terminal(&v, None, 5);
+    assert!(text.contains("Tolerances (non-default):"), "got: {text}");
+    assert!(text.contains("clock-skew 800ms"));
+}
+
+#[test]
 fn sarif_is_valid_2_1_0_and_maps_findings() {
     let d = skewed_dataset();
     let v = verdict_for(&d);
