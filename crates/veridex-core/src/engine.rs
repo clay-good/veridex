@@ -37,6 +37,9 @@ pub struct Tolerances {
     pub rate_deviation: f64,
     /// A `TEMPORAL.GAP` fires on an interval greater than this multiple of the expected interval.
     pub gap_factor: f64,
+    /// `TEMPORAL.JITTER` fires when a stream's inter-frame intervals have a coefficient of variation
+    /// (std / mean) above this — an irregular timeline whose mean rate can still look correct.
+    pub jitter_cv: f64,
 }
 
 impl Default for Tolerances {
@@ -46,6 +49,7 @@ impl Default for Tolerances {
             start_offset_ns: 50_000_000, // 50 ms
             rate_deviation: 0.10,        // 10%
             gap_factor: 3.0,
+            jitter_cv: 0.5,
         }
     }
 }

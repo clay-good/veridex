@@ -37,8 +37,11 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   presence so a stream that appears in only some episodes — a sensor that dropped out, or two
   exports pooled together — is flagged (`STRUCTURAL.STREAM_PRESENCE_INCONSISTENT`)), temporal (monotonicity,
   rate conformance, gaps, the headline
-  `TEMPORAL.CLOCK_SKEW`, and a shared-clock start-offset check that catches a stream which comes
-  online late — a misalignment the duration-based skew check can miss), statistical (range/sanity — inverted range, non-finite, negative std, mean-outside-range, and
+  `TEMPORAL.CLOCK_SKEW`, a shared-clock start-offset check that catches a stream which comes
+  online late — a misalignment the duration-based skew check can miss — and a timeline-jitter check
+  (`TEMPORAL.JITTER`) that flags an irregular inter-frame spacing (coefficient of variation above a
+  configurable tolerance) even when the mean rate looks correct and no single interval is a gap),
+  statistical (range/sanity — inverted range, non-finite, negative std, mean-outside-range, and
   degeneracy, an implausibly-large std that violates Popoviciu's bound `(max−min)/2`, and stored
   min/max outside the declared integer dtype's representable range — over stored stats), semantic
   (task-string quality — present-but-empty and placeholder tasks — and stream-key clarity, which

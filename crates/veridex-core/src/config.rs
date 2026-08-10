@@ -41,6 +41,8 @@ pub struct TolerancesConfig {
     pub rate_deviation: Option<f64>,
     /// `TEMPORAL.GAP` gap factor: an interval this many times the expected one is a gap.
     pub gap_factor: Option<f64>,
+    /// `TEMPORAL.JITTER` max coefficient of variation (std / mean) of inter-frame intervals.
+    pub jitter_cv: Option<f64>,
 }
 
 /// A parsed `veridex.toml`.
@@ -133,6 +135,7 @@ impl TolerancesConfig {
             ("clock_skew_ms", self.clock_skew_ms),
             ("start_offset_ms", self.start_offset_ms),
             ("rate_deviation", self.rate_deviation),
+            ("jitter_cv", self.jitter_cv),
         ];
         for (name, v) in non_negative {
             if let Some(v) = v {
@@ -168,6 +171,7 @@ impl TolerancesConfig {
                 .unwrap_or(d.start_offset_ns),
             rate_deviation: self.rate_deviation.unwrap_or(d.rate_deviation),
             gap_factor: self.gap_factor.unwrap_or(d.gap_factor),
+            jitter_cv: self.jitter_cv.unwrap_or(d.jitter_cv),
         }
     }
 }

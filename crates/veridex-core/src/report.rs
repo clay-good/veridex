@@ -138,6 +138,9 @@ fn non_default_tolerances(t: &crate::Tolerances) -> Vec<String> {
     if t.gap_factor != d.gap_factor {
         out.push(format!("gap {}x", t.gap_factor));
     }
+    if t.jitter_cv != d.jitter_cv {
+        out.push(format!("jitter cv {}", t.jitter_cv));
+    }
     out
 }
 

@@ -400,6 +400,49 @@ fn gaps_are_detected_against_declared_rate() {
 }
 
 #[test]
+fn jitter_flags_an_irregular_timeline() {
+    // Intervals alternate 40 ms / 160 ms: mean 100 ms, std 60 ms → cv 0.6, above the 0.5 default.
+    // The mean rate is a clean 10 Hz, so RATE would not fire — jitter is the distinct signal.
+    let ts = [
+        0i64,
+        40_000_000,
+        200_000_000,
+        240_000_000,
+        400_000_000,
+        440_000_000,
+        600_000_000,
+        640_000_000,
+        800_000_000,
+        840_000_000,
+        1_000_000_000,
+    ];
+    let d = dataset(vec![episode(0, vec![stream("s", "c", Some(10.0), &ts)])]);
+    // The mean rate is within tolerance, so rate-conformance stays quiet.
+    assert!(temporal::RateConformance::default().run(&d).is_empty());
+    let f = temporal::Jitter::default().run(&d);
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].code, "TEMPORAL.JITTER");
+    assert_eq!(f[0].severity, Severity::Warning);
+    assert!(f[0].message.contains("cv"));
+}
+
+#[test]
+fn regular_timeline_has_no_jitter() {
+    // 11 evenly-spaced frames at 100 ms → cv 0 → clean.
+    let ts: Vec<i64> = (0..11).map(|i| i * 100_000_000).collect();
+    let d = dataset(vec![episode(0, vec![stream("s", "c", Some(10.0), &ts)])]);
+    assert!(temporal::Jitter::default().run(&d).is_empty());
+}
+
+#[test]
+fn jitter_needs_enough_intervals_to_be_meaningful() {
+    // Only 5 frames (4 intervals), even wildly irregular, is too small a sample to judge → skipped.
+    let ts = [0i64, 10_000_000, 500_000_000, 510_000_000, 1_000_000_000];
+    let d = dataset(vec![episode(0, vec![stream("s", "c", None, &ts)])]);
+    assert!(temporal::Jitter::default().run(&d).is_empty());
+}
+
+#[test]
 fn clock_skew_flags_streams_that_drift_apart() {
     // camera spans 1000 ms, robot spans 1200 ms => 200 ms drift, beyond the 50 ms default.
     let cam = stream("cam", "camera", None, &[0, 500_000_000, 1_000_000_000]);
@@ -578,7 +621,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 16);
+    assert_eq!(verdict.executed_checks.len(), 17);
 }
 
 #[test]

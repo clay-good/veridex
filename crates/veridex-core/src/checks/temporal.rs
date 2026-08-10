@@ -277,6 +277,112 @@ impl Check for Gaps {
     }
 }
 
+/// Timeline jitter: even when a stream's mean rate is correct and no single interval is a gap, the
+/// inter-frame intervals can be badly irregular. This measures the **coefficient of variation**
+/// (std / mean) of the intervals and flags a stream whose CV exceeds a threshold. It is complementary
+/// to [`RateConformance`] (which only checks the *mean* rate) and [`Gaps`] (which catches a single
+/// large interval): a stream can pass both yet still have a jittery timeline that distorts the
+/// fixed-timestep dynamics temporal models assume.
+///
+/// A short stream gives an unreliable CV, so streams with fewer than [`Jitter::MIN_INTERVALS`]
+/// positive intervals are skipped, as are non-monotonic streams (that fault is
+/// [`Monotonicity`]'s — a negative interval would corrupt the statistic).
+pub struct Jitter {
+    /// Maximum tolerated coefficient of variation of the inter-frame intervals.
+    pub max_cv: f64,
+}
+
+impl Default for Jitter {
+    fn default() -> Self {
+        Jitter { max_cv: 0.5 }
+    }
+}
+
+impl Jitter {
+    /// Minimum positive intervals (frames − 1) needed for a meaningful CV; below this the statistic
+    /// is too noisy to act on.
+    const MIN_INTERVALS: usize = 8;
+}
+
+impl Check for Jitter {
+    fn id(&self) -> &'static str {
+        "temporal.jitter"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["TEMPORAL.JITTER"]
+    }
+    fn title(&self) -> &'static str {
+        "Timeline jitter"
+    }
+    fn category(&self) -> Category {
+        Category::Temporal
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Warning
+    }
+    fn scope(&self) -> Scope {
+        Scope::Stream
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        for ep in &dataset.episodes {
+            for stream in &ep.streams {
+                // Consecutive intervals. A non-positive interval means the stream is non-monotonic
+                // (Monotonicity's concern) and would make the statistic meaningless — skip the stream.
+                let intervals: Vec<f64> = stream
+                    .frames
+                    .windows(2)
+                    .map(|w| w[1].ts.saturating_sub(w[0].ts) as f64)
+                    .collect();
+                if intervals.len() < Self::MIN_INTERVALS || intervals.iter().any(|d| *d <= 0.0) {
+                    continue;
+                }
+                let n = intervals.len() as f64;
+                let mean = intervals.iter().sum::<f64>() / n;
+                if mean <= 0.0 {
+                    continue;
+                }
+                let variance = intervals.iter().map(|d| (d - mean).powi(2)).sum::<f64>() / n;
+                let cv = variance.sqrt() / mean;
+                if cv > self.max_cv {
+                    findings.push(
+                        Finding::new(
+                            self.id(),
+                            Category::Temporal,
+                            Severity::Warning,
+                            Location::Stream {
+                                episode: ep.index,
+                                stream: stream.name.clone(),
+                            },
+                            "TEMPORAL.JITTER",
+                            format!(
+                                "stream `{}` in episode {}: irregular timeline (interval cv \
+                                 {cv:.2} vs allowed {:.2}; mean ~{:.1} ms)",
+                                stream.name,
+                                ep.index,
+                                self.max_cv,
+                                mean / 1e6,
+                            ),
+                        )
+                        .with_risk(
+                            "Unevenly spaced frames distort the fixed-timestep dynamics temporal \
+                             models assume, even when the mean rate looks correct.",
+                        )
+                        .with_remedy(
+                            "Investigate recorder/scheduling jitter, or resample the stream onto a \
+                             uniform time base.",
+                        ),
+                    );
+                }
+            }
+        }
+        findings
+    }
+}
+
 /// **The headline check (design D4).** Cross-stream clock skew: streams recorded over the same
 /// episode should span the same real-time duration. A relative difference in spanned duration is
 /// clock drift — one sensor's clock ran fast or slow — and it silently mis-aligns observations from

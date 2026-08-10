@@ -36,6 +36,9 @@ pub fn standard_checks_with(t: &Tolerances) -> Vec<Box<dyn Check>> {
         Box::new(temporal::Gaps {
             gap_factor: t.gap_factor,
         }),
+        Box::new(temporal::Jitter {
+            max_cv: t.jitter_cv,
+        }),
         Box::new(temporal::ClockSkew {
             tolerance_ns: t.clock_skew_ns,
         }),

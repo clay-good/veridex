@@ -35,3 +35,4 @@ disabled_checks = []
 # start_offset_ms = 50    # TEMPORAL.START_OFFSET: max shared-clock start offset
 # rate_deviation = 0.10   # TEMPORAL.RATE: allowed relative rate deviation (0.10 = 10%)
 # gap_factor = 3.0        # TEMPORAL.GAP: an interval this many times the expected one is a gap
+# jitter_cv = 0.5         # TEMPORAL.JITTER: max coefficient of variation (std/mean) of intervals

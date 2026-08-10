@@ -171,13 +171,14 @@ fn category_selection_scopes_the_run() {
 fn tolerances_parse_resolve_and_validate() {
     // Provided values resolve; unset ones fall back to the defaults.
     let cfg = CheckConfig::from_toml(
-        "[tolerances]\nclock_skew_ms = 250\nrate_deviation = 0.2\ngap_factor = 5\n",
+        "[tolerances]\nclock_skew_ms = 250\nrate_deviation = 0.2\ngap_factor = 5\njitter_cv = 0.8\n",
     )
     .expect("parses");
     let rc = cfg.to_run_config();
     assert_eq!(rc.tolerances.clock_skew_ns, 250_000_000);
     assert_eq!(rc.tolerances.rate_deviation, 0.2);
     assert_eq!(rc.tolerances.gap_factor, 5.0);
+    assert_eq!(rc.tolerances.jitter_cv, 0.8);
     // start_offset_ms was unset → default 50 ms.
     assert_eq!(rc.tolerances.start_offset_ns, 50_000_000);
 
@@ -185,6 +186,7 @@ fn tolerances_parse_resolve_and_validate() {
     assert!(CheckConfig::from_toml("[tolerances]\nclock_skew_ms = -1\n").is_err());
     assert!(CheckConfig::from_toml("[tolerances]\ngap_factor = 0\n").is_err());
     assert!(CheckConfig::from_toml("[tolerances]\nrate_deviation = -0.5\n").is_err());
+    assert!(CheckConfig::from_toml("[tolerances]\njitter_cv = -0.1\n").is_err());
 }
 
 #[test]
