@@ -171,19 +171,28 @@ fn category_selection_scopes_the_run() {
 fn tolerances_parse_resolve_and_validate() {
     // Provided values resolve; unset ones fall back to the defaults.
     let cfg = CheckConfig::from_toml(
-        "[tolerances]\nclock_skew_ms = 250\nrate_deviation = 0.2\ngap_factor = 5\njitter_cv = 0.8\n",
+        "[tolerances]\nclock_skew_ms = 250\nstart_offset_ms = 120\nend_offset_ms = 90\n\
+         rate_deviation = 0.2\ngap_factor = 5\njitter_cv = 0.8\n",
     )
     .expect("parses");
     let rc = cfg.to_run_config();
     assert_eq!(rc.tolerances.clock_skew_ns, 250_000_000);
+    assert_eq!(rc.tolerances.start_offset_ns, 120_000_000);
+    assert_eq!(rc.tolerances.end_offset_ns, 90_000_000);
     assert_eq!(rc.tolerances.rate_deviation, 0.2);
     assert_eq!(rc.tolerances.gap_factor, 5.0);
     assert_eq!(rc.tolerances.jitter_cv, 0.8);
-    // start_offset_ms was unset → default 50 ms.
-    assert_eq!(rc.tolerances.start_offset_ns, 50_000_000);
+
+    // Unset time tolerances fall back to the 50 ms default.
+    let defaults = CheckConfig::from_toml("[tolerances]\nclock_skew_ms = 250\n")
+        .expect("parses")
+        .to_run_config();
+    assert_eq!(defaults.tolerances.start_offset_ns, 50_000_000);
+    assert_eq!(defaults.tolerances.end_offset_ns, 50_000_000);
 
     // Invalid values are rejected, not silently ignored.
     assert!(CheckConfig::from_toml("[tolerances]\nclock_skew_ms = -1\n").is_err());
+    assert!(CheckConfig::from_toml("[tolerances]\nend_offset_ms = -1\n").is_err());
     assert!(CheckConfig::from_toml("[tolerances]\ngap_factor = 0\n").is_err());
     assert!(CheckConfig::from_toml("[tolerances]\nrate_deviation = -0.5\n").is_err());
     assert!(CheckConfig::from_toml("[tolerances]\njitter_cv = -0.1\n").is_err());
@@ -209,6 +218,37 @@ fn a_loose_clock_skew_tolerance_suppresses_the_skew_finding() {
     let loose = CheckConfig::from_toml("[tolerances]\nclock_skew_ms = 800\n").unwrap();
     let v2 = run(&skewed(), &loose.to_run_config());
     assert!(v2.findings.iter().all(|f| f.code != "TEMPORAL.CLOCK_SKEW"));
+}
+
+#[test]
+fn a_loose_end_offset_tolerance_suppresses_the_end_offset_finding() {
+    // Two streams on one shared clock, aligned at the start but one ending 500 ms after the other.
+    let tail_misaligned = || Dataset {
+        id: "t".into(),
+        metadata: vec![],
+        provenance: vec![],
+        episodes: vec![Episode {
+            index: 0,
+            start_ts: None,
+            end_ts: None,
+            streams: vec![
+                stream("cam", "wall", &[0, 1_000_000_000]),
+                stream("arm", "wall", &[0, 1_500_000_000]),
+            ],
+            task: None,
+            labels: vec![],
+        }],
+    };
+
+    // The default 50 ms tolerance flags the 500 ms tail misalignment.
+    let strict = CheckConfig::from_toml("").unwrap();
+    let v = run(&tail_misaligned(), &strict.to_run_config());
+    assert!(v.findings.iter().any(|f| f.code == "TEMPORAL.END_OFFSET"));
+
+    // Raising end_offset_ms above the misalignment suppresses it — the configured threshold applied.
+    let loose = CheckConfig::from_toml("[tolerances]\nend_offset_ms = 800\n").unwrap();
+    let v2 = run(&tail_misaligned(), &loose.to_run_config());
+    assert!(v2.findings.iter().all(|f| f.code != "TEMPORAL.END_OFFSET"));
 }
 
 #[test]
