@@ -13,11 +13,13 @@
 //! - MCAP has no episode concept, so the whole file maps to a single episode (index 0). The
 //!   [`IngestReport`] records this and the MCAP fields the CDM does not carry.
 //!
-//! Provenance: the adapter records the source format and extracts the MCAP header's writing
-//! `library` (as a `recorder` element) and `profile`. Richer extraction from Metadata/Attachment
-//! records and calibration is deferred to the provenance milestone.
+//! Provenance: the adapter records the source format, the MCAP header's writing `library` (as a
+//! `recorder` element) and `profile`, every producer-written **Metadata** record (preserved in
+//! dataset metadata, with well-known keys — license/sensor/calibration/operator/upstream — mapped to
+//! typed provenance), and a summary of any **Attachments** (a calibration-looking attachment supplies
+//! the `calibration` element). Everything is read as-is; nothing is fabricated.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use crate::cdm::{
@@ -70,13 +72,52 @@ struct StreamBuilder {
     frames: Vec<Frame>,
 }
 
-/// The MCAP Header record (`profile`, `library`), if present. The header is the first record after
-/// the magic bytes, so a short linear pass reads it cheaply. Errors and absence yield `None` — the
-/// header is honest-if-present, never fabricated.
-fn read_header(bytes: &[u8]) -> Option<mcap::records::Header> {
-    // The header is the first record after the magic; anything else means there is none.
-    match mcap::read::LinearReader::new(bytes).ok()?.next()? {
-        Ok(mcap::records::Record::Header(h)) => Some(h),
+/// Honest provenance records read from an MCAP file: the header, any Metadata records (a name plus a
+/// key/value map the producer wrote), and a summary of any Attachments (name + media type). All are
+/// read as-is and never fabricated.
+#[derive(Default)]
+struct McapRecords {
+    header: Option<mcap::records::Header>,
+    metadata: Vec<mcap::records::Metadata>,
+    attachments: Vec<(String, String)>, // (name, media_type)
+}
+
+/// Read the header, Metadata records, and Attachment summaries in a single linear pass. Absent or
+/// malformed records are skipped, never fabricated (the pass stops at the first read error).
+fn read_records(bytes: &[u8]) -> McapRecords {
+    let mut out = McapRecords::default();
+    let Ok(reader) = mcap::read::LinearReader::new(bytes) else {
+        return out;
+    };
+    for rec in reader {
+        match rec {
+            Ok(mcap::records::Record::Header(h)) => out.header = Some(h),
+            Ok(mcap::records::Record::Metadata(m)) => out.metadata.push(m),
+            Ok(mcap::records::Record::Attachment { header, .. }) => {
+                out.attachments
+                    .push((header.name.clone(), header.media_type.clone()));
+            }
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+    out
+}
+
+/// Map an MCAP Metadata key (case-insensitive) to a CDM provenance key, when it names one Veridex
+/// tracks. Conservative: only well-known spellings map, so a producer's arbitrary keys aren't
+/// misread as typed provenance (they are still preserved in dataset metadata).
+fn provenance_key_for(meta_key: &str) -> Option<&'static str> {
+    match meta_key.trim().to_ascii_lowercase().as_str() {
+        "license" | "spdx" | "spdx_license" | "license_id" => Some("license"),
+        "sensor" | "sensors" | "device" | "camera_model" | "lidar_model" | "hardware" => {
+            Some("sensor")
+        }
+        "calibration" | "calibration_id" | "calib" | "calibration_version" => Some("calibration"),
+        "operator" | "annotator" | "author" | "recorded_by" | "operator_id" => Some("annotator"),
+        "upstream" | "derived_from" | "source_dataset" | "parent_dataset" | "upstream_dataset" => {
+            Some("upstream")
+        }
         _ => None,
     }
 }
@@ -112,8 +153,10 @@ impl Adapter for McapAdapter {
 
         let bytes = std::fs::read(path).map_err(|e| IngestError::Io(e.to_string()))?;
 
-        // The MCAP header records the writing library and profile — honest origin metadata.
-        let header = read_header(&bytes);
+        // Honest origin metadata: the header (library/profile), any producer-written Metadata
+        // records, and Attachment summaries.
+        let records = read_records(&bytes);
+        let header = records.header.clone();
 
         // Accumulate streams by topic (BTreeMap keeps a deterministic order before canonicalization).
         let mut streams: BTreeMap<String, StreamBuilder> = BTreeMap::new();
@@ -195,6 +238,40 @@ impl Adapter for McapAdapter {
             }
         }
 
+        // Producer-written Metadata records: preserve every non-empty key/value in dataset metadata
+        // (namespaced by record name), and map well-known keys to typed provenance. First value wins
+        // per provenance key so the result is deterministic in file order.
+        let mut mapped: BTreeSet<&'static str> = BTreeSet::new();
+        for m in &records.metadata {
+            for (k, v) in &m.metadata {
+                if v.trim().is_empty() {
+                    continue;
+                }
+                metadata.push((format!("mcap_meta.{}.{}", m.name, k), v.clone()));
+                if let Some(pk) = provenance_key_for(k) {
+                    if mapped.insert(pk) {
+                        elements.push(ProvenanceElement {
+                            key: pk.into(),
+                            value: Some(v.clone()),
+                            class: ProvenanceClass::Known,
+                        });
+                    }
+                }
+            }
+        }
+        // Attachments: record their presence, and let a calibration-looking attachment supply the
+        // `calibration` element when no metadata key already did.
+        for (name, media_type) in &records.attachments {
+            metadata.push((format!("mcap_attachment.{name}"), media_type.clone()));
+            if name.to_ascii_lowercase().contains("calib") && mapped.insert("calibration") {
+                elements.push(ProvenanceElement {
+                    key: "calibration".into(),
+                    value: Some(name.clone()),
+                    class: ProvenanceClass::Known,
+                });
+            }
+        }
+
         let dataset = Dataset {
             id: path
                 .file_stem()
@@ -232,6 +309,12 @@ impl Adapter for McapAdapter {
                     .is_some_and(|h| !h.library.trim().is_empty())
                 {
                     m.push("header.library -> provenance.recorder".into());
+                }
+                if !records.metadata.is_empty() {
+                    m.push("metadata records -> dataset metadata + provenance".into());
+                }
+                if !records.attachments.is_empty() {
+                    m.push("attachment names -> dataset metadata (+ calibration)".into());
                 }
                 m
             },

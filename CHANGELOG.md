@@ -19,7 +19,10 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   (`task_index` + `meta/tasks.jsonl` → `episode.task`), so the semantic task-quality check runs on
   real datasets; the omission is reported honestly when no `meta/tasks.jsonl` is present. The MCAP
   adapter extracts the file header's writing `library` (as a `recorder` provenance element) and
-  `profile`, so provenance reflects who produced the recording.
+  `profile`, every producer-written **Metadata** record (preserved in dataset metadata, with
+  well-known keys — license/sensor/calibration/operator/upstream — mapped to typed provenance), and
+  **Attachment** summaries (a calibration-looking attachment supplies the `calibration` element), so
+  provenance reflects who produced the recording and how.
 - **Validation engine** — check registry with duplicate-id rejection, category/id selection,
   severity overrides, deterministic stably-ordered verdicts with a result content hash, fault
   isolation for panicking checks, and reproducibility metadata.

@@ -48,8 +48,10 @@ the build plan.
 
 ## M5 — Provenance & Croissant
 - [x] Provenance model + known/asserted/unknown classification (in `cdm.rs`).
-- [~] Extract provenance from LeRobot v3 and MCAP sources. (MCAP records source_format; rich
-      extraction — metadata records, calibration — and the LeRobot side land with those adapters.)
+- [~] Extract provenance from LeRobot v3 and MCAP sources. (MCAP now extracts source_format, the
+      header library/profile, producer-written Metadata records — with well-known keys mapped to
+      typed provenance — and Attachment summaries incl. calibration. LeRobot extracts robot_type as
+      a sensor element; richer LeRobot-side extraction remains a follow-up.)
 - [x] Emit Croissant (JSON-LD) + minimal W3C PROV lineage from the CDM (honest classes, no
       fabrication). Wired to `veridex provenance --emit croissant|prov`.
 

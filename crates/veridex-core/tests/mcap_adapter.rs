@@ -160,6 +160,87 @@ fn header_library_is_extracted_as_recorder_provenance() {
         .any(|f| f.contains("header.library -> provenance.recorder")));
 }
 
+/// Build an MCAP carrying one channel plus a Metadata record and a calibration Attachment, to
+/// exercise the richer provenance extraction.
+fn build_mcap_with_provenance() -> Vec<u8> {
+    let mut out = Vec::new();
+    {
+        let mut w = mcap::Writer::new(Cursor::new(&mut out)).expect("writer");
+        let schema = w
+            .add_schema("sensor_msgs/msg/Image", "ros2msg", b"")
+            .unwrap();
+        let chan = w
+            .add_channel(schema, "/cam", "cdr", &BTreeMap::new())
+            .unwrap();
+        for (seq, &t) in [0u64, 1].iter().enumerate() {
+            w.write_to_known_channel(
+                &mcap::records::MessageHeader {
+                    channel_id: chan,
+                    sequence: seq as u32,
+                    log_time: t,
+                    publish_time: t,
+                },
+                b"payload",
+            )
+            .unwrap();
+        }
+        let mut meta = BTreeMap::new();
+        meta.insert("license".to_string(), "CC-BY-4.0".to_string());
+        meta.insert("sensor".to_string(), "ZED2i".to_string());
+        meta.insert("operator".to_string(), "alice".to_string());
+        meta.insert("site".to_string(), "lab-3".to_string()); // not a known provenance key
+        w.write_metadata(&mcap::records::Metadata {
+            name: "recording_info".to_string(),
+            metadata: meta,
+        })
+        .expect("write metadata");
+        w.attach(&mcap::Attachment {
+            log_time: 0,
+            create_time: 0,
+            name: "calibration.yaml".to_string(),
+            media_type: "application/yaml".to_string(),
+            data: (b"" as &[u8]).into(),
+        })
+        .expect("attach");
+        w.finish().expect("finish");
+    }
+    out
+}
+
+#[test]
+fn metadata_records_and_attachments_become_provenance() {
+    let path = write_temp_mcap(&build_mcap_with_provenance());
+    let ingested = McapAdapter
+        .ingest(
+            &Source::Local(path.to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest");
+    let prov = |key: &str| {
+        ingested
+            .dataset
+            .provenance
+            .iter()
+            .flat_map(|r| &r.elements)
+            .find(|e| e.key == key)
+            .and_then(|e| e.value.clone())
+    };
+
+    // Well-known metadata keys map to typed provenance (class Known).
+    assert_eq!(prov("license").as_deref(), Some("CC-BY-4.0"));
+    assert_eq!(prov("sensor").as_deref(), Some("ZED2i"));
+    assert_eq!(prov("annotator").as_deref(), Some("alice")); // "operator" → annotator
+                                                             // The calibration attachment supplies the calibration element.
+    assert_eq!(prov("calibration").as_deref(), Some("calibration.yaml"));
+
+    // Every metadata key/value is preserved (even the non-mapped "site").
+    assert!(ingested
+        .dataset
+        .metadata
+        .iter()
+        .any(|(k, v)| k == "mcap_meta.recording_info.site" && v == "lab-3"));
+}
+
 #[test]
 fn report_declares_fidelity_and_omissions() {
     let bytes = build_mcap(&[Chan {
