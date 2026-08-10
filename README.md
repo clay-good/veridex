@@ -130,7 +130,8 @@ warning`) or on the trust score directly (`--min-score 80` fails when the score 
 
 Drop a [`veridex.toml`](docs/veridex.toml.example) in your repo (or pass `--config`) to select
 categories, disable checks, override per-check severities, tune numeric tolerances (clock-skew,
-rate, gap, start-offset), and set the failure threshold — the effective config is recorded in every
+rate, gap, jitter, start-offset, end-offset), and set the failure threshold — the effective config
+is recorded in every
 verdict, and unknown keys, check ids, or invalid tolerances are rejected, not silently ignored.
 
 The same command works on a LeRobot v3 dataset — proof of the cross-format claim. Generate a demo
@@ -184,8 +185,8 @@ adapters** with a passing cross-format neutrality gate (the same logical dataset
 CDMs in both formats); Croissant + W3C PROV provenance emit; Ed25519 **certificate signing with
 offline verification** (tamper + transplant rejection); a working CLI (`check`, `inspect`, `checks`,
 `certify`, `verify`, `provenance`, `keygen`, `diff`) — see the [Quickstart](#quickstart); and **Python
-bindings** (`import veridex`, exposing `check`/`inspect`/`content_hash`) that call the same core
-pipeline, with a CLI⇄Python parity test run in CI. Next up: streaming/remote ingestion and
+bindings** (`import veridex`, exposing `check`/`inspect`/`content_hash`/`catalog`) that call the same
+core pipeline, with a CLI⇄Python parity test run in CI. Next up: streaming/remote ingestion and
 stored-vs-recomputed statistics.
 
 Start with [openspec/project.md](openspec/project.md) for the design, or track progress in
