@@ -27,7 +27,7 @@ pub enum RegistryError {
 /// Numeric tolerances for the checks that take one. Applied when the engine's checks are built, so
 /// a run can loosen or tighten a threshold (e.g. a rig with a known 80 ms camera latency). Defaults
 /// match each check's built-in default.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Tolerances {
     /// Max tolerated cross-stream duration drift for `TEMPORAL.CLOCK_SKEW`, in nanoseconds.
     pub clock_skew_ns: i64,
@@ -66,7 +66,8 @@ pub struct RunConfig {
 }
 
 /// The effective configuration, snapshotted into the verdict so a run is reproducible from it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// (Not `Eq`: [`Tolerances`] carries floats.)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EffectiveConfig {
     /// Selected categories, sorted; `None` means all.
     pub categories: Option<Vec<Category>>,
@@ -76,6 +77,8 @@ pub struct EffectiveConfig {
     pub disabled_checks: Vec<String>,
     /// Severity overrides, id → severity.
     pub severity_overrides: BTreeMap<String, Severity>,
+    /// The numeric tolerances the checks ran with.
+    pub tolerances: Tolerances,
 }
 
 impl From<&RunConfig> for EffectiveConfig {
@@ -85,6 +88,7 @@ impl From<&RunConfig> for EffectiveConfig {
             only_checks: c.only_checks.as_ref().map(|s| s.iter().cloned().collect()),
             disabled_checks: c.disabled_checks.iter().cloned().collect(),
             severity_overrides: c.severity_overrides.clone(),
+            tolerances: c.tolerances,
         }
     }
 }
@@ -134,8 +138,8 @@ pub struct ErroredCheck {
     pub message: String,
 }
 
-/// The full result of a run.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// The full result of a run. (Not `Eq`: the effective config's tolerances carry floats.)
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Verdict {
     /// The `veridex-core` version that produced this verdict.
     pub veridex_version: String,

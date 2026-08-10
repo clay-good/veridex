@@ -188,6 +188,15 @@ fn tolerances_parse_resolve_and_validate() {
 }
 
 #[test]
+fn the_verdict_records_the_tolerances_it_ran_with() {
+    // Reproducibility: a configured tolerance is snapshotted into the verdict's effective config.
+    let cfg = CheckConfig::from_toml("[tolerances]\nclock_skew_ms = 250\n").unwrap();
+    let v = run(&skewed(), &cfg.to_run_config());
+    assert_eq!(v.effective_config.tolerances.clock_skew_ns, 250_000_000);
+    assert_eq!(v.effective_config.tolerances.gap_factor, 3.0); // default carried through
+}
+
+#[test]
 fn a_loose_clock_skew_tolerance_suppresses_the_skew_finding() {
     // The skewed dataset drifts 500 ms; the default 50 ms tolerance flags it.
     let strict = CheckConfig::from_toml("").unwrap();

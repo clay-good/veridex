@@ -76,8 +76,9 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   `disabled_checks`, `only_checks`, or a `severity_overrides` key) is a hard error rather than a
   silent no-op. A `[tolerances]` table tunes the temporal checks' numeric thresholds
   (`clock_skew_ms`, `start_offset_ms`, `rate_deviation`, `gap_factor`); each is optional, validated
-  (finite, non-negative; positive `gap_factor`), and falls back to the check's default. (Recording
-  the applied tolerances in the verdict itself is a follow-up.)
+  (finite, non-negative; positive `gap_factor`), and falls back to the check's default. The
+  tolerances the run used are recorded in the verdict's effective config, so a result is fully
+  reproducible from what it reports.
 - **Runnable demos** — `examples/make_demo_mcap` (synthetic cross-stream clock skew) and
   `examples/make_demo_lerobot` (a LeRobot v3 dataset with an out-of-order timestamp, plus a
   `truncated` variant whose manifest over-declares its frame count → `STRUCTURAL.FRAME_COUNT_MISMATCH`),

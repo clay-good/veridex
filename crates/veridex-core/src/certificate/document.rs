@@ -45,8 +45,8 @@ pub struct FindingsSummary {
     pub by_category: BTreeMap<String, u64>,
 }
 
-/// The unsigned certificate content.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// The unsigned certificate content. (Not `Eq`: the effective config's tolerances carry floats.)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Certificate {
     /// Schema id.
     pub schema: String,

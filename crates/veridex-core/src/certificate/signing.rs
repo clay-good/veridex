@@ -91,7 +91,8 @@ impl SigningKeypair {
 }
 
 /// A signed certificate: content plus its detached Ed25519 signature and the issuer public key.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// (Not `Eq`: the certificate's effective config carries float tolerances.)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SignedCertificate {
     /// The certificate content.
     pub certificate: Certificate,
