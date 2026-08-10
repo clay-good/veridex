@@ -22,6 +22,10 @@ print(veridex.content_hash("my-dataset.mcap"))
 # The Canonical Dataset Model, without running checks (same as `veridex inspect --json`).
 cdm = json.loads(veridex.inspect("my-dataset.mcap"))
 print(len(cdm["episodes"]), "episodes")
+
+# The built-in check catalog (same as `veridex checks --json`).
+for check in json.loads(veridex.catalog()):
+    print(check["id"], "→", check["finding_codes"])
 ```
 
 These bindings add **no logic**: they call the exact same `veridex_core` pipeline the `veridex`

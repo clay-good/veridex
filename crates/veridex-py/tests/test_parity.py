@@ -70,6 +70,28 @@ def test_cli_and_python_inspect_agree(tmp_path):
     assert py == cli, "Python and CLI must produce identical CDM inspection"
 
 
+def _cli_catalog_json():
+    binary = os.environ.get("VERIDEX_BIN", "target/debug/veridex")
+    result = subprocess.run(
+        [binary, "checks", "--json"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return json.loads(result.stdout)
+
+
+def test_cli_and_python_catalog_agree():
+    py = json.loads(veridex.catalog())
+    cli = _cli_catalog_json()
+
+    assert py == cli, "Python and CLI must expose the identical check catalog"
+    # Sanity: the catalog is non-empty and every entry carries the documented fields.
+    assert py, "catalog must not be empty"
+    for check in py:
+        assert {"id", "category", "default_severity", "scope", "finding_codes"} <= check.keys()
+
+
 if __name__ == "__main__":
     # Minimal runner when pytest is unavailable.
     import tempfile

@@ -85,9 +85,10 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   autodetection (`--format` override, ambiguity is refused), a configurable failure threshold
   (`--fail-on`), a trust-score gate for CI (`--min-score 0-100`, fails below the threshold), and
   documented exit codes (0 pass · 10 warnings · 20 fail · 2 tool-error).
-- **Python bindings** (`import veridex`) exposing `check` / `content_hash` / `inspect` / `version`,
-  calling the same core pipeline as the CLI, with a passing CLI ⇄ Python parity test over both
-  `check` and `inspect`.
+- **Python bindings** (`import veridex`) exposing `check` / `content_hash` / `inspect` / `catalog` /
+  `version`, calling the same core pipeline as the CLI, with a passing CLI ⇄ Python parity test over
+  `check`, `inspect`, and `catalog` (the last two share a single `render_catalog_json` core helper,
+  so the machine-readable check catalog is byte-identical across CLI and Python).
 - **Configuration** — a `veridex.toml` (auto-discovered, or `--config`) that selects categories,
   disables checks, overrides per-check severities, and sets the failure threshold and minimum trust
   score (`min_score`, overridable by `--min-score`); the effective config is recorded in every

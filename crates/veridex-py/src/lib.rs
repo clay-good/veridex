@@ -76,6 +76,16 @@ fn inspect(path: &str, format: Option<&str>) -> PyResult<String> {
     serde_json::to_string_pretty(&ingested.dataset).map_err(to_py_err)
 }
 
+/// `veridex.catalog() -> str`
+///
+/// The built-in check catalog as a JSON string, byte-identical to `veridex checks --json`: each
+/// check's id, title, category, default severity, scope, version, and the finding codes it can emit.
+#[pyfunction]
+fn catalog() -> PyResult<String> {
+    let engine = veridex_core::checks::default_engine().map_err(to_py_err)?;
+    Ok(veridex_core::render_catalog_json(&engine.catalog()))
+}
+
 /// `veridex.version() -> str`
 #[pyfunction]
 fn version() -> &'static str {
@@ -89,6 +99,7 @@ fn veridex(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(check, m)?)?;
     m.add_function(wrap_pyfunction!(content_hash, m)?)?;
     m.add_function(wrap_pyfunction!(inspect, m)?)?;
+    m.add_function(wrap_pyfunction!(catalog, m)?)?;
     m.add_function(wrap_pyfunction!(version, m)?)?;
     Ok(())
 }

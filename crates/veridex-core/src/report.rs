@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 
 use crate::certificate::TrustScore;
 use crate::check::{Location, Severity};
-use crate::engine::{Status, Verdict};
+use crate::engine::{CheckInfo, Status, Verdict};
 
 /// The versioned JSON report schema id. Stable and additive within a major version.
 pub const REPORT_SCHEMA_VERSION: &str = "veridex.report/1";
@@ -39,6 +39,13 @@ pub fn render_json(verdict: &Verdict, trust_score: Option<TrustScore>) -> String
     // Pretty JSON is deterministic here: struct field order is fixed and the verdict's collections
     // are already stably ordered.
     serde_json::to_string_pretty(&report).expect("report serializes")
+}
+
+/// Render a check catalog (from [`Engine::catalog`](crate::Engine::catalog)) as stable, pretty JSON.
+/// The CLI's `veridex checks --json` and the Python `veridex.catalog()` binding both call this, so
+/// the machine-readable catalog is byte-identical across surfaces.
+pub fn render_catalog_json(catalog: &[CheckInfo]) -> String {
+    serde_json::to_string_pretty(catalog).expect("catalog serializes")
 }
 
 /// Per-episode finding rollup.

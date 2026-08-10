@@ -42,7 +42,10 @@ pub use diff::{diff_reports, render_diff, ReportDiff};
 pub use emit::{to_croissant, to_prov};
 pub use engine::{CheckInfo, Engine, RegistryError, RunConfig, Status, Tolerances, Verdict};
 pub use pipeline::{run_check, run_check_with, CheckOutput};
-pub use report::{render_html, render_json, render_sarif, render_terminal, REPORT_SCHEMA_VERSION};
+pub use report::{
+    render_catalog_json, render_html, render_json, render_sarif, render_terminal,
+    REPORT_SCHEMA_VERSION,
+};
 
 /// The version of `veridex-core`, from Cargo.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -340,13 +340,7 @@ fn cmd_checks(rest: &[String]) -> ExitCode {
     let catalog = engine.catalog();
 
     if args.json {
-        match serde_json::to_string_pretty(&catalog) {
-            Ok(s) => println!("{s}"),
-            Err(e) => {
-                eprintln!("veridex: {e}");
-                return ExitCode::from(EXIT_TOOL_ERROR);
-            }
-        }
+        println!("{}", veridex_core::render_catalog_json(&catalog));
         return ExitCode::SUCCESS;
     }
 
