@@ -69,7 +69,9 @@ impl Episode {
     pub fn duration_ns(&self) -> Option<TimestampNs> {
         if let (Some(start), Some(end)) = (self.start_ts, self.end_ts) {
             if end > start {
-                return Some(end - start);
+                // Saturating: corrupt boundaries spanning the full i64 range must not overflow
+                // (which would panic in debug builds) — Veridex's job is to survive bad data.
+                return Some(end.saturating_sub(start));
             }
         }
         self.streams

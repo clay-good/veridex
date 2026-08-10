@@ -788,6 +788,21 @@ fn temporal_checks_do_not_overflow_on_extreme_timestamps() {
         vec![stream("s", "c", None, &[i64::MIN, 0, i64::MAX])],
     )]);
     let _ = temporal::Gaps::default().run(&no_rate);
+
+    // The duration-outlier check spans episodes: give four episodes declared boundaries covering the
+    // full i64 range so `Episode::duration_ns` takes the `end - start` path on extreme values. It
+    // must saturate, not panic.
+    let mut extreme = dataset(vec![
+        episode(0, vec![stream("s", "c", None, &[0, 1])]),
+        episode(1, vec![stream("s", "c", None, &[0, 1])]),
+        episode(2, vec![stream("s", "c", None, &[0, 1])]),
+        episode(3, vec![stream("s", "c", None, &[0, 1])]),
+    ]);
+    for (i, ep) in extreme.episodes.iter_mut().enumerate() {
+        ep.start_ts = Some(i64::MIN);
+        ep.end_ts = Some(if i == 0 { 0 } else { i64::MAX });
+    }
+    let _ = temporal::EpisodeDuration::default().run(&extreme);
 }
 
 // ---- provenance completeness ----
