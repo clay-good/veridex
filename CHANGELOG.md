@@ -86,7 +86,10 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   with format
   autodetection (`--format` override, ambiguity is refused), a configurable failure threshold
   (`--fail-on`), a trust-score gate for CI (`--min-score 0-100`, fails below the threshold), and
-  documented exit codes (0 pass · 10 warnings · 20 fail · 2 tool-error).
+  documented exit codes (0 pass · 10 warnings · 20 fail · 2 tool-error). An end-to-end integration
+  test drives the real binary over the whole trust flow — `check` (terminal + JSON) then
+  `keygen → certify → verify` against a committed dataset fixture, including rejection of an
+  untrusted issuer key.
 - **Python bindings** (`import veridex`) exposing `check` / `content_hash` / `inspect` / `catalog` /
   `version`, calling the same core pipeline as the CLI, with a passing CLI ⇄ Python parity test over
   `check`, `inspect`, and `catalog` (the last two share a single `render_catalog_json` core helper,

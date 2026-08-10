@@ -135,3 +135,88 @@ fn diff_requires_two_report_files() {
     assert_eq!(code, 2);
     assert!(stderr.contains("two report files"));
 }
+
+/// The committed MCAP fixture standing in for a real dataset file on disk.
+fn fixture_dataset() -> String {
+    format!("{}/tests/fixtures/demo.mcap", env!("CARGO_MANIFEST_DIR"))
+}
+
+/// A unique, per-test temp directory (created), so parallel test runs don't collide.
+fn temp_dir(tag: &str) -> std::path::PathBuf {
+    let mut p = std::env::temp_dir();
+    p.push(format!("veridex-cli-{tag}-{}", std::process::id()));
+    std::fs::create_dir_all(&p).expect("create temp dir");
+    p
+}
+
+#[test]
+fn check_on_a_real_dataset_reports_and_exits_on_findings() {
+    let dataset = fixture_dataset();
+
+    // Terminal report: the demo carries a clock-skew error, so the run fails with exit 20.
+    let (code, stdout, _) = run(&["check", &dataset]);
+    assert_eq!(code, 20, "a dataset with an error finding must exit 20");
+    assert!(stdout.contains("Veridex report"), "unexpected: {stdout}");
+    assert!(stdout.contains("Trust:"), "report must carry a trust score");
+    assert!(stdout.contains("TEMPORAL.CLOCK_SKEW"), "unexpected: {stdout}");
+
+    // JSON report: same run, machine-readable, with the versioned schema and a bound content hash.
+    let (code, stdout, _) = run(&["check", &dataset, "--json"]);
+    assert_eq!(code, 20);
+    let report: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON report");
+    assert_eq!(report["schema"], "veridex.report/1");
+    assert!(report["verdict"]["cdm_content_hash"].is_string());
+    assert_eq!(report["trust_score"]["rubric_version"], "v1");
+}
+
+#[test]
+fn full_keygen_certify_verify_flow() {
+    // The primary trust flow, exercised through the real binary end-to-end: mint a key, certify a
+    // dataset, then verify the certificate offline against that same dataset and the public key.
+    let dataset = fixture_dataset();
+    let dir = temp_dir("certflow");
+    let key = dir.join("issuer");
+    let key_s = key.to_str().unwrap();
+    let cert = dir.join("cert.json");
+    let cert_s = cert.to_str().unwrap();
+
+    // keygen writes the secret key and its `.pub` companion.
+    let (code, stdout, _) = run(&["keygen", key_s]);
+    assert_eq!(code, 0, "keygen must succeed");
+    assert!(stdout.contains("issuer key id"));
+    assert!(key.exists() && dir.join("issuer.pub").exists());
+
+    // certify signs the verdict into a content-bound certificate.
+    let (code, stdout, _) = run(&["certify", &dataset, "--key", key_s, "--out", cert_s]);
+    assert_eq!(code, 0, "certify must succeed");
+    assert!(stdout.contains("certified"));
+    assert!(cert.exists());
+
+    // verify accepts the certificate against the same dataset and the trusted public key.
+    let pubkey = dir.join("issuer.pub");
+    let (code, stdout, _) = run(&[
+        "verify",
+        &dataset,
+        "--certificate",
+        cert_s,
+        "--key",
+        pubkey.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "verify must accept a valid certificate");
+    assert!(stdout.contains("verified"), "unexpected: {stdout}");
+
+    // A different issuer key must be rejected — the certificate is not from that issuer.
+    let other = dir.join("other");
+    run(&["keygen", other.to_str().unwrap()]);
+    let (code, _, _) = run(&[
+        "verify",
+        &dataset,
+        "--certificate",
+        cert_s,
+        "--key",
+        other.with_extension("pub").to_str().unwrap(),
+    ]);
+    assert_ne!(code, 0, "an untrusted issuer key must fail verification");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
