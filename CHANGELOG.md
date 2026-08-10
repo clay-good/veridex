@@ -47,9 +47,12 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   online late — a misalignment the duration-based skew check can miss — its mirror
   `TEMPORAL.END_OFFSET` that catches a stream which drops out early or runs long (a truncated tail;
   because `end = start + duration`, a tail misalignment can slip past both the start-offset and
-  clock-skew checks), and a timeline-jitter check
+  clock-skew checks), a timeline-jitter check
   (`TEMPORAL.JITTER`) that flags an irregular inter-frame spacing (coefficient of variation above a
-  configurable tolerance) even when the mean rate looks correct and no single interval is a gap),
+  configurable tolerance) even when the mean rate looks correct and no single interval is a gap, and
+  a cross-episode declared-rate consistency check (`TEMPORAL.RATE_INCONSISTENT`) that flags a stream
+  whose declared sampling rate changes between episodes — differently-configured sources pooled under
+  one key — which every per-episode check passes over),
   statistical (range/sanity — inverted range, non-finite, negative std, mean-outside-range, and
   degeneracy, an implausibly-large std that violates Popoviciu's bound `(max−min)/2`, and stored
   min/max outside the declared integer dtype's representable range — over stored stats), semantic

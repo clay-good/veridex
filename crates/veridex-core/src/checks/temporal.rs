@@ -2,7 +2,7 @@
 
 use crate::cdm::{Dataset, Stream};
 use crate::check::{Category, Check, Finding, Location, Scope, Severity};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 const NS_PER_S: f64 = 1_000_000_000.0;
 
@@ -737,6 +737,106 @@ impl Check for EndOffset {
                              common time window.",
                         ),
                     );
+                }
+            }
+        }
+        findings
+    }
+}
+
+/// Cross-episode **declared-rate consistency**. The temporal sibling of
+/// [`ShapeConsistency`](crate::checks::structural::ShapeConsistency): a stream that declares one
+/// sampling rate in some episodes and a materially different rate in others means the dataset pools
+/// differently-configured sources — or the rate metadata is wrong. Every per-episode temporal check
+/// passes (each episode is internally consistent), yet a global fixed-rate assumption is wrong for
+/// part of the data. Streams that declare no rate, or vary only by floating-point noise, are not
+/// flagged; the first declared rate seen for a stream name is the baseline the rest are compared to.
+pub struct RateConsistency;
+
+impl RateConsistency {
+    /// Relative tolerance for treating two declared rates as "the same". Declared rates are metadata
+    /// and usually exact, so this only absorbs floating-point noise; a real rate change (30 Hz vs
+    /// 10 Hz) is far larger. Not a policy knob, so it is a constant rather than a configurable
+    /// tolerance.
+    const REL_TOL: f64 = 0.01;
+}
+
+impl Check for RateConsistency {
+    fn id(&self) -> &'static str {
+        "temporal.rate-consistency"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["TEMPORAL.RATE_INCONSISTENT"]
+    }
+    fn title(&self) -> &'static str {
+        "Cross-episode declared-rate consistency"
+    }
+    fn category(&self) -> Category {
+        Category::Temporal
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Warning
+    }
+    fn scope(&self) -> Scope {
+        Scope::Dataset
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        // First valid declared rate seen for each stream name, and the episode it came from.
+        let mut baseline: BTreeMap<&str, (f64, u64)> = BTreeMap::new();
+        // Names already reported, so a stream that drifts across many episodes yields one finding.
+        let mut reported: BTreeSet<&str> = BTreeSet::new();
+        let mut findings = Vec::new();
+
+        for ep in &dataset.episodes {
+            for stream in &ep.streams {
+                // Only a positive, finite declared rate is comparable (a corrupt rate is
+                // `TEMPORAL.INVALID_RATE`'s concern, not this check's).
+                let Some(rate) = stream.declared_rate_hz else {
+                    continue;
+                };
+                if !rate.is_finite() || rate <= 0.0 {
+                    continue;
+                }
+                match baseline.get(stream.name.as_str()) {
+                    None => {
+                        baseline.insert(&stream.name, (rate, ep.index));
+                    }
+                    Some(&(base_rate, base_ep)) => {
+                        let differs = (rate - base_rate).abs() > Self::REL_TOL * base_rate;
+                        if differs && reported.insert(stream.name.as_str()) {
+                            findings.push(
+                                Finding::new(
+                                    self.id(),
+                                    Category::Temporal,
+                                    Severity::Warning,
+                                    Location::Stream {
+                                        episode: ep.index,
+                                        stream: stream.name.clone(),
+                                    },
+                                    "TEMPORAL.RATE_INCONSISTENT",
+                                    format!(
+                                        "stream `{}` declares {base_rate:.3} Hz in episode \
+                                         {base_ep} but {rate:.3} Hz in episode {}",
+                                        stream.name, ep.index,
+                                    ),
+                                )
+                                .with_risk(
+                                    "A stream whose declared sampling rate changes between episodes \
+                                     means the dataset pools differently-configured sources (or the \
+                                     rate metadata is wrong); a global fixed-rate assumption and any \
+                                     resampling will be wrong for part of the data.",
+                                )
+                                .with_remedy(
+                                    "Confirm every episode of this stream was recorded at one rate; \
+                                     re-export or split the mismatched episodes, or correct the \
+                                     declared rate.",
+                                ),
+                            );
+                        }
+                    }
                 }
             }
         }

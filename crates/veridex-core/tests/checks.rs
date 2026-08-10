@@ -458,6 +458,45 @@ fn rate_validity_ignores_valid_and_absent_rates() {
 }
 
 #[test]
+fn rate_consistency_flags_a_stream_whose_rate_changes_between_episodes() {
+    // `cam` is 30 Hz in episode 0 but 10 Hz in episode 2 — differently-configured sources pooled.
+    let ts = [0i64, 100_000_000];
+    let d = dataset(vec![
+        episode(0, vec![stream("cam", "c", Some(30.0), &ts)]),
+        episode(1, vec![stream("cam", "c", Some(30.0), &ts)]),
+        episode(2, vec![stream("cam", "c", Some(10.0), &ts)]),
+    ]);
+    let f = temporal::RateConsistency.run(&d);
+    assert_eq!(f.len(), 1, "one finding per drifting stream, not per episode");
+    assert_eq!(f[0].code, "TEMPORAL.RATE_INCONSISTENT");
+    assert_eq!(f[0].severity, Severity::Warning);
+    assert!(f[0].message.contains("30.000") && f[0].message.contains("10.000"));
+}
+
+#[test]
+fn rate_consistency_ignores_uniform_noise_and_absent_rates() {
+    let ts = [0i64, 100_000_000];
+    // Same rate across episodes → clean.
+    let uniform = dataset(vec![
+        episode(0, vec![stream("cam", "c", Some(30.0), &ts)]),
+        episode(1, vec![stream("cam", "c", Some(30.0), &ts)]),
+    ]);
+    assert!(temporal::RateConsistency.run(&uniform).is_empty());
+    // A sub-1% difference is floating-point noise, not a real rate change → clean.
+    let noisy = dataset(vec![
+        episode(0, vec![stream("cam", "c", Some(30.0), &ts)]),
+        episode(1, vec![stream("cam", "c", Some(30.05), &ts)]),
+    ]);
+    assert!(temporal::RateConsistency.run(&noisy).is_empty());
+    // Episodes that declare no rate can't be inconsistent.
+    let absent = dataset(vec![
+        episode(0, vec![stream("cam", "c", None, &ts)]),
+        episode(1, vec![stream("cam", "c", None, &ts)]),
+    ]);
+    assert!(temporal::RateConsistency.run(&absent).is_empty());
+}
+
+#[test]
 fn gaps_are_detected_against_declared_rate() {
     // 10 Hz declared (100 ms expected); a 500 ms jump between frame 2 and 3 is a gap.
     let ts = [0i64, 100_000_000, 200_000_000, 700_000_000, 800_000_000];
@@ -748,7 +787,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 20);
+    assert_eq!(verdict.executed_checks.len(), 21);
 }
 
 #[test]
