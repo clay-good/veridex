@@ -646,21 +646,34 @@ impl Check for EpisodeContinuity {
 /// Exact-duplicate episodes. A dataset that carries the *same episode more than once* — a re-upload,
 /// a bad merge of two exports, or a copy-paste in a manifest — over-weights those trajectories and
 /// inflates the apparent dataset size, biasing training toward the repeated data. This groups
-/// episodes by an exact structural signature (their streams, per-frame timestamps, and stored
-/// statistics — everything but the episode index) and flags any group holding more than one episode.
+/// episodes by an exact **content** signature and flags any group holding more than one episode.
 ///
-/// Scope note: this catches *exact* duplicates from the CDM alone. *Near*-duplicate detection (the
-/// same trajectory re-recorded with small differences) needs frame-payload similarity, which the MVP
-/// design does not decode, so it is deliberately out of scope here.
+/// Soundness note: a duplicate claim requires proof that the *frame contents* are identical, so the
+/// signature is built only from episodes whose every frame carries a `content_hash` — and the hash is
+/// part of the signature. An episode with any hashless frame is **not fingerprintable** and is
+/// excluded, because timestamps + schema + stored stats alone do not distinguish two genuinely
+/// different same-length episodes (in LeRobot, for instance, every episode shares one relative time
+/// base and dataset-global stats). This keeps the check from false-flagging normal datasets: it fires
+/// only once adapters populate per-frame content hashes, never on shape-only coincidence.
+///
+/// Scope note: this catches *exact* duplicates. *Near*-duplicate detection (the same trajectory
+/// re-recorded with small differences) needs frame-payload similarity, which the MVP design does not
+/// decode, so it is deliberately out of scope here.
 pub struct DuplicateEpisode;
 
 impl DuplicateEpisode {
-    /// A deterministic, exact signature of an episode's content, excluding its index. Two episodes
-    /// with equal signatures are byte-for-byte equivalent in every field a duplicate would share.
-    /// Floats are captured by their bit pattern so equality is exact (and `NaN`-stable); the
-    /// modality enum is captured by its `Debug` form.
-    fn signature(ep: &crate::cdm::Episode) -> String {
+    /// A deterministic, exact signature of an episode's content, excluding its index. Returns `None`
+    /// when the episode is not fingerprintable — any stream has no frames, or any frame lacks a
+    /// `content_hash` — because without proven-identical content a duplicate cannot be claimed. Two
+    /// episodes with equal `Some` signatures are byte-for-byte equivalent in every field a duplicate
+    /// shares, frame contents included. Floats are captured by their bit pattern so equality is exact
+    /// (and `NaN`-stable); the modality enum is captured by its `Debug` form.
+    fn signature(ep: &crate::cdm::Episode) -> Option<String> {
         use std::fmt::Write as _;
+        // An episode with no streams carries no content to compare — leave it to DegenerateEpisode.
+        if ep.streams.is_empty() {
+            return None;
+        }
         let mut sig = String::new();
         // task and labels (labels sorted for order-insensitivity).
         let _ = write!(sig, "task={:?};", ep.task);
@@ -673,9 +686,13 @@ impl DuplicateEpisode {
         let mut streams: Vec<&crate::cdm::Stream> = ep.streams.iter().collect();
         streams.sort_by(|a, b| a.name.cmp(&b.name));
         for s in streams {
+            // A stream with no frames can't establish content identity.
+            if s.frames.is_empty() {
+                return None;
+            }
             let _ = write!(
                 sig,
-                "S[name={};mod={:?};rate={:?};clock={};dtype={:?};shape={:?};ts=",
+                "S[name={};mod={:?};rate={:?};clock={};dtype={:?};shape={:?};frames=",
                 s.name,
                 s.modality,
                 s.declared_rate_hz.map(f64::to_bits),
@@ -684,7 +701,10 @@ impl DuplicateEpisode {
                 s.shape,
             );
             for f in &s.frames {
-                let _ = write!(sig, "{},", f.ts);
+                // The content hash is what proves duplication; without it the episode is not
+                // fingerprintable and the whole check must abstain for it.
+                let hash = f.value_ref.content_hash?;
+                let _ = write!(sig, "{}@{},", f.ts, hex32(&hash));
             }
             if let Some(st) = s.stats {
                 let _ = write!(
@@ -698,8 +718,18 @@ impl DuplicateEpisode {
             }
             sig.push_str("];");
         }
-        sig
+        Some(sig)
     }
+}
+
+/// Lowercase hex of a 32-byte content hash, for the episode signature.
+fn hex32(bytes: &[u8; 32]) -> String {
+    use std::fmt::Write as _;
+    let mut s = String::with_capacity(64);
+    for b in bytes {
+        let _ = write!(s, "{b:02x}");
+    }
+    s
 }
 
 impl Check for DuplicateEpisode {
@@ -725,13 +755,14 @@ impl Check for DuplicateEpisode {
         "1"
     }
     fn run(&self, dataset: &Dataset) -> Vec<Finding> {
-        // signature -> episode indices, in first-seen order within each group.
+        // signature -> episode indices, in first-seen order within each group. Episodes that are not
+        // fingerprintable (no proven-identical content) return `None` and are skipped, so a duplicate
+        // is never claimed from shape/timing coincidence alone.
         let mut groups: HashMap<String, Vec<u64>> = HashMap::new();
         for ep in &dataset.episodes {
-            groups
-                .entry(Self::signature(ep))
-                .or_default()
-                .push(ep.index);
+            if let Some(sig) = Self::signature(ep) {
+                groups.entry(sig).or_default().push(ep.index);
+            }
         }
         // Keep only groups with more than one episode; sort each group's indices, then order the
         // groups by their smallest index so the report is deterministic.

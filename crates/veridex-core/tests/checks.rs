@@ -231,12 +231,42 @@ fn contiguous_episode_indices_have_no_gap() {
     assert!(structural::EpisodeContinuity.run(&one).is_empty());
 }
 
+/// A stream whose frames carry content hashes: frame `i` gets `content_hash = [contents[i]; 32]`, so
+/// two streams with equal `contents` have provably-identical content and differing `contents` do not.
+/// A duplicate claim is only sound when frame content is known, so the duplicate tests use this.
+fn stream_hashed(name: &str, clock: &str, ts: &[i64], contents: &[u8]) -> Stream {
+    assert_eq!(ts.len(), contents.len());
+    let frames = ts
+        .iter()
+        .zip(contents)
+        .map(|(t, c)| Frame {
+            ts: *t,
+            value_ref: ValueRef {
+                uri: "x".into(),
+                byte_offset: None,
+                byte_len: None,
+                content_hash: Some([*c; 32]),
+            },
+        })
+        .collect();
+    Stream {
+        name: name.into(),
+        modality: Modality::ScalarState,
+        declared_rate_hz: Some(10.0),
+        clock_id: clock.into(),
+        dtype: None,
+        shape: None,
+        stats: None,
+        frames,
+    }
+}
+
 #[test]
 fn exact_duplicate_episodes_are_grouped() {
-    // Episodes 0, 1, 2 where 0 and 2 are byte-identical in content (a re-upload). The check groups
-    // them and reports both indices; the distinct episode 1 is not implicated.
-    let dup = || vec![stream("cam", "wall", Some(10.0), &[0, 100, 200])];
-    let distinct = vec![stream("cam", "wall", Some(10.0), &[0, 100, 300])];
+    // Episodes 0, 1, 2 where 0 and 2 have identical frame content (a re-upload). The check groups
+    // them and reports both indices; the distinct episode 1 (same timing, different content) is not.
+    let dup = || vec![stream_hashed("cam", "wall", &[0, 100, 200], &[1, 2, 3])];
+    let distinct = vec![stream_hashed("cam", "wall", &[0, 100, 200], &[9, 9, 9])];
     let d = dataset(vec![
         episode(0, dup()),
         episode(1, distinct),
@@ -252,23 +282,31 @@ fn exact_duplicate_episodes_are_grouped() {
 }
 
 #[test]
-fn distinct_episodes_are_not_flagged_as_duplicates() {
-    // Same streams and timestamps but different stored stats → not a duplicate.
-    let mut a = stream("cam", "wall", Some(10.0), &[0, 100, 200]);
-    a.stats = Some(veridex_core::cdm::StreamStats {
+fn same_timing_but_different_content_is_not_a_duplicate() {
+    // The false-positive guard: two episodes with identical timestamps, schema, and stored stats but
+    // DIFFERENT frame content are NOT duplicates. Without this, every same-length LeRobot episode
+    // (shared relative time base + dataset-global stats) would be mis-flagged.
+    let stats = Some(veridex_core::cdm::StreamStats {
         min: 0.0,
         max: 1.0,
         mean: 0.5,
         std: 0.1,
     });
-    let mut b = stream("cam", "wall", Some(10.0), &[0, 100, 200]);
-    b.stats = Some(veridex_core::cdm::StreamStats {
-        min: 0.0,
-        max: 2.0, // differs
-        mean: 0.5,
-        std: 0.1,
-    });
+    let mut a = stream_hashed("cam", "wall", &[0, 100, 200], &[1, 2, 3]);
+    a.stats = stats;
+    let mut b = stream_hashed("cam", "wall", &[0, 100, 200], &[4, 5, 6]); // same timing, other content
+    b.stats = stats;
     let d = dataset(vec![episode(0, vec![a]), episode(1, vec![b])]);
+    assert!(structural::DuplicateEpisode.run(&d).is_empty());
+}
+
+#[test]
+fn episodes_without_content_hashes_are_never_flagged_as_duplicates() {
+    // The `stream` helper builds hashless frames (content_hash: None). Two structurally-identical
+    // such episodes must NOT be flagged, because duplication can't be proven without frame content —
+    // this is exactly the shape-only coincidence that would false-positive on real datasets.
+    let ep_streams = || vec![stream("cam", "wall", Some(10.0), &[0, 100, 200])];
+    let d = dataset(vec![episode(0, ep_streams()), episode(1, ep_streams())]);
     assert!(structural::DuplicateEpisode.run(&d).is_empty());
 }
 
