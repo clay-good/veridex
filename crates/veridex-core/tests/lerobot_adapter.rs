@@ -45,6 +45,12 @@ fn write_lerobot(dir: &Path, features: &[(&str, &str)], fps: f64, rows: &[(i64, 
     )
     .unwrap();
 
+    write_frames_parquet(&dir.join("data/chunk-000/file-000.parquet"), rows);
+}
+
+/// Write one `.parquet` shard with the `episode_index` / `frame_index` / `timestamp` columns from
+/// `rows`. The parent directory must already exist.
+fn write_frames_parquet(path: &Path, rows: &[(i64, f64)]) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("episode_index", DataType::Int64, false),
         Field::new("frame_index", DataType::Int64, false),
@@ -63,7 +69,7 @@ fn write_lerobot(dir: &Path, features: &[(&str, &str)], fps: f64, rows: &[(i64, 
     )
     .unwrap();
 
-    let file = fs::File::create(dir.join("data/chunk-000/file-000.parquet")).unwrap();
+    let file = fs::File::create(path).unwrap();
     let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
     writer.write(&batch).unwrap();
     writer.close().unwrap();
@@ -258,6 +264,38 @@ fn reads_stored_stats_from_stats_json() {
         .findings
         .iter()
         .any(|f| f.code == "STATISTICAL.DEGENERATE"));
+}
+
+#[test]
+fn frames_are_aggregated_across_multiple_parquet_shards() {
+    // Real LeRobot datasets spread episodes across many shards in separate chunk dirs. The adapter
+    // must recurse into every chunk (find_parquet) and collect all episodes, not just the first
+    // shard — a silent single-shard read would drop most of a real dataset.
+    let dir = tempfile::tempdir().unwrap();
+    // chunk-000 (written by write_lerobot): episodes 0 and 1.
+    write_lerobot(
+        dir.path(),
+        &[("observation.state", "float32")],
+        10.0,
+        &[(0, 0.0), (0, 0.1), (1, 0.0), (1, 0.1), (1, 0.2)],
+    );
+    // A second shard in a separate chunk dir: episode 2. Only reached if find_parquet recurses.
+    fs::create_dir_all(dir.path().join("data/chunk-001")).unwrap();
+    write_frames_parquet(
+        &dir.path().join("data/chunk-001/file-000.parquet"),
+        &[(2, 0.0), (2, 0.1)],
+    );
+
+    let d = ingest_lerobot(dir.path());
+    // Every episode from both shards is present, in ascending index order.
+    assert_eq!(
+        d.episodes.iter().map(|e| e.index).collect::<Vec<_>>(),
+        vec![0, 1, 2]
+    );
+    // Each episode's frame count reflects the rows in whichever shard held it.
+    assert_eq!(d.episodes[0].streams[0].frames.len(), 2);
+    assert_eq!(d.episodes[1].streams[0].frames.len(), 3);
+    assert_eq!(d.episodes[2].streams[0].frames.len(), 2);
 }
 
 #[test]
