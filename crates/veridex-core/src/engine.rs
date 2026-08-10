@@ -24,6 +24,32 @@ pub enum RegistryError {
     DuplicateId(&'static str),
 }
 
+/// Numeric tolerances for the checks that take one. Applied when the engine's checks are built, so
+/// a run can loosen or tighten a threshold (e.g. a rig with a known 80 ms camera latency). Defaults
+/// match each check's built-in default.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Tolerances {
+    /// Max tolerated cross-stream duration drift for `TEMPORAL.CLOCK_SKEW`, in nanoseconds.
+    pub clock_skew_ns: i64,
+    /// Max tolerated shared-clock start offset for `TEMPORAL.START_OFFSET`, in nanoseconds.
+    pub start_offset_ns: i64,
+    /// Allowed relative rate deviation for `TEMPORAL.RATE` (0.10 = 10%).
+    pub rate_deviation: f64,
+    /// A `TEMPORAL.GAP` fires on an interval greater than this multiple of the expected interval.
+    pub gap_factor: f64,
+}
+
+impl Default for Tolerances {
+    fn default() -> Self {
+        Tolerances {
+            clock_skew_ns: 50_000_000,   // 50 ms
+            start_offset_ns: 50_000_000, // 50 ms
+            rate_deviation: 0.10,        // 10%
+            gap_factor: 3.0,
+        }
+    }
+}
+
 /// Caller configuration for a run. All collections are ordered for determinism.
 #[derive(Debug, Clone, Default)]
 pub struct RunConfig {
@@ -35,6 +61,8 @@ pub struct RunConfig {
     pub disabled_checks: BTreeSet<String>,
     /// Per-check severity overrides, applied to every finding of that check.
     pub severity_overrides: BTreeMap<String, Severity>,
+    /// Numeric tolerances for the checks that take one. The engine builds its checks with these.
+    pub tolerances: Tolerances,
 }
 
 /// The effective configuration, snapshotted into the verdict so a run is reproducible from it.

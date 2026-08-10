@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Deserialize;
 
 use crate::check::{Category, Severity};
-use crate::engine::RunConfig;
+use crate::engine::{RunConfig, Tolerances};
 
 /// Errors parsing a configuration file.
 #[derive(Debug, thiserror::Error)]
@@ -28,6 +28,21 @@ pub enum FailOn {
     Warning,
 }
 
+/// The `[tolerances]` table: per-check numeric thresholds. Each is optional and falls back to the
+/// check's built-in default. Times are in milliseconds for readability.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TolerancesConfig {
+    /// `TEMPORAL.CLOCK_SKEW` max cross-stream duration drift, in milliseconds.
+    pub clock_skew_ms: Option<f64>,
+    /// `TEMPORAL.START_OFFSET` max shared-clock start offset, in milliseconds.
+    pub start_offset_ms: Option<f64>,
+    /// `TEMPORAL.RATE` allowed relative rate deviation (0.10 = 10%).
+    pub rate_deviation: Option<f64>,
+    /// `TEMPORAL.GAP` gap factor: an interval this many times the expected one is a gap.
+    pub gap_factor: Option<f64>,
+}
+
 /// A parsed `veridex.toml`.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -45,6 +60,8 @@ pub struct CheckConfig {
     /// Minimum trust score (0–100) required to pass; a lower score fails the run. `None` disables
     /// the gate. The `--min-score` CLI flag overrides this.
     pub min_score: Option<u8>,
+    /// Per-check numeric tolerances. Unset entries use the check's default.
+    pub tolerances: TolerancesConfig,
 }
 
 impl CheckConfig {
@@ -59,6 +76,7 @@ impl CheckConfig {
                 )));
             }
         }
+        config.tolerances.validate()?;
         Ok(config)
     }
 
@@ -102,6 +120,54 @@ impl CheckConfig {
                 .map(|c| c.iter().cloned().collect::<BTreeSet<_>>()),
             disabled_checks: self.disabled_checks.iter().cloned().collect(),
             severity_overrides: self.severity_overrides.clone(),
+            tolerances: self.tolerances.resolve(),
+        }
+    }
+}
+
+impl TolerancesConfig {
+    /// Reject non-finite or negative values, and a non-positive gap factor (which would flag every
+    /// interval). Called before a run so a bad threshold is an error, not a silent misbehavior.
+    fn validate(&self) -> Result<(), ConfigError> {
+        let non_negative = [
+            ("clock_skew_ms", self.clock_skew_ms),
+            ("start_offset_ms", self.start_offset_ms),
+            ("rate_deviation", self.rate_deviation),
+        ];
+        for (name, v) in non_negative {
+            if let Some(v) = v {
+                if !v.is_finite() || v < 0.0 {
+                    return Err(ConfigError::Parse(format!(
+                        "{name} must be a finite, non-negative number, got {v}"
+                    )));
+                }
+            }
+        }
+        if let Some(g) = self.gap_factor {
+            if !g.is_finite() || g <= 0.0 {
+                return Err(ConfigError::Parse(format!(
+                    "gap_factor must be a finite, positive number, got {g}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Resolve into concrete [`Tolerances`], filling unset entries from the defaults. Millisecond
+    /// times are converted to nanoseconds (saturating on absurd values).
+    fn resolve(&self) -> Tolerances {
+        let d = Tolerances::default();
+        Tolerances {
+            clock_skew_ns: self
+                .clock_skew_ms
+                .map(|ms| (ms * 1_000_000.0) as i64)
+                .unwrap_or(d.clock_skew_ns),
+            start_offset_ns: self
+                .start_offset_ms
+                .map(|ms| (ms * 1_000_000.0) as i64)
+                .unwrap_or(d.start_offset_ns),
+            rate_deviation: self.rate_deviation.unwrap_or(d.rate_deviation),
+            gap_factor: self.gap_factor.unwrap_or(d.gap_factor),
         }
     }
 }

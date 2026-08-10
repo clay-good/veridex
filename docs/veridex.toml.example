@@ -27,3 +27,11 @@ disabled_checks = []
 # For example, treat cross-stream clock skew as a warning rather than an error:
 # [severity_overrides]
 # "temporal.clock-skew" = "warning"
+
+# Numeric tolerances for the checks that take one. Each is optional and falls back to the default
+# shown. Raise a threshold for a rig with a known offset (e.g. a camera that lags the arm by 80 ms).
+# [tolerances]
+# clock_skew_ms = 50      # TEMPORAL.CLOCK_SKEW: max cross-stream duration drift
+# start_offset_ms = 50    # TEMPORAL.START_OFFSET: max shared-clock start offset
+# rate_deviation = 0.10   # TEMPORAL.RATE: allowed relative rate deviation (0.10 = 10%)
+# gap_factor = 3.0        # TEMPORAL.GAP: an interval this many times the expected one is a gap

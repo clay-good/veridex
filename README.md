@@ -129,9 +129,9 @@ pass-with-warnings · `20` fail · `2` tool-error. For CI you can gate on severi
 warning`) or on the trust score directly (`--min-score 80` fails when the score is below 80).
 
 Drop a [`veridex.toml`](docs/veridex.toml.example) in your repo (or pass `--config`) to select
-categories, disable checks, override per-check severities, and set the failure threshold — the
-effective config is recorded in every verdict, and unknown keys or check ids are rejected, not
-silently ignored.
+categories, disable checks, override per-check severities, tune numeric tolerances (clock-skew,
+rate, gap, start-offset), and set the failure threshold — the effective config is recorded in every
+verdict, and unknown keys, check ids, or invalid tolerances are rejected, not silently ignored.
 
 The same command works on a LeRobot v3 dataset — proof of the cross-format claim. Generate a demo
 one (its second episode carries an out-of-order timestamp) and check it the same way:

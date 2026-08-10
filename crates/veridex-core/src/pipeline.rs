@@ -7,7 +7,7 @@
 use crate::adapter::{AdapterRegistry, IngestError, IngestOptions, Ingested, Source};
 use crate::canonical::content_hash;
 use crate::certificate::{score, ProvenanceCoverage, TrustScore};
-use crate::checks::default_engine;
+use crate::checks::default_engine_with;
 use crate::engine::{RunConfig, Verdict};
 
 /// The result of a full check: the ingested dataset, its verdict, and its trust score.
@@ -46,8 +46,10 @@ pub fn run_check_with(
     };
 
     let hash = content_hash(&ingested.dataset);
-    // The standard check set has unique ids by construction (asserted by tests).
-    let engine = default_engine().expect("standard checks have unique ids");
+    // The standard check set has unique ids by construction (asserted by tests). Build it with the
+    // run's tolerances so a configured threshold takes effect.
+    let engine =
+        default_engine_with(&run_config.tolerances).expect("standard checks have unique ids");
     let verdict = engine.run(&ingested.dataset, hash, run_config);
     let trust = score(&verdict, &ProvenanceCoverage::of(&ingested.dataset));
 

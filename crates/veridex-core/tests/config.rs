@@ -48,7 +48,8 @@ fn skewed() -> Dataset {
 }
 
 fn run(d: &Dataset, cfg: &RunConfig) -> veridex_core::Verdict {
-    let engine = veridex_core::checks::default_engine().unwrap();
+    // Mirror the pipeline: build the engine with the run's tolerances so configured thresholds apply.
+    let engine = veridex_core::checks::default_engine_with(&cfg.tolerances).unwrap();
     engine.run(d, content_hash(d), cfg)
 }
 
@@ -164,6 +165,39 @@ fn category_selection_scopes_the_run() {
         .iter()
         .all(|f| f.check_id.starts_with("temporal.")));
     assert!(v.findings.iter().any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
+}
+
+#[test]
+fn tolerances_parse_resolve_and_validate() {
+    // Provided values resolve; unset ones fall back to the defaults.
+    let cfg = CheckConfig::from_toml(
+        "[tolerances]\nclock_skew_ms = 250\nrate_deviation = 0.2\ngap_factor = 5\n",
+    )
+    .expect("parses");
+    let rc = cfg.to_run_config();
+    assert_eq!(rc.tolerances.clock_skew_ns, 250_000_000);
+    assert_eq!(rc.tolerances.rate_deviation, 0.2);
+    assert_eq!(rc.tolerances.gap_factor, 5.0);
+    // start_offset_ms was unset → default 50 ms.
+    assert_eq!(rc.tolerances.start_offset_ns, 50_000_000);
+
+    // Invalid values are rejected, not silently ignored.
+    assert!(CheckConfig::from_toml("[tolerances]\nclock_skew_ms = -1\n").is_err());
+    assert!(CheckConfig::from_toml("[tolerances]\ngap_factor = 0\n").is_err());
+    assert!(CheckConfig::from_toml("[tolerances]\nrate_deviation = -0.5\n").is_err());
+}
+
+#[test]
+fn a_loose_clock_skew_tolerance_suppresses_the_skew_finding() {
+    // The skewed dataset drifts 500 ms; the default 50 ms tolerance flags it.
+    let strict = CheckConfig::from_toml("").unwrap();
+    let v = run(&skewed(), &strict.to_run_config());
+    assert!(v.findings.iter().any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
+
+    // Raising the tolerance above the drift makes it clean — the configured threshold took effect.
+    let loose = CheckConfig::from_toml("[tolerances]\nclock_skew_ms = 800\n").unwrap();
+    let v2 = run(&skewed(), &loose.to_run_config());
+    assert!(v2.findings.iter().all(|f| f.code != "TEMPORAL.CLOCK_SKEW"));
 }
 
 #[test]
