@@ -261,6 +261,41 @@ fn reads_stored_stats_from_stats_json() {
 }
 
 #[test]
+fn a_truncated_episode_is_flagged_as_a_duration_outlier_end_to_end() {
+    // Five episodes at 30 Hz through the real adapter: four full ~1 s captures (30 frames) and one
+    // cut short right after it began (3 frames, ~0.07 s). The short episode's rate, spacing, and
+    // counts are all otherwise correct, so the duration-outlier check must be what catches it.
+    let fps = 30.0;
+    let mut rows: Vec<(i64, f64)> = Vec::new();
+    for ep in 0..4i64 {
+        for f in 0..30i64 {
+            rows.push((ep, f as f64 / fps));
+        }
+    }
+    for f in 0..3i64 {
+        rows.push((4, f as f64 / fps));
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    write_lerobot(dir.path(), &[("observation.state", "float32")], fps, &rows);
+    let d = ingest_lerobot(dir.path());
+    assert_eq!(d.episodes.len(), 5);
+
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let hash = veridex_core::content_hash(&d);
+    let verdict = engine.run(&d, hash, &veridex_core::RunConfig::default());
+    let outlier = verdict
+        .findings
+        .iter()
+        .find(|f| f.code == "TEMPORAL.EPISODE_DURATION_OUTLIER")
+        .expect("the truncated episode is flagged as a duration outlier");
+    assert!(matches!(
+        outlier.location,
+        veridex_core::check::Location::Episode { episode: 4 }
+    ));
+}
+
+#[test]
 fn same_logical_dataset_yields_equivalent_cdms_across_formats() {
     // One episode, two frame-aligned streams at 0.0/0.1/0.2 s.
     let dir = tempfile::tempdir().unwrap();

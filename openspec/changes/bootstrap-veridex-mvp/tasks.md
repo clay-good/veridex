@@ -88,7 +88,9 @@ the build plan.
 - [~] Reproduce detection of a synthetic cross-stream skew (done: the demo MCAP triggers
       `TEMPORAL.CLOCK_SKEW`) and a corrupted episode boundary (covered by unit tests). A runnable
       structural-corruption fixture now exists: `make_demo_lerobot -- <dir> truncated` writes a
-      cut-short export that `veridex check` flags as `STRUCTURAL.FRAME_COUNT_MISMATCH`. A
+      cut-short export that `veridex check` flags as `STRUCTURAL.FRAME_COUNT_MISMATCH`, and
+      `make_demo_lerobot -- <dir> short-episode` writes a five-episode dataset with one truncated
+      capture that `veridex check` flags as `TEMPORAL.EPISODE_DURATION_OUTLIER`. A
       boundary-specific (`STRUCTURAL.EPISODE_BOUNDARY`) file fixture is still a follow-up.
 - [x] Draft the upstream proposal (LeRobot CI/Hub quality-and-provenance gate) citing lerobot#4143
       — [docs/adoption-lerobot-ci-gate.md](../../../docs/adoption-lerobot-ci-gate.md).
