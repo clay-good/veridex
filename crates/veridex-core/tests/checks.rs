@@ -996,7 +996,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 25);
+    assert_eq!(verdict.executed_checks.len(), 26);
 }
 
 #[test]
@@ -1235,6 +1235,61 @@ fn saturation_is_reported_once_per_stream_not_per_episode() {
     ]);
     let f = statistical::Saturation::default().run(&d);
     assert_eq!(f.len(), 1);
+}
+
+#[test]
+fn a_lone_extreme_far_from_the_mean_is_an_outlier() {
+    // Bulk near 0 (tiny std), one spike at 100 → max is 100σ from mean → OUTLIER.
+    let d = dataset(vec![episode(
+        0,
+        vec![stream_with_stats("state", stats(0.0, 100.0, 0.0, 1.0))],
+    )]);
+    let f = statistical::ExtremeOutlier::default().run(&d);
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].code, "STATISTICAL.OUTLIER");
+    assert_eq!(f[0].severity, Severity::Warning);
+    assert!(f[0].message.contains("maximum"));
+}
+
+#[test]
+fn a_low_spike_reports_the_minimum() {
+    let d = dataset(vec![episode(
+        0,
+        vec![stream_with_stats("state", stats(-100.0, 1.0, 0.0, 1.0))],
+    )]);
+    let f = statistical::ExtremeOutlier::default().run(&d);
+    assert_eq!(f.len(), 1);
+    assert!(f[0].message.contains("minimum"));
+}
+
+#[test]
+fn a_wide_but_normal_distribution_is_not_an_outlier() {
+    // Extremes only ~2σ out — a broad distribution, not a spike.
+    let d = dataset(vec![episode(
+        0,
+        vec![stream_with_stats("state", stats(-2.0, 2.0, 0.0, 1.0))],
+    )]);
+    assert!(statistical::ExtremeOutlier::default().run(&d).is_empty());
+}
+
+#[test]
+fn extreme_outlier_leaves_corrupt_and_degenerate_stats_to_range_sanity() {
+    // std == 0 (degenerate): no z-scale, so this check abstains (DEGENERATE owns it).
+    let degenerate = dataset(vec![episode(
+        0,
+        vec![stream_with_stats("c", stats(5.0, 5.0, 5.0, 0.0))],
+    )]);
+    assert!(statistical::ExtremeOutlier::default()
+        .run(&degenerate)
+        .is_empty());
+    // Non-finite stats: RangeSanity's error, skipped here.
+    let corrupt = dataset(vec![episode(
+        0,
+        vec![stream_with_stats("c", stats(0.0, f64::NAN, 0.0, 1.0))],
+    )]);
+    assert!(statistical::ExtremeOutlier::default()
+        .run(&corrupt)
+        .is_empty());
 }
 
 // ---- semantic ----

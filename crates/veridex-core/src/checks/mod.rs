@@ -61,6 +61,7 @@ pub fn standard_checks_with(t: &Tolerances) -> Vec<Box<dyn Check>> {
             min_fraction: t.saturation_fraction,
             min_samples: t.saturation_min_samples,
         }),
+        Box::new(statistical::ExtremeOutlier::default()),
         Box::new(semantic::TaskQuality),
         Box::new(semantic::StreamKeyClarity),
         Box::new(provenance::ProvenanceCompleteness),

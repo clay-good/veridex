@@ -435,3 +435,115 @@ impl Check for StoredVsObserved {
         findings
     }
 }
+
+/// Extreme-outlier detection from summary statistics alone. A per-stream extreme (min or max) that
+/// sits many standard deviations from the mean is, by **Chebyshev's inequality**, necessarily a rare
+/// value: no more than `1/z²` of the samples can be `z` standard deviations or further from the mean.
+/// So a `z` of 10 guarantees the flagged extreme is at most 1% of the data — a sparse spike (a sensor
+/// glitch, a unit error, a dropped-to-zero frame), not the fat tail of a wide-but-normal distribution.
+///
+/// This reads only the recorded/recomputed `min`/`max`/`mean`/`std`, never frame payloads. It stays
+/// out of `RangeSanity`'s way: corrupt or degenerate stats (non-finite, inverted, `std == 0`) are that
+/// check's concern and are skipped here.
+pub struct ExtremeOutlier {
+    /// Standard-deviations-from-mean at or beyond which an extreme is flagged. The Chebyshev tail
+    /// bound is `1/z²`, so `z = 10` means the flagged value is ≤1% of the samples.
+    pub z_threshold: f64,
+}
+
+impl Default for ExtremeOutlier {
+    fn default() -> Self {
+        Self { z_threshold: 10.0 }
+    }
+}
+
+impl ExtremeOutlier {
+    fn check_stats(&self, stats: &StreamStats) -> Option<(f64, f64, &'static str)> {
+        // Leave corrupt/degenerate stats to RangeSanity; a zero/non-finite std has no z-scale.
+        if !(stats.min.is_finite()
+            && stats.max.is_finite()
+            && stats.mean.is_finite()
+            && stats.std.is_finite())
+            || stats.std <= 0.0
+            || stats.min > stats.max
+            || stats.mean < stats.min
+            || stats.mean > stats.max
+        {
+            return None;
+        }
+        let z_hi = (stats.max - stats.mean) / stats.std;
+        let z_lo = (stats.mean - stats.min) / stats.std;
+        let (z, value, end) = if z_hi >= z_lo {
+            (z_hi, stats.max, "maximum")
+        } else {
+            (z_lo, stats.min, "minimum")
+        };
+        (z >= self.z_threshold).then_some((z, value, end))
+    }
+}
+
+impl Check for ExtremeOutlier {
+    fn id(&self) -> &'static str {
+        "statistical.extreme-outlier"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["STATISTICAL.OUTLIER"]
+    }
+    fn title(&self) -> &'static str {
+        "Extreme value outlier"
+    }
+    fn category(&self) -> Category {
+        Category::Statistical
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Warning
+    }
+    fn scope(&self) -> Scope {
+        Scope::Stream
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        for ep in &dataset.episodes {
+            for stream in &ep.streams {
+                // Prefer Veridex's own recompute when present; otherwise use the source's stats.
+                let Some(stats) = stream.observed_stats.or(stream.stats) else {
+                    continue;
+                };
+                let Some((z, value, end)) = self.check_stats(&stats) else {
+                    continue;
+                };
+                let tail_pct = 100.0 / (z * z);
+                findings.push(
+                    Finding::new(
+                        self.id(),
+                        Category::Statistical,
+                        Severity::Warning,
+                        Location::Stream {
+                            episode: ep.index,
+                            stream: stream.name.clone(),
+                        },
+                        "STATISTICAL.OUTLIER",
+                        format!(
+                            "stream `{}` in episode {}: its {end} ({value}) is {z:.1}σ from the mean — \
+                             an extreme outlier (at most {tail_pct:.2}% of samples can lie this far out)",
+                            stream.name, ep.index
+                        ),
+                    )
+                    .with_risk(
+                        "A lone extreme far from the mean dominates min/max normalization — it squashes \
+                         the real signal into a sliver of the range — and destabilizes training; it is \
+                         usually a sensor glitch or a unit error, not real data.",
+                    )
+                    .with_remedy(
+                        "Inspect the extreme; clip/winsorize it or fix the unit/scale error, then \
+                         recompute the statistics.",
+                    ),
+                );
+            }
+        }
+        findings
+    }
+}
