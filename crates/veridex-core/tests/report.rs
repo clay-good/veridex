@@ -129,6 +129,7 @@ fn terminal_report_notes_non_default_tolerances_only_when_set() {
         tolerances: veridex_core::Tolerances {
             clock_skew_ns: 800_000_000,
             episode_duration_factor: 4.0,
+            saturation_fraction: 0.7,
             ..veridex_core::Tolerances::default()
         },
         ..RunConfig::default()
@@ -139,6 +140,7 @@ fn terminal_report_notes_non_default_tolerances_only_when_set() {
     assert!(text.contains("Tolerances (non-default):"), "got: {text}");
     assert!(text.contains("clock-skew 800ms"));
     assert!(text.contains("episode-duration 4x"), "got: {text}");
+    assert!(text.contains("saturation 70%"), "got: {text}");
 }
 
 #[test]

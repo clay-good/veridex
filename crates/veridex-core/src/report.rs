@@ -155,6 +155,15 @@ fn non_default_tolerances(t: &crate::Tolerances) -> Vec<String> {
     if t.episode_duration_factor != d.episode_duration_factor {
         out.push(format!("episode-duration {}x", t.episode_duration_factor));
     }
+    if t.saturation_fraction != d.saturation_fraction {
+        out.push(format!("saturation {:.0}%", t.saturation_fraction * 100.0));
+    }
+    if t.saturation_min_samples != d.saturation_min_samples {
+        out.push(format!(
+            "saturation min-samples {}",
+            t.saturation_min_samples
+        ));
+    }
     out
 }
 
