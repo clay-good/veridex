@@ -35,51 +35,25 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 - **Validation engine** — check registry with duplicate-id rejection, category/id selection,
   severity overrides, deterministic stably-ordered verdicts with a result content hash, fault
   isolation for panicking checks, and reproducibility metadata.
-- **Checks catalog** — structural (episode-boundary integrity covering the lerobot#4143 class,
-  degenerate episodes/streams — including a dataset with zero episodes, which would otherwise pass
-  silently — episode-index continuity (a gap like `0, 1, 3` means a dropped episode, caught without
-  any manifest), declared-vs-actual episode- and frame-count checks that catch a truncated export
-  (LeRobot `total_episodes` / `total_frames` vs what was ingested), and cross-episode dtype/shape
-  consistency so a stream
-  that changes
-  tensor shape between episodes — an un-batchable dataset — is caught, and cross-episode stream
-  presence so a stream that appears in only some episodes — a sensor that dropped out, or two
-  exports pooled together — is flagged (`STRUCTURAL.STREAM_PRESENCE_INCONSISTENT`), and exact-duplicate
-  episode detection (`STRUCTURAL.DUPLICATE_EPISODE`) that groups episodes with identical frame content
-  — a re-upload or a bad merge that over-weights the repeated trajectories; sound-only, comparing an
-  episode only when every frame carries a `content_hash`, so it never mis-flags two different
-  same-length episodes that merely share a time base and dataset-global stats, and a frozen-sensor
-  check (`STRUCTURAL.STUCK_STREAM`) that flags a `Video` stream repeating a byte-identical frame for
-  ≥5 consecutive frames while timestamps advance — a stuck camera that every timestamp-based temporal
-  check passes over; scoped to video, where byte-identical frames are physically implausible, so a
-  constant scalar stream isn't mistaken for one), temporal (monotonicity,
-  rate conformance, gaps, the headline
-  a declared-rate validity check (`TEMPORAL.INVALID_RATE`) that flags a corrupt declared rate
-  (`0`, negative, `NaN`, `inf`) which the rate- and gap-conformance checks would otherwise skip
-  silently, the headline
-  `TEMPORAL.CLOCK_SKEW`, a shared-clock start-offset check that catches a stream which comes
-  online late — a misalignment the duration-based skew check can miss — its mirror
-  `TEMPORAL.END_OFFSET` that catches a stream which drops out early or runs long (a truncated tail;
-  because `end = start + duration`, a tail misalignment can slip past both the start-offset and
-  clock-skew checks), a timeline-jitter check
-  (`TEMPORAL.JITTER`) that flags an irregular inter-frame spacing (coefficient of variation above a
-  configurable tolerance) even when the mean rate looks correct and no single interval is a gap, and
-  a cross-episode declared-rate consistency check (`TEMPORAL.RATE_INCONSISTENT`) that flags a stream
-  whose declared sampling rate changes between episodes — differently-configured sources pooled under
-  one key — which every per-episode check passes over, and a cross-episode duration-outlier check
-  (`TEMPORAL.EPISODE_DURATION_OUTLIER`) that flags an episode whose length is a large multiple away
-  from the dataset's median — a truncated capture or a stuck recorder that still counts as a full
-  labeled trajectory — using a median baseline robust to the outliers it hunts),
-  statistical (range/sanity — inverted range, non-finite, negative std, mean-outside-range, and
-  degeneracy, an implausibly-large std that violates Popoviciu's bound `(max−min)/2`, and stored
-  min/max outside the declared integer dtype's representable range — over stored stats), semantic
-  (task-string quality — present-but-empty and placeholder tasks — and stream-key clarity, which
-  flags an exact-duplicate stream key within an episode as an error (`SEMANTIC.DUPLICATE_STREAM_KEY`,
-  a uniqueness-invariant violation) and camera/stream keys that merely collide by case or whitespace
-  as a warning (`SEMANTIC.AMBIGUOUS_STREAM_KEY`); verified, never modified), and
-  provenance-completeness (presence, internal consistency, and placeholder values — a `license` of
-  `"unknown"` is present in form but empty in substance, so it's flagged and not counted as real
-  provenance). Every finding carries a training risk and a remedy.
+- **Checks catalog** — 23 checks across five families, each finding carrying a training **risk** and
+  a **remedy** and located to the exact episode / stream / frame:
+  - **Structural** — episode-boundary integrity (the lerobot#4143 class), degenerate
+    episodes/streams (including a zero-episode dataset), episode-index continuity, declared-vs-actual
+    episode/frame counts (truncated exports), cross-episode dtype/shape and stream-presence
+    consistency, exact-duplicate episodes (`STRUCTURAL.DUPLICATE_EPISODE`, content-hash-gated so it
+    never mis-flags same-length episodes), and a frozen-camera check (`STRUCTURAL.STUCK_STREAM`).
+  - **Temporal** — monotonicity, declared-rate validity (`TEMPORAL.INVALID_RATE`), rate conformance,
+    gaps, jitter, the headline cross-stream `TEMPORAL.CLOCK_SKEW`, shared-clock start/end offsets,
+    cross-episode rate consistency (`TEMPORAL.RATE_INCONSISTENT`), and episode-duration outliers.
+  - **Statistical** — stored-stats range and sanity: inverted range, non-finite, negative or
+    Popoviciu-implausible std, mean-out-of-range, integer-dtype range, and degeneracy.
+  - **Semantic** — task-string quality and stream-key clarity (an exact-duplicate key is an error, a
+    case/whitespace collision a warning); annotations are verified, never modified.
+  - **Provenance-completeness** — presence, internal consistency, and placeholder detection (a
+    `license` of `"unknown"` is present in form but empty in substance, so it isn't counted as real).
+
+  The full catalog — every check, its finding codes, default severity, and exactly when it fires —
+  lives in [docs/checks.md](docs/checks.md), guarded against drift in both directions by tests.
 - **Trust certificate** — a deterministic v1 score and A–F grade (provenance weighted as a separate
   30% axis), a content-bound certificate document, and Ed25519 signing with offline verification
   that rejects tampering, transplantation, untrusted issuers, and unsupported signature algorithms.
