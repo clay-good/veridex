@@ -14,6 +14,7 @@ fn stream(name: &str, clock: &str, ts: &[i64]) -> Stream {
         shape: None,
         stats: None,
         observed_stats: None,
+        observed_saturation: None,
         frames: ts
             .iter()
             .map(|t| Frame {

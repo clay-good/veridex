@@ -35,7 +35,7 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 - **Validation engine** — check registry with duplicate-id rejection, category/id selection,
   severity overrides, deterministic stably-ordered verdicts with a result content hash, fault
   isolation for panicking checks, and reproducibility metadata.
-- **Checks catalog** — 24 checks across five families, each finding carrying a training **risk** and
+- **Checks catalog** — 25 checks across five families, each finding carrying a training **risk** and
   a **remedy** and located to the exact episode / stream / frame:
   - **Structural** — episode-boundary integrity (the lerobot#4143 class), degenerate
     episodes/streams (including a zero-episode dataset), episode-index continuity, declared-vs-actual
@@ -49,7 +49,10 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
     Popoviciu-implausible std, mean-out-of-range, integer-dtype range, degeneracy), and
     stored-vs-recomputed (`STATISTICAL.STATS_STALE`): where the adapter reads feature values (LeRobot),
     Veridex recomputes the statistics and flags a stored `meta/stats.json` whose range doesn't bound
-    the actual data — stale stats that would poison normalization.
+    the actual data — stale stats that would poison normalization. The same recompute pass flags a
+    clamped/saturated actuator (`STATISTICAL.SATURATED`): a stream whose values sit **exactly** pinned
+    at one extreme for a large fraction of samples — an observation that no longer tracks the command.
+    Exact-equality is the signal, so it never mis-flags a noisy sensor.
   - **Semantic** — task-string quality and stream-key clarity (an exact-duplicate key is an error, a
     case/whitespace collision a warning); annotations are verified, never modified.
   - **Provenance-completeness** — presence, internal consistency, and placeholder detection (a

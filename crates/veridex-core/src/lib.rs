@@ -91,6 +91,7 @@ mod tests {
                         shape: Some(vec![3, 480, 640]),
                         stats: None,
                         observed_stats: None,
+                        observed_saturation: None,
                         frames: vec![
                             Frame {
                                 ts: 1_000,
@@ -121,6 +122,7 @@ mod tests {
                         shape: Some(vec![6]),
                         stats: None,
                         observed_stats: None,
+                        observed_saturation: None,
                         frames: vec![Frame {
                             ts: 1_000,
                             value_ref: ValueRef {
@@ -272,6 +274,7 @@ mod proptests {
                 frames,
                 stats: None,
                 observed_stats: None,
+                observed_saturation: None,
             })
     }
 

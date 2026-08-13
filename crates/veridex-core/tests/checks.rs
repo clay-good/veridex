@@ -35,6 +35,7 @@ fn stream(name: &str, clock: &str, rate: Option<f64>, ts: &[i64]) -> Stream {
         shape: None,
         stats: None,
         observed_stats: None,
+        observed_saturation: None,
         frames: frames_at(ts),
     }
 }
@@ -259,6 +260,7 @@ fn stream_hashed(name: &str, clock: &str, ts: &[i64], contents: &[u8]) -> Stream
         shape: None,
         stats: None,
         observed_stats: None,
+        observed_saturation: None,
         frames,
     }
 }
@@ -337,6 +339,7 @@ fn stream_with_content(name: &str, modality: Modality, contents: &[u8]) -> Strea
         shape: None,
         stats: None,
         observed_stats: None,
+        observed_saturation: None,
         frames,
     }
 }
@@ -404,6 +407,7 @@ fn shaped(name: &str, dtype: Option<&str>, shape: Option<Vec<u64>>, ts: &[i64]) 
         shape,
         stats: None,
         observed_stats: None,
+        observed_saturation: None,
         frames: frames_at(ts),
     }
 }
@@ -992,7 +996,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 24);
+    assert_eq!(verdict.executed_checks.len(), 25);
 }
 
 #[test]
@@ -1138,6 +1142,99 @@ fn stats_within_declared_dtype_range_are_clean() {
     assert!(statistical::RangeSanity
         .run(&dataset(vec![episode(0, vec![f32s])]))
         .is_empty());
+}
+
+/// A stream carrying a recomputed [`Saturation`] summary (as the LeRobot adapter would populate it).
+fn stream_with_saturation(
+    name: &str,
+    sample_count: u64,
+    at_min: u64,
+    at_max: u64,
+    min: f64,
+    max: f64,
+) -> Stream {
+    let mut s = stream(name, "c", None, &[0, 1]);
+    s.observed_saturation = Some(veridex_core::cdm::Saturation {
+        sample_count,
+        at_min,
+        at_max,
+        min,
+        max,
+    });
+    s
+}
+
+#[test]
+fn stream_pinned_at_its_max_is_saturated() {
+    // 70 of 100 samples sit exactly at the max rail → saturated.
+    let d = dataset(vec![episode(
+        0,
+        vec![stream_with_saturation("gripper", 100, 2, 70, 0.0, 1.0)],
+    )]);
+    let f = statistical::Saturation::default().run(&d);
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].code, "STATISTICAL.SATURATED");
+    assert_eq!(f[0].severity, Severity::Warning);
+    assert!(f[0].message.contains("maximum"));
+}
+
+#[test]
+fn stream_pinned_at_its_min_reports_the_minimum() {
+    let d = dataset(vec![episode(
+        0,
+        vec![stream_with_saturation("actuator", 100, 80, 1, -1.0, 1.0)],
+    )]);
+    let f = statistical::Saturation::default().run(&d);
+    assert_eq!(f.len(), 1);
+    assert!(f[0].message.contains("minimum"));
+}
+
+#[test]
+fn lightly_touched_limit_is_not_saturated() {
+    // Only 10% of samples at the rail — normal contact, not saturation.
+    let d = dataset(vec![episode(
+        0,
+        vec![stream_with_saturation("state", 100, 3, 10, 0.0, 5.0)],
+    )]);
+    assert!(statistical::Saturation::default().run(&d).is_empty());
+}
+
+#[test]
+fn constant_stream_is_left_to_degenerate() {
+    // min == max: every sample pins both ends, but that's DEGENERATE's job, not saturation.
+    let d = dataset(vec![episode(
+        0,
+        vec![stream_with_saturation("const", 100, 100, 100, 2.0, 2.0)],
+    )]);
+    assert!(statistical::Saturation::default().run(&d).is_empty());
+}
+
+#[test]
+fn too_few_samples_to_judge_saturation() {
+    // Below min_samples the fraction says little, so the check abstains even at 100% pinned.
+    let d = dataset(vec![episode(
+        0,
+        vec![stream_with_saturation("short", 5, 0, 5, 0.0, 1.0)],
+    )]);
+    assert!(statistical::Saturation::default().run(&d).is_empty());
+}
+
+#[test]
+fn saturation_is_reported_once_per_stream_not_per_episode() {
+    // The adapter attaches the same dataset-level summary to every episode's copy of the stream;
+    // the check must report it once, not once per episode.
+    let d = dataset(vec![
+        episode(
+            0,
+            vec![stream_with_saturation("gripper", 100, 0, 90, 0.0, 1.0)],
+        ),
+        episode(
+            1,
+            vec![stream_with_saturation("gripper", 100, 0, 90, 0.0, 1.0)],
+        ),
+    ]);
+    let f = statistical::Saturation::default().run(&d);
+    assert_eq!(f.len(), 1);
 }
 
 // ---- semantic ----

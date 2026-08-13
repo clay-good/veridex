@@ -32,7 +32,7 @@ use sha2::{Digest, Sha256};
 
 use crate::cdm::{
     Dataset, Episode, Frame, Modality, Provenance, ProvenanceClass, ProvenanceElement,
-    ProvenanceScope, Stream, StreamStats, ValueRef,
+    ProvenanceScope, Saturation, Stream, StreamStats, ValueRef,
 };
 
 use super::{
@@ -279,6 +279,11 @@ struct StatsAccum {
     max: f64,
     sum: f64,
     sum_sq: f64,
+    /// Values seen exactly equal to the running `min` / `max`. Reset to 1 whenever a new extreme
+    /// appears, so at the end they count values equal to the *final* min/max in a single pass —
+    /// no need to retain the values (mirrors the streaming stats above).
+    at_min: u64,
+    at_max: u64,
 }
 
 impl StatsAccum {
@@ -286,9 +291,21 @@ impl StatsAccum {
         if self.count == 0 {
             self.min = v;
             self.max = v;
+            self.at_min = 1;
+            self.at_max = 1;
         } else {
-            self.min = self.min.min(v);
-            self.max = self.max.max(v);
+            if v < self.min {
+                self.min = v;
+                self.at_min = 1;
+            } else if v == self.min {
+                self.at_min += 1;
+            }
+            if v > self.max {
+                self.max = v;
+                self.at_max = 1;
+            } else if v == self.max {
+                self.at_max += 1;
+            }
         }
         self.count += 1;
         self.sum += v;
@@ -308,6 +325,20 @@ impl StatsAccum {
             max: self.max,
             mean,
             std: variance.sqrt(),
+        })
+    }
+
+    /// Finalize the pinned-at-extreme counts, or `None` if nothing was accumulated.
+    fn finish_saturation(&self) -> Option<Saturation> {
+        if self.count == 0 {
+            return None;
+        }
+        Some(Saturation {
+            sample_count: self.count,
+            at_min: self.at_min,
+            at_max: self.at_max,
+            min: self.min,
+            max: self.max,
         })
     }
 }
@@ -508,6 +539,10 @@ impl Adapter for LeRobotAdapter {
             .iter()
             .filter_map(|(name, acc)| acc.finish().map(|s| (name.clone(), s)))
             .collect();
+        let observed_saturation: BTreeMap<String, Saturation> = observed
+            .iter()
+            .filter_map(|(name, acc)| acc.finish_saturation().map(|s| (name.clone(), s)))
+            .collect();
 
         let stats = load_stats(dir);
         // Resolve `task_index` -> task string via meta/tasks.jsonl (empty map if the file is absent).
@@ -543,6 +578,7 @@ impl Adapter for LeRobotAdapter {
                             .collect(),
                         stats: stats.get(name).copied(),
                         observed_stats: observed_stats.get(name).copied(),
+                        observed_saturation: observed_saturation.get(name).copied(),
                     })
                     .collect();
                 // Resolve this episode's task string, if its task_index maps to one.

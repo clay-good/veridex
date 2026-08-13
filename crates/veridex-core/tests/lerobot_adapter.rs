@@ -427,7 +427,7 @@ fn lerobot_dataset_flows_through_the_full_check_pipeline() {
     let verdict = engine.run(&d, hash, &veridex_core::RunConfig::default());
 
     // Every standard check ran, none errored, and clean data yields no failing findings.
-    assert_eq!(verdict.executed_checks.len(), 24);
+    assert_eq!(verdict.executed_checks.len(), 25);
     assert!(
         verdict.errored_checks.is_empty(),
         "no check should error on a well-formed dataset"
@@ -681,6 +681,51 @@ fn stored_stats_that_dont_bound_the_data_are_flagged_stale() {
         .collect();
     assert_eq!(stale.len(), 1, "the out-of-range stored stats are flagged");
     assert_eq!(stale[0].severity, Severity::Error);
+}
+
+#[test]
+fn an_actuator_pinned_at_its_limit_is_flagged_saturated() {
+    // 24 of 30 samples sit exactly at 1.0 (the action clamped against its stop); the rest vary.
+    // >50% pinned at one distinct extreme over ≥20 samples → STATISTICAL.SATURATED, end to end.
+    let dir = tempfile::tempdir().unwrap();
+    let mut rows: Vec<(i64, f64, f32)> = Vec::new();
+    for i in 0..30i64 {
+        let ts = i as f64 * 0.1;
+        let value = if i < 24 { 1.0 } else { -(i as f32) * 0.01 };
+        rows.push((0, ts, value));
+    }
+    write_lerobot_with_values(dir.path(), "action", 10.0, &rows);
+    let d = ingest_lerobot(dir.path());
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let hash = veridex_core::content_hash(&d);
+    let verdict = engine.run(&d, hash, &veridex_core::RunConfig::default());
+    let sat: Vec<_> = verdict
+        .findings
+        .iter()
+        .filter(|f| f.code == "STATISTICAL.SATURATED")
+        .collect();
+    assert_eq!(sat.len(), 1, "the pinned actuator is flagged once");
+    assert_eq!(sat[0].severity, Severity::Warning);
+    assert!(sat[0].message.contains("maximum"));
+}
+
+#[test]
+fn a_varied_actuator_is_not_saturated() {
+    // Same stream, values spread across its range — no single rail dominates → no SATURATED.
+    let dir = tempfile::tempdir().unwrap();
+    let mut rows: Vec<(i64, f64, f32)> = Vec::new();
+    for i in 0..30i64 {
+        rows.push((0, i as f64 * 0.1, i as f32 * 0.03));
+    }
+    write_lerobot_with_values(dir.path(), "action", 10.0, &rows);
+    let d = ingest_lerobot(dir.path());
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let hash = veridex_core::content_hash(&d);
+    let verdict = engine.run(&d, hash, &veridex_core::RunConfig::default());
+    assert!(verdict
+        .findings
+        .iter()
+        .all(|f| f.code != "STATISTICAL.SATURATED"));
 }
 
 #[test]

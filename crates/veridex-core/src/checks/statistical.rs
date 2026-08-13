@@ -7,6 +7,121 @@
 use crate::cdm::{Dataset, StreamStats};
 use crate::check::{Category, Check, Finding, Location, Scope, Severity};
 
+/// Actuator/state saturation. When the adapter recomputes values from the data
+/// ([`Stream::observed_saturation`](crate::cdm::Stream::observed_saturation)), a stream that spends a
+/// large fraction of its samples **exactly** pinned at one extreme is a clamped or saturated channel
+/// — a gripper commanded past its stop, an actuator against its limit, a state that flatlines at a
+/// rail. The controller can't distinguish "at the limit" from "wants to go further," so the policy
+/// learns from an observation that no longer tracks intent.
+///
+/// Exact equality is the signal (the same false-positive-free philosophy as
+/// `STRUCTURAL.STUCK_STREAM`): a real, noisy sensor never lands on the identical float hundreds of
+/// times, so a high pinned fraction is unambiguous. A fully constant stream (every value equal, so
+/// both ends coincide) is `STATISTICAL.DEGENERATE`'s concern and is left to it.
+pub struct Saturation {
+    /// Fraction of samples pinned at a single extreme, at or above which the stream is flagged.
+    pub min_fraction: f64,
+    /// Minimum sample count below which the fraction isn't trustworthy and the check abstains.
+    pub min_samples: u64,
+}
+
+impl Default for Saturation {
+    fn default() -> Self {
+        // Half an episode's samples pinned at one rail is well past incidental contact; 20 samples
+        // is the floor below which a "fraction" says little.
+        Self {
+            min_fraction: 0.5,
+            min_samples: 20,
+        }
+    }
+}
+
+impl Check for Saturation {
+    fn id(&self) -> &'static str {
+        "statistical.saturation"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["STATISTICAL.SATURATED"]
+    }
+    fn title(&self) -> &'static str {
+        "Actuator/state saturation"
+    }
+    fn category(&self) -> Category {
+        Category::Statistical
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Warning
+    }
+    fn scope(&self) -> Scope {
+        Scope::Stream
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        // The adapter recomputes one saturation summary per stream (dataset-level), so report each
+        // stream once — on the first episode that carries it — rather than repeating per episode.
+        let mut reported: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        for ep in &dataset.episodes {
+            for stream in &ep.streams {
+                let Some(sat) = stream.observed_saturation else {
+                    continue;
+                };
+                if sat.sample_count < self.min_samples {
+                    continue;
+                }
+                // A fully constant stream pins at both ends at once; that is DEGENERATE, not
+                // saturation. Only flag when the two rails are genuinely distinct.
+                if sat.min == sat.max {
+                    continue;
+                }
+                if !reported.insert(stream.name.as_str()) {
+                    continue;
+                }
+                let n = sat.sample_count as f64;
+                let hi = sat.at_max as f64 / n;
+                let lo = sat.at_min as f64 / n;
+                let (frac, value, end) = if hi >= lo {
+                    (hi, sat.max, "maximum")
+                } else {
+                    (lo, sat.min, "minimum")
+                };
+                if frac < self.min_fraction {
+                    continue;
+                }
+                findings.push(
+                    Finding::new(
+                        self.id(),
+                        Category::Statistical,
+                        Severity::Warning,
+                        Location::Stream {
+                            episode: ep.index,
+                            stream: stream.name.clone(),
+                        },
+                        "STATISTICAL.SATURATED",
+                        format!(
+                            "stream `{}`: {:.0}% of values sit exactly at its {end} ({value}) — a saturated or clamped channel",
+                            stream.name,
+                            frac * 100.0
+                        ),
+                    )
+                    .with_risk(
+                        "A channel pinned at its limit can't express intent past that limit; the policy \
+                         learns from observations that no longer track the command, and imitation of a \
+                         saturated actuator transfers poorly.",
+                    )
+                    .with_remedy(
+                        "Check for a mis-scaled or clipped command range, a mechanical end-stop, or a \
+                         mis-calibrated sensor; rescale or exclude the stream before training.",
+                    ),
+                );
+            }
+        }
+        findings
+    }
+}
+
 /// Range, sanity, and degeneracy of stored per-stream statistics.
 pub struct RangeSanity;
 

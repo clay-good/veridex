@@ -150,6 +150,28 @@ pub struct Stream {
     /// `statistical.stored-vs-observed` check compares these against [`Stream::stats`] to catch a
     /// stale or wrong `meta/stats.json`. `None` when the source's values weren't read.
     pub observed_stats: Option<StreamStats>,
+    /// How often the stream's recomputed values sit exactly pinned at an extreme, when the adapter
+    /// reads them. The `statistical.saturation` check uses this to flag a clamped/saturated actuator.
+    /// `None` when the source's values weren't read.
+    pub observed_saturation: Option<Saturation>,
+}
+
+/// How often a stream's recomputed values sit **exactly** at their extreme — the fingerprint of a
+/// saturated/clamped actuator. Values are counted as pinned only on exact equality with the observed
+/// min/max (the same false-positive-free philosophy as `STRUCTURAL.STUCK_STREAM`): a real, noisy
+/// sensor never lands on the same float many times, so a large pinned fraction is unambiguous.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Saturation {
+    /// Finite values considered (the denominator for the pinned fractions).
+    pub sample_count: u64,
+    /// Values exactly equal to `min`.
+    pub at_min: u64,
+    /// Values exactly equal to `max`.
+    pub at_max: u64,
+    /// The observed minimum the `at_min` count is pinned to.
+    pub min: f64,
+    /// The observed maximum the `at_max` count is pinned to.
+    pub max: f64,
 }
 
 /// Stored summary statistics for a stream, as recorded by the source (not recomputed by Veridex).
