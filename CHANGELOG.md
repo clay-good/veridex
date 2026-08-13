@@ -56,10 +56,11 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
     (`STATISTICAL.OUTLIER`): an extreme many σ from the mean, which by Chebyshev's inequality is
     provably a rare spike (≤1% of samples at 10σ) — a sensor glitch or unit error that would dominate
     normalization — read from summary stats alone. And non-finite values in the actual data
-    (`STATISTICAL.NON_FINITE_OBSERVED`): a NaN or ±infinity among the recomputed feature cells, which
-    a clean or absent `meta/stats.json` hides entirely — held out of the recomputed summary (a NaN
-    would poison every stat) and counted separately, since a single non-finite value propagates to a
-    NaN loss and silently kills a training run.
+    (`STATISTICAL.NON_FINITE_OBSERVED`): a NaN or ±infinity among the recomputed feature cells —
+    scanned across **every dimension**, so a NaN buried in one joint of a multi-DoF arm is still
+    caught — which a clean or absent `meta/stats.json` hides entirely. Held out of the recomputed
+    summary (a NaN would poison every stat) and counted separately, since a single non-finite value
+    propagates to a NaN loss and silently kills a training run.
   - **Semantic** — task-string quality and stream-key clarity (an exact-duplicate key is an error, a
     case/whitespace collision a warning); and language-annotation integrity
     (`SEMANTIC.ANNOTATION_UNALIGNED` / `_CONFLICT` / `_EMPTY_ANNOTATION`): timestamped language

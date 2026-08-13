@@ -38,11 +38,14 @@ the build plan.
       metadata — deferred to M2.)
 - [x] Temporal: monotonicity, rate conformance, gaps — and **`TEMPORAL.CLOCK_SKEW`** cross-stream
       alignment (D4, headline).
-- [~] Statistical: range/sanity + degenerate distributions over stored stats
+- [x] Statistical: range/sanity + degenerate distributions over stored stats
       (`statistical.range-sanity`: inverted range, non-finite, negative std, mean-outside-range,
-      constant). CDM now
-      carries `Stream.stats`; the LeRobot adapter reads `meta/stats.json`. Stored-vs-recomputed and
-      saturation need streamed values — a follow-up.
+      Popoviciu-implausible std, integer-dtype range, constant); CDM carries `Stream.stats` from
+      `meta/stats.json`. Value-based checks now ship too — the LeRobot adapter recomputes per-feature
+      stats from the actual cells (fingerprinting the same pass), enabling stored-vs-recomputed
+      (`STATISTICAL.STATS_STALE`), saturation (`STATISTICAL.SATURATED`), extreme outliers
+      (`STATISTICAL.OUTLIER`), and non-finite values in the data (`STATISTICAL.NON_FINITE_OBSERVED`,
+      scanned across every dimension). MCAP abstains from value-based checks (opaque payloads).
 - [x] Provenance-completeness checks (presence + internal consistency).
 - [x] Each check ships ID + documented risk + remedy.
 
