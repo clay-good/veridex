@@ -124,8 +124,9 @@ impl Check for Saturation {
 
 /// Non-finite values in the **actual data**. When the adapter recomputes values from the source
 /// ([`Stream::observed_non_finite`](crate::cdm::Stream::observed_non_finite)), any NaN or ±infinity
-/// among a stream's scalars is counted. A single non-finite value in a training tensor propagates to
-/// a NaN loss and silently kills a run.
+/// among a stream's scalars is counted — across every dimension of a multi-DoF cell, so a NaN buried
+/// in one joint of an arm is still caught. A single non-finite value in a training tensor propagates
+/// to a NaN loss and silently kills a run.
 ///
 /// This is distinct from `STATISTICAL.NON_FINITE`, which inspects the source's **stored**
 /// `stats.json`: a dataset whose stored summary is clean (or absent) can still hold NaN/inf in the

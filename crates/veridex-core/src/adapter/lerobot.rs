@@ -271,6 +271,36 @@ fn first_scalar(array: &dyn Array, row: usize) -> Option<f64> {
     }
 }
 
+/// Count the **non-finite** scalars (NaN or ±infinity) in one feature cell, walking *every*
+/// dimension — not just the first, unlike [`first_scalar`]. A multi-DoF feature (a 7-joint arm, a
+/// 3-axis IMU) hides a bad element behind a healthy element 0; a NaN in any dimension still poisons
+/// training, so `statistical.non-finite-observed` must see all of them. Integer/bool cells have no
+/// non-finite representation and contribute zero. A null cell is absent data, not a non-finite value.
+fn count_non_finite(array: &dyn Array, row: usize) -> u64 {
+    if array.is_null(row) {
+        return 0;
+    }
+    let any = array.as_any();
+    if let Some(a) = any.downcast_ref::<Float32Array>() {
+        u64::from(!a.value(row).is_finite())
+    } else if let Some(a) = any.downcast_ref::<Float64Array>() {
+        u64::from(!a.value(row).is_finite())
+    } else if let Some(a) = any.downcast_ref::<FixedSizeListArray>() {
+        let child = a.value(row);
+        (0..child.len())
+            .map(|i| count_non_finite(child.as_ref(), i))
+            .sum()
+    } else if let Some(a) = any.downcast_ref::<ListArray>() {
+        let child = a.value(row);
+        (0..child.len())
+            .map(|i| count_non_finite(child.as_ref(), i))
+            .sum()
+    } else {
+        // Int32/Int64/Boolean and anything else: no non-finite representation.
+        0
+    }
+}
+
 /// Running accumulator for a feature's recomputed statistics (over its first scalar per row).
 #[derive(Default, Clone, Copy)]
 struct StatsAccum {
@@ -350,12 +380,11 @@ impl StatsAccum {
 /// column is present; unresolved to a string here — see [`load_tasks`]), and per feature-value column
 /// present in the Parquet a content hash (`None` if the type isn't hashable) and its first scalar
 /// value (`None` if not numeric), used to recompute statistics.
-type Row = (
-    u64,
-    i64,
-    Option<i64>,
-    Vec<(String, Option<[u8; 32]>, Option<f64>)>,
-);
+/// One feature's per-row extraction: `(name, content hash, first scalar for stats, non-finite count
+/// across all dimensions)`.
+type FeatureValue = (String, Option<[u8; 32]>, Option<f64>, u64);
+
+type Row = (u64, i64, Option<i64>, Vec<FeatureValue>);
 
 /// Read (episode_index, timestamp_ns, task_index) for every row of a Parquet file, in row order.
 fn read_rows(path: &Path, fps: f64) -> Result<Vec<Row>, IngestError> {
@@ -420,9 +449,16 @@ fn read_rows(path: &Path, fps: f64) -> Result<Vec<Row>, IngestError> {
                 });
             };
             let task_index = task_col.as_ref().and_then(|c| column_i64(c.as_ref(), row));
-            let feature_values: Vec<(String, Option<[u8; 32]>, Option<f64>)> = feature_cols
+            let feature_values: Vec<FeatureValue> = feature_cols
                 .iter()
-                .map(|(name, col)| (name.clone(), hash_cell(*col, row), first_scalar(*col, row)))
+                .map(|(name, col)| {
+                    (
+                        name.clone(),
+                        hash_cell(*col, row),
+                        first_scalar(*col, row),
+                        count_non_finite(*col, row),
+                    )
+                })
                 .collect();
             rows.push((ep, ts_ns, task_index, feature_values));
         }
@@ -530,16 +566,18 @@ impl Adapter for LeRobotAdapter {
         for path in &parquet_files {
             for (ep, ts, task_index, feature_values) in read_rows(path, fps)? {
                 let mut hashes = BTreeMap::new();
-                for (name, hash, scalar) in feature_values {
+                for (name, hash, scalar, non_finite) in feature_values {
+                    // The non-finite tally spans every dimension of the cell (see `count_non_finite`),
+                    // so it flags a NaN in any joint — not just element 0. Keep the entry alive even
+                    // when the first scalar is null so a fully-bad cell is still recorded.
+                    let acc = observed.entry(name.clone()).or_default();
+                    acc.non_finite += non_finite;
+                    // The stats/saturation recompute stays on the first scalar (mirroring the
+                    // element-0 stored stats it validates); a non-finite first scalar is already
+                    // counted above, so it never enters the summary.
                     if let Some(v) = scalar {
-                        let acc = observed.entry(name.clone()).or_default();
                         if v.is_finite() {
                             acc.push(v);
-                        } else {
-                            // A NaN/inf would poison every summary stat, so it never enters the
-                            // accumulator — but we count it so `statistical.non-finite-observed` can
-                            // flag data the stored stats.json may hide.
-                            acc.non_finite += 1;
                         }
                     }
                     hashes.insert(name, hash);

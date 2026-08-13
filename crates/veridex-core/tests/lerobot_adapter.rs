@@ -7,7 +7,7 @@ use std::io::Cursor;
 use std::path::Path;
 use std::sync::Arc;
 
-use arrow::array::{Float32Array, Float64Array, Int64Array};
+use arrow::array::{ArrayRef, FixedSizeListArray, Float32Array, Float64Array, Int64Array};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use parquet::arrow::ArrowWriter;
@@ -823,6 +823,79 @@ fn all_finite_values_do_not_flag_non_finite() {
         .findings
         .iter()
         .all(|f| f.code != "STATISTICAL.NON_FINITE_OBSERVED"));
+}
+
+/// Write a LeRobot dataset with one multi-dimensional feature: a `FixedSizeList<Float32, width>`
+/// column, `rows[i]` supplying the `width` scalars of frame `i` (all in episode 0).
+fn write_lerobot_vector_feature(dir: &Path, feature: &str, width: i32, rows: &[Vec<f32>]) {
+    fs::create_dir_all(dir.join("meta")).unwrap();
+    fs::create_dir_all(dir.join("data/chunk-000")).unwrap();
+    let info = serde_json::json!({
+        "codebase_version": "v3.0",
+        "fps": 10.0,
+        "robot_type": "so100",
+        "features": { feature: { "dtype": "float32", "shape": [width] } },
+    });
+    fs::write(
+        dir.join("meta/info.json"),
+        serde_json::to_string_pretty(&info).unwrap(),
+    )
+    .unwrap();
+
+    let item = Arc::new(Field::new("item", DataType::Float32, true));
+    let list_ty = DataType::FixedSizeList(item.clone(), width);
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("episode_index", DataType::Int64, false),
+        Field::new("frame_index", DataType::Int64, false),
+        Field::new("timestamp", DataType::Float64, false),
+        Field::new(feature, list_ty, false),
+    ]));
+    let eps: Vec<i64> = vec![0; rows.len()];
+    let frames: Vec<i64> = (0..rows.len() as i64).collect();
+    let ts: Vec<f64> = (0..rows.len()).map(|i| i as f64 * 0.1).collect();
+    let flat: Vec<f32> = rows.iter().flatten().copied().collect();
+    let values: ArrayRef = Arc::new(Float32Array::from(flat));
+    let list = FixedSizeListArray::new(item, width, values, None);
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int64Array::from(eps)),
+            Arc::new(Int64Array::from(frames)),
+            Arc::new(Float64Array::from(ts)),
+            Arc::new(list),
+        ],
+    )
+    .unwrap();
+    let file = fs::File::create(dir.join("data/chunk-000/file-000.parquet")).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
+#[test]
+fn a_nan_in_a_non_first_dimension_is_flagged_non_finite() {
+    // A 3-DoF feature whose element 0 is always healthy but joint 1 goes NaN on one frame. Since the
+    // recompute scans every dimension, the buried NaN is still flagged — the common multi-DoF case a
+    // first-scalar-only scan would miss entirely.
+    let dir = tempfile::tempdir().unwrap();
+    let rows: Vec<Vec<f32>> = (0..25i64)
+        .map(|i| {
+            let j1 = if i == 12 { f32::NAN } else { i as f32 * 0.2 };
+            vec![i as f32, j1, i as f32 * -0.1]
+        })
+        .collect();
+    write_lerobot_vector_feature(dir.path(), "observation.state", 3, &rows);
+    let d = ingest_lerobot(dir.path());
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let hash = veridex_core::content_hash(&d);
+    let verdict = engine.run(&d, hash, &veridex_core::RunConfig::default());
+    let nf: Vec<_> = verdict
+        .findings
+        .iter()
+        .filter(|f| f.code == "STATISTICAL.NON_FINITE_OBSERVED")
+        .collect();
+    assert_eq!(nf.len(), 1, "the NaN buried in joint 1 is flagged");
+    assert_eq!(nf[0].severity, Severity::Error);
 }
 
 #[test]
