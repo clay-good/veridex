@@ -134,15 +134,15 @@ warning`) or on the trust score directly (`--min-score 80` fails when the score 
 
 Drop a [`veridex.toml`](docs/veridex.toml.example) in your repo (or pass `--config`) to select
 categories, disable checks, override per-check severities, tune numeric tolerances (clock-skew,
-rate, gap, jitter, start-offset, end-offset, episode-duration), and set the failure threshold — the effective config
-is recorded in every
+rate, gap, jitter, start-offset, end-offset, episode-duration, saturation), and set the failure
+threshold — the effective config is recorded in every
 verdict, and unknown keys, check ids, or invalid tolerances are rejected, not silently ignored.
 
 The same command works on a LeRobot v3 dataset — proof of the cross-format claim. Generate a demo
 one (its second episode carries an out-of-order timestamp) and check it the same way:
 
 ```sh
-# generate a demo LeRobot v3 dataset; append `clean`, `truncated`, `jitter`, `short-episode`, or `duplicate`
+# generate a demo LeRobot v3 dataset; append `clean`, `truncated`, `jitter`, `short-episode`, `duplicate`, or `saturated`
 cargo run -p veridex-core --example make_demo_lerobot -- /tmp/demo-lerobot
 cargo run -p veridex-cli -- check /tmp/demo-lerobot   # fires TEMPORAL.NON_MONOTONIC, exits 20
 ```
@@ -155,7 +155,9 @@ episodes where one was cut short right after it began, and `check` flags it agai
 median as `TEMPORAL.EPISODE_DURATION_OUTLIER`. The `duplicate` variant re-uploads an episode
 byte-for-byte, and `check` catches it as `STRUCTURAL.DUPLICATE_EPISODE` — Veridex fingerprints each
 feature cell's bytes into a per-frame content hash, so the duplicate is proven by content, not
-guessed from matching timestamps.
+guessed from matching timestamps. The `saturated` variant pins the feature values exactly at their
+maximum for most of the episode — a clamped actuator against its stop — and `check` flags it as
+`STATISTICAL.SATURATED` from the values it recomputes as it fingerprints them.
 
 The certificate binds to the dataset's CDM content hash and is Ed25519-signed: `verify` succeeds
 offline, and rejects a tampered certificate (signature mismatch) or one presented against a

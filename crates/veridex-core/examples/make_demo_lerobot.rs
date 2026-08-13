@@ -14,8 +14,10 @@
 //!   `STRUCTURAL.DUPLICATE_EPISODE`.
 //! - `short-episode` — five episodes; four are ~1 s captures and one was cut short right after it
 //!   began (~0.07 s), a duration far below the dataset median → `TEMPORAL.EPISODE_DURATION_OUTLIER`.
+//! - `saturated` — one 30-frame episode whose feature values sit pinned exactly at their maximum for
+//!   24 of 30 frames (a clamped actuator against its stop) → `STATISTICAL.SATURATED`.
 //!
-//! Usage: `cargo run -p veridex-core --example make_demo_lerobot -- <output-dir> [clean|truncated|jitter|short-episode|duplicate]`
+//! Usage: `cargo run -p veridex-core --example make_demo_lerobot -- <output-dir> [clean|truncated|jitter|short-episode|duplicate|saturated]`
 //!
 //! Then: `veridex check <output-dir>`.
 
@@ -37,6 +39,7 @@ enum Mode {
     Jitter,
     ShortEpisode,
     Duplicate,
+    Saturated,
 }
 
 fn main() {
@@ -49,6 +52,7 @@ fn main() {
         Some("jitter") => Mode::Jitter,
         Some("short-episode") => Mode::ShortEpisode,
         Some("duplicate") => Mode::Duplicate,
+        Some("saturated") => Mode::Saturated,
         _ => Mode::NonMonotonic,
     };
     let dir = Path::new(&dir);
@@ -69,6 +73,9 @@ fn main() {
         }
         Mode::Duplicate => {
             "duplicate (episode 1 is a byte-for-byte re-upload of episode 0 → STRUCTURAL.DUPLICATE_EPISODE)"
+        }
+        Mode::Saturated => {
+            "saturated (feature values pinned at their maximum for 24 of 30 frames → STATISTICAL.SATURATED)"
         }
     };
     println!("Wrote {what} LeRobot v3 dataset to {}", dir.display());
@@ -132,6 +139,24 @@ fn build_rows(mode: Mode, fps: f64) -> (Vec<DemoRow>, u64, u64) {
             }
         }
         return (rows, 2, 20);
+    }
+
+    if mode == Mode::Saturated {
+        // One 30-frame episode at ~30 Hz whose feature values sit pinned exactly at 1.0 for 24 of the
+        // 30 frames — an actuator clamped against its stop — then vary for the last 6 (so the stream
+        // isn't merely constant). 80% pinned at the maximum, well past the 50% default → SATURATED.
+        // (`action` mirrors the value column, so both scalar streams saturate.)
+        let rows: Vec<DemoRow> = (0..30i64)
+            .map(|f| {
+                let v = if f < 24 {
+                    1.0
+                } else {
+                    1.0 - (f - 23) as f32 * 0.1
+                };
+                (0, f as f64 / fps, v)
+            })
+            .collect();
+        return (rows, 1, 30);
     }
 
     // Give every row a globally-unique value so no two episodes are accidental content duplicates.
