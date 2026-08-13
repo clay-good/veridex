@@ -1012,6 +1012,57 @@ fn default_engine_runs_all_families_end_to_end() {
 }
 
 #[test]
+fn dataset_level_stat_checks_fire_once_regardless_of_episode_count() {
+    // Regression guard for the dataset-level-stats duplication class: several checks read
+    // dataset-level data (stored/recomputed stats) attached to every episode's copy of a stream, and
+    // must report per stream, not per episode. The bug this guards produced findings at *different*
+    // episode locations (ep0/s, ep1/s, …), so a (code, location) check would miss it — the real
+    // invariant is that these codes' finding counts don't scale with episode count. (RangeSanity once
+    // emitted DEGENERATE once per episode.)
+    let mk = || {
+        // A degenerate stored stat (DEGENERATE) plus a stored range the recompute escapes
+        // (STATS_STALE), both dataset-level and repeated across every episode.
+        let mut s = stream_with_stats("s", stats(0.0, 0.0, 0.0, 0.0));
+        s.observed_stats = Some(stats(-1.0, 1.0, 0.0, 0.5));
+        s
+    };
+    let run = |episode_count: u64| {
+        let episodes: Vec<_> = (0..episode_count).map(|i| episode(i, vec![mk()])).collect();
+        let d = dataset(episodes);
+        let engine =
+            veridex_core::checks::default_engine().expect("standard checks have unique ids");
+        let hash = veridex_core::content_hash(&d);
+        engine.run(&d, hash, &veridex_core::RunConfig::default())
+    };
+
+    // The dataset-level statistical codes must each fire exactly the same number of times whether the
+    // dataset has 1 episode or 5 — their count is per stream, not per episode.
+    let dataset_level_codes = [
+        "STATISTICAL.DEGENERATE",
+        "STATISTICAL.STATS_STALE",
+        "STATISTICAL.NON_FINITE",
+        "STATISTICAL.RANGE_INVERTED",
+        "STATISTICAL.SATURATED",
+        "STATISTICAL.OUTLIER",
+        "STATISTICAL.NON_FINITE_OBSERVED",
+    ];
+    let count = |v: &veridex_core::Verdict, code: &str| {
+        v.findings.iter().filter(|f| f.code == code).count()
+    };
+    let one = run(1);
+    let five = run(5);
+    for code in dataset_level_codes {
+        assert_eq!(
+            count(&one, code),
+            count(&five, code),
+            "`{code}` count must not scale with episode count (dataset-level stat)"
+        );
+    }
+    // Sanity: at least one dataset-level check actually fired (else the guard proves nothing).
+    assert!(count(&five, "STATISTICAL.DEGENERATE") >= 1);
+}
+
+#[test]
 fn catalog_lists_every_standard_check_with_metadata() {
     let engine = veridex_core::checks::default_engine().expect("standard checks have unique ids");
     let catalog = engine.catalog();
