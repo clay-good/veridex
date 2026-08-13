@@ -44,6 +44,7 @@ fn episode(index: u64, streams: Vec<Stream>) -> Episode {
         streams,
         task: None,
         labels: vec![],
+        declared_frame_count: None,
     }
 }
 

@@ -39,7 +39,9 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   isolation for panicking checks, and reproducibility metadata.
 - **Checks catalog** — 28 checks across five families, each finding carrying a training **risk** and
   a **remedy** and located to the exact episode / stream / frame:
-  - **Structural** — episode-boundary integrity (the lerobot#4143 class), degenerate
+  - **Structural** — episode-boundary integrity (the lerobot#4143 class: a per-episode declared
+    `length` from `meta/episodes.jsonl` that disagrees with the frames ingested, duplicate episode
+    indices, or inverted `start_ts`/`end_ts`), degenerate
     episodes/streams (including a zero-episode dataset), episode-index continuity, declared-vs-actual
     episode/frame counts (truncated exports), cross-episode dtype/shape and stream-presence
     consistency, exact-duplicate episodes (`STRUCTURAL.DUPLICATE_EPISODE`, content-hash-gated so it
@@ -120,7 +122,9 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 - **Runnable demos** — `examples/make_demo_mcap` (synthetic cross-stream clock skew) and
   `examples/make_demo_lerobot` (a LeRobot v3 dataset with an out-of-order timestamp, a
   `truncated` variant whose manifest over-declares its frame count → `STRUCTURAL.FRAME_COUNT_MISMATCH`,
-  and a `jitter` variant whose one episode has an irregular inter-frame spacing → `TEMPORAL.JITTER`),
+  a `boundary` variant whose `meta/episodes.jsonl` declares the wrong length for one episode → the
+  lerobot#4143 `STRUCTURAL.EPISODE_BOUNDARY`, and a `jitter` variant whose one episode has an
+  irregular inter-frame spacing → `TEMPORAL.JITTER`),
   each with a `clean` variant, so `veridex check` has something to find end-to-end in **both** formats.
 - **CI** — GitHub Actions running fmt, clippy (`-D warnings`), and the full test suite, plus a
   Python job that builds the extension with maturin and runs the CLI ⇄ Python parity test on every

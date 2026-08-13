@@ -51,6 +51,7 @@ fn episode(index: u64, streams: Vec<Stream>) -> Episode {
         streams,
         task: None,
         labels: vec![],
+        declared_frame_count: None,
     }
 }
 
@@ -87,6 +88,38 @@ fn inverted_episode_bounds_are_flagged() {
     let f = structural::EpisodeBoundary.run(&dataset(vec![ep]));
     assert_eq!(f.len(), 1);
     assert!(f[0].message.contains("inverted"));
+}
+
+#[test]
+fn declared_episode_length_mismatch_is_a_boundary_error() {
+    // The lerobot#4143 class: the manifest declares 7 frames for the episode but 10 were ingested.
+    let mut ep = episode(
+        1,
+        vec![stream("s", "c", None, &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9])],
+    );
+    ep.declared_frame_count = Some(7);
+    let f = structural::EpisodeBoundary.run(&dataset(vec![ep]));
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].code, "STRUCTURAL.EPISODE_BOUNDARY");
+    assert_eq!(f[0].severity, Severity::Error);
+    assert!(f[0].message.contains("declares 7 frames but 10"));
+    assert!(!f[0].risk.is_empty(), "check must document a risk");
+    assert!(!f[0].remedy.is_empty(), "check must document a remedy");
+}
+
+#[test]
+fn declared_episode_length_matching_or_absent_is_clean() {
+    // Declared length equals the frames ingested → no boundary finding.
+    let mut ep = episode(0, vec![stream("s", "c", None, &[0, 1, 2])]);
+    ep.declared_frame_count = Some(3);
+    assert!(structural::EpisodeBoundary
+        .run(&dataset(vec![ep]))
+        .is_empty());
+    // No declared length at all → the comparison is skipped.
+    let plain = episode(0, vec![stream("s", "c", None, &[0, 1, 2])]);
+    assert!(structural::EpisodeBoundary
+        .run(&dataset(vec![plain]))
+        .is_empty());
 }
 
 #[test]

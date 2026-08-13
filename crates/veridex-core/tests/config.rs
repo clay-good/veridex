@@ -48,6 +48,7 @@ fn skewed() -> Dataset {
             ],
             task: None,
             labels: vec![],
+            declared_frame_count: None,
         }],
     }
 }
@@ -257,6 +258,7 @@ fn a_loose_end_offset_tolerance_suppresses_the_end_offset_finding() {
             ],
             task: None,
             labels: vec![],
+            declared_frame_count: None,
         }],
     };
 

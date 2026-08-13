@@ -554,6 +554,34 @@ fn load_tasks(dir: &Path) -> BTreeMap<i64, String> {
     out
 }
 
+/// Load `meta/episodes.jsonl`, mapping each `episode_index` to the frame count (`length`) the
+/// manifest declares for it. This is the metadata whose corruption is the lerobot#4143 class: when a
+/// per-episode length is wrong, LeRobot's cumulative boundaries misplace frames into the wrong
+/// episode. The structural check compares this declared length against the frames actually ingested.
+/// Absent or unreadable file yields an empty map (the check simply has nothing to compare); malformed
+/// lines are skipped.
+fn load_episode_lengths(dir: &Path) -> BTreeMap<u64, u64> {
+    #[derive(Deserialize)]
+    struct EpisodeRow {
+        episode_index: u64,
+        length: u64,
+    }
+    let mut out = BTreeMap::new();
+    let Ok(contents) = std::fs::read_to_string(dir.join("meta").join("episodes.jsonl")) else {
+        return out;
+    };
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(row) = serde_json::from_str::<EpisodeRow>(line) {
+            out.insert(row.episode_index, row.length);
+        }
+    }
+    out
+}
+
 /// Read the SPDX license from a Hugging Face dataset card's YAML frontmatter (`README.md`), the place
 /// LeRobot datasets actually record it (`meta/info.json` carries none). Only the leading `---`-fenced
 /// block is inspected, and only the `license:` key — either a scalar (`license: apache-2.0`) or the
@@ -748,6 +776,9 @@ impl Adapter for LeRobotAdapter {
         let stats = load_stats(dir);
         // Resolve `task_index` -> task string via meta/tasks.jsonl (empty map if the file is absent).
         let tasks = load_tasks(dir);
+        // Declared per-episode frame counts from meta/episodes.jsonl (empty if absent) — the manifest
+        // assertion the boundary check tests against the frames actually ingested (lerobot#4143).
+        let declared_lengths = load_episode_lengths(dir);
 
         // Build episodes: one stream per feature, frames at the episode's row timestamps, each frame
         // carrying that feature's per-row content hash (when the feature is a hashable Parquet column).
@@ -812,6 +843,7 @@ impl Adapter for LeRobotAdapter {
                     streams,
                     task,
                     labels,
+                    declared_frame_count: declared_lengths.get(&index).copied(),
                 }
             })
             .collect();
@@ -902,6 +934,9 @@ impl Adapter for LeRobotAdapter {
         }
         if info.total_frames.is_some() {
             mapped_fields.push("total_frames -> declared frame-count check".into());
+        }
+        if !declared_lengths.is_empty() {
+            mapped_fields.push("meta/episodes.jsonl length -> episode.declared_frame_count".into());
         }
 
         let report = IngestReport {

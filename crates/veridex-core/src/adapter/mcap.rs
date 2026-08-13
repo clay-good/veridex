@@ -301,6 +301,7 @@ impl Adapter for McapAdapter {
                 streams: cdm_streams,
                 task: None,
                 labels: vec![],
+                declared_frame_count: None,
             }],
         };
 

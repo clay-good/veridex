@@ -20,6 +20,7 @@ fn dataset_with(elements: Vec<ProvenanceElement>) -> Dataset {
             streams: vec![],
             task: None,
             labels: vec![],
+            declared_frame_count: None,
         }],
     }
 }

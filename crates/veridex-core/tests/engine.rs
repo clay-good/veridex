@@ -94,6 +94,7 @@ fn ds(n: u64) -> Dataset {
                 streams: vec![],
                 task: None,
                 labels: vec![],
+                declared_frame_count: None,
             })
             .collect(),
     }

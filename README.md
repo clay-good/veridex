@@ -142,13 +142,17 @@ The same command works on a LeRobot v3 dataset — proof of the cross-format cla
 one (its second episode carries an out-of-order timestamp) and check it the same way:
 
 ```sh
-# generate a demo LeRobot v3 dataset; append `clean`, `truncated`, `jitter`, `short-episode`, `duplicate`, `saturated`, `spike`, `nan`, or `multi-joint`
+# generate a demo LeRobot v3 dataset; append `clean`, `truncated`, `boundary`, `jitter`, `short-episode`, `duplicate`, `saturated`, `spike`, `nan`, or `multi-joint`
 cargo run -p veridex-core --example make_demo_lerobot -- /tmp/demo-lerobot
 cargo run -p veridex-cli -- check /tmp/demo-lerobot   # fires TEMPORAL.NON_MONOTONIC, exits 20
 ```
 
 The `truncated` variant writes a dataset whose manifest declares more frames than were exported —
 a realistic interrupted upload — and `check` catches it as `STRUCTURAL.FRAME_COUNT_MISMATCH`. The
+`boundary` variant leaves the frames intact but corrupts one episode's declared `length` in
+`meta/episodes.jsonl` — the lerobot#4143 failure, where wrong cumulative boundaries silently load
+frames under the wrong episode — and `check` catches the declared-vs-actual disagreement as
+`STRUCTURAL.EPISODE_BOUNDARY`. The
 `jitter` variant spaces one episode's frames unevenly so its mean rate still looks right, and
 `check` flags the irregular timeline as `TEMPORAL.JITTER`. The `short-episode` variant records five
 episodes where one was cut short right after it began, and `check` flags it against the dataset

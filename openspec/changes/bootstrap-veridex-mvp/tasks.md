@@ -95,8 +95,12 @@ the build plan.
       structural-corruption fixture now exists: `make_demo_lerobot -- <dir> truncated` writes a
       cut-short export that `veridex check` flags as `STRUCTURAL.FRAME_COUNT_MISMATCH`, and
       `make_demo_lerobot -- <dir> short-episode` writes a five-episode dataset with one truncated
-      capture that `veridex check` flags as `TEMPORAL.EPISODE_DURATION_OUTLIER`. A
-      boundary-specific (`STRUCTURAL.EPISODE_BOUNDARY`) file fixture is still a follow-up.
+      capture that `veridex check` flags as `TEMPORAL.EPISODE_DURATION_OUTLIER`. The
+      boundary-specific fixture now exists too: `make_demo_lerobot -- <dir> boundary` writes a
+      two-episode dataset whose `meta/episodes.jsonl` declares the wrong `length` for one episode
+      (the lerobot#4143 corrupted-cumulative-length class), which `veridex check` flags as
+      `STRUCTURAL.EPISODE_BOUNDARY` — reproduced end-to-end through the real adapter, not just unit
+      tests.
 - [x] Draft the upstream proposal (LeRobot CI/Hub quality-and-provenance gate) citing lerobot#4143
       — [docs/adoption-lerobot-ci-gate.md](../../../docs/adoption-lerobot-ci-gate.md).
 - [~] Quickstart docs written (README). Publishing `veridex-data` to PyPI and the crates to

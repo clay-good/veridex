@@ -59,6 +59,13 @@ pub struct Episode {
     pub task: Option<String>,
     /// Labels/annotations attached to the episode.
     pub labels: Vec<Label>,
+    /// Frame count the **source manifest** declares for this episode (e.g. LeRobot
+    /// `meta/episodes.jsonl` `length`), if any. This is an assertion *about* the content, not the
+    /// content itself: a structural check compares it against the frames actually ingested to catch
+    /// the corrupted-cumulative-length class from lerobot#4143. Deliberately excluded from the CDM
+    /// content hash (`canonical.rs`) — a corrupt manifest does not change what frames a dataset holds.
+    #[serde(default)]
+    pub declared_frame_count: Option<u64>,
 }
 
 impl Episode {

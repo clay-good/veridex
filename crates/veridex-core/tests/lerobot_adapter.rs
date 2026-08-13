@@ -441,6 +441,56 @@ fn a_truncated_episode_is_flagged_as_a_duration_outlier_end_to_end() {
 }
 
 #[test]
+fn a_corrupt_episode_length_is_flagged_as_a_boundary_error_end_to_end() {
+    // The lerobot#4143 class through the real adapter: two well-formed 3-frame episodes, but
+    // meta/episodes.jsonl declares episode 1 as 2 frames. LeRobot would derive cumulative boundaries
+    // from those lengths and misplace frames; the boundary check must catch the disagreement.
+    let fps = 10.0;
+    let rows: Vec<(i64, f64)> = vec![(0, 0.0), (0, 0.1), (0, 0.2), (1, 0.0), (1, 0.1), (1, 0.2)];
+    let dir = tempfile::tempdir().unwrap();
+    write_lerobot(dir.path(), &[("observation.state", "float32")], fps, &rows);
+    // Episode 0's length is correct (3); episode 1's is corrupt (2, but 3 were written).
+    fs::write(
+        dir.path().join("meta/episodes.jsonl"),
+        "{\"episode_index\": 0, \"length\": 3}\n{\"episode_index\": 1, \"length\": 2}\n",
+    )
+    .unwrap();
+
+    let d = ingest_lerobot(dir.path());
+    assert_eq!(d.episodes[1].declared_frame_count, Some(2));
+
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let hash = veridex_core::content_hash(&d);
+    let verdict = engine.run(&d, hash, &veridex_core::RunConfig::default());
+    let boundary = verdict
+        .findings
+        .iter()
+        .find(|f| f.code == "STRUCTURAL.EPISODE_BOUNDARY")
+        .expect("the corrupt per-episode length is flagged as a boundary error");
+    assert!(matches!(
+        boundary.location,
+        veridex_core::check::Location::Episode { episode: 1 }
+    ));
+
+    // A correct manifest (episode 1 = 3) leaves the boundary check quiet.
+    fs::write(
+        dir.path().join("meta/episodes.jsonl"),
+        "{\"episode_index\": 0, \"length\": 3}\n{\"episode_index\": 1, \"length\": 3}\n",
+    )
+    .unwrap();
+    let clean = ingest_lerobot(dir.path());
+    let verdict = engine.run(
+        &clean,
+        veridex_core::content_hash(&clean),
+        &veridex_core::RunConfig::default(),
+    );
+    assert!(verdict
+        .findings
+        .iter()
+        .all(|f| f.code != "STRUCTURAL.EPISODE_BOUNDARY"));
+}
+
+#[test]
 fn same_logical_dataset_yields_equivalent_cdms_across_formats() {
     // One episode, two frame-aligned streams at 0.0/0.1/0.2 s.
     let dir = tempfile::tempdir().unwrap();

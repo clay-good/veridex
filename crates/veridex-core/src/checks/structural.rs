@@ -8,8 +8,9 @@ use crate::check::{Category, Check, Finding, Location, Scope, Severity};
 /// Episode-boundary integrity, covering the corrupted-cumulative-length class from
 /// [lerobot#4143](https://github.com/huggingface/lerobot/issues/4143): when episode-length metadata
 /// yields wrong cumulative boundaries, frames are silently misattributed to the wrong episode. In
-/// the CDM that corruption surfaces as **duplicate episode indices** (two episodes claim the same
-/// slot) or an **inverted boundary** (`start_ts > end_ts`).
+/// the CDM that corruption surfaces as a **declared-vs-actual length mismatch** (the manifest's
+/// per-episode `length` disagrees with the frames ingested), **duplicate episode indices** (two
+/// episodes claim the same slot), or an **inverted boundary** (`start_ts > end_ts`).
 pub struct EpisodeBoundary;
 
 impl Check for EpisodeBoundary {
@@ -65,6 +66,48 @@ impl Check for EpisodeBoundary {
                          shards and re-export.",
                     ),
                 );
+            }
+        }
+
+        // Declared-vs-actual per-episode length: the direct lerobot#4143 signature. When the source
+        // manifest records a frame count for an episode (LeRobot `meta/episodes.jsonl` `length`) that
+        // disagrees with the frames actually ingested, the cumulative boundaries LeRobot derives from
+        // those lengths are wrong, and frames load under the wrong episode during training. The actual
+        // count is the largest per-stream frame count (streams are frame-aligned; the max is robust to
+        // a stream that abstains from frames).
+        for ep in &dataset.episodes {
+            if let Some(declared) = ep.declared_frame_count {
+                let actual = ep
+                    .streams
+                    .iter()
+                    .map(|s| s.frames.len() as u64)
+                    .max()
+                    .unwrap_or(0);
+                if declared != actual {
+                    findings.push(
+                        Finding::new(
+                            self.id(),
+                            Category::Structural,
+                            Severity::Error,
+                            Location::Episode { episode: ep.index },
+                            "STRUCTURAL.EPISODE_BOUNDARY",
+                            format!(
+                                "episode {} declares {declared} frames but {actual} were ingested; \
+                                 cumulative episode boundaries are inconsistent",
+                                ep.index
+                            ),
+                        )
+                        .with_risk(
+                            "Wrong per-episode lengths make cumulative boundaries misplace frames, so \
+                             frames load under the wrong episode during training — corrupting \
+                             trajectory segmentation and per-episode statistics.",
+                        )
+                        .with_remedy(
+                            "Recompute the per-episode length metadata (meta/episodes.jsonl) from the \
+                             source shards and re-export.",
+                        ),
+                    );
+                }
             }
         }
 

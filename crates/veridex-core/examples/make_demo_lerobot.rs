@@ -7,6 +7,10 @@
 //! - `clean` — a well-formed two-episode dataset with no findings.
 //! - `truncated` — the manifest declares 20 frames but episode 1 was cut short (only 6 written),
 //!   a realistic interrupted export → `STRUCTURAL.FRAME_COUNT_MISMATCH`.
+//! - `boundary` — two well-formed 10-frame episodes, but `meta/episodes.jsonl` declares the wrong
+//!   `length` for episode 1 (7, not 10). LeRobot derives cumulative boundaries from those lengths, so
+//!   the corruption silently misplaces frames into the wrong episode — the lerobot#4143 class →
+//!   `STRUCTURAL.EPISODE_BOUNDARY`.
 //! - `jitter` — episode 1 has an irregular inter-frame spacing (alternating ~13 ms / ~53 ms) so its
 //!   mean rate still looks like ~30 Hz and no single gap is large, yet the timeline is jittery →
 //!   `TEMPORAL.JITTER`.
@@ -23,7 +27,7 @@
 //! - `multi-joint` — a 3-DoF `action` (a `FixedSizeList`) whose gripper (dimension 2) saturates while
 //!   the arm joints sweep → `STATISTICAL.SATURATED` naming the dimension, which element 0 alone misses.
 //!
-//! Usage: `cargo run -p veridex-core --example make_demo_lerobot -- <output-dir> [clean|truncated|jitter|short-episode|duplicate|saturated|spike|nan|multi-joint]`
+//! Usage: `cargo run -p veridex-core --example make_demo_lerobot -- <output-dir> [clean|truncated|boundary|jitter|short-episode|duplicate|saturated|spike|nan|multi-joint]`
 //!
 //! Then: `veridex check <output-dir>`.
 
@@ -42,6 +46,7 @@ enum Mode {
     Clean,
     NonMonotonic,
     Truncated,
+    Boundary,
     Jitter,
     ShortEpisode,
     Duplicate,
@@ -58,6 +63,7 @@ fn main() {
     let mode = match std::env::args().nth(2).as_deref() {
         Some("clean") => Mode::Clean,
         Some("truncated") => Mode::Truncated,
+        Some("boundary") => Mode::Boundary,
         Some("jitter") => Mode::Jitter,
         Some("short-episode") => Mode::ShortEpisode,
         Some("duplicate") => Mode::Duplicate,
@@ -76,6 +82,9 @@ fn main() {
         Mode::NonMonotonic => "broken (episode 1 has an out-of-order timestamp → TEMPORAL.NON_MONOTONIC)",
         Mode::Truncated => {
             "truncated (manifest declares 20 frames, episode 1 cut short → STRUCTURAL.FRAME_COUNT_MISMATCH)"
+        }
+        Mode::Boundary => {
+            "boundary (meta/episodes.jsonl declares the wrong length for episode 1 → STRUCTURAL.EPISODE_BOUNDARY)"
         }
         Mode::Jitter => {
             "jitter (episode 1 has an irregular inter-frame spacing → TEMPORAL.JITTER)"
@@ -138,6 +147,16 @@ fn write_dataset(dir: &Path, mode: Mode) {
 
     write_shared_meta(dir);
     write_parquet(&dir.join("data/chunk-000/file-000.parquet"), &rows);
+
+    if mode == Mode::Boundary {
+        // Both episodes actually hold 10 frames, but the per-episode manifest declares episode 1 as
+        // 7 — a corrupted cumulative length. LeRobot would derive boundaries from these lengths and
+        // misplace frames; `veridex check` catches the declared-vs-actual disagreement.
+        let episodes = "\
+            {\"episode_index\": 0, \"tasks\": [\"pick up the red cube\"], \"length\": 10}\n\
+            {\"episode_index\": 1, \"tasks\": [\"pick up the red cube\"], \"length\": 7}\n";
+        fs::write(dir.join("meta/episodes.jsonl"), episodes).expect("write episodes.jsonl");
+    }
 }
 
 /// The tasks table (so the CLI resolves task strings) and a Hugging Face-style dataset card (so the

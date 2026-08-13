@@ -146,6 +146,7 @@ mod tests {
                     value: "pick up the cube".into(),
                     ts: None,
                 }],
+                declared_frame_count: None,
             }],
         }
     }
@@ -313,6 +314,7 @@ mod proptests {
                 streams,
                 task: None,
                 labels: vec![],
+                declared_frame_count: None,
             }
         })
     }

@@ -12,7 +12,7 @@ Severities below are the defaults.
 
 | Check id | Finding code | Severity | Fires when |
 |---|---|---|---|
-| `structural.episode-boundary` | `STRUCTURAL.EPISODE_BOUNDARY` | error | Duplicate episode indices, or an episode whose `start_ts > end_ts` (corrupt cumulative boundaries, the lerobot#4143 class). |
+| `structural.episode-boundary` | `STRUCTURAL.EPISODE_BOUNDARY` | error | A per-episode declared `length` (e.g. LeRobot `meta/episodes.jsonl`) that disagrees with the frames ingested, duplicate episode indices, or an episode whose `start_ts > end_ts` — all signatures of corrupt cumulative boundaries (the lerobot#4143 class), where frames load under the wrong episode. |
 | `structural.degenerate-episode` | `STRUCTURAL.EMPTY_DATASET` | error | The dataset has no episodes at all. |
 | `structural.degenerate-episode` | `STRUCTURAL.EMPTY_EPISODE` | error | An episode has no streams. |
 | `structural.degenerate-episode` | `STRUCTURAL.EMPTY_STREAM` | error | A stream has no frames. |

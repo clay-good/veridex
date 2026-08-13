@@ -48,6 +48,7 @@ fn dataset(streams: Vec<Stream>) -> Dataset {
             streams,
             task: None,
             labels: vec![],
+            declared_frame_count: None,
         }],
     }
 }
