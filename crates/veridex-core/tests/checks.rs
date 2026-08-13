@@ -1238,6 +1238,25 @@ fn saturation_is_reported_once_per_stream_not_per_episode() {
 }
 
 #[test]
+fn stale_stats_on_dataset_level_stats_are_reported_once_not_per_episode() {
+    // Stored + recomputed stats are dataset-level, attached to every episode's copy of the stream.
+    // A stored range that doesn't bound the data must produce one STATS_STALE, not one per episode.
+    let mk = || {
+        let mut s = stream_with_stats("state", stats(0.0, 3.0, 1.5, 1.0));
+        s.observed_stats = Some(stats(0.0, 5.0, 2.0, 1.0)); // real max 5 exceeds stored 3
+        s
+    };
+    let d = dataset(vec![
+        episode(0, vec![mk()]),
+        episode(1, vec![mk()]),
+        episode(2, vec![mk()]),
+    ]);
+    let f = statistical::StoredVsObserved.run(&d);
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].code, "STATISTICAL.STATS_STALE");
+}
+
+#[test]
 fn a_lone_extreme_far_from_the_mean_is_an_outlier() {
     // Bulk near 0 (tiny std), one spike at 100 → max is 100σ from mean → OUTLIER.
     let d = dataset(vec![episode(
@@ -1249,6 +1268,28 @@ fn a_lone_extreme_far_from_the_mean_is_an_outlier() {
     assert_eq!(f[0].code, "STATISTICAL.OUTLIER");
     assert_eq!(f[0].severity, Severity::Warning);
     assert!(f[0].message.contains("maximum"));
+}
+
+#[test]
+fn outlier_on_dataset_level_stats_is_reported_once_not_per_episode() {
+    // Stored/recomputed stats are dataset-level, attached to every episode's copy of the stream.
+    // The check must report the outlier once, not once per episode.
+    let d = dataset(vec![
+        episode(
+            0,
+            vec![stream_with_stats("state", stats(0.0, 100.0, 0.0, 1.0))],
+        ),
+        episode(
+            1,
+            vec![stream_with_stats("state", stats(0.0, 100.0, 0.0, 1.0))],
+        ),
+        episode(
+            2,
+            vec![stream_with_stats("state", stats(0.0, 100.0, 0.0, 1.0))],
+        ),
+    ]);
+    let f = statistical::ExtremeOutlier::default().run(&d);
+    assert_eq!(f.len(), 1);
 }
 
 #[test]

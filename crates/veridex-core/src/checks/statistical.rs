@@ -390,6 +390,10 @@ impl Check for StoredVsObserved {
     }
     fn run(&self, dataset: &Dataset) -> Vec<Finding> {
         let mut findings = Vec::new();
+        // Both stored and recomputed stats are dataset-level (attached identically to every episode's
+        // copy of a stream), so report each stream once — on the first episode carrying it — rather
+        // than emitting the same finding per episode.
+        let mut reported: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
         for ep in &dataset.episodes {
             for stream in &ep.streams {
                 let (Some(stored), Some(observed)) = (stream.stats, stream.observed_stats) else {
@@ -403,6 +407,9 @@ impl Check for StoredVsObserved {
                 let below = observed.min < stored.min - tol(stored.min);
                 let above = observed.max > stored.max + tol(stored.max);
                 if below || above {
+                    if !reported.insert(stream.name.as_str()) {
+                        continue;
+                    }
                     findings.push(
                         Finding::new(
                             self.id(),
@@ -414,9 +421,9 @@ impl Check for StoredVsObserved {
                             },
                             "STATISTICAL.STATS_STALE",
                             format!(
-                                "stream `{}` in episode {}: actual values [{}, {}] fall outside the \
+                                "stream `{}`: actual values [{}, {}] fall outside the \
                                  stored range [{}, {}] — the stored statistics don't match the data",
-                                stream.name, ep.index, observed.min, observed.max, stored.min, stored.max
+                                stream.name, observed.min, observed.max, stored.min, stored.max
                             ),
                         )
                         .with_risk(
@@ -506,6 +513,10 @@ impl Check for ExtremeOutlier {
     }
     fn run(&self, dataset: &Dataset) -> Vec<Finding> {
         let mut findings = Vec::new();
+        // Both stored and recomputed stats are dataset-level (attached identically to every episode's
+        // copy of a stream), so report each stream once — on the first episode carrying it — rather
+        // than emitting the same finding per episode.
+        let mut reported: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
         for ep in &dataset.episodes {
             for stream in &ep.streams {
                 // Prefer Veridex's own recompute when present; otherwise use the source's stats.
@@ -515,6 +526,9 @@ impl Check for ExtremeOutlier {
                 let Some((z, value, end)) = self.check_stats(&stats) else {
                     continue;
                 };
+                if !reported.insert(stream.name.as_str()) {
+                    continue;
+                }
                 let tail_pct = 100.0 / (z * z);
                 findings.push(
                     Finding::new(
@@ -527,9 +541,9 @@ impl Check for ExtremeOutlier {
                         },
                         "STATISTICAL.OUTLIER",
                         format!(
-                            "stream `{}` in episode {}: its {end} ({value}) is {z:.1}σ from the mean — \
+                            "stream `{}`: its {end} ({value}) is {z:.1}σ from the mean — \
                              an extreme outlier (at most {tail_pct:.2}% of samples can lie this far out)",
-                            stream.name, ep.index
+                            stream.name
                         ),
                     )
                     .with_risk(
