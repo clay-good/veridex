@@ -1120,6 +1120,26 @@ fn constant_stream_is_a_degenerate_warning() {
 }
 
 #[test]
+fn range_sanity_reports_dataset_level_stats_once_not_per_episode() {
+    // Stored stats are dataset-level, attached to every episode's copy of the stream. A corrupt or
+    // degenerate stored stat must produce one finding, not one per episode (the same dedup the other
+    // stored-stats checks apply).
+    let mk = || stream_with_stats("s", stats(2.0, 2.0, 2.0, 0.0)); // constant → DEGENERATE
+    let d = dataset(vec![
+        episode(0, vec![mk()]),
+        episode(1, vec![mk()]),
+        episode(2, vec![mk()]),
+    ]);
+    let f = statistical::RangeSanity.run(&d);
+    assert_eq!(
+        f.len(),
+        1,
+        "one finding for the dataset-level stat, not one per episode"
+    );
+    assert_eq!(f[0].code, "STATISTICAL.DEGENERATE");
+}
+
+#[test]
 fn healthy_stats_produce_no_findings() {
     let d = dataset(vec![episode(
         0,

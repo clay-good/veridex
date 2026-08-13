@@ -245,11 +245,17 @@ impl Check for RangeSanity {
     }
     fn run(&self, dataset: &Dataset) -> Vec<Finding> {
         let mut findings = Vec::new();
+        // Stored stats are dataset-level (attached identically to every episode's copy of a stream),
+        // so report each stream once — on the first episode carrying it — rather than per episode.
+        let mut reported: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
         for ep in &dataset.episodes {
             for stream in &ep.streams {
                 let Some(stats) = stream.stats else {
                     continue;
                 };
+                if !reported.insert(stream.name.as_str()) {
+                    continue;
+                }
                 let at = || Location::Stream {
                     episode: ep.index,
                     stream: stream.name.clone(),
