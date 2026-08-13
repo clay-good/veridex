@@ -111,6 +111,29 @@ def test_cli_and_python_provenance_agree(tmp_path):
         assert py == cli, f"Python and CLI provenance must agree for emit={emit}"
 
 
+def test_cli_and_python_diff_agree(tmp_path):
+    old = str(tmp_path / "old.json")
+    new = str(tmp_path / "new.json")
+    old_json = '{"verdict":{"findings":[{"code":"A","severity":"error","message":"m"}]},"trust_score":{"score":80}}'
+    new_json = '{"verdict":{"findings":[{"code":"A","severity":"error","message":"m"},{"code":"B","severity":"warning","message":"m"}]},"trust_score":{"score":70}}'
+    with open(old, "w") as f:
+        f.write(old_json)
+    with open(new, "w") as f:
+        f.write(new_json)
+
+    binary = os.environ.get("VERIDEX_BIN", "target/debug/veridex")
+    cli = json.loads(
+        subprocess.run(
+            [binary, "diff", "--json", old, new],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    )
+    py = json.loads(veridex.diff(old_json, new_json))
+    assert py == cli, "Python and CLI diff must agree"
+
+
 if __name__ == "__main__":
     # Minimal runner when pytest is unavailable.
     import tempfile

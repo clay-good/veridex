@@ -117,6 +117,20 @@ pub fn render_diff(diff: &ReportDiff) -> String {
     out
 }
 
+/// Diff two report JSON values and render the machine-readable summary as a pretty JSON string:
+/// `{introduced, resolved, unchanged_count, score_delta}`. Shared by the CLI's `veridex diff --json`
+/// and the Python `veridex.diff` binding, so both emit byte-identical output.
+pub fn render_diff_json(old: &Value, new: &Value) -> String {
+    let diff = diff_reports(old, new);
+    let doc = serde_json::json!({
+        "introduced": diff.introduced,
+        "resolved": diff.resolved,
+        "unchanged_count": diff.unchanged.len(),
+        "score_delta": diff.score_delta(),
+    });
+    serde_json::to_string_pretty(&doc).expect("diff serializes")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,6 +158,17 @@ mod tests {
         assert_eq!(d.resolved, vec![finding("A", "error")]);
         assert_eq!(d.unchanged, vec![finding("B", "warning")]);
         assert_eq!(d.score_delta(), Some(15));
+    }
+
+    #[test]
+    fn render_diff_json_carries_the_summary_fields() {
+        let old = report(json!([finding("A", "error")]), 60);
+        let new = report(json!([finding("A", "error"), finding("C", "info")]), 55);
+        let doc: Value = serde_json::from_str(&render_diff_json(&old, &new)).unwrap();
+        assert_eq!(doc["introduced"], json!([finding("C", "info")]));
+        assert_eq!(doc["resolved"], json!([]));
+        assert_eq!(doc["unchanged_count"], 1);
+        assert_eq!(doc["score_delta"], -5);
     }
 
     #[test]

@@ -105,8 +105,8 @@ Built on a Rust core (`veridex-core`) with a `veridex` CLI and a Python package
 ```sh
 cargo build
 
-# generate a demo MCAP with a synthetic cross-stream clock skew (append `clean` or
-# `late-start` for a well-synced recording or a sensor that comes online late)
+# generate a demo MCAP with a synthetic cross-stream clock skew (append `clean`,
+# `late-start`, or `stuck` for a clean recording, a late sensor, or a frozen camera)
 cargo run -p veridex-core --example make_demo_mcap -- /tmp/demo.mcap
 
 # validate it — prints a report and exits non-zero on failure
@@ -194,7 +194,7 @@ adapters** with a passing cross-format neutrality gate (the same logical dataset
 CDMs in both formats); Croissant + W3C PROV provenance emit; Ed25519 **certificate signing with
 offline verification** (tamper + transplant rejection); a working CLI (`check`, `inspect`, `checks`,
 `certify`, `verify`, `provenance`, `keygen`, `diff`) — see the [Quickstart](#quickstart); and **Python
-bindings** (`import veridex`, exposing `check`/`inspect`/`content_hash`/`catalog`/`provenance`) that call the same
+bindings** (`import veridex`, exposing `check`/`inspect`/`content_hash`/`catalog`/`provenance`/`diff`) that call the same
 core pipeline, with a CLI⇄Python parity test run in CI. Next up: streaming/remote ingestion and
 stored-vs-recomputed statistics.
 

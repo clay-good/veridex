@@ -30,6 +30,11 @@ for check in json.loads(veridex.catalog()):
 # Extract provenance as Croissant (default) or W3C PROV (same as `veridex provenance`).
 croissant = json.loads(veridex.provenance("my-dataset.mcap"))
 prov = json.loads(veridex.provenance("my-dataset.mcap", "prov"))
+
+# Diff two `check` reports for CI regression gating (same as `veridex diff --json`).
+old, new = veridex.check("v1.mcap"), veridex.check("v2.mcap")
+delta = json.loads(veridex.diff(old, new))
+print(delta["introduced"], delta["score_delta"])
 ```
 
 These bindings add **no logic**: they call the exact same `veridex_core` pipeline the `veridex`

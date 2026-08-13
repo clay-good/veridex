@@ -104,6 +104,18 @@ fn catalog() -> PyResult<String> {
     Ok(veridex_core::render_catalog_json(&engine.catalog()))
 }
 
+/// `veridex.diff(old_report_json, new_report_json) -> str`
+///
+/// Diff two `veridex check --json` reports and return the machine-readable summary
+/// (`{introduced, resolved, unchanged_count, score_delta}`) as a JSON string, byte-identical to
+/// `veridex diff --json`. Inputs are the report JSON strings, not file paths.
+#[pyfunction]
+fn diff(old_report_json: &str, new_report_json: &str) -> PyResult<String> {
+    let old: serde_json::Value = serde_json::from_str(old_report_json).map_err(to_py_err)?;
+    let new: serde_json::Value = serde_json::from_str(new_report_json).map_err(to_py_err)?;
+    Ok(veridex_core::render_diff_json(&old, &new))
+}
+
 /// `veridex.version() -> str`
 #[pyfunction]
 fn version() -> &'static str {
@@ -119,6 +131,7 @@ fn veridex(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(inspect, m)?)?;
     m.add_function(wrap_pyfunction!(catalog, m)?)?;
     m.add_function(wrap_pyfunction!(provenance, m)?)?;
+    m.add_function(wrap_pyfunction!(diff, m)?)?;
     m.add_function(wrap_pyfunction!(version, m)?)?;
     Ok(())
 }

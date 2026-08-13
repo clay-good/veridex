@@ -753,13 +753,7 @@ fn cmd_diff(rest: &[String]) -> ExitCode {
 
     let diff = veridex_core::diff_reports(&old, &new);
     if json_out {
-        let doc = serde_json::json!({
-            "introduced": diff.introduced,
-            "resolved": diff.resolved,
-            "unchanged_count": diff.unchanged.len(),
-            "score_delta": diff.score_delta(),
-        });
-        println!("{}", serde_json::to_string_pretty(&doc).unwrap());
+        println!("{}", veridex_core::render_diff_json(&old, &new));
     } else {
         print!("{}", veridex_core::render_diff(&diff));
     }
