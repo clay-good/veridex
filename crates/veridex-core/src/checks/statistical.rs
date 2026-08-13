@@ -90,6 +90,13 @@ impl Check for Saturation {
                 if frac < self.min_fraction {
                     continue;
                 }
+                // Name the dimension for a multi-DoF feature (e.g. the gripper joint); a scalar
+                // stream saturates at dimension 0, where the qualifier would only add noise.
+                let where_ = if sat.dim > 0 {
+                    format!(" (dimension {})", sat.dim)
+                } else {
+                    String::new()
+                };
                 findings.push(
                     Finding::new(
                         self.id(),
@@ -101,7 +108,7 @@ impl Check for Saturation {
                         },
                         "STATISTICAL.SATURATED",
                         format!(
-                            "stream `{}`: {:.0}% of values sit exactly at its {end} ({value}) — a saturated or clamped channel",
+                            "stream `{}`{where_}: {:.0}% of values sit exactly at its {end} ({value}) — a saturated or clamped channel",
                             stream.name,
                             frac * 100.0
                         ),

@@ -317,16 +317,24 @@ impl FeatureAccum {
                 s.at_min.max(s.at_max) as f64 / n
             }
         };
+        // Tag each dimension's summary with its own index so the winning dimension is named.
+        let with_dim = |(i, a): (usize, &StatsAccum)| {
+            a.finish_saturation().map(|mut s| {
+                s.dim = i as u64;
+                s
+            })
+        };
         self.dims
             .iter()
-            .filter_map(StatsAccum::finish_saturation)
+            .enumerate()
+            .filter_map(with_dim)
             .filter(|s| s.min != s.max)
             .max_by(|a, b| {
                 frac(a)
                     .partial_cmp(&frac(b))
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
-            .or_else(|| self.dims.first().and_then(StatsAccum::finish_saturation))
+            .or_else(|| self.dims.iter().enumerate().next().and_then(with_dim))
     }
 }
 
@@ -398,6 +406,7 @@ impl StatsAccum {
             at_max: self.at_max,
             min: self.min,
             max: self.max,
+            dim: 0, // set by FeatureAccum::saturation, which knows the dimension index
         })
     }
 }

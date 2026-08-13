@@ -179,6 +179,10 @@ pub struct Saturation {
     pub min: f64,
     /// The observed maximum the `at_max` count is pinned to.
     pub max: f64,
+    /// The dimension index this summary is for, within a multi-DoF feature cell (0 for a scalar
+    /// stream, or the saturating joint of a vector — e.g. `6` for the gripper of a 7-DoF `action`).
+    /// The adapter reports the worst-saturating dimension; the check names it in its finding.
+    pub dim: u64,
 }
 
 /// Stored summary statistics for a stream, as recorded by the source (not recomputed by Veridex).

@@ -989,6 +989,11 @@ fn a_saturating_gripper_at_the_last_dimension_is_flagged() {
         .collect();
     assert_eq!(sat.len(), 1, "the pinned gripper dimension is flagged");
     assert!(sat[0].message.contains("maximum"));
+    assert!(
+        sat[0].message.contains("dimension 2"),
+        "the finding names the saturating dimension: {}",
+        sat[0].message
+    );
 }
 
 #[test]

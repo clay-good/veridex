@@ -1164,6 +1164,7 @@ fn stream_with_saturation(
         at_max,
         min,
         max,
+        dim: 0,
     });
     s
 }
@@ -1180,6 +1181,28 @@ fn stream_pinned_at_its_max_is_saturated() {
     assert_eq!(f[0].code, "STATISTICAL.SATURATED");
     assert_eq!(f[0].severity, Severity::Warning);
     assert!(f[0].message.contains("maximum"));
+}
+
+#[test]
+fn saturation_names_a_multi_dimension_but_not_a_scalar() {
+    // dim 0 (scalar): no "dimension" qualifier, to avoid noise.
+    let d0 = dataset(vec![episode(
+        0,
+        vec![stream_with_saturation("gripper", 100, 2, 70, 0.0, 1.0)],
+    )]);
+    let f0 = statistical::Saturation::default().run(&d0);
+    assert_eq!(f0.len(), 1);
+    assert!(!f0[0].message.contains("dimension"));
+
+    // dim 6 (a joint of a multi-DoF feature): the finding names it.
+    let mut s = stream_with_saturation("action", 100, 2, 70, 0.0, 1.0);
+    if let Some(sat) = s.observed_saturation.as_mut() {
+        sat.dim = 6;
+    }
+    let d6 = dataset(vec![episode(0, vec![s])]);
+    let f6 = statistical::Saturation::default().run(&d6);
+    assert_eq!(f6.len(), 1);
+    assert!(f6[0].message.contains("dimension 6"));
 }
 
 #[test]
