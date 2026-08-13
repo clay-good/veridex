@@ -276,6 +276,69 @@ fn provenance_records_robot_type_but_does_not_fabricate() {
 }
 
 #[test]
+fn provenance_reads_license_from_the_dataset_card() {
+    let dir = tempfile::tempdir().unwrap();
+    write_lerobot(
+        dir.path(),
+        &[("observation.state", "float32")],
+        10.0,
+        &[(0, 0.0)],
+    );
+    // A Hugging Face dataset card: YAML frontmatter with a license, then prose.
+    fs::write(
+        dir.path().join("README.md"),
+        "---\nlicense: apache-2.0\ntags:\n- robotics\n---\n\n# My dataset\n",
+    )
+    .unwrap();
+    let d = ingest_lerobot(dir.path());
+    let license = d
+        .provenance
+        .iter()
+        .flat_map(|r| &r.elements)
+        .find(|e| e.key == "license")
+        .expect("license extracted from the card");
+    assert_eq!(license.value.as_deref(), Some("apache-2.0"));
+    assert_eq!(license.class, veridex_core::cdm::ProvenanceClass::Known);
+
+    // With a real license, the completeness check must no longer report it missing.
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let hash = veridex_core::content_hash(&d);
+    let verdict = engine.run(&d, hash, &veridex_core::RunConfig::default());
+    assert!(
+        verdict
+            .findings
+            .iter()
+            .all(|f| f.code != "PROVENANCE.MISSING_LICENSE"),
+        "an extracted license clears the MISSING_LICENSE finding"
+    );
+}
+
+#[test]
+fn license_list_form_and_missing_card_are_handled() {
+    // YAML list form: `license:` then `- <value>` on the next line.
+    let dir = tempfile::tempdir().unwrap();
+    write_lerobot(dir.path(), &[("s", "float32")], 10.0, &[(0, 0.0)]);
+    fs::write(dir.path().join("README.md"), "---\nlicense:\n- mit\n---\n").unwrap();
+    let d = ingest_lerobot(dir.path());
+    let license = d
+        .provenance
+        .iter()
+        .flat_map(|r| &r.elements)
+        .find(|e| e.key == "license");
+    assert_eq!(license.and_then(|e| e.value.as_deref()), Some("mit"));
+
+    // No card at all: no license element is fabricated.
+    let dir2 = tempfile::tempdir().unwrap();
+    write_lerobot(dir2.path(), &[("s", "float32")], 10.0, &[(0, 0.0)]);
+    let d2 = ingest_lerobot(dir2.path());
+    assert!(d2
+        .provenance
+        .iter()
+        .flat_map(|r| &r.elements)
+        .all(|e| e.key != "license"));
+}
+
+#[test]
 fn reads_stored_stats_from_stats_json() {
     let dir = tempfile::tempdir().unwrap();
     write_lerobot(

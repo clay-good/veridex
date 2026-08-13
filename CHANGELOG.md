@@ -17,7 +17,9 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   mapped / unmapped / omitted fields. A cross-format gate test proves the same logical dataset
   yields equivalent CDMs in both formats. The LeRobot adapter resolves task strings
   (`task_index` + `meta/tasks.jsonl` → `episode.task`), so the semantic task-quality check runs on
-  real datasets; the omission is reported honestly when no `meta/tasks.jsonl` is present. It also
+  real datasets; the omission is reported honestly when no `meta/tasks.jsonl` is present. It reads
+  the SPDX license from the dataset card's (`README.md`) YAML frontmatter — where LeRobot datasets
+  actually record it — so a licensed dataset no longer trips `PROVENANCE.MISSING_LICENSE`. It also
   fingerprints each feature cell's raw value bytes into `frame.value_ref.content_hash` (a SHA-256,
   never a decode of the values), so — like MCAP below — the CDM hash is content-sensitive (a tampered
   export no longer verifies against the original's certificate) and exact-duplicate episode detection

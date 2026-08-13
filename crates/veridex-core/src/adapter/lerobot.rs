@@ -490,6 +490,62 @@ fn load_tasks(dir: &Path) -> BTreeMap<i64, String> {
     out
 }
 
+/// Read the SPDX license from a Hugging Face dataset card's YAML frontmatter (`README.md`), the place
+/// LeRobot datasets actually record it (`meta/info.json` carries none). Only the leading `---`-fenced
+/// block is inspected, and only the `license:` key — either a scalar (`license: apache-2.0`) or the
+/// first item of a YAML list. Returns `None` when there is no card, no frontmatter, or no license, so
+/// a missing license stays honestly missing (the completeness check then reports it). This is a
+/// deliberately minimal parse — no YAML dependency for one well-known field.
+fn load_card_license(dir: &Path) -> Option<String> {
+    let contents = std::fs::read_to_string(dir.join("README.md")).ok()?;
+    let mut lines = contents.lines();
+    // Frontmatter must be the very first non-empty content and open with a `---` fence.
+    if lines.by_ref().find(|l| !l.trim().is_empty())?.trim() != "---" {
+        return None;
+    }
+    let mut in_license_list = false;
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed == "---" {
+            break; // end of frontmatter
+        }
+        if in_license_list {
+            // First item of a `license:`-introduced YAML list.
+            if let Some(item) = trimmed.strip_prefix('-') {
+                let v = clean_yaml_scalar(item);
+                if !v.is_empty() {
+                    return Some(v);
+                }
+            }
+            // A non-item line ends the list without a value.
+            in_license_list = false;
+        }
+        if let Some(rest) = trimmed.strip_prefix("license:") {
+            let v = clean_yaml_scalar(rest);
+            if v.is_empty() {
+                in_license_list = true; // list form: value(s) on following lines
+            } else {
+                return Some(v);
+            }
+        }
+    }
+    None
+}
+
+/// Trim a minimal YAML scalar: surrounding whitespace, a trailing `# comment`, and matching quotes.
+fn clean_yaml_scalar(s: &str) -> String {
+    let mut v = s.trim();
+    if let Some(hash) = v.find(" #") {
+        v = v[..hash].trim();
+    }
+    if v.len() >= 2
+        && ((v.starts_with('"') && v.ends_with('"')) || (v.starts_with('\'') && v.ends_with('\'')))
+    {
+        v = &v[1..v.len() - 1];
+    }
+    v.to_string()
+}
+
 impl Adapter for LeRobotAdapter {
     fn format_id(&self) -> &'static str {
         "lerobot"
@@ -692,6 +748,15 @@ impl Adapter for LeRobotAdapter {
                 class: ProvenanceClass::Known,
             });
         }
+        // The dataset card (README.md frontmatter) is where LeRobot records the license.
+        let card_license = load_card_license(dir);
+        if let Some(license) = &card_license {
+            elements.push(ProvenanceElement {
+                key: "license".into(),
+                value: Some(license.clone()),
+                class: ProvenanceClass::Known,
+            });
+        }
 
         let dataset = Dataset {
             id: dir
@@ -747,6 +812,9 @@ impl Adapter for LeRobotAdapter {
             omitted_fields.push("task strings (no meta/tasks.jsonl to resolve task_index)".into());
         } else {
             mapped_fields.push("task_index + meta/tasks.jsonl -> episode.task".into());
+        }
+        if card_license.is_some() {
+            mapped_fields.push("README.md license -> provenance.license".into());
         }
         if info.total_episodes.is_some() {
             mapped_fields.push("total_episodes -> declared episode-count check".into());
