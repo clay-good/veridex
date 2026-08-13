@@ -31,8 +31,8 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::cdm::{
-    Dataset, Episode, Frame, Label, Modality, Provenance, ProvenanceClass, ProvenanceElement,
-    ProvenanceScope, Saturation, Stream, StreamStats, ValueRef,
+    Dataset, DimStats, Episode, Frame, Label, Modality, Provenance, ProvenanceClass,
+    ProvenanceElement, ProvenanceScope, Saturation, Stream, StreamStats, ValueRef,
 };
 
 use super::{
@@ -688,6 +688,27 @@ impl Adapter for LeRobotAdapter {
             .iter()
             .map(|(name, acc)| (name.clone(), acc.non_finite))
             .collect();
+        // Per-dimension stats, only for multi-DoF features — the extreme-outlier check scans them so a
+        // spike in a non-first joint is caught. Scalar features carry their one dimension in
+        // `observed_stats` already, so they get `None` here (no duplication).
+        let observed_dim_stats: BTreeMap<String, Vec<DimStats>> = observed
+            .iter()
+            .filter(|(_, acc)| acc.dims.len() > 1)
+            .filter_map(|(name, acc)| {
+                let dims: Vec<DimStats> = acc
+                    .dims
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, a)| {
+                        a.finish().map(|stats| DimStats {
+                            dim: i as u64,
+                            stats,
+                        })
+                    })
+                    .collect();
+                (!dims.is_empty()).then(|| (name.clone(), dims))
+            })
+            .collect();
 
         let stats = load_stats(dir);
         // Resolve `task_index` -> task string via meta/tasks.jsonl (empty map if the file is absent).
@@ -725,6 +746,7 @@ impl Adapter for LeRobotAdapter {
                         observed_stats: observed_stats.get(name).copied(),
                         observed_saturation: observed_saturation.get(name).copied(),
                         observed_non_finite: observed_non_finite.get(name).copied(),
+                        observed_dim_stats: observed_dim_stats.get(name).cloned(),
                     })
                     .collect();
                 // Resolve this episode's task string, if its task_index maps to one.

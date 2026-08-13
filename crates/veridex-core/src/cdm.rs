@@ -161,6 +161,21 @@ pub struct Stream {
     /// `statistical.non-finite-observed` check flags any stream where it is non-zero. `None` when the
     /// source's values weren't read; `Some(0)` when they were read and all were finite.
     pub observed_non_finite: Option<u64>,
+    /// Recomputed statistics **per dimension** of a multi-DoF feature, when the adapter reads values
+    /// and the feature has more than one dimension (`None` for scalar streams — their single
+    /// dimension is already in [`Stream::observed_stats`] — and where values weren't read). The
+    /// `statistical.extreme-outlier` check scans these so a spike buried in one joint of a 7-DoF
+    /// `action` is caught, not just element 0.
+    pub observed_dim_stats: Option<Vec<DimStats>>,
+}
+
+/// Recomputed summary statistics for one dimension of a multi-DoF feature, tagged with its index.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct DimStats {
+    /// The dimension index within the feature cell (e.g. `6` for the gripper of a 7-DoF `action`).
+    pub dim: u64,
+    /// The recomputed statistics for that dimension's values.
+    pub stats: StreamStats,
 }
 
 /// How often a stream's recomputed values sit **exactly** at their extreme — the fingerprint of a

@@ -997,6 +997,37 @@ fn a_saturating_gripper_at_the_last_dimension_is_flagged() {
 }
 
 #[test]
+fn a_spike_in_a_non_first_dimension_is_flagged_an_outlier() {
+    // A 3-DoF feature: elements 0 and 1 hug zero with tiny distinct steps; element 1 takes a lone
+    // jump to 1000 on one frame. 150 frames put that spike ~12σ out (a single point sits at most
+    // sqrt(N-1)·std from the mean), past the 10σ default. The per-dimension scan catches it and names
+    // the dimension — a first-scalar-only read (element 0 is calm) would miss it.
+    let dir = tempfile::tempdir().unwrap();
+    let rows: Vec<Vec<f32>> = (0..150i64)
+        .map(|i| {
+            let j1 = if i == 75 { 1000.0 } else { i as f32 * 0.001 };
+            vec![i as f32 * 0.001, j1, -(i as f32) * 0.001]
+        })
+        .collect();
+    write_lerobot_vector_feature(dir.path(), "observation.state", 3, &rows);
+    let d = ingest_lerobot(dir.path());
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let hash = veridex_core::content_hash(&d);
+    let verdict = engine.run(&d, hash, &veridex_core::RunConfig::default());
+    let out: Vec<_> = verdict
+        .findings
+        .iter()
+        .filter(|f| f.code == "STATISTICAL.OUTLIER")
+        .collect();
+    assert_eq!(out.len(), 1, "the spike buried in dimension 1 is flagged");
+    assert!(
+        out[0].message.contains("dimension 1"),
+        "the finding names the outlying dimension: {}",
+        out[0].message
+    );
+}
+
+#[test]
 fn a_varied_actuator_is_not_saturated() {
     // Same stream, values spread across its range — no single rail dominates → no SATURATED.
     let dir = tempfile::tempdir().unwrap();

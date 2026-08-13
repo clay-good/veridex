@@ -59,7 +59,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
     just element 0. And extreme outliers
     (`STATISTICAL.OUTLIER`): an extreme many σ from the mean, which by Chebyshev's inequality is
     provably a rare spike (≤1% of samples at 10σ) — a sensor glitch or unit error that would dominate
-    normalization — read from summary stats alone. And non-finite values in the actual data
+    normalization — read from summary stats alone, and scanned per dimension so a spike in a non-first
+    joint is caught and named. And non-finite values in the actual data
     (`STATISTICAL.NON_FINITE_OBSERVED`): a NaN or ±infinity among the recomputed feature cells —
     scanned across **every dimension**, so a NaN buried in one joint of a multi-DoF arm is still
     caught — which a clean or absent `meta/stats.json` hides entirely. Held out of the recomputed

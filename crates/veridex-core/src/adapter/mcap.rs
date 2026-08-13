@@ -220,6 +220,7 @@ impl Adapter for McapAdapter {
                 observed_stats: None,
                 observed_saturation: None,
                 observed_non_finite: None,
+                observed_dim_stats: None,
             })
             .collect();
 

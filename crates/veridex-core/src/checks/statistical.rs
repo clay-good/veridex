@@ -607,16 +607,33 @@ impl Check for ExtremeOutlier {
         let mut reported: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
         for ep in &dataset.episodes {
             for stream in &ep.streams {
-                // Prefer Veridex's own recompute when present; otherwise use the source's stats.
-                let Some(stats) = stream.observed_stats.or(stream.stats) else {
-                    continue;
+                // For a multi-DoF feature, scan every dimension and keep the most extreme outlier, so
+                // a spike in a non-first joint is caught and named. Otherwise fall back to the stream's
+                // scalar summary (Veridex's recompute if present, else the source's stats).
+                let hit = if let Some(dims) = &stream.observed_dim_stats {
+                    dims.iter()
+                        .filter_map(|d| {
+                            self.check_stats(&d.stats).map(|(z, v, e)| (z, v, e, d.dim))
+                        })
+                        .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+                } else {
+                    stream
+                        .observed_stats
+                        .or(stream.stats)
+                        .and_then(|s| self.check_stats(&s).map(|(z, v, e)| (z, v, e, 0)))
                 };
-                let Some((z, value, end)) = self.check_stats(&stats) else {
+                let Some((z, value, end, dim)) = hit else {
                     continue;
                 };
                 if !reported.insert(stream.name.as_str()) {
                     continue;
                 }
+                // Name the dimension for a multi-DoF feature; a scalar/element-0 extreme needs none.
+                let where_ = if dim > 0 {
+                    format!(" (dimension {dim})")
+                } else {
+                    String::new()
+                };
                 let tail_pct = 100.0 / (z * z);
                 findings.push(
                     Finding::new(
@@ -629,7 +646,7 @@ impl Check for ExtremeOutlier {
                         },
                         "STATISTICAL.OUTLIER",
                         format!(
-                            "stream `{}`: its {end} ({value}) is {z:.1}σ from the mean — \
+                            "stream `{}`{where_}: its {end} ({value}) is {z:.1}σ from the mean — \
                              an extreme outlier (at most {tail_pct:.2}% of samples can lie this far out)",
                             stream.name
                         ),
