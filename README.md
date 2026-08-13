@@ -194,7 +194,7 @@ adapters** with a passing cross-format neutrality gate (the same logical dataset
 CDMs in both formats); Croissant + W3C PROV provenance emit; Ed25519 **certificate signing with
 offline verification** (tamper + transplant rejection); a working CLI (`check`, `inspect`, `checks`,
 `certify`, `verify`, `provenance`, `keygen`, `diff`) — see the [Quickstart](#quickstart); and **Python
-bindings** (`import veridex`, exposing `check`/`inspect`/`content_hash`/`catalog`/`provenance`/`diff`/`certify`/`verify`) that call the same
+bindings** (`import veridex`, exposing `check`/`inspect`/`content_hash`/`catalog`/`provenance`/`diff`/`keygen`/`certify`/`verify`) that call the same
 core pipeline, with a CLI⇄Python parity test run in CI. Next up: streaming/remote ingestion and
 stored-vs-recomputed statistics.
 

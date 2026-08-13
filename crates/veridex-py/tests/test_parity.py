@@ -165,6 +165,18 @@ def test_cli_and_python_certify_and_verify_agree(tmp_path):
         raise AssertionError("verify must reject an untrusted issuer key")
 
 
+def test_python_keygen_certify_verify_roundtrip(tmp_path):
+    dataset = _demo_dataset(tmp_path)
+    secret, public = veridex.keygen()
+    assert len(secret) == 64 and len(public) == 64
+
+    cert = veridex.certify(str(dataset), secret)
+    # The certificate verifies against the dataset and the generated public key.
+    result = json.loads(veridex.verify(cert, str(dataset), public))
+    assert result["verified"] is True
+    assert result["key_id"] == public
+
+
 if __name__ == "__main__":
     # Minimal runner when pytest is unavailable.
     import tempfile

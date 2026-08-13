@@ -111,7 +111,7 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   test drives the real binary over the whole trust flow — `check` (terminal + JSON) then
   `keygen → certify → verify` against a committed dataset fixture, including rejection of an
   untrusted issuer key.
-- **Python bindings** (`import veridex`) exposing `check` / `content_hash` / `inspect` / `catalog` / `diff` / `certify` / `verify` /
+- **Python bindings** (`import veridex`) exposing `check` / `content_hash` / `inspect` / `catalog` / `diff` / `keygen` / `certify` / `verify` /
   `provenance` / `version`, calling the same core pipeline as the CLI, with passing CLI ⇄ Python
   parity tests over `check`, `inspect`, `catalog`, `provenance`, `diff`, and `certify`/`verify` —
   each shares a single core render helper (`render_catalog_json`, `render_provenance`,

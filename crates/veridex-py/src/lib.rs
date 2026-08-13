@@ -113,6 +113,17 @@ fn catalog() -> PyResult<String> {
     Ok(veridex_core::render_catalog_json(&engine.catalog()))
 }
 
+/// `veridex.keygen() -> (str, str)`
+///
+/// Generate a fresh Ed25519 signing keypair, returning `(secret_key_hex, public_key_hex)`. The
+/// secret key feeds `certify`; the public key feeds `verify` (and identifies the issuer). Keep the
+/// secret key private — anyone holding it can issue certificates in your name.
+#[pyfunction]
+fn keygen() -> (String, String) {
+    let kp = veridex_core::SigningKeypair::generate();
+    (kp.secret_hex(), kp.public_hex())
+}
+
 /// `veridex.certify(path, secret_key_hex, timestamp=None, format=None) -> str`
 ///
 /// Validate a dataset and issue a signed, content-bound trust certificate as a JSON string,
@@ -219,6 +230,7 @@ fn veridex(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(catalog, m)?)?;
     m.add_function(wrap_pyfunction!(provenance, m)?)?;
     m.add_function(wrap_pyfunction!(diff, m)?)?;
+    m.add_function(wrap_pyfunction!(keygen, m)?)?;
     m.add_function(wrap_pyfunction!(certify, m)?)?;
     m.add_function(wrap_pyfunction!(verify, m)?)?;
     m.add_function(wrap_pyfunction!(version, m)?)?;
