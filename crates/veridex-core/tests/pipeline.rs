@@ -12,7 +12,7 @@ use veridex_core::{default_registry, run_check, run_check_with, RunConfig, Toler
 
 /// Write a two-stream MCAP whose clocks drift 500 ms apart (camera spans 1.0 s, robot spans 1.5 s),
 /// so `TEMPORAL.CLOCK_SKEW` fires under the default 50 ms tolerance.
-fn write_skewed_mcap() -> PathBuf {
+fn write_skewed_mcap(tag: &str) -> PathBuf {
     let mut buf = Vec::new();
     {
         let mut w = mcap::Writer::new(Cursor::new(&mut buf)).expect("writer");
@@ -40,15 +40,21 @@ fn write_skewed_mcap() -> PathBuf {
         write_stream(&mut w, "/robot", 1_500_000_000);
         w.finish().expect("finish");
     }
+    // The path must be unique per test: cargo runs the tests in this file concurrently in one
+    // process, so keying only on the pid would make two tests share a file and race (one's cleanup
+    // deletes the other's input mid-ingest). The per-test `tag` keeps them isolated.
     let mut path = std::env::temp_dir();
-    path.push(format!("veridex-pipeline-test-{}.mcap", std::process::id()));
+    path.push(format!(
+        "veridex-pipeline-test-{}-{tag}.mcap",
+        std::process::id()
+    ));
     std::fs::write(&path, &buf).expect("write mcap");
     path
 }
 
 #[test]
 fn run_check_ingests_validates_and_scores_end_to_end() {
-    let path = write_skewed_mcap();
+    let path = write_skewed_mcap("end-to-end");
     let out = run_check(
         &default_registry(),
         &Source::Local(path.clone()),
@@ -73,7 +79,7 @@ fn run_check_ingests_validates_and_scores_end_to_end() {
 fn run_check_with_applies_the_configured_tolerance() {
     // Guards the pipeline's own wiring: it must build the engine with the run's tolerances, not the
     // defaults. Raising the clock-skew tolerance above the 500 ms drift suppresses the finding.
-    let path = write_skewed_mcap();
+    let path = write_skewed_mcap("tolerance");
     let cfg = RunConfig {
         tolerances: Tolerances {
             clock_skew_ns: 800_000_000, // 800 ms > the 500 ms drift
