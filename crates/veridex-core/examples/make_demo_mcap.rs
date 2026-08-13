@@ -8,8 +8,13 @@
 //! - `late-start` — a camera from t=0 and a robot of the *same* ~1.0 s duration that comes online
 //!   ~0.30 s late; the durations match (no clock skew) but the shared-clock start and end diverge →
 //!   `TEMPORAL.START_OFFSET` (and its mirror `TEMPORAL.END_OFFSET`).
+//! - `stuck` — a single camera whose feed is frozen: every frame is byte-identical while timestamps
+//!   advance → `STRUCTURAL.STUCK_STREAM` (a freeze the timestamp-based temporal checks can't see).
 //!
-//! Usage: `cargo run -p veridex-core --example make_demo_mcap -- <output.mcap> [clean|late-start]`
+//! Each message's payload bytes vary per frame (so frames are content-distinct, as real recordings
+//! are) except in `stuck`, where the camera deliberately repeats one frame.
+//!
+//! Usage: `cargo run -p veridex-core --example make_demo_mcap -- <output.mcap> [clean|late-start|stuck]`
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
@@ -19,7 +24,9 @@ fn main() {
         .nth(1)
         .unwrap_or_else(|| "demo.mcap".to_string());
     let mode = std::env::args().nth(2);
-    let clean = mode.as_deref() == Some("clean");
+    let stuck = mode.as_deref() == Some("stuck");
+    // `stuck` is a single-camera dataset like `clean`, but with a frozen (byte-identical) feed.
+    let clean = mode.as_deref() == Some("clean") || stuck;
     let late_start = mode.as_deref() == Some("late-start");
 
     let mut buf = Vec::new();
@@ -34,8 +41,10 @@ fn main() {
             .add_channel(cam_schema, "/camera/image", "cdr", &BTreeMap::new())
             .unwrap();
         for i in 0..31u64 {
+            // A frozen feed repeats one frame; a healthy feed's frames each differ.
+            let payload = if stuck { 0u64 } else { i };
             let t = i * 33_000_000; // 33 ms
-            write_msg(&mut w, cam, i as u32, t);
+            write_msg(&mut w, cam, i as u32, t, &payload.to_le_bytes());
         }
 
         if !clean {
@@ -50,13 +59,13 @@ fn main() {
                 // equal spans (no clock skew) with a diverging shared-clock start/end.
                 for i in 0..31u64 {
                     let t = 300_000_000 + i * 33_000_000;
-                    write_msg(&mut w, rob, i as u32, t);
+                    write_msg(&mut w, rob, i as u32, t, &i.to_le_bytes());
                 }
             } else {
                 // Robot state at ~50 Hz spanning ~1.20 s — a 200 ms clock drift vs the camera.
                 for i in 0..61u64 {
                     let t = i * 20_000_000; // 20 ms => 1.20 s total
-                    write_msg(&mut w, rob, i as u32, t);
+                    write_msg(&mut w, rob, i as u32, t, &i.to_le_bytes());
                 }
             }
         }
@@ -93,6 +102,7 @@ fn write_msg<W: std::io::Write + std::io::Seek>(
     channel_id: u16,
     sequence: u32,
     log_time: u64,
+    payload: &[u8],
 ) {
     w.write_to_known_channel(
         &mcap::records::MessageHeader {
@@ -101,7 +111,7 @@ fn write_msg<W: std::io::Write + std::io::Seek>(
             log_time,
             publish_time: log_time,
         },
-        b"payload",
+        payload,
     )
     .expect("write message");
 }

@@ -127,7 +127,8 @@ cargo run -p veridex-cli -- verify  /tmp/demo.mcap --certificate /tmp/demo.verid
 `check` catches the headline `TEMPORAL.CLOCK_SKEW` (the camera and robot clocks drift 210 ms apart,
 which also diverges their tails as `TEMPORAL.END_OFFSET`), reports the training risk and remedy, and
 exits `20` (fail). The `late-start` variant instead trips `TEMPORAL.START_OFFSET` — a sensor that
-came online late on the shared clock. Exit codes: `0` pass · `10`
+came online late on the shared clock — and the `stuck` variant a frozen camera whose byte-identical
+frames trip `STRUCTURAL.STUCK_STREAM`, a freeze the timestamp checks can't see. Exit codes: `0` pass · `10`
 pass-with-warnings · `20` fail · `2` tool-error. For CI you can gate on severity (`--fail-on
 warning`) or on the trust score directly (`--min-score 80` fails when the score is below 80).
 

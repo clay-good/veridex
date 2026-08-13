@@ -310,6 +310,87 @@ fn episodes_without_content_hashes_are_never_flagged_as_duplicates() {
     assert!(structural::DuplicateEpisode.run(&d).is_empty());
 }
 
+/// A stream with a given modality whose frames carry the given per-frame content bytes (`content_hash
+/// = [byte; 32]`). Used to exercise the frozen-sensor check on real content.
+fn stream_with_content(name: &str, modality: Modality, contents: &[u8]) -> Stream {
+    let frames = contents
+        .iter()
+        .enumerate()
+        .map(|(i, c)| Frame {
+            ts: i as i64 * 1_000_000,
+            value_ref: ValueRef {
+                uri: name.into(),
+                byte_offset: None,
+                byte_len: None,
+                content_hash: Some([*c; 32]),
+            },
+        })
+        .collect();
+    Stream {
+        name: name.into(),
+        modality,
+        declared_rate_hz: Some(30.0),
+        clock_id: "c".into(),
+        dtype: None,
+        shape: None,
+        stats: None,
+        frames,
+    }
+}
+
+#[test]
+fn a_frozen_video_stream_is_flagged_as_stuck() {
+    // Eight byte-identical camera frames while timestamps advance — a frozen feed (run 8 ≥ 5).
+    let cam = stream_with_content("camera", Modality::Video, &[7; 8]);
+    let d = dataset(vec![episode(0, vec![cam])]);
+    let f = structural::StuckStream.run(&d);
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].code, "STRUCTURAL.STUCK_STREAM");
+    assert_eq!(f[0].severity, Severity::Warning);
+    assert!(f[0].message.contains("frozen") || f[0].message.contains("stuck"));
+}
+
+#[test]
+fn a_short_repeat_and_a_varying_video_stream_are_clean() {
+    // A brief 3-frame repeat (an encoder hiccup, under the run-of-5 threshold) is not a freeze.
+    let hiccup = stream_with_content("camera", Modality::Video, &[1, 1, 1, 2, 3, 4, 5, 6]);
+    assert!(structural::StuckStream
+        .run(&dataset(vec![episode(0, vec![hiccup])]))
+        .is_empty());
+    // A normal camera (every frame distinct) is clean.
+    let varying = stream_with_content("camera", Modality::Video, &[1, 2, 3, 4, 5, 6, 7, 8]);
+    assert!(structural::StuckStream
+        .run(&dataset(vec![episode(0, vec![varying])]))
+        .is_empty());
+}
+
+#[test]
+fn a_constant_scalar_stream_is_not_a_stuck_video() {
+    // A scalar stream held constant (an arm at rest) is legitimate — DEGENERATE's concern, not this.
+    // The frozen-sensor check is scoped to Video, so an identical-content ScalarState is ignored.
+    let rest = stream_with_content("state", Modality::ScalarState, &[9; 8]);
+    assert!(structural::StuckStream
+        .run(&dataset(vec![episode(0, vec![rest])]))
+        .is_empty());
+}
+
+#[test]
+fn a_hashless_video_stream_is_not_flagged_as_stuck() {
+    // Without content hashes the check can't prove frames repeat, so it abstains (no false positive
+    // on LeRobot video features, which live outside the Parquet and are unhashed).
+    let cam = stream(
+        "camera_hashless",
+        "c",
+        Some(30.0),
+        &[0, 1, 2, 3, 4, 5, 6, 7],
+    );
+    let mut cam = cam;
+    cam.modality = Modality::Video;
+    assert!(structural::StuckStream
+        .run(&dataset(vec![episode(0, vec![cam])]))
+        .is_empty());
+}
+
 fn shaped(name: &str, dtype: Option<&str>, shape: Option<Vec<u64>>, ts: &[i64]) -> Stream {
     Stream {
         name: name.into(),
@@ -907,7 +988,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 22);
+    assert_eq!(verdict.executed_checks.len(), 23);
 }
 
 #[test]

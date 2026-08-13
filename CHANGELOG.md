@@ -48,7 +48,11 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   episode detection (`STRUCTURAL.DUPLICATE_EPISODE`) that groups episodes with identical frame content
   — a re-upload or a bad merge that over-weights the repeated trajectories; sound-only, comparing an
   episode only when every frame carries a `content_hash`, so it never mis-flags two different
-  same-length episodes that merely share a time base and dataset-global stats), temporal (monotonicity,
+  same-length episodes that merely share a time base and dataset-global stats, and a frozen-sensor
+  check (`STRUCTURAL.STUCK_STREAM`) that flags a `Video` stream repeating a byte-identical frame for
+  ≥5 consecutive frames while timestamps advance — a stuck camera that every timestamp-based temporal
+  check passes over; scoped to video, where byte-identical frames are physically implausible, so a
+  constant scalar stream isn't mistaken for one), temporal (monotonicity,
   rate conformance, gaps, the headline
   a declared-rate validity check (`TEMPORAL.INVALID_RATE`) that flags a corrupt declared rate
   (`0`, negative, `NaN`, `inf`) which the rate- and gap-conformance checks would otherwise skip

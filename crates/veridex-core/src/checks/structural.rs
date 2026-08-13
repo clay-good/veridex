@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use crate::cdm::Dataset;
+use crate::cdm::{Dataset, Modality};
 use crate::check::{Category, Check, Finding, Location, Scope, Severity};
 
 /// Episode-boundary integrity, covering the corrupted-cumulative-length class from
@@ -803,5 +803,105 @@ impl Check for DuplicateEpisode {
                 .with_remedy("De-duplicate the dataset so each episode appears once.")
             })
             .collect()
+    }
+}
+
+/// Frozen/stuck video stream. A camera whose feed freezes keeps emitting **byte-identical** frames
+/// while its timestamps keep advancing — so every timestamp-based temporal check (monotonicity, rate,
+/// gaps, skew) passes, yet the observations are stale garbage. Real camera frames are never
+/// byte-identical (sensor noise alone guarantees it), so a run of frames sharing one `content_hash`
+/// on a `Video` stream is a genuine freeze. This is scoped to `Video` because a constant *scalar*
+/// stream (an arm at rest) is legitimate — that case is `STATISTICAL.DEGENERATE`'s concern, not this.
+///
+/// Only frames that carry a `content_hash` are compared (MCAP image messages are fingerprinted;
+/// LeRobot video features live outside the Parquet and are unhashed, so the check honestly abstains
+/// for them). A stream must repeat one frame for at least [`StuckStream::STUCK_RUN`] consecutive
+/// frames to be flagged, so an isolated duplicated frame (an encoder hiccup) doesn't trip it.
+pub struct StuckStream;
+
+impl StuckStream {
+    /// Minimum run of consecutive byte-identical frames that counts as a freeze rather than a hiccup.
+    const STUCK_RUN: usize = 5;
+}
+
+impl Check for StuckStream {
+    fn id(&self) -> &'static str {
+        "structural.stuck-stream"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["STRUCTURAL.STUCK_STREAM"]
+    }
+    fn title(&self) -> &'static str {
+        "Frozen/stuck video stream"
+    }
+    fn category(&self) -> Category {
+        Category::Structural
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Warning
+    }
+    fn scope(&self) -> Scope {
+        Scope::Stream
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        for ep in &dataset.episodes {
+            for stream in &ep.streams {
+                if stream.modality != Modality::Video {
+                    continue;
+                }
+                // Longest run of consecutive frames sharing one content hash. A frame without a hash
+                // breaks the run (we can't claim it repeats the prior frame's content).
+                let mut longest = 0usize;
+                let mut run = 0usize;
+                let mut prev: Option<[u8; 32]> = None;
+                for frame in &stream.frames {
+                    match frame.value_ref.content_hash {
+                        Some(h) if Some(h) == prev => run += 1,
+                        Some(h) => {
+                            run = 1;
+                            prev = Some(h);
+                        }
+                        None => {
+                            run = 0;
+                            prev = None;
+                        }
+                    }
+                    longest = longest.max(run);
+                }
+                if longest >= Self::STUCK_RUN {
+                    findings.push(
+                        Finding::new(
+                            self.id(),
+                            Category::Structural,
+                            Severity::Warning,
+                            Location::Stream {
+                                episode: ep.index,
+                                stream: stream.name.clone(),
+                            },
+                            "STRUCTURAL.STUCK_STREAM",
+                            format!(
+                                "video stream `{}` in episode {} repeats one identical frame for {} \
+                                 consecutive frames — a frozen or stuck feed",
+                                stream.name, ep.index, longest
+                            ),
+                        )
+                        .with_risk(
+                            "A frozen camera repeats the same frame while timestamps keep advancing, \
+                             so the policy trains on stale observations that the timestamp-based \
+                             temporal checks cannot detect.",
+                        )
+                        .with_remedy(
+                            "Check the capture pipeline for a stuck encoder or sensor; drop or \
+                             re-record the frozen segment.",
+                        ),
+                    );
+                }
+            }
+        }
+        findings
     }
 }
