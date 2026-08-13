@@ -23,6 +23,15 @@ fn source_for(path: &str) -> Source {
     Source::Local(std::path::PathBuf::from(path))
 }
 
+/// Current Unix time (seconds) as a string. The core never reads a clock (certificate timestamps are
+/// caller-supplied); this binding fills one in when the caller doesn't, matching the CLI's default.
+fn unix_timestamp() -> String {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs().to_string())
+        .unwrap_or_else(|_| "0".to_string())
+}
+
 /// `veridex.check(path, format=None) -> str`
 ///
 /// Validate a dataset and return the report as a JSON string, byte-identical to
@@ -104,6 +113,84 @@ fn catalog() -> PyResult<String> {
     Ok(veridex_core::render_catalog_json(&engine.catalog()))
 }
 
+/// `veridex.certify(path, secret_key_hex, timestamp=None, format=None) -> str`
+///
+/// Validate a dataset and issue a signed, content-bound trust certificate as a JSON string,
+/// byte-identical to `veridex certify` for the same key and timestamp (Ed25519 signing is
+/// deterministic). `secret_key_hex` is a 64-character hex secret key (see `veridex keygen`);
+/// `timestamp` defaults to the current Unix time if omitted.
+#[pyfunction]
+#[pyo3(signature = (path, secret_key_hex, timestamp=None, format=None))]
+fn certify(
+    path: &str,
+    secret_key_hex: &str,
+    timestamp: Option<&str>,
+    format: Option<&str>,
+) -> PyResult<String> {
+    let keypair = veridex_core::SigningKeypair::from_secret_hex(secret_key_hex)
+        .ok_or_else(|| PyValueError::new_err("secret_key_hex is not a valid 32-byte hex key"))?;
+    let registry = veridex_core::default_registry();
+    let out = veridex_core::run_check(
+        &registry,
+        &source_for(path),
+        format,
+        &IngestOptions::default(),
+    )
+    .map_err(to_py_err)?;
+    let cert = veridex_core::Certificate::build(
+        out.ingested.dataset.id.clone(),
+        &out.verdict,
+        out.trust.clone(),
+        veridex_core::ProvenanceCoverage::of(&out.ingested.dataset),
+        veridex_core::Issuance {
+            key_id: keypair.public_hex(),
+            timestamp: timestamp.map(String::from).unwrap_or_else(unix_timestamp),
+        },
+    );
+    let signed = veridex_core::sign(cert, &keypair);
+    serde_json::to_string_pretty(&signed).map_err(to_py_err)
+}
+
+/// `veridex.verify(certificate_json, path=None, public_key_hex=None, format=None) -> str`
+///
+/// Verify a certificate offline. When `path` is given the certificate must be bound to that dataset
+/// (content-hash / transplant check); when `public_key_hex` is given it must be signed by that
+/// issuer. Returns a JSON summary on success; raises `ValueError` if verification fails.
+#[pyfunction]
+#[pyo3(signature = (certificate_json, path=None, public_key_hex=None, format=None))]
+fn verify(
+    certificate_json: &str,
+    path: Option<&str>,
+    public_key_hex: Option<&str>,
+    format: Option<&str>,
+) -> PyResult<String> {
+    let signed: veridex_core::SignedCertificate =
+        serde_json::from_str(certificate_json).map_err(to_py_err)?;
+    let presented = match path {
+        Some(p) => {
+            let registry = veridex_core::default_registry();
+            let source = source_for(p);
+            let opts = IngestOptions::default();
+            let ingested = match format {
+                Some(fmt) => registry.ingest_as(fmt, &source, &opts),
+                None => registry.ingest(&source, &opts),
+            }
+            .map_err(to_py_err)?;
+            Some(veridex_core::content_hash(&ingested.dataset).to_hex())
+        }
+        None => None,
+    };
+    let v = veridex_core::verify(&signed, presented.as_deref(), public_key_hex)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let doc = serde_json::json!({
+        "verified": true,
+        "key_id": v.key_id,
+        "timestamp": v.timestamp,
+        "dataset_id": signed.certificate.dataset_id,
+    });
+    serde_json::to_string_pretty(&doc).map_err(to_py_err)
+}
+
 /// `veridex.diff(old_report_json, new_report_json) -> str`
 ///
 /// Diff two `veridex check --json` reports and return the machine-readable summary
@@ -132,6 +219,8 @@ fn veridex(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(catalog, m)?)?;
     m.add_function(wrap_pyfunction!(provenance, m)?)?;
     m.add_function(wrap_pyfunction!(diff, m)?)?;
+    m.add_function(wrap_pyfunction!(certify, m)?)?;
+    m.add_function(wrap_pyfunction!(verify, m)?)?;
     m.add_function(wrap_pyfunction!(version, m)?)?;
     Ok(())
 }

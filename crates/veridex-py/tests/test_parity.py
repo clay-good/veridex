@@ -134,6 +134,37 @@ def test_cli_and_python_diff_agree(tmp_path):
     assert py == cli, "Python and CLI diff must agree"
 
 
+def test_cli_and_python_certify_and_verify_agree(tmp_path):
+    dataset = _demo_dataset(tmp_path)
+    secret = "01" * 32  # a 32-byte Ed25519 seed as hex
+    ts = "1700000000"  # fixed timestamp so both sides sign the identical certificate
+
+    # Ed25519 signing is deterministic: same key + same certificate bytes → identical signature.
+    py_cert = veridex.certify(str(dataset), secret, ts)
+
+    binary = os.environ.get("VERIDEX_BIN", "target/debug/veridex")
+    keyfile = tmp_path / "issuer"
+    keyfile.write_text(secret + "\n")
+    out = tmp_path / "cert.json"
+    subprocess.run(
+        [binary, "certify", str(dataset), "--key", str(keyfile), "--timestamp", ts, "--out", str(out)],
+        check=True,
+    )
+    assert json.loads(py_cert) == json.loads(out.read_text()), "Python and CLI must issue the identical certificate"
+
+    # Python verify accepts the certificate against the same dataset.
+    result = json.loads(veridex.verify(py_cert, str(dataset)))
+    assert result["verified"] is True
+
+    # A certificate signed by a different issuer key is rejected.
+    try:
+        veridex.verify(py_cert, str(dataset), "00" * 32)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("verify must reject an untrusted issuer key")
+
+
 if __name__ == "__main__":
     # Minimal runner when pytest is unavailable.
     import tempfile
