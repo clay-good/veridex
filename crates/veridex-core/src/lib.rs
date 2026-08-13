@@ -39,7 +39,7 @@ pub use certificate::{
 pub use check::{Category, Check, Finding, Location, Scope, Severity};
 pub use config::{CheckConfig, ConfigError, FailOn};
 pub use diff::{diff_reports, render_diff, ReportDiff};
-pub use emit::{to_croissant, to_prov};
+pub use emit::{render_provenance, to_croissant, to_prov};
 pub use engine::{CheckInfo, Engine, RegistryError, RunConfig, Status, Tolerances, Verdict};
 pub use pipeline::{run_check, run_check_with, CheckOutput};
 pub use report::{

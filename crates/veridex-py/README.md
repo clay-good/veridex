@@ -26,6 +26,10 @@ print(len(cdm["episodes"]), "episodes")
 # The built-in check catalog (same as `veridex checks --json`).
 for check in json.loads(veridex.catalog()):
     print(check["id"], "→", check["finding_codes"])
+
+# Extract provenance as Croissant (default) or W3C PROV (same as `veridex provenance`).
+croissant = json.loads(veridex.provenance("my-dataset.mcap"))
+prov = json.loads(veridex.provenance("my-dataset.mcap", "prov"))
 ```
 
 These bindings add **no logic**: they call the exact same `veridex_core` pipeline the `veridex`

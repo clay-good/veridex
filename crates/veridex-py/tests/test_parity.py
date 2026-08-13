@@ -92,6 +92,25 @@ def test_cli_and_python_catalog_agree():
         assert {"id", "category", "default_severity", "scope", "finding_codes"} <= check.keys()
 
 
+def _cli_provenance_json(path, emit):
+    binary = os.environ.get("VERIDEX_BIN", "target/debug/veridex")
+    result = subprocess.run(
+        [binary, "provenance", str(path), "--emit", emit],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return json.loads(result.stdout)
+
+
+def test_cli_and_python_provenance_agree(tmp_path):
+    dataset = _demo_dataset(tmp_path)
+    for emit in ("croissant", "prov"):
+        py = json.loads(veridex.provenance(str(dataset), emit))
+        cli = _cli_provenance_json(dataset, emit)
+        assert py == cli, f"Python and CLI provenance must agree for emit={emit}"
+
+
 if __name__ == "__main__":
     # Minimal runner when pytest is unavailable.
     import tempfile

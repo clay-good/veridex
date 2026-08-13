@@ -112,9 +112,10 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   `keygen → certify → verify` against a committed dataset fixture, including rejection of an
   untrusted issuer key.
 - **Python bindings** (`import veridex`) exposing `check` / `content_hash` / `inspect` / `catalog` /
-  `version`, calling the same core pipeline as the CLI, with a passing CLI ⇄ Python parity test over
-  `check`, `inspect`, and `catalog` (the last two share a single `render_catalog_json` core helper,
-  so the machine-readable check catalog is byte-identical across CLI and Python).
+  `provenance` / `version`, calling the same core pipeline as the CLI, with a passing CLI ⇄ Python
+  parity test over `check`, `inspect`, `catalog`, and `provenance` — each shares a single core render
+  helper (`render_catalog_json`, `render_provenance`) with the CLI, so the machine-readable catalog
+  and the Croissant / PROV provenance documents are byte-identical across CLI and Python.
 - **Configuration** — a `veridex.toml` (auto-discovered, or `--config`) that selects categories,
   disables checks, overrides per-check severities, and sets the failure threshold and minimum trust
   score (`min_score`, overridable by `--min-score`); the effective config is recorded in every

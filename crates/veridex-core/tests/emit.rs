@@ -3,7 +3,7 @@
 use veridex_core::cdm::{
     Dataset, Episode, Provenance, ProvenanceClass, ProvenanceElement, ProvenanceScope,
 };
-use veridex_core::{content_hash, to_croissant, to_prov};
+use veridex_core::{content_hash, render_provenance, to_croissant, to_prov};
 
 fn dataset_with(elements: Vec<ProvenanceElement>) -> Dataset {
     Dataset {
@@ -153,4 +153,22 @@ fn prov_omits_attribution_when_no_agents_are_known() {
     let doc = to_prov(&d);
     assert!(doc["@graph"][0].get("prov:wasAttributedTo").is_none());
     assert_eq!(doc["@graph"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn render_provenance_matches_the_underlying_emitters_and_rejects_unknown_formats() {
+    let d = dataset_with(vec![el("license", Some("MIT"), ProvenanceClass::Known)]);
+
+    // `croissant` (default) and `prov` render exactly what the direct emitters produce, pretty-printed.
+    let croissant = render_provenance(&d, "croissant").expect("croissant renders");
+    let expected_croissant =
+        serde_json::to_string_pretty(&to_croissant(&d, &content_hash(&d).to_hex())).unwrap();
+    assert_eq!(croissant, expected_croissant);
+
+    let prov = render_provenance(&d, "prov").expect("prov renders");
+    assert_eq!(prov, serde_json::to_string_pretty(&to_prov(&d)).unwrap());
+
+    // An unknown format is a clear error, not a silent default.
+    let err = render_provenance(&d, "yaml").unwrap_err();
+    assert!(err.contains("unknown emit"));
 }

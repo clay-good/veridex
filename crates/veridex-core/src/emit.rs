@@ -152,3 +152,19 @@ pub fn to_prov(dataset: &Dataset) -> Value {
         "@graph": graph
     })
 }
+
+/// Render provenance as a pretty JSON string in the requested format — `croissant` (default) or
+/// `prov`. Shared by the CLI's `veridex provenance` and the Python `veridex.provenance` binding, so
+/// both emit byte-identical documents. Returns `Err` with a message for an unknown format.
+pub fn render_provenance(dataset: &Dataset, emit: &str) -> Result<String, String> {
+    let doc = match emit {
+        "croissant" => to_croissant(dataset, &crate::content_hash(dataset).to_hex()),
+        "prov" => to_prov(dataset),
+        other => {
+            return Err(format!(
+                "unknown emit `{other}` (expected `croissant` or `prov`)"
+            ))
+        }
+    };
+    Ok(serde_json::to_string_pretty(&doc).expect("provenance serializes"))
+}

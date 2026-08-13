@@ -696,18 +696,9 @@ fn cmd_provenance(rest: &[String]) -> ExitCode {
         Err(code) => return code,
     };
     let d = &ingested.dataset;
-    let hash = veridex_core::content_hash(d).to_hex();
 
     let emit = args.emit.as_deref().unwrap_or("croissant");
-    let doc = match emit {
-        "croissant" => veridex_core::to_croissant(d, &hash),
-        "prov" => veridex_core::to_prov(d),
-        other => {
-            eprintln!("veridex: unknown --emit `{other}` (expected `croissant` or `prov`)");
-            return ExitCode::from(EXIT_TOOL_ERROR);
-        }
-    };
-    let json = match serde_json::to_string_pretty(&doc) {
+    let json = match veridex_core::render_provenance(d, emit) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("veridex: {e}");

@@ -76,6 +76,24 @@ fn inspect(path: &str, format: Option<&str>) -> PyResult<String> {
     serde_json::to_string_pretty(&ingested.dataset).map_err(to_py_err)
 }
 
+/// `veridex.provenance(path, emit="croissant", format=None) -> str`
+///
+/// Extract the dataset's provenance and emit it as a JSON string — `croissant` (MLCommons Croissant
+/// JSON-LD, the default) or `prov` (minimal W3C PROV) — byte-identical to `veridex provenance`.
+#[pyfunction]
+#[pyo3(signature = (path, emit="croissant", format=None))]
+fn provenance(path: &str, emit: &str, format: Option<&str>) -> PyResult<String> {
+    let registry = veridex_core::default_registry();
+    let source = source_for(path);
+    let opts = IngestOptions::default();
+    let ingested = match format {
+        Some(fmt) => registry.ingest_as(fmt, &source, &opts),
+        None => registry.ingest(&source, &opts),
+    }
+    .map_err(to_py_err)?;
+    veridex_core::render_provenance(&ingested.dataset, emit).map_err(to_py_err)
+}
+
 /// `veridex.catalog() -> str`
 ///
 /// The built-in check catalog as a JSON string, byte-identical to `veridex checks --json`: each
@@ -100,6 +118,7 @@ fn veridex(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(content_hash, m)?)?;
     m.add_function(wrap_pyfunction!(inspect, m)?)?;
     m.add_function(wrap_pyfunction!(catalog, m)?)?;
+    m.add_function(wrap_pyfunction!(provenance, m)?)?;
     m.add_function(wrap_pyfunction!(version, m)?)?;
     Ok(())
 }
