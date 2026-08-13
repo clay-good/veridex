@@ -142,7 +142,7 @@ The same command works on a LeRobot v3 dataset — proof of the cross-format cla
 one (its second episode carries an out-of-order timestamp) and check it the same way:
 
 ```sh
-# generate a demo LeRobot v3 dataset; append `clean`, `truncated`, `jitter`, `short-episode`, `duplicate`, `saturated`, `spike`, or `nan`
+# generate a demo LeRobot v3 dataset; append `clean`, `truncated`, `jitter`, `short-episode`, `duplicate`, `saturated`, `spike`, `nan`, or `multi-joint`
 cargo run -p veridex-core --example make_demo_lerobot -- /tmp/demo-lerobot
 cargo run -p veridex-cli -- check /tmp/demo-lerobot   # fires TEMPORAL.NON_MONOTONIC, exits 20
 ```
@@ -161,7 +161,10 @@ maximum for most of the episode — a clamped actuator against its stop — and 
 jumps a single frame far off the baseline — a sensor glitch or unit error — and `check` flags it as
 `STATISTICAL.OUTLIER`, provably a rare value by Chebyshev's inequality. The `nan` variant writes one
 NaN feature value and no `meta/stats.json`, so the stored-stats check has nothing to inspect — only
-the recompute over the real cells sees it, flagged as `STATISTICAL.NON_FINITE_OBSERVED`. Every
+the recompute over the real cells sees it, flagged as `STATISTICAL.NON_FINITE_OBSERVED`. The
+`multi-joint` variant is a 3-DoF `action` whose gripper (dimension 2) saturates while the arm joints
+sweep freely; `check` flags `STATISTICAL.SATURATED` and **names the dimension** — the value-based
+checks scan every joint, not just element 0, which is where real robot data hides its problems. Every
 variant also ships a Hugging Face-style dataset card (`README.md`), so `veridex inspect` surfaces the
 extracted `license` as covered provenance rather than a `PROVENANCE.MISSING_LICENSE` gap.
 
