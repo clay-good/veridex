@@ -161,7 +161,9 @@ maximum for most of the episode — a clamped actuator against its stop — and 
 jumps a single frame far off the baseline — a sensor glitch or unit error — and `check` flags it as
 `STATISTICAL.OUTLIER`, provably a rare value by Chebyshev's inequality. The `nan` variant writes one
 NaN feature value and no `meta/stats.json`, so the stored-stats check has nothing to inspect — only
-the recompute over the real cells sees it, flagged as `STATISTICAL.NON_FINITE_OBSERVED`.
+the recompute over the real cells sees it, flagged as `STATISTICAL.NON_FINITE_OBSERVED`. Every
+variant also ships a Hugging Face-style dataset card (`README.md`), so `veridex inspect` surfaces the
+extracted `license` as covered provenance rather than a `PROVENANCE.MISSING_LICENSE` gap.
 
 The certificate binds to the dataset's CDM content hash and is Ed25519-signed: `verify` succeeds
 offline, and rejects a tampered certificate (signature mismatch) or one presented against a
