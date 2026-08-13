@@ -35,7 +35,7 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 - **Validation engine** — check registry with duplicate-id rejection, category/id selection,
   severity overrides, deterministic stably-ordered verdicts with a result content hash, fault
   isolation for panicking checks, and reproducibility metadata.
-- **Checks catalog** — 23 checks across five families, each finding carrying a training **risk** and
+- **Checks catalog** — 24 checks across five families, each finding carrying a training **risk** and
   a **remedy** and located to the exact episode / stream / frame:
   - **Structural** — episode-boundary integrity (the lerobot#4143 class), degenerate
     episodes/streams (including a zero-episode dataset), episode-index continuity, declared-vs-actual
@@ -45,8 +45,11 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   - **Temporal** — monotonicity, declared-rate validity (`TEMPORAL.INVALID_RATE`), rate conformance,
     gaps, jitter, the headline cross-stream `TEMPORAL.CLOCK_SKEW`, shared-clock start/end offsets,
     cross-episode rate consistency (`TEMPORAL.RATE_INCONSISTENT`), and episode-duration outliers.
-  - **Statistical** — stored-stats range and sanity: inverted range, non-finite, negative or
-    Popoviciu-implausible std, mean-out-of-range, integer-dtype range, and degeneracy.
+  - **Statistical** — stored-stats range and sanity (inverted range, non-finite, negative or
+    Popoviciu-implausible std, mean-out-of-range, integer-dtype range, degeneracy), and
+    stored-vs-recomputed (`STATISTICAL.STATS_STALE`): where the adapter reads feature values (LeRobot),
+    Veridex recomputes the statistics and flags a stored `meta/stats.json` whose range doesn't bound
+    the actual data — stale stats that would poison normalization.
   - **Semantic** — task-string quality and stream-key clarity (an exact-duplicate key is an error, a
     case/whitespace collision a warning); annotations are verified, never modified.
   - **Provenance-completeness** — presence, internal consistency, and placeholder detection (a
@@ -141,5 +144,5 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Not yet included
 
-Streaming / large-than-memory and remote Hub ingestion; stored-vs-recomputed statistics and
-actuator saturation; and publishing to PyPI / crates.io.
+Streaming / large-than-memory and remote Hub ingestion; actuator-saturation detection; and
+publishing to PyPI / crates.io.

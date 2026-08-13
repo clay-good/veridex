@@ -34,6 +34,7 @@ fn stream(name: &str, clock: &str, rate: Option<f64>, ts: &[i64]) -> Stream {
         dtype: None,
         shape: None,
         stats: None,
+        observed_stats: None,
         frames: frames_at(ts),
     }
 }
@@ -257,6 +258,7 @@ fn stream_hashed(name: &str, clock: &str, ts: &[i64], contents: &[u8]) -> Stream
         dtype: None,
         shape: None,
         stats: None,
+        observed_stats: None,
         frames,
     }
 }
@@ -334,6 +336,7 @@ fn stream_with_content(name: &str, modality: Modality, contents: &[u8]) -> Strea
         dtype: None,
         shape: None,
         stats: None,
+        observed_stats: None,
         frames,
     }
 }
@@ -400,6 +403,7 @@ fn shaped(name: &str, dtype: Option<&str>, shape: Option<Vec<u64>>, ts: &[i64]) 
         dtype: dtype.map(Into::into),
         shape,
         stats: None,
+        observed_stats: None,
         frames: frames_at(ts),
     }
 }
@@ -988,7 +992,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 23);
+    assert_eq!(verdict.executed_checks.len(), 24);
 }
 
 #[test]

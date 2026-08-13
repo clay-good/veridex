@@ -215,6 +215,9 @@ impl Adapter for McapAdapter {
                 shape: None,
                 frames: b.frames,
                 stats: None,
+                // MCAP message payloads are opaque bytes; Veridex fingerprints them but never decodes
+                // numeric values, so there are no recomputed statistics.
+                observed_stats: None,
             })
             .collect();
 

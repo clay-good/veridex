@@ -427,7 +427,7 @@ fn lerobot_dataset_flows_through_the_full_check_pipeline() {
     let verdict = engine.run(&d, hash, &veridex_core::RunConfig::default());
 
     // Every standard check ran, none errored, and clean data yields no failing findings.
-    assert_eq!(verdict.executed_checks.len(), 23);
+    assert_eq!(verdict.executed_checks.len(), 24);
     assert!(
         verdict.errored_checks.is_empty(),
         "no check should error on a well-formed dataset"
@@ -648,4 +648,58 @@ fn tampering_a_feature_value_changes_the_lerobot_cdm_hash() {
         veridex_core::content_hash(&b),
         "a changed feature value must change the CDM hash"
     );
+}
+
+/// Write a `meta/stats.json` declaring one feature's stored [min, max] (mean/std filled plausibly).
+fn write_stats(dir: &Path, feature: &str, min: f64, max: f64) {
+    let stats = serde_json::json!({
+        feature: { "min": [min], "max": [max], "mean": [(min + max) / 2.0], "std": [0.0] }
+    });
+    fs::write(dir.join("meta/stats.json"), stats.to_string()).unwrap();
+}
+
+#[test]
+fn stored_stats_that_dont_bound_the_data_are_flagged_stale() {
+    // Actual feature values span [1, 5]; the stored stats claim a too-narrow [1, 3], so a real value
+    // (5) falls outside the stored range → STATISTICAL.STATS_STALE.
+    let dir = tempfile::tempdir().unwrap();
+    write_lerobot_with_values(
+        dir.path(),
+        "observation.state",
+        10.0,
+        &[(0, 0.0, 1.0), (0, 0.1, 3.0), (0, 0.2, 5.0)],
+    );
+    write_stats(dir.path(), "observation.state", 1.0, 3.0);
+    let d = ingest_lerobot(dir.path());
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let hash = veridex_core::content_hash(&d);
+    let verdict = engine.run(&d, hash, &veridex_core::RunConfig::default());
+    let stale: Vec<_> = verdict
+        .findings
+        .iter()
+        .filter(|f| f.code == "STATISTICAL.STATS_STALE")
+        .collect();
+    assert_eq!(stale.len(), 1, "the out-of-range stored stats are flagged");
+    assert_eq!(stale[0].severity, Severity::Error);
+}
+
+#[test]
+fn stored_stats_that_bound_the_data_are_clean() {
+    // Correct (containing) stored stats → no STATS_STALE.
+    let dir = tempfile::tempdir().unwrap();
+    write_lerobot_with_values(
+        dir.path(),
+        "observation.state",
+        10.0,
+        &[(0, 0.0, 1.0), (0, 0.1, 3.0), (0, 0.2, 5.0)],
+    );
+    write_stats(dir.path(), "observation.state", 0.0, 10.0);
+    let d = ingest_lerobot(dir.path());
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let hash = veridex_core::content_hash(&d);
+    let verdict = engine.run(&d, hash, &veridex_core::RunConfig::default());
+    assert!(verdict
+        .findings
+        .iter()
+        .all(|f| f.code != "STATISTICAL.STATS_STALE"));
 }

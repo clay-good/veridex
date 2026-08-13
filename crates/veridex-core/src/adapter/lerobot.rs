@@ -238,10 +238,90 @@ fn feed_cell(array: &dyn Array, row: usize, hasher: &mut Sha256) -> bool {
     true
 }
 
+/// The first scalar value reachable in a feature cell (descending into the first list element), or
+/// `None` for a null or an unsupported type. LeRobot's stored `meta/stats.json` summarizes each
+/// feature by its first dimension, so Veridex recomputes over the same first scalar to compare.
+fn first_scalar(array: &dyn Array, row: usize) -> Option<f64> {
+    if array.is_null(row) {
+        return None;
+    }
+    let any = array.as_any();
+    if let Some(a) = any.downcast_ref::<Float32Array>() {
+        Some(a.value(row) as f64)
+    } else if let Some(a) = any.downcast_ref::<Float64Array>() {
+        Some(a.value(row))
+    } else if let Some(a) = any.downcast_ref::<Int64Array>() {
+        Some(a.value(row) as f64)
+    } else if let Some(a) = any.downcast_ref::<Int32Array>() {
+        Some(a.value(row) as f64)
+    } else if let Some(a) = any.downcast_ref::<BooleanArray>() {
+        Some(a.value(row) as u8 as f64)
+    } else if let Some(a) = any.downcast_ref::<FixedSizeListArray>() {
+        let child = a.value(row);
+        (!child.is_empty())
+            .then(|| first_scalar(child.as_ref(), 0))
+            .flatten()
+    } else if let Some(a) = any.downcast_ref::<ListArray>() {
+        let child = a.value(row);
+        (!child.is_empty())
+            .then(|| first_scalar(child.as_ref(), 0))
+            .flatten()
+    } else {
+        None
+    }
+}
+
+/// Running accumulator for a feature's recomputed statistics (over its first scalar per row).
+#[derive(Default, Clone, Copy)]
+struct StatsAccum {
+    count: u64,
+    min: f64,
+    max: f64,
+    sum: f64,
+    sum_sq: f64,
+}
+
+impl StatsAccum {
+    fn push(&mut self, v: f64) {
+        if self.count == 0 {
+            self.min = v;
+            self.max = v;
+        } else {
+            self.min = self.min.min(v);
+            self.max = self.max.max(v);
+        }
+        self.count += 1;
+        self.sum += v;
+        self.sum_sq += v * v;
+    }
+
+    /// Finalize to a [`StreamStats`] (population std), or `None` if nothing was accumulated.
+    fn finish(&self) -> Option<StreamStats> {
+        if self.count == 0 {
+            return None;
+        }
+        let n = self.count as f64;
+        let mean = self.sum / n;
+        let variance = (self.sum_sq / n - mean * mean).max(0.0);
+        Some(StreamStats {
+            min: self.min,
+            max: self.max,
+            mean,
+            std: variance.sqrt(),
+        })
+    }
+}
+
 /// One row of a LeRobot data Parquet: episode index, frame timestamp (ns), `task_index` (if the
-/// column is present; unresolved to a string here — see [`load_tasks`]), and a content hash per
-/// feature-value column present in the Parquet (`None` for a column whose type isn't hashable).
-type Row = (u64, i64, Option<i64>, Vec<(String, Option<[u8; 32]>)>);
+/// column is present; unresolved to a string here — see [`load_tasks`]), and per feature-value column
+/// present in the Parquet a content hash (`None` if the type isn't hashable) and its first scalar
+/// value (`None` if not numeric), used to recompute statistics.
+type Row = (
+    u64,
+    i64,
+    Option<i64>,
+    Vec<(String, Option<[u8; 32]>, Option<f64>)>,
+);
 
 /// Read (episode_index, timestamp_ns, task_index) for every row of a Parquet file, in row order.
 fn read_rows(path: &Path, fps: f64) -> Result<Vec<Row>, IngestError> {
@@ -306,11 +386,11 @@ fn read_rows(path: &Path, fps: f64) -> Result<Vec<Row>, IngestError> {
                 });
             };
             let task_index = task_col.as_ref().and_then(|c| column_i64(c.as_ref(), row));
-            let feature_hashes: Vec<(String, Option<[u8; 32]>)> = feature_cols
+            let feature_values: Vec<(String, Option<[u8; 32]>, Option<f64>)> = feature_cols
                 .iter()
-                .map(|(name, col)| (name.clone(), hash_cell(*col, row)))
+                .map(|(name, col)| (name.clone(), hash_cell(*col, row), first_scalar(*col, row)))
                 .collect();
-            rows.push((ep, ts_ns, task_index, feature_hashes));
+            rows.push((ep, ts_ns, task_index, feature_values));
         }
     }
     Ok(rows)
@@ -405,17 +485,29 @@ impl Adapter for LeRobotAdapter {
         // First `task_index` seen per episode (row order is deterministic: files are sorted). Most
         // episodes are single-task; if the task changes mid-episode we take the first, honestly.
         let mut episode_task_index: BTreeMap<u64, i64> = BTreeMap::new();
+        // Dataset-level recomputed statistics per feature (LeRobot's stored stats are dataset-level).
+        let mut observed: BTreeMap<String, StatsAccum> = BTreeMap::new();
         for path in &parquet_files {
-            for (ep, ts, task_index, feature_hashes) in read_rows(path, fps)? {
-                episode_rows
-                    .entry(ep)
-                    .or_default()
-                    .push((ts, feature_hashes.into_iter().collect()));
+            for (ep, ts, task_index, feature_values) in read_rows(path, fps)? {
+                let mut hashes = BTreeMap::new();
+                for (name, hash, scalar) in feature_values {
+                    if let Some(v) = scalar {
+                        if v.is_finite() {
+                            observed.entry(name.clone()).or_default().push(v);
+                        }
+                    }
+                    hashes.insert(name, hash);
+                }
+                episode_rows.entry(ep).or_default().push((ts, hashes));
                 if let Some(ti) = task_index {
                     episode_task_index.entry(ep).or_insert(ti);
                 }
             }
         }
+        let observed_stats: BTreeMap<String, StreamStats> = observed
+            .iter()
+            .filter_map(|(name, acc)| acc.finish().map(|s| (name.clone(), s)))
+            .collect();
 
         let stats = load_stats(dir);
         // Resolve `task_index` -> task string via meta/tasks.jsonl (empty map if the file is absent).
@@ -450,6 +542,7 @@ impl Adapter for LeRobotAdapter {
                             })
                             .collect(),
                         stats: stats.get(name).copied(),
+                        observed_stats: observed_stats.get(name).copied(),
                     })
                     .collect();
                 // Resolve this episode's task string, if its task_index maps to one.

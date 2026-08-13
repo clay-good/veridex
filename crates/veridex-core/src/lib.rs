@@ -90,6 +90,7 @@ mod tests {
                         dtype: Some("video".into()),
                         shape: Some(vec![3, 480, 640]),
                         stats: None,
+                        observed_stats: None,
                         frames: vec![
                             Frame {
                                 ts: 1_000,
@@ -119,6 +120,7 @@ mod tests {
                         dtype: Some("float32".into()),
                         shape: Some(vec![6]),
                         stats: None,
+                        observed_stats: None,
                         frames: vec![Frame {
                             ts: 1_000,
                             value_ref: ValueRef {
@@ -269,6 +271,7 @@ mod proptests {
                 shape: None,
                 frames,
                 stats: None,
+                observed_stats: None,
             })
     }
 

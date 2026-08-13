@@ -13,6 +13,7 @@ fn stream(name: &str, clock: &str, ts: &[i64]) -> Stream {
         dtype: None,
         shape: None,
         stats: None,
+        observed_stats: None,
         frames: ts
             .iter()
             .map(|t| Frame {

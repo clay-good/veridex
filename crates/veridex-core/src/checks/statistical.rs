@@ -232,3 +232,91 @@ fn integer_dtype_range(dtype: &str) -> Option<(f64, f64)> {
         _ => None,
     }
 }
+
+/// Stored-vs-recomputed statistics. When an adapter records both the source's stored per-stream
+/// statistics ([`Stream::stats`](crate::cdm::Stream::stats), e.g. LeRobot's `meta/stats.json`) and
+/// the statistics Veridex recomputed from the actual feature values
+/// ([`Stream::observed_stats`](crate::cdm::Stream::observed_stats)), the stored range must **contain**
+/// the data. If a real value falls outside the stored `[min, max]`, the stored statistics are stale
+/// or were computed on different data — and any normalization built from them clips or distorts the
+/// true values.
+///
+/// Only `min`/`max` are compared: they are convention-free (unlike `mean`/`std`, whose exact value
+/// depends on population-vs-sample and precision, which would risk false positives). A small relative
+/// epsilon absorbs float rounding between the stored value and the recompute.
+pub struct StoredVsObserved;
+
+impl StoredVsObserved {
+    /// Relative tolerance for the range comparison — absorbs float rounding, not real excursions.
+    const REL_EPS: f64 = 1e-6;
+}
+
+impl Check for StoredVsObserved {
+    fn id(&self) -> &'static str {
+        "statistical.stored-vs-observed"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["STATISTICAL.STATS_STALE"]
+    }
+    fn title(&self) -> &'static str {
+        "Stored statistics match the data"
+    }
+    fn category(&self) -> Category {
+        Category::Statistical
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Error
+    }
+    fn scope(&self) -> Scope {
+        Scope::Stream
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        for ep in &dataset.episodes {
+            for stream in &ep.streams {
+                let (Some(stored), Some(observed)) = (stream.stats, stream.observed_stats) else {
+                    continue;
+                };
+                // Ignore corrupt stored stats (RangeSanity's concern) and non-finite recomputes.
+                if !stored.min.is_finite() || !stored.max.is_finite() {
+                    continue;
+                }
+                let tol = |x: f64| Self::REL_EPS * x.abs().max(1.0);
+                let below = observed.min < stored.min - tol(stored.min);
+                let above = observed.max > stored.max + tol(stored.max);
+                if below || above {
+                    findings.push(
+                        Finding::new(
+                            self.id(),
+                            Category::Statistical,
+                            Severity::Error,
+                            Location::Stream {
+                                episode: ep.index,
+                                stream: stream.name.clone(),
+                            },
+                            "STATISTICAL.STATS_STALE",
+                            format!(
+                                "stream `{}` in episode {}: actual values [{}, {}] fall outside the \
+                                 stored range [{}, {}] — the stored statistics don't match the data",
+                                stream.name, ep.index, observed.min, observed.max, stored.min, stored.max
+                            ),
+                        )
+                        .with_risk(
+                            "Stored statistics that don't bound the real values were computed on \
+                             different or stale data; normalization built from them clips or distorts \
+                             the true inputs.",
+                        )
+                        .with_remedy(
+                            "Recompute the stored statistics from the current data (e.g. regenerate \
+                             `meta/stats.json`).",
+                        ),
+                    );
+                }
+            }
+        }
+        findings
+    }
+}

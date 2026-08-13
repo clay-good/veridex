@@ -195,8 +195,7 @@ CDMs in both formats); Croissant + W3C PROV provenance emit; Ed25519 **certifica
 offline verification** (tamper + transplant rejection); a working CLI (`check`, `inspect`, `checks`,
 `certify`, `verify`, `provenance`, `keygen`, `diff`) — see the [Quickstart](#quickstart); and **Python
 bindings** (`import veridex`, exposing `check`/`inspect`/`content_hash`/`catalog`/`provenance`/`diff`/`keygen`/`certify`/`verify`) that call the same
-core pipeline, with a CLI⇄Python parity test run in CI. Next up: streaming/remote ingestion and
-stored-vs-recomputed statistics.
+core pipeline, with a CLI⇄Python parity test run in CI. Next up: streaming/remote ingestion.
 
 Start with [openspec/project.md](openspec/project.md) for the design, or track progress in
 [openspec/changes/bootstrap-veridex-mvp/tasks.md](openspec/changes/bootstrap-veridex-mvp/tasks.md).

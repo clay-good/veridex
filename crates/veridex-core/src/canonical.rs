@@ -181,6 +181,12 @@ impl Stream {
             e.f64(s.mean);
             e.f64(s.std);
         });
+        e.opt(&self.observed_stats, |e, s| {
+            e.f64(s.min);
+            e.f64(s.max);
+            e.f64(s.mean);
+            e.f64(s.std);
+        });
         // frames: order is data-defined and preserved (the recorded timeline)
         e.seq(&self.frames, |e, f| f.encode(e));
     }

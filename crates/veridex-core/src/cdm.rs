@@ -145,6 +145,11 @@ pub struct Stream {
     /// Stored per-stream summary statistics, if the source records them (e.g. LeRobot's
     /// `meta/stats.json`). Checks may sanity-check these without decoding frame payloads.
     pub stats: Option<StreamStats>,
+    /// Statistics Veridex **recomputed** from the actual feature values, when the adapter reads them
+    /// (the LeRobot adapter fingerprints feature cells, so it recomputes these in the same pass). The
+    /// `statistical.stored-vs-observed` check compares these against [`Stream::stats`] to catch a
+    /// stale or wrong `meta/stats.json`. `None` when the source's values weren't read.
+    pub observed_stats: Option<StreamStats>,
 }
 
 /// Stored summary statistics for a stream, as recorded by the source (not recomputed by Veridex).
