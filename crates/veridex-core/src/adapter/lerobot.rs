@@ -238,70 +238,99 @@ fn feed_cell(array: &dyn Array, row: usize, hasher: &mut Sha256) -> bool {
     true
 }
 
-/// The first scalar value reachable in a feature cell (descending into the first list element), or
-/// `None` for a null or an unsupported type. LeRobot's stored `meta/stats.json` summarizes each
-/// feature by its first dimension, so Veridex recomputes over the same first scalar to compare.
-fn first_scalar(array: &dyn Array, row: usize) -> Option<f64> {
+/// Collect **every leaf scalar** of one feature cell, in dimension order, as `f64` (non-finite values
+/// included — callers separate them). Element `i` of `out` is dimension `i` of the cell: a scalar
+/// column yields one value, a `FixedSizeList`/`List` yields one per element. This is the multi-DoF
+/// generalization that lets the recompute see past element 0 — a saturating gripper or a NaN buried
+/// in joint 6 is invisible to a first-scalar-only read. A null leaf is absent data and contributes
+/// nothing (so a dimension's sample count only ever reflects present values).
+fn cell_scalars(array: &dyn Array, row: usize, out: &mut Vec<f64>) {
     if array.is_null(row) {
-        return None;
+        return;
     }
     let any = array.as_any();
     if let Some(a) = any.downcast_ref::<Float32Array>() {
-        Some(a.value(row) as f64)
+        out.push(a.value(row) as f64);
     } else if let Some(a) = any.downcast_ref::<Float64Array>() {
-        Some(a.value(row))
+        out.push(a.value(row));
     } else if let Some(a) = any.downcast_ref::<Int64Array>() {
-        Some(a.value(row) as f64)
+        out.push(a.value(row) as f64);
     } else if let Some(a) = any.downcast_ref::<Int32Array>() {
-        Some(a.value(row) as f64)
+        out.push(a.value(row) as f64);
     } else if let Some(a) = any.downcast_ref::<BooleanArray>() {
-        Some(a.value(row) as u8 as f64)
+        out.push(a.value(row) as u8 as f64);
     } else if let Some(a) = any.downcast_ref::<FixedSizeListArray>() {
         let child = a.value(row);
-        (!child.is_empty())
-            .then(|| first_scalar(child.as_ref(), 0))
-            .flatten()
+        for i in 0..child.len() {
+            cell_scalars(child.as_ref(), i, out);
+        }
     } else if let Some(a) = any.downcast_ref::<ListArray>() {
         let child = a.value(row);
-        (!child.is_empty())
-            .then(|| first_scalar(child.as_ref(), 0))
-            .flatten()
-    } else {
-        None
+        for i in 0..child.len() {
+            cell_scalars(child.as_ref(), i, out);
+        }
+    }
+    // Any other type contributes no scalars.
+}
+
+/// Per-feature recomputed accumulators: one [`StatsAccum`] per dimension, plus a non-finite tally
+/// pooled across all dimensions. Dimension 0 backs `observed_stats` (mirroring the element-0 stored
+/// `stats.json` that `STATISTICAL.STATS_STALE` validates); saturation is judged across every dimension.
+#[derive(Default, Clone)]
+struct FeatureAccum {
+    dims: Vec<StatsAccum>,
+    /// NaN / ±inf scalars seen across all dimensions (kept out of the per-dimension stats).
+    non_finite: u64,
+}
+
+impl FeatureAccum {
+    /// Feed one cell's dimension-ordered scalars: finite values grow their dimension's accumulator;
+    /// non-finite values are tallied and held out (a NaN would poison the summary).
+    fn push_cell(&mut self, scalars: &[f64]) {
+        for (dim, &v) in scalars.iter().enumerate() {
+            if v.is_finite() {
+                if dim >= self.dims.len() {
+                    self.dims.resize(dim + 1, StatsAccum::default());
+                }
+                self.dims[dim].push(v);
+            } else {
+                self.non_finite += 1;
+            }
+        }
+    }
+
+    /// Element-0 stats, for stored-vs-observed comparison against the element-0 stored stats.
+    fn stats(&self) -> Option<StreamStats> {
+        self.dims.first().and_then(StatsAccum::finish)
+    }
+
+    /// The saturation summary of the dimension most likely to be flagged — the non-constant dimension
+    /// with the highest pinned fraction — so a saturating gripper at element 6 is caught, not just
+    /// element 0. Falls back to dimension 0 (constant → the check skips it, DEGENERATE's concern), so
+    /// a scalar stream reports exactly as before.
+    fn saturation(&self) -> Option<Saturation> {
+        let frac = |s: &Saturation| {
+            let n = s.sample_count as f64;
+            if n == 0.0 {
+                0.0
+            } else {
+                s.at_min.max(s.at_max) as f64 / n
+            }
+        };
+        self.dims
+            .iter()
+            .filter_map(StatsAccum::finish_saturation)
+            .filter(|s| s.min != s.max)
+            .max_by(|a, b| {
+                frac(a)
+                    .partial_cmp(&frac(b))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .or_else(|| self.dims.first().and_then(StatsAccum::finish_saturation))
     }
 }
 
-/// Count the **non-finite** scalars (NaN or ±infinity) in one feature cell, walking *every*
-/// dimension — not just the first, unlike [`first_scalar`]. A multi-DoF feature (a 7-joint arm, a
-/// 3-axis IMU) hides a bad element behind a healthy element 0; a NaN in any dimension still poisons
-/// training, so `statistical.non-finite-observed` must see all of them. Integer/bool cells have no
-/// non-finite representation and contribute zero. A null cell is absent data, not a non-finite value.
-fn count_non_finite(array: &dyn Array, row: usize) -> u64 {
-    if array.is_null(row) {
-        return 0;
-    }
-    let any = array.as_any();
-    if let Some(a) = any.downcast_ref::<Float32Array>() {
-        u64::from(!a.value(row).is_finite())
-    } else if let Some(a) = any.downcast_ref::<Float64Array>() {
-        u64::from(!a.value(row).is_finite())
-    } else if let Some(a) = any.downcast_ref::<FixedSizeListArray>() {
-        let child = a.value(row);
-        (0..child.len())
-            .map(|i| count_non_finite(child.as_ref(), i))
-            .sum()
-    } else if let Some(a) = any.downcast_ref::<ListArray>() {
-        let child = a.value(row);
-        (0..child.len())
-            .map(|i| count_non_finite(child.as_ref(), i))
-            .sum()
-    } else {
-        // Int32/Int64/Boolean and anything else: no non-finite representation.
-        0
-    }
-}
-
-/// Running accumulator for a feature's recomputed statistics (over its first scalar per row).
+/// Running accumulator for one dimension's recomputed statistics.
 #[derive(Default, Clone, Copy)]
 struct StatsAccum {
     count: u64,
@@ -314,9 +343,6 @@ struct StatsAccum {
     /// no need to retain the values (mirrors the streaming stats above).
     at_min: u64,
     at_max: u64,
-    /// Non-finite scalars (NaN / ±inf) seen for this feature. Kept out of the running stats so a
-    /// single NaN can't poison every summary; surfaced separately for `non-finite-observed`.
-    non_finite: u64,
 }
 
 impl StatsAccum {
@@ -376,13 +402,10 @@ impl StatsAccum {
     }
 }
 
-/// One row of a LeRobot data Parquet: episode index, frame timestamp (ns), `task_index` (if the
-/// column is present; unresolved to a string here — see [`load_tasks`]), and per feature-value column
-/// present in the Parquet a content hash (`None` if the type isn't hashable) and its first scalar
-/// value (`None` if not numeric), used to recompute statistics.
-/// One feature's per-row extraction: `(name, content hash, first scalar for stats, non-finite count
-/// across all dimensions)`.
-type FeatureValue = (String, Option<[u8; 32]>, Option<f64>, u64);
+/// One feature's per-row extraction: `(name, content hash — `None` if the type isn't hashable, the
+/// cell's dimension-ordered scalars — empty if not numeric)`. The scalars drive the per-dimension
+/// statistics recompute (see [`FeatureAccum`]).
+type FeatureValue = (String, Option<[u8; 32]>, Vec<f64>);
 
 type Row = (u64, i64, Option<i64>, Vec<FeatureValue>);
 
@@ -452,12 +475,9 @@ fn read_rows(path: &Path, fps: f64) -> Result<Vec<Row>, IngestError> {
             let feature_values: Vec<FeatureValue> = feature_cols
                 .iter()
                 .map(|(name, col)| {
-                    (
-                        name.clone(),
-                        hash_cell(*col, row),
-                        first_scalar(*col, row),
-                        count_non_finite(*col, row),
-                    )
+                    let mut scalars = Vec::new();
+                    cell_scalars(*col, row, &mut scalars);
+                    (name.clone(), hash_cell(*col, row), scalars)
                 })
                 .collect();
             rows.push((ep, ts_ns, task_index, feature_values));
@@ -618,24 +638,18 @@ impl Adapter for LeRobotAdapter {
         let mut episode_task_events: BTreeMap<u64, Vec<(i64, i64)>> = BTreeMap::new();
         let mut last_task_index: BTreeMap<u64, i64> = BTreeMap::new();
         // Dataset-level recomputed statistics per feature (LeRobot's stored stats are dataset-level).
-        let mut observed: BTreeMap<String, StatsAccum> = BTreeMap::new();
+        let mut observed: BTreeMap<String, FeatureAccum> = BTreeMap::new();
         for path in &parquet_files {
             for (ep, ts, task_index, feature_values) in read_rows(path, fps)? {
                 let mut hashes = BTreeMap::new();
-                for (name, hash, scalar, non_finite) in feature_values {
-                    // The non-finite tally spans every dimension of the cell (see `count_non_finite`),
-                    // so it flags a NaN in any joint — not just element 0. Keep the entry alive even
-                    // when the first scalar is null so a fully-bad cell is still recorded.
-                    let acc = observed.entry(name.clone()).or_default();
-                    acc.non_finite += non_finite;
-                    // The stats/saturation recompute stays on the first scalar (mirroring the
-                    // element-0 stored stats it validates); a non-finite first scalar is already
-                    // counted above, so it never enters the summary.
-                    if let Some(v) = scalar {
-                        if v.is_finite() {
-                            acc.push(v);
-                        }
-                    }
+                for (name, hash, scalars) in feature_values {
+                    // Feed every dimension of the cell: finite values grow their dimension's stats,
+                    // non-finite values (a NaN in any joint) are tallied out. `or_default` keeps the
+                    // entry alive even for an all-null/non-numeric cell so "values were read" holds.
+                    observed
+                        .entry(name.clone())
+                        .or_default()
+                        .push_cell(&scalars);
                     hashes.insert(name, hash);
                 }
                 episode_rows.entry(ep).or_default().push((ts, hashes));
@@ -653,11 +667,11 @@ impl Adapter for LeRobotAdapter {
         }
         let observed_stats: BTreeMap<String, StreamStats> = observed
             .iter()
-            .filter_map(|(name, acc)| acc.finish().map(|s| (name.clone(), s)))
+            .filter_map(|(name, acc)| acc.stats().map(|s| (name.clone(), s)))
             .collect();
         let observed_saturation: BTreeMap<String, Saturation> = observed
             .iter()
-            .filter_map(|(name, acc)| acc.finish_saturation().map(|s| (name.clone(), s)))
+            .filter_map(|(name, acc)| acc.saturation().map(|s| (name.clone(), s)))
             .collect();
         // Every feature whose scalars were read gets a non-finite count (0 when all were finite), so
         // the check can distinguish "clean data" from "values never read" (a `None`).

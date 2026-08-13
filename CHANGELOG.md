@@ -54,7 +54,9 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
     the actual data — stale stats that would poison normalization. The same recompute pass flags a
     clamped/saturated actuator (`STATISTICAL.SATURATED`): a stream whose values sit **exactly** pinned
     at one extreme for a large fraction of samples — an observation that no longer tracks the command.
-    Exact-equality is the signal, so it never mis-flags a noisy sensor. And extreme outliers
+    Exact-equality is the signal, so it never mis-flags a noisy sensor; saturation is judged per
+    dimension, so a gripper pinned at the last element of a multi-DoF `action` vector is caught, not
+    just element 0. And extreme outliers
     (`STATISTICAL.OUTLIER`): an extreme many σ from the mean, which by Chebyshev's inequality is
     provably a rare spike (≤1% of samples at 10σ) — a sensor glitch or unit error that would dominate
     normalization — read from summary stats alone. And non-finite values in the actual data

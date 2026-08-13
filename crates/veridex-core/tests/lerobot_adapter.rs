@@ -962,6 +962,36 @@ fn a_nan_in_a_non_first_dimension_is_flagged_non_finite() {
 }
 
 #[test]
+fn a_saturating_gripper_at_the_last_dimension_is_flagged() {
+    // A 3-DoF action whose first two joints sweep freely but the gripper (element 2) is pinned at
+    // 1.0 for 24 of 30 frames — the most common real saturation, and one a first-scalar-only read
+    // (element 0 varies) would miss entirely. The per-dimension recompute catches it.
+    let dir = tempfile::tempdir().unwrap();
+    let rows: Vec<Vec<f32>> = (0..30i64)
+        .map(|i| {
+            let gripper = if i < 24 {
+                1.0
+            } else {
+                1.0 - (i - 23) as f32 * 0.1
+            };
+            vec![i as f32 * 0.5, -(i as f32) * 0.3, gripper]
+        })
+        .collect();
+    write_lerobot_vector_feature(dir.path(), "action", 3, &rows);
+    let d = ingest_lerobot(dir.path());
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let hash = veridex_core::content_hash(&d);
+    let verdict = engine.run(&d, hash, &veridex_core::RunConfig::default());
+    let sat: Vec<_> = verdict
+        .findings
+        .iter()
+        .filter(|f| f.code == "STATISTICAL.SATURATED")
+        .collect();
+    assert_eq!(sat.len(), 1, "the pinned gripper dimension is flagged");
+    assert!(sat[0].message.contains("maximum"));
+}
+
+#[test]
 fn a_varied_actuator_is_not_saturated() {
     // Same stream, values spread across its range — no single rail dominates → no SATURATED.
     let dir = tempfile::tempdir().unwrap();
