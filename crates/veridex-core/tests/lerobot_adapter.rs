@@ -997,6 +997,56 @@ fn a_saturating_gripper_at_the_last_dimension_is_flagged() {
 }
 
 #[test]
+fn a_stale_stat_in_a_non_first_dimension_is_flagged() {
+    // A 3-DoF feature where element 1 reaches 5.0, but stats.json's per-element `max` for element 1
+    // is a stale 3.0 (element 0's stored range does bound its data). Robot normalization is per
+    // dimension, so this stale stat clips element 1 — the per-dimension comparison catches and names
+    // it, where an element-0-only check would report "stats match data".
+    let dir = tempfile::tempdir().unwrap();
+    let rows: Vec<Vec<f32>> = vec![
+        vec![0.0, 0.0, 0.0],
+        vec![1.0, 1.0, -1.0],
+        vec![2.0, 5.0, -2.0], // element 1 spikes to 5.0
+        vec![3.0, 2.0, -3.0],
+        vec![4.0, 3.0, -4.0],
+    ];
+    write_lerobot_vector_feature(dir.path(), "observation.state", 3, &rows);
+    // Per-element stored stats: element 1's max (3.0) does NOT bound the real 5.0.
+    let stats = serde_json::json!({
+        "observation.state": {
+            "min":  [0.0, 0.0, -4.0],
+            "max":  [4.0, 3.0,  0.0],
+            "mean": [2.0, 2.2, -2.0],
+            "std":  [1.4, 1.7,  1.4],
+        }
+    });
+    fs::write(
+        dir.path().join("meta/stats.json"),
+        serde_json::to_string(&stats).unwrap(),
+    )
+    .unwrap();
+    let d = ingest_lerobot(dir.path());
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let hash = veridex_core::content_hash(&d);
+    let verdict = engine.run(&d, hash, &veridex_core::RunConfig::default());
+    let stale: Vec<_> = verdict
+        .findings
+        .iter()
+        .filter(|f| f.code == "STATISTICAL.STATS_STALE")
+        .collect();
+    assert_eq!(
+        stale.len(),
+        1,
+        "the stale non-first dimension is flagged once"
+    );
+    assert!(
+        stale[0].message.contains("dimension 1"),
+        "the finding names the stale dimension: {}",
+        stale[0].message
+    );
+}
+
+#[test]
 fn a_spike_in_a_non_first_dimension_is_flagged_an_outlier() {
     // A 3-DoF feature: elements 0 and 1 hug zero with tiny distinct steps; element 1 takes a lone
     // jump to 1000 on one frame. 150 frames put that spike ~12σ out (a single point sits at most

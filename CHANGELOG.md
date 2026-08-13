@@ -51,7 +51,9 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
     Popoviciu-implausible std, mean-out-of-range, integer-dtype range, degeneracy), and
     stored-vs-recomputed (`STATISTICAL.STATS_STALE`): where the adapter reads feature values (LeRobot),
     Veridex recomputes the statistics and flags a stored `meta/stats.json` whose range doesn't bound
-    the actual data — stale stats that would poison normalization. The same recompute pass flags a
+    the actual data — stale stats that would poison normalization; compared per dimension (LeRobot's
+    stats are per-element arrays), so a stale stat in one joint is caught and named. The same recompute
+    pass flags a
     clamped/saturated actuator (`STATISTICAL.SATURATED`): a stream whose values sit **exactly** pinned
     at one extreme for a large fraction of samples — an observation that no longer tracks the command.
     Exact-equality is the signal, so it never mis-flags a noisy sensor; saturation is judged per

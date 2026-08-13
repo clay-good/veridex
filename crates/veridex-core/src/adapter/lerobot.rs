@@ -108,20 +108,33 @@ fn infer_modality(name: &str, dtype: Option<&str>) -> Modality {
     }
 }
 
-/// The first scalar number reachable in a JSON value (descending into arrays). LeRobot stats are
-/// per-dimension arrays; we summarize with the first dimension.
-fn first_number(v: &serde_json::Value) -> Option<f64> {
+/// The flat list of numbers in a JSON value: a scalar becomes a 1-element vec, a (possibly nested)
+/// array flattens in order. `None` if it holds no numbers. Used to read LeRobot's per-dimension stat
+/// arrays (`min: [a, b, c]`).
+fn number_list(v: &serde_json::Value) -> Option<Vec<f64>> {
     match v {
-        serde_json::Value::Number(n) => n.as_f64(),
-        serde_json::Value::Array(a) => a.iter().find_map(first_number),
+        serde_json::Value::Number(n) => n.as_f64().map(|x| vec![x]),
+        serde_json::Value::Array(a) => {
+            let nums: Vec<f64> = a.iter().filter_map(number_list).flatten().collect();
+            (!nums.is_empty()).then_some(nums)
+        }
         _ => None,
     }
 }
 
+/// Stored statistics loaded from `meta/stats.json`: the element-0 summary per feature (for the
+/// scalar checks) and, for multi-dimensional features, the full per-dimension breakdown.
+#[derive(Default)]
+struct StoredStats {
+    scalar: BTreeMap<String, StreamStats>,
+    per_dim: BTreeMap<String, Vec<DimStats>>,
+}
+
 /// Load per-feature stored statistics from `meta/stats.json`, if present. Missing or unparseable
-/// stats are simply absent (never fabricated).
-fn load_stats(dir: &Path) -> BTreeMap<String, StreamStats> {
-    let mut out = BTreeMap::new();
+/// stats are simply absent (never fabricated). Element-0 backs the scalar checks; the full
+/// per-dimension arrays (when the feature is multi-DoF) back per-dimension stored-vs-observed.
+fn load_stats(dir: &Path) -> StoredStats {
+    let mut out = StoredStats::default();
     let Ok(bytes) = std::fs::read(dir.join("meta").join("stats.json")) else {
         return out;
     };
@@ -131,22 +144,44 @@ fn load_stats(dir: &Path) -> BTreeMap<String, StreamStats> {
     };
     for (feature, stats) in map {
         let (Some(min), Some(max), Some(mean), Some(std)) = (
-            stats.get("min").and_then(first_number),
-            stats.get("max").and_then(first_number),
-            stats.get("mean").and_then(first_number),
-            stats.get("std").and_then(first_number),
+            stats.get("min").and_then(number_list),
+            stats.get("max").and_then(number_list),
+            stats.get("mean").and_then(number_list),
+            stats.get("std").and_then(number_list),
         ) else {
             continue;
         };
-        out.insert(
-            feature,
+        // Element 0 is the scalar summary the existing element-0 checks compare against.
+        out.scalar.insert(
+            feature.clone(),
             StreamStats {
-                min,
-                max,
-                mean,
-                std,
+                min: min[0],
+                max: max[0],
+                mean: mean[0],
+                std: std[0],
             },
         );
+        // A multi-DoF feature (all four arrays present and same length > 1) gets a per-dimension
+        // breakdown; ragged or scalar stats stay element-0 only.
+        let width = min.len();
+        if width > 1
+            && [max.len(), mean.len(), std.len()]
+                .iter()
+                .all(|&l| l == width)
+        {
+            let dims: Vec<DimStats> = (0..width)
+                .map(|i| DimStats {
+                    dim: i as u64,
+                    stats: StreamStats {
+                        min: min[i],
+                        max: max[i],
+                        mean: mean[i],
+                        std: std[i],
+                    },
+                })
+                .collect();
+            out.per_dim.insert(feature, dims);
+        }
     }
     out
 }
@@ -742,7 +777,8 @@ impl Adapter for LeRobotAdapter {
                                 },
                             })
                             .collect(),
-                        stats: stats.get(name).copied(),
+                        stats: stats.scalar.get(name).copied(),
+                        dim_stats: stats.per_dim.get(name).cloned(),
                         observed_stats: observed_stats.get(name).copied(),
                         observed_saturation: observed_saturation.get(name).copied(),
                         observed_non_finite: observed_non_finite.get(name).copied(),

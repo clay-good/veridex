@@ -16,6 +16,7 @@ fn stream(name: &str, clock: &str, rate: Option<f64>, ts: &[i64]) -> Stream {
         dtype: None,
         shape: None,
         stats: None,
+        dim_stats: None,
         observed_stats: None,
         observed_saturation: None,
         observed_non_finite: None,

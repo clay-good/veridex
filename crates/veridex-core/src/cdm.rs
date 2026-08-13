@@ -145,6 +145,13 @@ pub struct Stream {
     /// Stored per-stream summary statistics, if the source records them (e.g. LeRobot's
     /// `meta/stats.json`). Checks may sanity-check these without decoding frame payloads.
     pub stats: Option<StreamStats>,
+    /// Stored statistics **per dimension** of a multi-DoF feature, when the source records per-element
+    /// arrays (LeRobot's `meta/stats.json` stores `min`/`max`/… as vectors). `None` for a scalar
+    /// feature — its one dimension is already in [`Stream::stats`]. The `statistical.stored-vs-observed`
+    /// check pairs these with [`Stream::observed_dim_stats`] so a stale stat in a non-first joint is
+    /// caught: robot normalization is per dimension, so an element-0-only comparison gives false
+    /// confidence.
+    pub dim_stats: Option<Vec<DimStats>>,
     /// Statistics Veridex **recomputed** from the actual feature values, when the adapter reads them
     /// (the LeRobot adapter fingerprints feature cells, so it recomputes these in the same pass). The
     /// `statistical.stored-vs-observed` check compares these against [`Stream::stats`] to catch a

@@ -452,6 +452,19 @@ pub struct StoredVsObserved;
 impl StoredVsObserved {
     /// Relative tolerance for the range comparison — absorbs float rounding, not real excursions.
     const REL_EPS: f64 = 1e-6;
+
+    /// Whether the observed range escapes the stored range (below its min or above its max) beyond the
+    /// rounding tolerance. Returns `None` when the stored bounds are non-finite (RangeSanity's concern).
+    fn escapes(stored: &StreamStats, observed: &StreamStats) -> Option<bool> {
+        if !stored.min.is_finite() || !stored.max.is_finite() {
+            return None;
+        }
+        let tol = |x: f64| Self::REL_EPS * x.abs().max(1.0);
+        Some(
+            observed.min < stored.min - tol(stored.min)
+                || observed.max > stored.max + tol(stored.max),
+        )
+    }
 }
 
 impl Check for StoredVsObserved {
@@ -484,36 +497,51 @@ impl Check for StoredVsObserved {
         let mut reported: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
         for ep in &dataset.episodes {
             for stream in &ep.streams {
-                let (Some(stored), Some(observed)) = (stream.stats, stream.observed_stats) else {
+                // For a multi-DoF feature with both stored and recomputed per-dimension stats, compare
+                // each dimension and report the first stale one — normalization is per dimension, so a
+                // stale stat in any joint matters. Otherwise fall back to the scalar (element-0) pair.
+                let hit: Option<(StreamStats, StreamStats, u64)> =
+                    match (&stream.dim_stats, &stream.observed_dim_stats) {
+                        (Some(stored_dims), Some(obs_dims)) => stored_dims.iter().find_map(|sd| {
+                            let od = obs_dims.iter().find(|o| o.dim == sd.dim)?;
+                            (Self::escapes(&sd.stats, &od.stats)?)
+                                .then_some((sd.stats, od.stats, sd.dim))
+                        }),
+                        _ => match (stream.stats, stream.observed_stats) {
+                            (Some(stored), Some(observed)) => Self::escapes(&stored, &observed)
+                                .unwrap_or(false)
+                                .then_some((stored, observed, 0)),
+                            _ => None,
+                        },
+                    };
+                let Some((stored, observed, dim)) = hit else {
                     continue;
                 };
-                // Ignore corrupt stored stats (RangeSanity's concern) and non-finite recomputes.
-                if !stored.min.is_finite() || !stored.max.is_finite() {
+                if !reported.insert(stream.name.as_str()) {
                     continue;
                 }
-                let tol = |x: f64| Self::REL_EPS * x.abs().max(1.0);
-                let below = observed.min < stored.min - tol(stored.min);
-                let above = observed.max > stored.max + tol(stored.max);
-                if below || above {
-                    if !reported.insert(stream.name.as_str()) {
-                        continue;
-                    }
-                    findings.push(
-                        Finding::new(
-                            self.id(),
-                            Category::Statistical,
-                            Severity::Error,
-                            Location::Stream {
-                                episode: ep.index,
-                                stream: stream.name.clone(),
-                            },
-                            "STATISTICAL.STATS_STALE",
-                            format!(
-                                "stream `{}`: actual values [{}, {}] fall outside the \
-                                 stored range [{}, {}] — the stored statistics don't match the data",
-                                stream.name, observed.min, observed.max, stored.min, stored.max
-                            ),
-                        )
+                // Name the dimension for a multi-DoF feature; a scalar/element-0 mismatch needs none.
+                let where_ = if dim > 0 {
+                    format!(" (dimension {dim})")
+                } else {
+                    String::new()
+                };
+                findings.push(
+                    Finding::new(
+                        self.id(),
+                        Category::Statistical,
+                        Severity::Error,
+                        Location::Stream {
+                            episode: ep.index,
+                            stream: stream.name.clone(),
+                        },
+                        "STATISTICAL.STATS_STALE",
+                        format!(
+                            "stream `{}`{where_}: actual values [{}, {}] fall outside the \
+                             stored range [{}, {}] — the stored statistics don't match the data",
+                            stream.name, observed.min, observed.max, stored.min, stored.max
+                        ),
+                    )
                         .with_risk(
                             "Stored statistics that don't bound the real values were computed on \
                              different or stale data; normalization built from them clips or distorts \
@@ -524,7 +552,6 @@ impl Check for StoredVsObserved {
                              `meta/stats.json`).",
                         ),
                     );
-                }
             }
         }
         findings
