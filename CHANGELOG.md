@@ -48,26 +48,17 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
     gaps, jitter, the headline cross-stream `TEMPORAL.CLOCK_SKEW`, shared-clock start/end offsets,
     cross-episode rate consistency (`TEMPORAL.RATE_INCONSISTENT`), and episode-duration outliers.
   - **Statistical** — stored-stats range and sanity (inverted range, non-finite, negative or
-    Popoviciu-implausible std, mean-out-of-range, integer-dtype range, degeneracy), and
-    stored-vs-recomputed (`STATISTICAL.STATS_STALE`): where the adapter reads feature values (LeRobot),
-    Veridex recomputes the statistics and flags a stored `meta/stats.json` whose range doesn't bound
-    the actual data — stale stats that would poison normalization; compared per dimension (LeRobot's
-    stats are per-element arrays), so a stale stat in one joint is caught and named. The same recompute
-    pass flags a
-    clamped/saturated actuator (`STATISTICAL.SATURATED`): a stream whose values sit **exactly** pinned
-    at one extreme for a large fraction of samples — an observation that no longer tracks the command.
-    Exact-equality is the signal, so it never mis-flags a noisy sensor; saturation is judged per
-    dimension, so a gripper pinned at the last element of a multi-DoF `action` vector is caught, not
-    just element 0. And extreme outliers
-    (`STATISTICAL.OUTLIER`): an extreme many σ from the mean, which by Chebyshev's inequality is
-    provably a rare spike (≤1% of samples at 10σ) — a sensor glitch or unit error that would dominate
-    normalization — read from summary stats alone, and scanned per dimension so a spike in a non-first
-    joint is caught and named. And non-finite values in the actual data
-    (`STATISTICAL.NON_FINITE_OBSERVED`): a NaN or ±infinity among the recomputed feature cells —
-    scanned across **every dimension**, so a NaN buried in one joint of a multi-DoF arm is still
-    caught — which a clean or absent `meta/stats.json` hides entirely. Held out of the recomputed
-    summary (a NaN would poison every stat) and counted separately, since a single non-finite value
-    propagates to a NaN loss and silently kills a training run.
+    Popoviciu-implausible std, mean-out-of-range, integer-dtype range, degeneracy). Where the adapter
+    reads feature values (LeRobot), Veridex recomputes statistics from the actual cells and adds four
+    data-facing checks: `STATISTICAL.STATS_STALE` flags a stored `meta/stats.json` whose range doesn't
+    bound the data (stale stats poison normalization); `STATISTICAL.SATURATED` flags a clamped actuator
+    whose values sit **exactly** pinned at one rail (exact-equality is the signal, so a noisy sensor is
+    never mis-flagged); `STATISTICAL.OUTLIER` flags an extreme many σ from the mean, provably a rare
+    spike by Chebyshev's inequality (≤1% of samples at 10σ); and `STATISTICAL.NON_FINITE_OBSERVED`
+    flags a NaN or ±infinity in the cells that a clean or absent `stats.json` hides — a single one
+    propagates to a NaN loss and silently kills a training run. All four scan **every dimension** of a
+    multi-DoF feature and name the offending joint, so a stale stat, saturated gripper, spike, or NaN
+    buried in element 6 of a 7-DoF `action` is caught, not just element 0.
   - **Semantic** — task-string quality and stream-key clarity (an exact-duplicate key is an error, a
     case/whitespace collision a warning); and language-annotation integrity
     (`SEMANTIC.ANNOTATION_UNALIGNED` / `_CONFLICT` / `_EMPTY_ANNOTATION`): timestamped language
