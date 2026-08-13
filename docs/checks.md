@@ -63,6 +63,9 @@ Severities below are the defaults.
 | `semantic.task-quality` | `SEMANTIC.PLACEHOLDER_TASK` | info | An episode's task is a low-information placeholder (e.g. "Hold"). |
 | `semantic.stream-key-clarity` | `SEMANTIC.DUPLICATE_STREAM_KEY` | error | A stream key appears more than once in one episode — a violation of the "unique within an episode" invariant that makes the name an unusable identifier. |
 | `semantic.stream-key-clarity` | `SEMANTIC.AMBIGUOUS_STREAM_KEY` | warning | Two *distinct* stream keys in an episode differ only by case or whitespace. |
+| `semantic.annotation-integrity` | `SEMANTIC.ANNOTATION_UNALIGNED` | error | A timestamped `language` annotation falls outside its episode's time span — it would attach to a moment the episode never recorded, so per-frame language conditioning built from it aligns to the wrong frame. |
+| `semantic.annotation-integrity` | `SEMANTIC.ANNOTATION_CONFLICT` | warning | Two `language` annotations at the same timestamp carry different values — contradictory supervision for one instant. |
+| `semantic.annotation-integrity` | `SEMANTIC.EMPTY_ANNOTATION` | warning | A `language` annotation is present but its value is empty/whitespace. Veridex verifies annotations, never writes or edits them. LeRobot surfaces mid-episode `task_index` changes as timestamped `language` labels; single-task episodes carry none. |
 
 ## Provenance — do we know where the data came from?
 

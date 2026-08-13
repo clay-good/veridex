@@ -13,7 +13,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::cdm::Dataset;
+use crate::cdm::{Dataset, Episode, TimestampNs};
 use crate::check::{Category, Check, Finding, Location, Scope, Severity};
 
 /// Degenerate placeholder task strings — matched case-insensitively against the trimmed task. These
@@ -93,6 +93,164 @@ impl Check for TaskQuality {
                     )
                     .with_remedy(
                         "Replace the placeholder with the actual instruction for this episode.",
+                    ),
+                );
+            }
+        }
+        findings
+    }
+}
+
+/// The episode's time span `[lo, hi]` on its clock: the declared `[start_ts, end_ts]` when both are
+/// present and ordered, else the min/max frame timestamp across its streams. `None` when the episode
+/// carries no timestamps at all (nothing to align against).
+fn episode_time_span(ep: &Episode) -> Option<(TimestampNs, TimestampNs)> {
+    if let (Some(s), Some(e)) = (ep.start_ts, ep.end_ts) {
+        if e >= s {
+            return Some((s, e));
+        }
+    }
+    let mut span: Option<(TimestampNs, TimestampNs)> = None;
+    for stream in &ep.streams {
+        for f in &stream.frames {
+            span = Some(match span {
+                Some((lo, hi)) => (lo.min(f.ts), hi.max(f.ts)),
+                None => (f.ts, f.ts),
+            });
+        }
+    }
+    span
+}
+
+/// Language-annotation integrity. Where a dataset carries timestamped language annotations (e.g. a
+/// LeRobot mid-episode task change, surfaced as a `language` label with a timestamp), Veridex
+/// **verifies** them without ever writing, generating, or altering one:
+///
+/// - `SEMANTIC.ANNOTATION_UNALIGNED` (error) — a timestamped annotation whose time falls outside its
+///   episode's span, so it would attach to a moment the episode never recorded.
+/// - `SEMANTIC.ANNOTATION_CONFLICT` (warning) — two annotations at the same timestamp with different
+///   values: ambiguous supervision at one instant.
+/// - `SEMANTIC.EMPTY_ANNOTATION` (warning) — an annotation present in form but empty in substance.
+///
+/// Only `language`-keyed labels are judged. Per-camera uniqueness is out of scope until an adapter
+/// associates annotations with a specific stream.
+pub struct AnnotationIntegrity;
+
+impl Check for AnnotationIntegrity {
+    fn id(&self) -> &'static str {
+        "semantic.annotation-integrity"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &[
+            "SEMANTIC.ANNOTATION_UNALIGNED",
+            "SEMANTIC.ANNOTATION_CONFLICT",
+            "SEMANTIC.EMPTY_ANNOTATION",
+        ]
+    }
+    fn title(&self) -> &'static str {
+        "Language-annotation integrity"
+    }
+    fn category(&self) -> Category {
+        Category::Semantic
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Warning
+    }
+    fn scope(&self) -> Scope {
+        Scope::Episode
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        for ep in &dataset.episodes {
+            let span = episode_time_span(ep);
+            // Group timestamped language values by timestamp to detect same-instant conflicts.
+            let mut by_ts: BTreeMap<TimestampNs, BTreeSet<&str>> = BTreeMap::new();
+            for label in ep.labels.iter().filter(|l| l.key == "language") {
+                let value = label.value.trim();
+
+                // (1) Structural validity: an annotation present but empty carries no instruction.
+                if value.is_empty() {
+                    findings.push(
+                        Finding::new(
+                            self.id(),
+                            Category::Semantic,
+                            Severity::Warning,
+                            Location::Episode { episode: ep.index },
+                            "SEMANTIC.EMPTY_ANNOTATION",
+                            format!("episode {} carries an empty language annotation", ep.index),
+                        )
+                        .with_risk(
+                            "An empty annotation is present in form but supervises nothing, diluting \
+                             language conditioning while counting as a labeled moment.",
+                        )
+                        .with_remedy("Fill in the annotation text, or drop the empty annotation."),
+                    );
+                }
+
+                // (2) Timestamp alignment: a timed annotation must fall within the episode's span.
+                if let (Some(ts), Some((lo, hi))) = (label.ts, span) {
+                    if ts < lo || ts > hi {
+                        findings.push(
+                            Finding::new(
+                                self.id(),
+                                Category::Semantic,
+                                Severity::Error,
+                                Location::Episode { episode: ep.index },
+                                "SEMANTIC.ANNOTATION_UNALIGNED",
+                                format!(
+                                    "episode {}: language annotation at ts {} falls outside the \
+                                     episode span [{}, {}]",
+                                    ep.index, ts, lo, hi
+                                ),
+                            )
+                            .with_risk(
+                                "An annotation outside the episode's timeline attaches to a moment \
+                                 that was never recorded, so any per-frame language conditioning \
+                                 built from it aligns to the wrong (or no) frame.",
+                            )
+                            .with_remedy(
+                                "Re-derive the annotation timestamps against the episode's clock, or \
+                                 drop annotations that reference frames outside the episode.",
+                            ),
+                        );
+                    }
+                }
+
+                if let Some(ts) = label.ts {
+                    by_ts.entry(ts).or_default().insert(value);
+                }
+            }
+
+            // (3) Per-timestamp uniqueness: distinct values at one instant are ambiguous.
+            for (ts, values) in by_ts.iter().filter(|(_, v)| v.len() > 1) {
+                findings.push(
+                    Finding::new(
+                        self.id(),
+                        Category::Semantic,
+                        Severity::Warning,
+                        Location::Episode { episode: ep.index },
+                        "SEMANTIC.ANNOTATION_CONFLICT",
+                        format!(
+                            "episode {}: {} conflicting language annotations at ts {} ({})",
+                            ep.index,
+                            values.len(),
+                            ts,
+                            values
+                                .iter()
+                                .map(|v| format!("`{v}`"))
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                        ),
+                    )
+                    .with_risk(
+                        "Two different instructions at the same instant give a language-conditioned \
+                         policy contradictory supervision for the same frame.",
+                    )
+                    .with_remedy(
+                        "Reconcile the annotations so at most one instruction applies per timestamp.",
                     ),
                 );
             }

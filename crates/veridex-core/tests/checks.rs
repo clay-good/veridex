@@ -1,7 +1,7 @@
 //! Behavior tests for the MVP checks catalog.
 
 use veridex_core::cdm::{
-    Dataset, Episode, Frame, Modality, Provenance, ProvenanceClass, ProvenanceElement,
+    Dataset, Episode, Frame, Label, Modality, Provenance, ProvenanceClass, ProvenanceElement,
     ProvenanceScope, Stream, ValueRef,
 };
 use veridex_core::check::{Check, Severity};
@@ -996,7 +996,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 26);
+    assert_eq!(verdict.executed_checks.len(), 27);
 }
 
 #[test]
@@ -1340,6 +1340,83 @@ fn episode_with_task(index: u64, task: Option<&str>) -> Episode {
     let mut ep = episode(index, vec![stream("s", "c", None, &[0, 1])]);
     ep.task = task.map(Into::into);
     ep
+}
+
+/// An episode over frames ts 0..10 carrying the given language labels.
+fn episode_with_labels(index: u64, labels: Vec<Label>) -> Episode {
+    let mut ep = episode(index, vec![stream("s", "c", None, &[0, 5, 10])]);
+    ep.labels = labels;
+    ep
+}
+
+fn lang(value: &str, ts: Option<i64>) -> Label {
+    Label {
+        key: "language".into(),
+        value: value.into(),
+        ts,
+    }
+}
+
+#[test]
+fn a_language_annotation_outside_the_episode_span_is_unaligned() {
+    // Frames span [0, 10]; an annotation at ts 50 references a moment the episode never recorded.
+    let d = dataset(vec![episode_with_labels(0, vec![lang("push", Some(50))])]);
+    let f = semantic::AnnotationIntegrity.run(&d);
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].code, "SEMANTIC.ANNOTATION_UNALIGNED");
+    assert_eq!(f[0].severity, Severity::Error);
+}
+
+#[test]
+fn an_aligned_annotation_is_clean() {
+    let d = dataset(vec![episode_with_labels(
+        0,
+        vec![lang("push the block", Some(5))],
+    )]);
+    assert!(semantic::AnnotationIntegrity.run(&d).is_empty());
+}
+
+#[test]
+fn conflicting_annotations_at_one_timestamp_are_flagged() {
+    let d = dataset(vec![episode_with_labels(
+        0,
+        vec![lang("push", Some(5)), lang("pull", Some(5))],
+    )]);
+    let f = semantic::AnnotationIntegrity.run(&d);
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].code, "SEMANTIC.ANNOTATION_CONFLICT");
+    assert_eq!(f[0].severity, Severity::Warning);
+}
+
+#[test]
+fn identical_annotations_at_one_timestamp_do_not_conflict() {
+    let d = dataset(vec![episode_with_labels(
+        0,
+        vec![lang("push", Some(5)), lang("push", Some(5))],
+    )]);
+    assert!(semantic::AnnotationIntegrity.run(&d).is_empty());
+}
+
+#[test]
+fn an_empty_language_annotation_is_flagged() {
+    let d = dataset(vec![episode_with_labels(0, vec![lang("   ", Some(5))])]);
+    let f = semantic::AnnotationIntegrity.run(&d);
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].code, "SEMANTIC.EMPTY_ANNOTATION");
+}
+
+#[test]
+fn non_language_labels_are_ignored_by_the_annotation_check() {
+    // A `success` label out of span is not a language annotation → not this check's concern.
+    let d = dataset(vec![episode_with_labels(
+        0,
+        vec![Label {
+            key: "success".into(),
+            value: "true".into(),
+            ts: Some(999),
+        }],
+    )]);
+    assert!(semantic::AnnotationIntegrity.run(&d).is_empty());
 }
 
 #[test]

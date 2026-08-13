@@ -138,6 +138,7 @@ mod tests {
                 labels: vec![Label {
                     key: "language".into(),
                     value: "pick up the cube".into(),
+                    ts: None,
                 }],
             }],
         }
@@ -195,6 +196,17 @@ mod tests {
         let base = content_hash(&d);
         let mut d2 = d.clone();
         d2.episodes[0].streams[0].frames[0].ts += 1;
+        assert_ne!(content_hash(&d2), base);
+    }
+
+    #[test]
+    fn changing_a_label_timestamp_changes_the_hash() {
+        // A timestamped annotation's time is data: retiming it must change the content hash, so a
+        // certificate binds to the annotation timeline it was issued against.
+        let d = sample_dataset();
+        let base = content_hash(&d);
+        let mut d2 = d.clone();
+        d2.episodes[0].labels[0].ts = Some(42);
         assert_ne!(content_hash(&d2), base);
     }
 

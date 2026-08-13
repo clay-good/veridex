@@ -31,7 +31,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::cdm::{
-    Dataset, Episode, Frame, Modality, Provenance, ProvenanceClass, ProvenanceElement,
+    Dataset, Episode, Frame, Label, Modality, Provenance, ProvenanceClass, ProvenanceElement,
     ProvenanceScope, Saturation, Stream, StreamStats, ValueRef,
 };
 
@@ -513,9 +513,15 @@ impl Adapter for LeRobotAdapter {
         // Per episode: rows in read order, each a (timestamp, feature-name -> content hash) pair.
         type RowContent = (i64, BTreeMap<String, Option<[u8; 32]>>);
         let mut episode_rows: BTreeMap<u64, Vec<RowContent>> = BTreeMap::new();
-        // First `task_index` seen per episode (row order is deterministic: files are sorted). Most
-        // episodes are single-task; if the task changes mid-episode we take the first, honestly.
+        // First `task_index` seen per episode (row order is deterministic: files are sorted) — this
+        // is the episode's primary task string.
         let mut episode_task_index: BTreeMap<u64, i64> = BTreeMap::new();
+        // Task *transitions* within an episode: the (timestamp, task_index) at each row whose task
+        // differs from the previous row's — a mid-episode instruction change. These become timestamped
+        // `language` annotations the semantic checks verify. Single-task episodes produce none, so a
+        // dataset without mid-episode task changes is unaffected.
+        let mut episode_task_events: BTreeMap<u64, Vec<(i64, i64)>> = BTreeMap::new();
+        let mut last_task_index: BTreeMap<u64, i64> = BTreeMap::new();
         // Dataset-level recomputed statistics per feature (LeRobot's stored stats are dataset-level).
         let mut observed: BTreeMap<String, StatsAccum> = BTreeMap::new();
         for path in &parquet_files {
@@ -532,6 +538,13 @@ impl Adapter for LeRobotAdapter {
                 episode_rows.entry(ep).or_default().push((ts, hashes));
                 if let Some(ti) = task_index {
                     episode_task_index.entry(ep).or_insert(ti);
+                    // Record a transition when this row's task differs from the episode's previous row.
+                    match last_task_index.insert(ep, ti) {
+                        Some(prev) if prev != ti => {
+                            episode_task_events.entry(ep).or_default().push((ts, ti));
+                        }
+                        _ => {}
+                    }
                 }
             }
         }
@@ -586,13 +599,28 @@ impl Adapter for LeRobotAdapter {
                     .get(&index)
                     .and_then(|ti| tasks.get(ti))
                     .cloned();
+                // Surface each mid-episode task change as a timestamped `language` annotation. Only
+                // resolvable task indices become labels (Veridex never invents an instruction from a
+                // bare index); the semantic checks then verify their integrity.
+                let labels = episode_task_events
+                    .get(&index)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|(ts, ti)| {
+                        tasks.get(ti).map(|value| Label {
+                            key: "language".into(),
+                            value: value.clone(),
+                            ts: Some(*ts),
+                        })
+                    })
+                    .collect();
                 Episode {
                     index,
                     start_ts,
                     end_ts,
                     streams,
                     task,
-                    labels: vec![],
+                    labels,
                 }
             })
             .collect();

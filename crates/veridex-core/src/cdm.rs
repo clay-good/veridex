@@ -219,6 +219,11 @@ pub struct Label {
     pub key: String,
     /// The label value.
     pub value: String,
+    /// When the annotation applies, on the episode's clock, for a **timestamped** annotation such as a
+    /// language event (an instruction that takes effect part-way through an episode). `None` for a
+    /// persistent episode-level label. The `semantic.annotation-integrity` check verifies that a
+    /// timestamped annotation falls within its episode's time span, never editing it.
+    pub ts: Option<TimestampNs>,
 }
 
 /// How well a provenance element is known.

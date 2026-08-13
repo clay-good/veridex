@@ -64,6 +64,7 @@ pub fn standard_checks_with(t: &Tolerances) -> Vec<Box<dyn Check>> {
         Box::new(statistical::ExtremeOutlier::default()),
         Box::new(semantic::TaskQuality),
         Box::new(semantic::StreamKeyClarity),
+        Box::new(semantic::AnnotationIntegrity),
         Box::new(provenance::ProvenanceCompleteness),
     ]
 }

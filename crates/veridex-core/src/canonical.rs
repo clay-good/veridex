@@ -157,12 +157,18 @@ impl Episode {
 
         e.opt(&self.task, |e, t| e.str(t));
 
-        // labels: order-insensitive, canonicalized by (key, value)
+        // labels: order-insensitive, canonicalized by (key, value, ts)
         let mut labels: Vec<&Label> = self.labels.iter().collect();
-        labels.sort_by(|a, b| a.key.cmp(&b.key).then_with(|| a.value.cmp(&b.value)));
+        labels.sort_by(|a, b| {
+            a.key
+                .cmp(&b.key)
+                .then_with(|| a.value.cmp(&b.value))
+                .then_with(|| a.ts.cmp(&b.ts))
+        });
         e.seq(&labels, |e, l| {
             e.str(&l.key);
             e.str(&l.value);
+            e.opt(&l.ts, |e, t| e.i64(*t));
         });
     }
 }

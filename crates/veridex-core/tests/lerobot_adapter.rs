@@ -427,7 +427,7 @@ fn lerobot_dataset_flows_through_the_full_check_pipeline() {
     let verdict = engine.run(&d, hash, &veridex_core::RunConfig::default());
 
     // Every standard check ran, none errored, and clean data yields no failing findings.
-    assert_eq!(verdict.executed_checks.len(), 26);
+    assert_eq!(verdict.executed_checks.len(), 27);
     assert!(
         verdict.errored_checks.is_empty(),
         "no check should error on a well-formed dataset"
@@ -504,6 +504,50 @@ fn write_lerobot_with_tasks(dir: &Path, fps: f64, rows: &[(i64, f64, i64)], task
     let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
     writer.write(&batch).unwrap();
     writer.close().unwrap();
+}
+
+#[test]
+fn a_mid_episode_task_change_becomes_a_timestamped_language_label() {
+    // Episode 0 starts on task 0 and switches to task 1 at ts 0.2s — a real multi-task episode.
+    // The adapter surfaces the switch as one timestamped `language` label; the episode's primary
+    // task stays the first. A single-task episode 1 produces no labels.
+    let dir = tempfile::tempdir().unwrap();
+    write_lerobot_with_tasks(
+        dir.path(),
+        10.0,
+        &[
+            (0, 0.0, 0),
+            (0, 0.1, 0),
+            (0, 0.2, 1),
+            (0, 0.3, 1),
+            (1, 0.0, 2),
+            (1, 0.1, 2),
+        ],
+        &[(0, "grasp the cube"), (1, "lift the cube"), (2, "hold")],
+    );
+    let d = ingest_lerobot(dir.path());
+
+    // Episode 0: primary task is the first; exactly one language label at the switch (ts 0.2s).
+    assert_eq!(d.episodes[0].task.as_deref(), Some("grasp the cube"));
+    let labels: Vec<_> = d.episodes[0]
+        .labels
+        .iter()
+        .filter(|l| l.key == "language")
+        .collect();
+    assert_eq!(labels.len(), 1);
+    assert_eq!(labels[0].value, "lift the cube");
+    assert!(labels[0].ts.is_some());
+    // Single-task episode 1 carries no transition labels.
+    assert!(d.episodes[1].labels.is_empty());
+
+    // The surfaced label is aligned within the episode, so the integrity check stays clean.
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let hash = veridex_core::content_hash(&d);
+    let verdict = engine.run(&d, hash, &veridex_core::RunConfig::default());
+    assert!(verdict
+        .findings
+        .iter()
+        .all(|f| !f.code.starts_with("SEMANTIC.ANNOTATION")));
 }
 
 #[test]

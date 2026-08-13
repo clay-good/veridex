@@ -35,7 +35,7 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 - **Validation engine** — check registry with duplicate-id rejection, category/id selection,
   severity overrides, deterministic stably-ordered verdicts with a result content hash, fault
   isolation for panicking checks, and reproducibility metadata.
-- **Checks catalog** — 26 checks across five families, each finding carrying a training **risk** and
+- **Checks catalog** — 27 checks across five families, each finding carrying a training **risk** and
   a **remedy** and located to the exact episode / stream / frame:
   - **Structural** — episode-boundary integrity (the lerobot#4143 class), degenerate
     episodes/streams (including a zero-episode dataset), episode-index continuity, declared-vs-actual
@@ -57,7 +57,11 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
     provably a rare spike (≤1% of samples at 10σ) — a sensor glitch or unit error that would dominate
     normalization — read from summary stats alone.
   - **Semantic** — task-string quality and stream-key clarity (an exact-duplicate key is an error, a
-    case/whitespace collision a warning); annotations are verified, never modified.
+    case/whitespace collision a warning); and language-annotation integrity
+    (`SEMANTIC.ANNOTATION_UNALIGNED` / `_CONFLICT` / `_EMPTY_ANNOTATION`): timestamped language
+    annotations are verified — in span, unique per instant, non-empty — never written or modified. The
+    LeRobot adapter surfaces mid-episode `task_index` changes as timestamped `language` labels
+    (single-task episodes carry none), so the check runs on real multi-task datasets.
   - **Provenance-completeness** — presence, internal consistency, and placeholder detection (a
     `license` of `"unknown"` is present in form but empty in substance, so it isn't counted as real).
 
