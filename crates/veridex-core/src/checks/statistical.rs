@@ -122,6 +122,86 @@ impl Check for Saturation {
     }
 }
 
+/// Non-finite values in the **actual data**. When the adapter recomputes values from the source
+/// ([`Stream::observed_non_finite`](crate::cdm::Stream::observed_non_finite)), any NaN or ±infinity
+/// among a stream's scalars is counted. A single non-finite value in a training tensor propagates to
+/// a NaN loss and silently kills a run.
+///
+/// This is distinct from `STATISTICAL.NON_FINITE`, which inspects the source's **stored**
+/// `stats.json`: a dataset whose stored summary is clean (or absent) can still hold NaN/inf in the
+/// data itself, and only a recompute over the real values sees it. Because the non-finite values are
+/// held out of `observed_stats` (a NaN would poison every summary), this count is their only record.
+pub struct NonFiniteObserved;
+
+impl Check for NonFiniteObserved {
+    fn id(&self) -> &'static str {
+        "statistical.non-finite-observed"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["STATISTICAL.NON_FINITE_OBSERVED"]
+    }
+    fn title(&self) -> &'static str {
+        "Non-finite values in the data"
+    }
+    fn category(&self) -> Category {
+        Category::Statistical
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Error
+    }
+    fn scope(&self) -> Scope {
+        Scope::Stream
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        // The count is dataset-level (attached to every episode's stream), so report each stream
+        // once — on the first episode that carries it — not per episode.
+        let mut reported: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        for ep in &dataset.episodes {
+            for stream in &ep.streams {
+                // `None` means values were never read (e.g. MCAP); `Some(0)` means read and clean.
+                let Some(count) = stream.observed_non_finite else {
+                    continue;
+                };
+                if count == 0 {
+                    continue;
+                }
+                if !reported.insert(stream.name.as_str()) {
+                    continue;
+                }
+                findings.push(
+                    Finding::new(
+                        self.id(),
+                        Category::Statistical,
+                        Severity::Error,
+                        Location::Stream {
+                            episode: ep.index,
+                            stream: stream.name.clone(),
+                        },
+                        "STATISTICAL.NON_FINITE_OBSERVED",
+                        format!(
+                            "stream `{}`: {count} non-finite value(s) (NaN or ±inf) in the recorded data",
+                            stream.name
+                        ),
+                    )
+                    .with_risk(
+                        "A NaN or infinity in a training tensor propagates to a NaN loss and gradient, \
+                         silently destroying the run; stored summary statistics can hide it entirely.",
+                    )
+                    .with_remedy(
+                        "Locate and drop or repair the affected frames (a failed sensor read or a \
+                         divide-by-zero in a derived channel); never normalize over non-finite data.",
+                    ),
+                );
+            }
+        }
+        findings
+    }
+}
+
 /// Range, sanity, and degeneracy of stored per-stream statistics.
 pub struct RangeSanity;
 

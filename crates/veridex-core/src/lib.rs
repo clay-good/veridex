@@ -92,6 +92,7 @@ mod tests {
                         stats: None,
                         observed_stats: None,
                         observed_saturation: None,
+                        observed_non_finite: None,
                         frames: vec![
                             Frame {
                                 ts: 1_000,
@@ -123,6 +124,7 @@ mod tests {
                         stats: None,
                         observed_stats: None,
                         observed_saturation: None,
+                        observed_non_finite: None,
                         frames: vec![Frame {
                             ts: 1_000,
                             value_ref: ValueRef {
@@ -287,6 +289,7 @@ mod proptests {
                 stats: None,
                 observed_stats: None,
                 observed_saturation: None,
+                observed_non_finite: None,
             })
     }
 

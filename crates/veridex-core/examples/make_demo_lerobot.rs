@@ -18,8 +18,10 @@
 //!   24 of 30 frames (a clamped actuator against its stop) → `STATISTICAL.SATURATED`.
 //! - `spike` — one 150-frame episode whose values hug zero except a single frame that jumps to 1000
 //!   (a sensor glitch or unit error), an extreme >10σ from the mean → `STATISTICAL.OUTLIER`.
+//! - `nan` — one 30-frame episode with a single NaN feature value (a failed sensor read) and no
+//!   `meta/stats.json`, so only a recompute over the real cells sees it → `STATISTICAL.NON_FINITE_OBSERVED`.
 //!
-//! Usage: `cargo run -p veridex-core --example make_demo_lerobot -- <output-dir> [clean|truncated|jitter|short-episode|duplicate|saturated|spike]`
+//! Usage: `cargo run -p veridex-core --example make_demo_lerobot -- <output-dir> [clean|truncated|jitter|short-episode|duplicate|saturated|spike|nan]`
 //!
 //! Then: `veridex check <output-dir>`.
 
@@ -43,6 +45,7 @@ enum Mode {
     Duplicate,
     Saturated,
     Spike,
+    Nan,
 }
 
 fn main() {
@@ -57,6 +60,7 @@ fn main() {
         Some("duplicate") => Mode::Duplicate,
         Some("saturated") => Mode::Saturated,
         Some("spike") => Mode::Spike,
+        Some("nan") => Mode::Nan,
         _ => Mode::NonMonotonic,
     };
     let dir = Path::new(&dir);
@@ -83,6 +87,9 @@ fn main() {
         }
         Mode::Spike => {
             "spike (a single frame jumps to 1000 while the rest hug zero → STATISTICAL.OUTLIER)"
+        }
+        Mode::Nan => {
+            "nan (one frame's value is NaN, invisible to the absent stats.json → STATISTICAL.NON_FINITE_OBSERVED)"
         }
     };
     println!("Wrote {what} LeRobot v3 dataset to {}", dir.display());
@@ -178,6 +185,20 @@ fn build_rows(mode: Mode, fps: f64) -> (Vec<DemoRow>, u64, u64) {
             })
             .collect();
         return (rows, 1, 150);
+    }
+
+    if mode == Mode::Nan {
+        // One 30-frame episode at ~30 Hz whose values step distinctly except frame 15, whose value is
+        // NaN — a failed sensor read. No `meta/stats.json` is written, so the stored-stats
+        // NON_FINITE check has nothing to inspect; only a recompute over the real cells sees it →
+        // STATISTICAL.NON_FINITE_OBSERVED. (`action` mirrors the value, so both streams carry it.)
+        let rows: Vec<DemoRow> = (0..30i64)
+            .map(|f| {
+                let v = if f == 15 { f32::NAN } else { f as f32 };
+                (0, f as f64 / fps, v)
+            })
+            .collect();
+        return (rows, 1, 30);
     }
 
     // Give every row a globally-unique value so no two episodes are accidental content duplicates.

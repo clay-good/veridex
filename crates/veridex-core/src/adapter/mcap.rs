@@ -219,6 +219,7 @@ impl Adapter for McapAdapter {
                 // numeric values, so there are no recomputed statistics.
                 observed_stats: None,
                 observed_saturation: None,
+                observed_non_finite: None,
             })
             .collect();
 

@@ -142,7 +142,7 @@ The same command works on a LeRobot v3 dataset — proof of the cross-format cla
 one (its second episode carries an out-of-order timestamp) and check it the same way:
 
 ```sh
-# generate a demo LeRobot v3 dataset; append `clean`, `truncated`, `jitter`, `short-episode`, `duplicate`, `saturated`, or `spike`
+# generate a demo LeRobot v3 dataset; append `clean`, `truncated`, `jitter`, `short-episode`, `duplicate`, `saturated`, `spike`, or `nan`
 cargo run -p veridex-core --example make_demo_lerobot -- /tmp/demo-lerobot
 cargo run -p veridex-cli -- check /tmp/demo-lerobot   # fires TEMPORAL.NON_MONOTONIC, exits 20
 ```
@@ -159,7 +159,9 @@ guessed from matching timestamps. The `saturated` variant pins the feature value
 maximum for most of the episode — a clamped actuator against its stop — and `check` flags it as
 `STATISTICAL.SATURATED` from the values it recomputes as it fingerprints them. The `spike` variant
 jumps a single frame far off the baseline — a sensor glitch or unit error — and `check` flags it as
-`STATISTICAL.OUTLIER`, provably a rare value by Chebyshev's inequality.
+`STATISTICAL.OUTLIER`, provably a rare value by Chebyshev's inequality. The `nan` variant writes one
+NaN feature value and no `meta/stats.json`, so the stored-stats check has nothing to inspect — only
+the recompute over the real cells sees it, flagged as `STATISTICAL.NON_FINITE_OBSERVED`.
 
 The certificate binds to the dataset's CDM content hash and is Ed25519-signed: `verify` succeeds
 offline, and rejects a tampered certificate (signature mismatch) or one presented against a

@@ -35,7 +35,7 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 - **Validation engine** — check registry with duplicate-id rejection, category/id selection,
   severity overrides, deterministic stably-ordered verdicts with a result content hash, fault
   isolation for panicking checks, and reproducibility metadata.
-- **Checks catalog** — 27 checks across five families, each finding carrying a training **risk** and
+- **Checks catalog** — 28 checks across five families, each finding carrying a training **risk** and
   a **remedy** and located to the exact episode / stream / frame:
   - **Structural** — episode-boundary integrity (the lerobot#4143 class), degenerate
     episodes/streams (including a zero-episode dataset), episode-index continuity, declared-vs-actual
@@ -55,7 +55,11 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
     Exact-equality is the signal, so it never mis-flags a noisy sensor. And extreme outliers
     (`STATISTICAL.OUTLIER`): an extreme many σ from the mean, which by Chebyshev's inequality is
     provably a rare spike (≤1% of samples at 10σ) — a sensor glitch or unit error that would dominate
-    normalization — read from summary stats alone.
+    normalization — read from summary stats alone. And non-finite values in the actual data
+    (`STATISTICAL.NON_FINITE_OBSERVED`): a NaN or ±infinity among the recomputed feature cells, which
+    a clean or absent `meta/stats.json` hides entirely — held out of the recomputed summary (a NaN
+    would poison every stat) and counted separately, since a single non-finite value propagates to a
+    NaN loss and silently kills a training run.
   - **Semantic** — task-string quality and stream-key clarity (an exact-duplicate key is an error, a
     case/whitespace collision a warning); and language-annotation integrity
     (`SEMANTIC.ANNOTATION_UNALIGNED` / `_CONFLICT` / `_EMPTY_ANNOTATION`): timestamped language

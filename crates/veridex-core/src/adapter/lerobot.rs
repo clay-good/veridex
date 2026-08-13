@@ -284,6 +284,9 @@ struct StatsAccum {
     /// no need to retain the values (mirrors the streaming stats above).
     at_min: u64,
     at_max: u64,
+    /// Non-finite scalars (NaN / ±inf) seen for this feature. Kept out of the running stats so a
+    /// single NaN can't poison every summary; surfaced separately for `non-finite-observed`.
+    non_finite: u64,
 }
 
 impl StatsAccum {
@@ -529,8 +532,14 @@ impl Adapter for LeRobotAdapter {
                 let mut hashes = BTreeMap::new();
                 for (name, hash, scalar) in feature_values {
                     if let Some(v) = scalar {
+                        let acc = observed.entry(name.clone()).or_default();
                         if v.is_finite() {
-                            observed.entry(name.clone()).or_default().push(v);
+                            acc.push(v);
+                        } else {
+                            // A NaN/inf would poison every summary stat, so it never enters the
+                            // accumulator — but we count it so `statistical.non-finite-observed` can
+                            // flag data the stored stats.json may hide.
+                            acc.non_finite += 1;
                         }
                     }
                     hashes.insert(name, hash);
@@ -555,6 +564,12 @@ impl Adapter for LeRobotAdapter {
         let observed_saturation: BTreeMap<String, Saturation> = observed
             .iter()
             .filter_map(|(name, acc)| acc.finish_saturation().map(|s| (name.clone(), s)))
+            .collect();
+        // Every feature whose scalars were read gets a non-finite count (0 when all were finite), so
+        // the check can distinguish "clean data" from "values never read" (a `None`).
+        let observed_non_finite: BTreeMap<String, u64> = observed
+            .iter()
+            .map(|(name, acc)| (name.clone(), acc.non_finite))
             .collect();
 
         let stats = load_stats(dir);
@@ -592,6 +607,7 @@ impl Adapter for LeRobotAdapter {
                         stats: stats.get(name).copied(),
                         observed_stats: observed_stats.get(name).copied(),
                         observed_saturation: observed_saturation.get(name).copied(),
+                        observed_non_finite: observed_non_finite.get(name).copied(),
                     })
                     .collect();
                 // Resolve this episode's task string, if its task_index maps to one.

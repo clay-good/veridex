@@ -154,6 +154,12 @@ pub struct Stream {
     /// reads them. The `statistical.saturation` check uses this to flag a clamped/saturated actuator.
     /// `None` when the source's values weren't read.
     pub observed_saturation: Option<Saturation>,
+    /// Count of **non-finite** scalar feature values (NaN or ±infinity) the adapter encountered when
+    /// recomputing statistics from the actual data. These are excluded from [`Stream::observed_stats`]
+    /// (a NaN would poison every summary), so this field is the only record that they exist — the
+    /// `statistical.non-finite-observed` check flags any stream where it is non-zero. `None` when the
+    /// source's values weren't read; `Some(0)` when they were read and all were finite.
+    pub observed_non_finite: Option<u64>,
 }
 
 /// How often a stream's recomputed values sit **exactly** at their extreme — the fingerprint of a

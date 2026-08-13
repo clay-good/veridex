@@ -36,6 +36,7 @@ fn stream(name: &str, clock: &str, rate: Option<f64>, ts: &[i64]) -> Stream {
         stats: None,
         observed_stats: None,
         observed_saturation: None,
+        observed_non_finite: None,
         frames: frames_at(ts),
     }
 }
@@ -261,6 +262,7 @@ fn stream_hashed(name: &str, clock: &str, ts: &[i64], contents: &[u8]) -> Stream
         stats: None,
         observed_stats: None,
         observed_saturation: None,
+        observed_non_finite: None,
         frames,
     }
 }
@@ -340,6 +342,7 @@ fn stream_with_content(name: &str, modality: Modality, contents: &[u8]) -> Strea
         stats: None,
         observed_stats: None,
         observed_saturation: None,
+        observed_non_finite: None,
         frames,
     }
 }
@@ -408,6 +411,7 @@ fn shaped(name: &str, dtype: Option<&str>, shape: Option<Vec<u64>>, ts: &[i64]) 
         stats: None,
         observed_stats: None,
         observed_saturation: None,
+        observed_non_finite: None,
         frames: frames_at(ts),
     }
 }
@@ -996,7 +1000,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 27);
+    assert_eq!(verdict.executed_checks.len(), 28);
 }
 
 #[test]
@@ -1234,6 +1238,44 @@ fn saturation_is_reported_once_per_stream_not_per_episode() {
         ),
     ]);
     let f = statistical::Saturation::default().run(&d);
+    assert_eq!(f.len(), 1);
+}
+
+/// A stream carrying a recomputed non-finite count (as the LeRobot adapter would populate it).
+fn stream_with_non_finite(name: &str, count: u64) -> Stream {
+    let mut s = stream(name, "c", None, &[0, 1]);
+    s.observed_non_finite = Some(count);
+    s
+}
+
+#[test]
+fn non_finite_values_in_the_data_are_an_error() {
+    let d = dataset(vec![episode(0, vec![stream_with_non_finite("state", 3)])]);
+    let f = statistical::NonFiniteObserved.run(&d);
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].code, "STATISTICAL.NON_FINITE_OBSERVED");
+    assert_eq!(f[0].severity, Severity::Error);
+    assert!(f[0].message.contains('3'));
+}
+
+#[test]
+fn clean_data_and_unread_values_do_not_flag_non_finite() {
+    // Some(0): values were read and all finite. None: values were never read (e.g. MCAP).
+    let clean = stream_with_non_finite("a", 0);
+    let mut unread = stream("b", "c", None, &[0, 1]);
+    unread.observed_non_finite = None;
+    let d = dataset(vec![episode(0, vec![clean, unread])]);
+    assert!(statistical::NonFiniteObserved.run(&d).is_empty());
+}
+
+#[test]
+fn non_finite_is_reported_once_per_stream_not_per_episode() {
+    // The count is dataset-level, attached to every episode's copy of the stream.
+    let d = dataset(vec![
+        episode(0, vec![stream_with_non_finite("state", 2)]),
+        episode(1, vec![stream_with_non_finite("state", 2)]),
+    ]);
+    let f = statistical::NonFiniteObserved.run(&d);
     assert_eq!(f.len(), 1);
 }
 
