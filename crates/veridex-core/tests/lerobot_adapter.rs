@@ -710,6 +710,32 @@ fn an_actuator_pinned_at_its_limit_is_flagged_saturated() {
 }
 
 #[test]
+fn a_lone_value_spike_is_flagged_an_outlier() {
+    // 150 frames hugging zero with one spike to 1000. A single point among N sits at most
+    // sqrt(N-1) std out, so 150 frames put this ~12σ past the mean → STATISTICAL.OUTLIER, end to end
+    // through the adapter's recomputed stats.
+    let dir = tempfile::tempdir().unwrap();
+    let mut rows: Vec<(i64, f64, f32)> = Vec::new();
+    for i in 0..150i64 {
+        let value = if i == 75 { 1000.0 } else { i as f32 * 0.001 };
+        rows.push((0, i as f64 * 0.033, value));
+    }
+    write_lerobot_with_values(dir.path(), "action", 30.0, &rows);
+    let d = ingest_lerobot(dir.path());
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let hash = veridex_core::content_hash(&d);
+    let verdict = engine.run(&d, hash, &veridex_core::RunConfig::default());
+    let out: Vec<_> = verdict
+        .findings
+        .iter()
+        .filter(|f| f.code == "STATISTICAL.OUTLIER")
+        .collect();
+    assert_eq!(out.len(), 1, "the lone spike is flagged");
+    assert_eq!(out[0].severity, Severity::Warning);
+    assert!(out[0].message.contains("maximum"));
+}
+
+#[test]
 fn a_varied_actuator_is_not_saturated() {
     // Same stream, values spread across its range — no single rail dominates → no SATURATED.
     let dir = tempfile::tempdir().unwrap();

@@ -16,8 +16,10 @@
 //!   began (~0.07 s), a duration far below the dataset median → `TEMPORAL.EPISODE_DURATION_OUTLIER`.
 //! - `saturated` — one 30-frame episode whose feature values sit pinned exactly at their maximum for
 //!   24 of 30 frames (a clamped actuator against its stop) → `STATISTICAL.SATURATED`.
+//! - `spike` — one 150-frame episode whose values hug zero except a single frame that jumps to 1000
+//!   (a sensor glitch or unit error), an extreme >10σ from the mean → `STATISTICAL.OUTLIER`.
 //!
-//! Usage: `cargo run -p veridex-core --example make_demo_lerobot -- <output-dir> [clean|truncated|jitter|short-episode|duplicate|saturated]`
+//! Usage: `cargo run -p veridex-core --example make_demo_lerobot -- <output-dir> [clean|truncated|jitter|short-episode|duplicate|saturated|spike]`
 //!
 //! Then: `veridex check <output-dir>`.
 
@@ -40,6 +42,7 @@ enum Mode {
     ShortEpisode,
     Duplicate,
     Saturated,
+    Spike,
 }
 
 fn main() {
@@ -53,6 +56,7 @@ fn main() {
         Some("short-episode") => Mode::ShortEpisode,
         Some("duplicate") => Mode::Duplicate,
         Some("saturated") => Mode::Saturated,
+        Some("spike") => Mode::Spike,
         _ => Mode::NonMonotonic,
     };
     let dir = Path::new(&dir);
@@ -76,6 +80,9 @@ fn main() {
         }
         Mode::Saturated => {
             "saturated (feature values pinned at their maximum for 24 of 30 frames → STATISTICAL.SATURATED)"
+        }
+        Mode::Spike => {
+            "spike (a single frame jumps to 1000 while the rest hug zero → STATISTICAL.OUTLIER)"
         }
     };
     println!("Wrote {what} LeRobot v3 dataset to {}", dir.display());
@@ -157,6 +164,20 @@ fn build_rows(mode: Mode, fps: f64) -> (Vec<DemoRow>, u64, u64) {
             })
             .collect();
         return (rows, 1, 30);
+    }
+
+    if mode == Mode::Spike {
+        // One 150-frame episode at ~30 Hz. Values hug zero (tiny distinct steps) except frame 75,
+        // which jumps to 1000 — a sensor glitch or a unit error. A single point among N can sit at
+        // most sqrt(N-1) std from the mean, so 150 frames put this spike ~12σ out, past the 10σ
+        // default → STATISTICAL.OUTLIER (and nothing else: one frame is far too few to saturate).
+        let rows: Vec<DemoRow> = (0..150i64)
+            .map(|f| {
+                let v = if f == 75 { 1000.0 } else { f as f32 * 0.001 };
+                (0, f as f64 / fps, v)
+            })
+            .collect();
+        return (rows, 1, 150);
     }
 
     // Give every row a globally-unique value so no two episodes are accidental content duplicates.

@@ -142,7 +142,7 @@ The same command works on a LeRobot v3 dataset — proof of the cross-format cla
 one (its second episode carries an out-of-order timestamp) and check it the same way:
 
 ```sh
-# generate a demo LeRobot v3 dataset; append `clean`, `truncated`, `jitter`, `short-episode`, `duplicate`, or `saturated`
+# generate a demo LeRobot v3 dataset; append `clean`, `truncated`, `jitter`, `short-episode`, `duplicate`, `saturated`, or `spike`
 cargo run -p veridex-core --example make_demo_lerobot -- /tmp/demo-lerobot
 cargo run -p veridex-cli -- check /tmp/demo-lerobot   # fires TEMPORAL.NON_MONOTONIC, exits 20
 ```
@@ -157,7 +157,9 @@ byte-for-byte, and `check` catches it as `STRUCTURAL.DUPLICATE_EPISODE` — Veri
 feature cell's bytes into a per-frame content hash, so the duplicate is proven by content, not
 guessed from matching timestamps. The `saturated` variant pins the feature values exactly at their
 maximum for most of the episode — a clamped actuator against its stop — and `check` flags it as
-`STATISTICAL.SATURATED` from the values it recomputes as it fingerprints them.
+`STATISTICAL.SATURATED` from the values it recomputes as it fingerprints them. The `spike` variant
+jumps a single frame far off the baseline — a sensor glitch or unit error — and `check` flags it as
+`STATISTICAL.OUTLIER`, provably a rare value by Chebyshev's inequality.
 
 The certificate binds to the dataset's CDM content hash and is Ed25519-signed: `verify` succeeds
 offline, and rejects a tampered certificate (signature mismatch) or one presented against a
