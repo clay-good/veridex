@@ -38,3 +38,5 @@ disabled_checks = []
 # gap_factor = 3.0        # TEMPORAL.GAP: an interval this many times the expected one is a gap
 # jitter_cv = 0.5         # TEMPORAL.JITTER: max coefficient of variation (std/mean) of intervals
 # episode_duration_factor = 10.0  # TEMPORAL.EPISODE_DURATION_OUTLIER: multiple-of-median past which an episode duration is an outlier (must be > 1.0)
+# saturation_fraction = 0.50      # STATISTICAL.SATURATED: fraction of samples exactly pinned at one extreme to flag (in (0.0, 1.0])
+# saturation_min_samples = 20     # STATISTICAL.SATURATED: minimum recomputed samples before the check applies

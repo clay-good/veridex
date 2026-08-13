@@ -174,7 +174,8 @@ fn tolerances_parse_resolve_and_validate() {
     // Provided values resolve; unset ones fall back to the defaults.
     let cfg = CheckConfig::from_toml(
         "[tolerances]\nclock_skew_ms = 250\nstart_offset_ms = 120\nend_offset_ms = 90\n\
-         rate_deviation = 0.2\ngap_factor = 5\njitter_cv = 0.8\nepisode_duration_factor = 6\n",
+         rate_deviation = 0.2\ngap_factor = 5\njitter_cv = 0.8\nepisode_duration_factor = 6\n\
+         saturation_fraction = 0.7\nsaturation_min_samples = 50\n",
     )
     .expect("parses");
     let rc = cfg.to_run_config();
@@ -185,6 +186,8 @@ fn tolerances_parse_resolve_and_validate() {
     assert_eq!(rc.tolerances.gap_factor, 5.0);
     assert_eq!(rc.tolerances.jitter_cv, 0.8);
     assert_eq!(rc.tolerances.episode_duration_factor, 6.0);
+    assert_eq!(rc.tolerances.saturation_fraction, 0.7);
+    assert_eq!(rc.tolerances.saturation_min_samples, 50);
 
     // Unset time tolerances fall back to the 50 ms default.
     let defaults = CheckConfig::from_toml("[tolerances]\nclock_skew_ms = 250\n")
@@ -204,6 +207,12 @@ fn tolerances_parse_resolve_and_validate() {
     // A duration factor of 1.0 or less would flag every episode — rejected.
     assert!(CheckConfig::from_toml("[tolerances]\nepisode_duration_factor = 1.0\n").is_err());
     assert!(CheckConfig::from_toml("[tolerances]\nepisode_duration_factor = 0.5\n").is_err());
+    // A saturation fraction must be within (0.0, 1.0]: 0 flags everything, >1 is unreachable.
+    assert!(CheckConfig::from_toml("[tolerances]\nsaturation_fraction = 0\n").is_err());
+    assert!(CheckConfig::from_toml("[tolerances]\nsaturation_fraction = 1.5\n").is_err());
+    // An unset saturation fraction falls back to the 0.5 default.
+    assert_eq!(defaults.tolerances.saturation_fraction, 0.5);
+    assert_eq!(defaults.tolerances.saturation_min_samples, 20);
 }
 
 #[test]

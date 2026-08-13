@@ -48,6 +48,11 @@ pub struct TolerancesConfig {
     /// `TEMPORAL.EPISODE_DURATION_OUTLIER` multiple-of-median past which an episode duration is an
     /// outlier. Must be greater than 1.0 (a factor of 1.0 or less would flag every episode).
     pub episode_duration_factor: Option<f64>,
+    /// `STATISTICAL.SATURATED` pinned-fraction threshold (0.50 = half the samples). Must be within
+    /// (0.0, 1.0]: a threshold of 0 would flag every stream, and above 1.0 nothing could ever reach it.
+    pub saturation_fraction: Option<f64>,
+    /// `STATISTICAL.SATURATED` minimum sample count below which the check abstains.
+    pub saturation_min_samples: Option<u64>,
 }
 
 /// A parsed `veridex.toml`.
@@ -166,6 +171,13 @@ impl TolerancesConfig {
                 )));
             }
         }
+        if let Some(f) = self.saturation_fraction {
+            if !f.is_finite() || f <= 0.0 || f > 1.0 {
+                return Err(ConfigError::Parse(format!(
+                    "saturation_fraction must be a finite number in (0.0, 1.0], got {f}"
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -192,6 +204,10 @@ impl TolerancesConfig {
             episode_duration_factor: self
                 .episode_duration_factor
                 .unwrap_or(d.episode_duration_factor),
+            saturation_fraction: self.saturation_fraction.unwrap_or(d.saturation_fraction),
+            saturation_min_samples: self
+                .saturation_min_samples
+                .unwrap_or(d.saturation_min_samples),
         }
     }
 }

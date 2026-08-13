@@ -45,6 +45,12 @@ pub struct Tolerances {
     /// `TEMPORAL.EPISODE_DURATION_OUTLIER` fires on an episode whose duration is more than this
     /// multiple away (either direction) from the dataset's median episode duration.
     pub episode_duration_factor: f64,
+    /// `STATISTICAL.SATURATED` fires when at least this fraction of a stream's recomputed values sit
+    /// exactly pinned at one extreme (0.50 = half the samples).
+    pub saturation_fraction: f64,
+    /// `STATISTICAL.SATURATED` abstains on streams with fewer than this many recomputed samples, where
+    /// a pinned "fraction" isn't yet meaningful.
+    pub saturation_min_samples: u64,
 }
 
 impl Default for Tolerances {
@@ -57,6 +63,8 @@ impl Default for Tolerances {
             gap_factor: 3.0,
             jitter_cv: 0.5,
             episode_duration_factor: 10.0,
+            saturation_fraction: 0.5,
+            saturation_min_samples: 20,
         }
     }
 }

@@ -57,7 +57,10 @@ pub fn standard_checks_with(t: &Tolerances) -> Vec<Box<dyn Check>> {
         }),
         Box::new(statistical::RangeSanity),
         Box::new(statistical::StoredVsObserved),
-        Box::new(statistical::Saturation::default()),
+        Box::new(statistical::Saturation {
+            min_fraction: t.saturation_fraction,
+            min_samples: t.saturation_min_samples,
+        }),
         Box::new(semantic::TaskQuality),
         Box::new(semantic::StreamKeyClarity),
         Box::new(provenance::ProvenanceCompleteness),
