@@ -465,10 +465,20 @@ fn provenance_summary(d: &veridex_core::cdm::Dataset) -> String {
         cov.unknown,
     );
     for key in veridex_core::certificate::EXPECTED_PROVENANCE_KEYS {
-        let best =
-            d.provenance.iter().flat_map(|r| &r.elements).find(|e| {
-                e.key == *key && e.class != ProvenanceClass::Unknown && e.has_real_value()
-            });
+        // Show the *strongest* covering element for the key (known > asserted), matching how
+        // ProvenanceCoverage counts it — a plain `.find()` would show whichever happens to come first,
+        // so the displayed `[class]` could disagree with the counted coverage above.
+        let class_rank = |c: ProvenanceClass| match c {
+            ProvenanceClass::Known => 2,
+            ProvenanceClass::Asserted => 1,
+            ProvenanceClass::Unknown => 0,
+        };
+        let best = d
+            .provenance
+            .iter()
+            .flat_map(|r| &r.elements)
+            .filter(|e| e.key == *key && e.class != ProvenanceClass::Unknown && e.has_real_value())
+            .max_by_key(|e| class_rank(e.class));
         match best {
             Some(e) => {
                 let _ = writeln!(

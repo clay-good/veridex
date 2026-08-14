@@ -271,14 +271,17 @@ impl Adapter for McapAdapter {
             }
         }
         // Attachments: record their presence, and let a calibration-looking attachment supply the
-        // `calibration` element when no metadata key already did.
+        // `calibration` element when no metadata key already did. This is inferred from the file
+        // *name* (a "calib" substring), not extracted calibration content, so it is classed
+        // `Asserted`, not `Known` — the honest distinction, and it keeps a name-heuristic guess from
+        // inflating the `known` coverage count.
         for (name, media_type) in &records.attachments {
             metadata.push((format!("mcap_attachment.{name}"), media_type.clone()));
             if name.to_ascii_lowercase().contains("calib") && mapped.insert("calibration") {
                 elements.push(ProvenanceElement {
                     key: "calibration".into(),
                     value: Some(name.clone()),
-                    class: ProvenanceClass::Known,
+                    class: ProvenanceClass::Asserted,
                 });
             }
         }

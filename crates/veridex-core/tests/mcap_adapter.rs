@@ -222,15 +222,16 @@ fn metadata_records_and_attachments_become_provenance() {
             &IngestOptions::default(),
         )
         .expect("ingest");
-    let prov = |key: &str| {
+    let elem = |key: &str| {
         ingested
             .dataset
             .provenance
             .iter()
             .flat_map(|r| &r.elements)
             .find(|e| e.key == key)
-            .and_then(|e| e.value.clone())
+            .cloned()
     };
+    let prov = |key: &str| elem(key).and_then(|e| e.value.clone());
 
     // Well-known metadata keys map to typed provenance (class Known).
     assert_eq!(prov("license").as_deref(), Some("CC-BY-4.0"));
@@ -238,6 +239,15 @@ fn metadata_records_and_attachments_become_provenance() {
     assert_eq!(prov("annotator").as_deref(), Some("alice")); // "operator" → annotator
                                                              // The calibration attachment supplies the calibration element.
     assert_eq!(prov("calibration").as_deref(), Some("calibration.yaml"));
+    // It is inferred from the attachment *name*, not extracted content, so it's Asserted, not Known.
+    assert_eq!(
+        elem("calibration").map(|e| e.class),
+        Some(veridex_core::cdm::ProvenanceClass::Asserted)
+    );
+    assert_eq!(
+        elem("license").map(|e| e.class),
+        Some(veridex_core::cdm::ProvenanceClass::Known)
+    );
 
     // Every metadata key/value is preserved (even the non-mapped "site").
     assert!(ingested
