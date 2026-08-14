@@ -68,7 +68,9 @@ impl Check for Saturation {
                 let Some(sat) = stream.observed_saturation else {
                     continue;
                 };
-                if sat.sample_count < self.min_samples {
+                // Zero samples can't have a meaningful pinned fraction (and would make `at_*/n` a
+                // NaN that slips past the `< min_fraction` gate); skip regardless of `min_samples`.
+                if sat.sample_count == 0 || sat.sample_count < self.min_samples {
                     continue;
                 }
                 // A fully constant stream pins at both ends at once; that is DEGENERATE, not

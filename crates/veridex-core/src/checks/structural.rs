@@ -457,11 +457,15 @@ impl Check for StreamPresence {
                 continue; // present in every episode — consistent.
             }
             // Which episodes lack it. Compact the list like the episode-continuity check does.
-            let missing: Vec<u64> = episodes
+            // Dedup by index: duplicate episode indices (an `EpisodeBoundary` corruption) would
+            // otherwise list the same missing index twice and inflate the reported count.
+            let mut missing: Vec<u64> = episodes
                 .iter()
                 .map(|ep| ep.index)
                 .filter(|idx| !present_in.contains(idx))
                 .collect();
+            missing.sort_unstable();
+            missing.dedup();
             // `total` counts raw episodes; `present_in` holds distinct indices. Duplicate episode
             // indices (a corruption `EpisodeBoundary` flags) can make `present_in.len() < total` while
             // the stream is in fact present in every distinct episode — an empty `missing`. Don't emit
