@@ -202,6 +202,10 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   corrupting frame ordering; `STREAM_ABSENT` no longer lists a duplicate episode index twice; and the
   saturation check skips a zero-sample summary rather than emitting a `NaN%` finding, while the score's
   penalty arithmetic saturates so a pathological finding count cannot overflow.
+- `SEMANTIC.ANNOTATION_UNALIGNED` treated a declared episode window as authoritative even when it was
+  *narrower* than the recorded frames, so a `language` annotation on a genuinely recorded frame outside
+  that window raised a false Error (flipping the episode to FAIL). The alignment span is now the union
+  of the declared bounds and the actual frame extent; a genuinely out-of-range annotation still fires.
 
 ### Security
 
