@@ -69,7 +69,10 @@ struct Args {
     force: bool,
 }
 
-fn parse_args(rest: &[String]) -> Args {
+/// Parse the shared flag set. Rejects unknown `--`-flags and value-flags whose value is missing or
+/// looks like another flag, so a typo can never silently disable a gate (e.g. `--min-scor 90` would
+/// otherwise drop the score threshold) nor swallow the next flag as a value (`--key --format`).
+fn parse_args(rest: &[String]) -> Result<Args, String> {
     let mut path = None;
     let mut format = None;
     let mut json = false;
@@ -86,25 +89,33 @@ fn parse_args(rest: &[String]) -> Args {
     let mut force = false;
     let mut it = rest.iter();
     while let Some(arg) = it.next() {
+        // Take the value for a value-flag, rejecting a missing value or one that starts with `-`
+        // (which is almost always the next flag, accidentally swallowed).
+        let mut value = |flag: &str| -> Result<String, String> {
+            match it.next() {
+                Some(v) if !v.starts_with('-') => Ok(v.clone()),
+                _ => Err(format!("{flag} requires a value")),
+            }
+        };
         match arg.as_str() {
             "--json" => json = true,
             "--sarif" => sarif = true,
             "--html" => html = true,
             "--force" => force = true,
-            "--config" => config = it.next().cloned(),
-            "--format" => format = it.next().cloned(),
-            "--key" => key = it.next().cloned(),
-            "--certificate" => certificate = it.next().cloned(),
-            "--out" => out = it.next().cloned(),
-            "--timestamp" => timestamp = it.next().cloned(),
-            "--emit" => emit = it.next().cloned(),
-            "--fail-on" => fail_on = it.next().cloned(),
-            "--min-score" => min_score = it.next().cloned(),
-            other if !other.starts_with('-') => path = Some(other.to_string()),
-            _ => {}
+            "--config" => config = Some(value("--config")?),
+            "--format" => format = Some(value("--format")?),
+            "--key" => key = Some(value("--key")?),
+            "--certificate" => certificate = Some(value("--certificate")?),
+            "--out" => out = Some(value("--out")?),
+            "--timestamp" => timestamp = Some(value("--timestamp")?),
+            "--emit" => emit = Some(value("--emit")?),
+            "--fail-on" => fail_on = Some(value("--fail-on")?),
+            "--min-score" => min_score = Some(value("--min-score")?),
+            other if other.starts_with('-') => return Err(format!("unknown option `{other}`")),
+            other => path = Some(other.to_string()),
         }
     }
-    Args {
+    Ok(Args {
         path,
         format,
         json,
@@ -119,7 +130,16 @@ fn parse_args(rest: &[String]) -> Args {
         html,
         config,
         force,
-    }
+    })
+}
+
+/// Parse the shared flags or print the error and return a tool-error exit code. Used by every
+/// data-consuming command so a bad flag fails loudly and identically everywhere.
+fn parse_args_or_exit(rest: &[String]) -> Result<Args, ExitCode> {
+    parse_args(rest).map_err(|e| {
+        eprintln!("veridex: {e}");
+        ExitCode::from(EXIT_TOOL_ERROR)
+    })
 }
 
 fn main() -> ExitCode {
@@ -180,7 +200,10 @@ fn parse_min_score(v: &str) -> Result<u8, String> {
 }
 
 fn cmd_check(rest: &[String]) -> ExitCode {
-    let args = parse_args(rest);
+    let args = match parse_args_or_exit(rest) {
+        Ok(a) => a,
+        Err(code) => return code,
+    };
     let Some(path) = &args.path else {
         eprintln!("veridex: missing dataset path");
         return ExitCode::from(EXIT_TOOL_ERROR);
@@ -329,7 +352,10 @@ fn load_config(explicit: Option<&str>) -> Result<veridex_core::CheckConfig, Stri
 /// title), so users can discover what runs without validating a dataset. `--json` emits the
 /// structured catalog.
 fn cmd_checks(rest: &[String]) -> ExitCode {
-    let args = parse_args(rest);
+    let args = match parse_args_or_exit(rest) {
+        Ok(a) => a,
+        Err(code) => return code,
+    };
     let engine = match veridex_core::checks::default_engine() {
         Ok(e) => e,
         Err(e) => {
@@ -381,7 +407,10 @@ fn describe_schema(dtype: &Option<String>, shape: &Option<Vec<u64>>) -> String {
 }
 
 fn cmd_inspect(rest: &[String]) -> ExitCode {
-    let args = parse_args(rest);
+    let args = match parse_args_or_exit(rest) {
+        Ok(a) => a,
+        Err(code) => return code,
+    };
     let ingested = match ingest(&args) {
         Ok(i) => i,
         Err(code) => return code,
@@ -497,7 +526,10 @@ fn provenance_summary(d: &veridex_core::cdm::Dataset) -> String {
 }
 
 fn cmd_certify(rest: &[String]) -> ExitCode {
-    let args = parse_args(rest);
+    let args = match parse_args_or_exit(rest) {
+        Ok(a) => a,
+        Err(code) => return code,
+    };
     let Some(key_path) = &args.key else {
         eprintln!("veridex: certify requires --key <secret-key-file>");
         return ExitCode::from(EXIT_TOOL_ERROR);
@@ -603,7 +635,10 @@ fn is_hex_key(s: &str) -> bool {
 }
 
 fn cmd_verify(rest: &[String]) -> ExitCode {
-    let args = parse_args(rest);
+    let args = match parse_args_or_exit(rest) {
+        Ok(a) => a,
+        Err(code) => return code,
+    };
     let Some(cert_path) = &args.certificate else {
         eprintln!("veridex: verify requires --certificate <cert.json>");
         return ExitCode::from(EXIT_TOOL_ERROR);
@@ -664,8 +699,32 @@ fn cmd_verify(rest: &[String]) -> ExitCode {
     }
 }
 
+/// Write a secret key file. On Unix the file is created `0600` (owner-only) so another local user
+/// on a shared host or CI runner cannot read the issuer's private signing key and forge certificates.
+#[cfg(unix)]
+fn write_secret_key(path: &str, contents: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    f.write_all(contents.as_bytes())
+}
+
+/// Non-Unix fallback: the `0600` permission bit has no portable equivalent, so write normally.
+#[cfg(not(unix))]
+fn write_secret_key(path: &str, contents: &str) -> std::io::Result<()> {
+    std::fs::write(path, contents)
+}
+
 fn cmd_keygen(rest: &[String]) -> ExitCode {
-    let args = parse_args(rest);
+    let args = match parse_args_or_exit(rest) {
+        Ok(a) => a,
+        Err(code) => return code,
+    };
     let Some(path) = &args.path else {
         eprintln!("veridex: keygen requires an output path, e.g. `veridex keygen issuer`");
         return ExitCode::from(EXIT_TOOL_ERROR);
@@ -685,7 +744,7 @@ fn cmd_keygen(rest: &[String]) -> ExitCode {
         }
     }
     let keypair = SigningKeypair::generate();
-    if let Err(e) = std::fs::write(path, format!("{}\n", keypair.secret_hex())) {
+    if let Err(e) = write_secret_key(path, &format!("{}\n", keypair.secret_hex())) {
         eprintln!("veridex: cannot write {path}: {e}");
         return ExitCode::from(EXIT_TOOL_ERROR);
     }
@@ -700,7 +759,10 @@ fn cmd_keygen(rest: &[String]) -> ExitCode {
 }
 
 fn cmd_provenance(rest: &[String]) -> ExitCode {
-    let args = parse_args(rest);
+    let args = match parse_args_or_exit(rest) {
+        Ok(a) => a,
+        Err(code) => return code,
+    };
     let ingested = match ingest(&args) {
         Ok(i) => i,
         Err(code) => return code,

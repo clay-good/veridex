@@ -92,6 +92,29 @@ fn invalid_min_score_is_rejected() {
     assert!(stderr.contains("invalid --min-score"));
 }
 
+#[test]
+fn an_unknown_flag_is_rejected_not_silently_ignored() {
+    // A mistyped `--min-scor` must fail loudly — silently ignoring it would drop the score gate and
+    // let low-scoring data pass CI.
+    let (code, _, stderr) = run(&["check", "--min-scor", "90", "/tmp/whatever"]);
+    assert_eq!(code, 2);
+    assert!(
+        stderr.contains("unknown option `--min-scor`"),
+        "unexpected: {stderr}"
+    );
+}
+
+#[test]
+fn a_value_flag_will_not_swallow_the_next_flag() {
+    // `--key --format` must not consume `--format` as the key value; the missing value is an error.
+    let (code, _, stderr) = run(&["certify", "--key", "--format", "mcap", "/tmp/whatever"]);
+    assert_eq!(code, 2);
+    assert!(
+        stderr.contains("--key requires a value"),
+        "unexpected: {stderr}"
+    );
+}
+
 /// Write `content` to a uniquely-named temp file and return its path.
 fn temp_report(tag: &str, content: &str) -> std::path::PathBuf {
     let mut p = std::env::temp_dir();
@@ -188,6 +211,15 @@ fn full_keygen_certify_verify_flow() {
     assert_eq!(code, 0, "keygen must succeed");
     assert!(stdout.contains("issuer key id"));
     assert!(key.exists() && dir.join("issuer.pub").exists());
+
+    // On Unix the secret key must be owner-only (0600): another local user on a shared host or CI
+    // runner must not be able to read the private signing key and forge certificates.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&key).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "secret key must be 0600, got {mode:o}");
+    }
 
     // certify signs the verdict into a content-bound certificate.
     let (code, stdout, _) = run(&["certify", &dataset, "--key", key_s, "--out", cert_s]);
