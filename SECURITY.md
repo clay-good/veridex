@@ -9,6 +9,11 @@ document states what Veridex guarantees, what it does **not**, and how signing k
   same verdict and the same certificate content hash. Parallelism never changes results.
 - **Content binding.** A certificate is bound to the exact CDM content hash of the dataset it was
   issued for. Presenting it against a different dataset fails verification (transplant rejection).
+  The content hash covers the dataset's actual content (episodes, streams, frames, stored/observed
+  stats, provenance) and is independent of the order those collections happen to be listed in. It
+  deliberately excludes *manifest assertions about* the content — e.g. a source-declared frame count
+  — which the checks still validate against what was ingested. So a certificate attests the content
+  and the verdict computed over it, not the correctness of a source's own manifest bookkeeping.
 - **Offline verification.** Certificates are Ed25519-signed and verify against the issuer public key
   with no network dependency. Any change to a signed certificate fails signature verification
   (tamper rejection). Verification also rejects a certificate signed by an untrusted issuer key, and
@@ -39,6 +44,8 @@ document states what Veridex guarantees, what it does **not**, and how signing k
 - `veridex keygen <path>` writes the secret to `<path>` and the public key to `<path>.pub`. Share
   only the public key; verifiers use it to check certificates. `keygen` refuses to overwrite an
   existing key file unless `--force` is given, so an accidental re-run cannot destroy a signing key.
+  On Unix the secret key file is created with `0600` (owner-only) permissions so another local user
+  cannot read it.
 - Rotating an issuer key invalidates trust in future certificates signed by the old key; already
   issued certificates remain verifiable against the public key they embed.
 
