@@ -567,6 +567,18 @@ fn stream_presence_needs_two_populated_episodes_and_ignores_empty_ones() {
     assert!(structural::StreamPresence.run(&with_empty).is_empty());
 }
 
+#[test]
+fn duplicate_episode_indices_do_not_produce_a_malformed_presence_finding() {
+    // Two episodes share index 0 (a boundary corruption EpisodeBoundary flags). `base` is present in
+    // both, so it is in every *distinct* episode — the presence check must stay silent rather than
+    // emit "present in 1 of 2 episodes; missing from " with an empty list.
+    let d = dataset(vec![
+        episode(0, vec![stream("base", "c", None, &[0, 1])]),
+        episode(0, vec![stream("base", "c", None, &[0, 1])]),
+    ]);
+    assert!(structural::StreamPresence.run(&d).is_empty());
+}
+
 // ---- temporal ----
 
 #[test]

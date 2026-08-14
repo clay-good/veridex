@@ -462,6 +462,13 @@ impl Check for StreamPresence {
                 .map(|ep| ep.index)
                 .filter(|idx| !present_in.contains(idx))
                 .collect();
+            // `total` counts raw episodes; `present_in` holds distinct indices. Duplicate episode
+            // indices (a corruption `EpisodeBoundary` flags) can make `present_in.len() < total` while
+            // the stream is in fact present in every distinct episode — an empty `missing`. Don't emit
+            // a malformed "missing from " finding for that; the duplicate index is already reported.
+            if missing.is_empty() {
+                continue;
+            }
             let shown: Vec<String> = missing.iter().take(8).map(|i| i.to_string()).collect();
             let more = if missing.len() > shown.len() {
                 format!(", … ({} more)", missing.len() - shown.len())
