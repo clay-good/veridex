@@ -1168,6 +1168,26 @@ fn mean_outside_range_is_an_error() {
 }
 
 #[test]
+fn mean_one_ulp_outside_the_range_is_tolerated() {
+    // A source's independently-rounded mean can land a hair past a bound on a near-constant stream.
+    // That's honest rounding, not corrupt stats — the check must not raise a hard error on it.
+    let m = 0.1_f64;
+    let d = dataset(vec![episode(
+        0,
+        vec![stream_with_stats("s", stats(m, m, m + f64::EPSILON, 0.0))],
+    )]);
+    let mean_findings: Vec<_> = statistical::RangeSanity
+        .run(&d)
+        .into_iter()
+        .filter(|f| f.code == "STATISTICAL.MEAN_OUT_OF_RANGE")
+        .collect();
+    assert!(
+        mean_findings.is_empty(),
+        "a one-ULP rounding overshoot must not trip MEAN_OUT_OF_RANGE"
+    );
+}
+
+#[test]
 fn std_exceeding_popoviciu_bound_is_an_error() {
     // For values in [0, 10] the std cannot exceed (10-0)/2 = 5; a stored std of 8 is impossible.
     let d = dataset(vec![episode(

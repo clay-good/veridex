@@ -6,7 +6,7 @@
 //! content hash matches the presented dataset — rejecting tampering (signature mismatch) and
 //! transplantation (content-hash mismatch) respectively.
 
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 use super::document::Certificate;
@@ -137,6 +137,12 @@ pub fn sign(certificate: Certificate, keypair: &SigningKeypair) -> SignedCertifi
 ///
 /// - `presented_cdm_hash`: if `Some`, the certificate must be bound to this hash (transplant check).
 /// - `expected_issuer`: if `Some`, the certificate must be signed by this public key hex.
+///
+/// The returned [`Verified::key_id`] is the **actual signing key** (`signed.public_key`, the key the
+/// signature verified against) — that is the authoritative issuer identity. The certificate's own
+/// `issuance.key_id` is a self-asserted label the issuer chose and is not required to equal the
+/// signing key; callers that need to trust a specific issuer must pass `expected_issuer` rather than
+/// reading `issuance.key_id`.
 pub fn verify(
     signed: &SignedCertificate,
     presented_cdm_hash: Option<&str>,
@@ -172,8 +178,10 @@ pub fn verify(
         expected: 64,
     })?;
     let signature = Signature::from_bytes(&sig_bytes);
+    // `verify_strict` rejects non-canonical signatures and mixed-order/small-order keys, so a given
+    // certificate has exactly one valid signature — no malleability.
     verifying_key
-        .verify(&signing_message(&signed.certificate), &signature)
+        .verify_strict(&signing_message(&signed.certificate), &signature)
         .map_err(|_| CertError::SignatureMismatch)?;
 
     // Binding to the presented dataset (transplant check).

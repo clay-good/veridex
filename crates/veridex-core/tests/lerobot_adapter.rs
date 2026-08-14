@@ -374,6 +374,51 @@ fn reads_stored_stats_from_stats_json() {
 }
 
 #[test]
+fn a_null_timestamp_cell_falls_back_to_frame_index_not_a_fabricated_zero() {
+    // A null `timestamp` cell must not read as a bogus 0 (Arrow's `value()` ignores the null bitmap).
+    // The adapter should abstain on the null and derive the frame's time from frame_index / fps.
+    let fps = 10.0;
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("episode_index", DataType::Int64, false),
+        Field::new("frame_index", DataType::Int64, false),
+        Field::new("timestamp", DataType::Float64, true), // nullable
+    ]));
+    // Row 1's timestamp is null; frame_index is intact (0,1,2).
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int64Array::from(vec![0i64, 0, 0])),
+            Arc::new(Int64Array::from(vec![0i64, 1, 2])),
+            Arc::new(Float64Array::from(vec![Some(0.0), None, Some(0.2)])),
+        ],
+    )
+    .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    write_lerobot(
+        dir.path(),
+        &[("observation.state", "float32")],
+        fps,
+        &[(0, 0.0)],
+    );
+    // Overwrite the shard with our null-bearing batch.
+    let path = dir.path().join("data/chunk-000/file-000.parquet");
+    let file = fs::File::create(&path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+
+    let d = ingest_lerobot(dir.path());
+    let frames = &d.episodes[0].streams[0].frames;
+    assert_eq!(frames.len(), 3);
+    // Frame 1 derived from frame_index 1 / 10 Hz = 0.1 s = 1e8 ns — not a fabricated 0.
+    assert_eq!(frames[1].ts, 100_000_000);
+    assert!(
+        frames[0].ts < frames[1].ts && frames[1].ts < frames[2].ts,
+        "timeline stays monotonic; the null did not collapse to 0"
+    );
+}
+
+#[test]
 fn frames_are_aggregated_across_multiple_parquet_shards() {
     // Real LeRobot datasets spread episodes across many shards in separate chunk dirs. The adapter
     // must recurse into every chunk (find_parquet) and collect all episodes, not just the first

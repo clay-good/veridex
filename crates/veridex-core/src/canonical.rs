@@ -11,13 +11,17 @@
 use sha2::{Digest, Sha256};
 
 use crate::cdm::{
-    Dataset, Episode, Frame, Label, Provenance, ProvenanceElement, ProvenanceScope, Stream,
-    ValueRef,
+    Dataset, DimStats, Episode, Frame, Label, Provenance, ProvenanceElement, ProvenanceScope,
+    Stream, StreamStats, ValueRef,
 };
 
 /// Version of the canonical encoding. Bumping this deliberately changes every content hash; it is
 /// mixed into the domain-separation prefix so hashes from different encoding versions never collide.
-pub const CANONICAL_VERSION: u32 = 1;
+///
+/// v2 binds every content-bearing `Stream` field into the hash — the stored per-dimension stats
+/// (`dim_stats`) and the recomputed `observed_*` fields, which v1's hand-written encoder silently
+/// dropped, so two datasets differing only in those fields no longer collide.
+pub const CANONICAL_VERSION: u32 = 2;
 
 const DOMAIN: &[u8] = b"veridex.cdm.v1\0";
 
@@ -92,6 +96,22 @@ impl Encoder {
         self.u64(bits);
     }
 
+    /// A `StreamStats` quadruple (min/max/mean/std), used for stored and per-dimension stats alike.
+    fn stats(&mut self, s: &StreamStats) {
+        self.f64(s.min);
+        self.f64(s.max);
+        self.f64(s.mean);
+        self.f64(s.std);
+    }
+
+    /// A per-dimension stats sequence (`dim` index + its quadruple).
+    fn dim_stats(&mut self, dims: &[DimStats]) {
+        self.seq(dims, |e, d| {
+            e.u64(d.dim);
+            e.stats(&d.stats);
+        });
+    }
+
     /// Length-prefixed bytes; unambiguous for concatenation.
     fn bytes(&mut self, b: &[u8]) {
         self.u64(b.len() as u64);
@@ -132,9 +152,11 @@ impl Dataset {
             e.str(v);
         });
 
-        // provenance: order-insensitive, canonicalized by scope
+        // provenance: order-insensitive, canonicalized by scope *and* full content — a scope can
+        // legitimately carry more than one record, so scope alone is not a total order and would let
+        // two set-equal-but-permuted inputs hash differently.
         let mut provenance: Vec<&Provenance> = self.provenance.iter().collect();
-        provenance.sort_by(|a, b| scope_key(&a.scope).cmp(&scope_key(&b.scope)));
+        provenance.sort_by(|a, b| prov_sort_key(a).cmp(&prov_sort_key(b)));
         e.seq(&provenance, |e, p| p.encode(e));
 
         // episodes: order-insensitive, canonicalized by index
@@ -181,18 +203,25 @@ impl Stream {
         e.str(&self.clock_id);
         e.opt(&self.dtype, |e, d| e.str(d));
         e.opt(&self.shape, |e, sh| e.seq(sh, |e, d| e.u64(*d)));
-        e.opt(&self.stats, |e, s| {
+        // Stored statistics (from the source manifest): the scalar summary and, for a multi-DoF
+        // feature, the per-dimension breakdown. Both are source content, so both bind into the hash —
+        // omitting `dim_stats` let two datasets with a different corrupted per-joint stat collide.
+        e.opt(&self.stats, |e, s| e.stats(s));
+        e.opt(&self.dim_stats, |e, dims| e.dim_stats(dims));
+        // Recomputed statistics (Veridex's own pass over the values). Bound too, so this hand-written
+        // encoder stays in lockstep with the struct — every content field is hashed, none silently
+        // dropped. (They are deterministic functions of the hashed frames, so this cannot desync.)
+        e.opt(&self.observed_stats, |e, s| e.stats(s));
+        e.opt(&self.observed_saturation, |e, s| {
+            e.u64(s.sample_count);
+            e.u64(s.at_min);
+            e.u64(s.at_max);
             e.f64(s.min);
             e.f64(s.max);
-            e.f64(s.mean);
-            e.f64(s.std);
+            e.u64(s.dim);
         });
-        e.opt(&self.observed_stats, |e, s| {
-            e.f64(s.min);
-            e.f64(s.max);
-            e.f64(s.mean);
-            e.f64(s.std);
-        });
+        e.opt(&self.observed_non_finite, |e, n| e.u64(*n));
+        e.opt(&self.observed_dim_stats, |e, dims| e.dim_stats(dims));
         // frames: order is data-defined and preserved (the recorded timeline)
         e.seq(&self.frames, |e, f| f.encode(e));
     }
@@ -217,9 +246,10 @@ impl ValueRef {
 impl Provenance {
     fn encode(&self, e: &mut Encoder) {
         encode_scope(&self.scope, e);
-        // elements: order-insensitive, canonicalized by key
+        // elements: order-insensitive, canonicalized by full content (key alone is not unique — the
+        // same key can appear with a different value/class).
         let mut elements: Vec<&ProvenanceElement> = self.elements.iter().collect();
-        elements.sort_by(|a, b| a.key.cmp(&b.key));
+        elements.sort_by(|a, b| element_sort_key(a).cmp(&element_sort_key(b)));
         e.seq(&elements, |e, el| {
             e.str(&el.key);
             e.opt(&el.value, |e, v| e.str(v));
@@ -250,4 +280,22 @@ fn scope_key(scope: &ProvenanceScope) -> (u8, u64, &str) {
         ProvenanceScope::Episode(idx) => (1, *idx, ""),
         ProvenanceScope::Stream { episode, stream } => (2, *episode, stream.as_str()),
     }
+}
+
+/// A total ordering key for a provenance element: its full (key, value, class) content, so two
+/// elements sharing a `key` never tie.
+type ElementKey<'a> = (&'a str, Option<&'a str>, &'a str);
+
+fn element_sort_key(el: &ProvenanceElement) -> ElementKey<'_> {
+    (el.key.as_str(), el.value.as_deref(), el.class.tag())
+}
+
+/// A total ordering key for a provenance record: its scope plus every element's content (sorted), so
+/// two records in the same scope never tie and the encoding is permutation-independent.
+type ProvKey<'a> = ((u8, u64, &'a str), Vec<ElementKey<'a>>);
+
+fn prov_sort_key(p: &Provenance) -> ProvKey<'_> {
+    let mut elements: Vec<_> = p.elements.iter().map(element_sort_key).collect();
+    elements.sort();
+    (scope_key(&p.scope), elements)
 }

@@ -203,6 +203,11 @@ fn find_parquet(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 fn column_i64(array: &dyn Array, row: usize) -> Option<i64> {
+    // A null cell is absent data, not zero: `PrimitiveArray::value` ignores the validity bitmap and
+    // would return a garbage `0`, silently fabricating episode/frame/task indices. Abstain instead.
+    if array.is_null(row) {
+        return None;
+    }
     if let Some(a) = array.as_any().downcast_ref::<Int64Array>() {
         Some(a.value(row))
     } else {
@@ -214,6 +219,11 @@ fn column_i64(array: &dyn Array, row: usize) -> Option<i64> {
 }
 
 fn column_f64(array: &dyn Array, row: usize) -> Option<f64> {
+    // See `column_i64`: a null cell reads as a bogus `0.0` unless we check the bitmap first, which
+    // would fabricate a `ts = 0` mid-stream and bypass the frame_index/fps fallback.
+    if array.is_null(row) {
+        return None;
+    }
     if let Some(a) = array.as_any().downcast_ref::<Float64Array>() {
         Some(a.value(row))
     } else {

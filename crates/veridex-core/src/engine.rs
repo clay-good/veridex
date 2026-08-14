@@ -402,7 +402,9 @@ fn status_from(counts: &SeverityCounts) -> Status {
 
 fn digest_hex<T: Serialize>(value: &T) -> String {
     // serde_json serializes struct fields in declaration order and BTreeMaps sorted, so the bytes
-    // are deterministic for our verdict shape (no floats involved).
+    // are deterministic for our verdict shape. The effective-config tolerances are f64s; serde_json
+    // formats them with ryu (shortest round-trip, platform-independent), so they stay stable — the
+    // tolerances are always finite (config parsing rejects non-finite), so none serialize to `null`.
     let bytes = serde_json::to_vec(value).expect("verdict serializes");
     let mut hasher = Sha256::new();
     hasher.update(b"veridex.verdict.v1\0");

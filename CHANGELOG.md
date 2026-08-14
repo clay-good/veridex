@@ -63,7 +63,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
     buried in element 6 of a 7-DoF `action` is caught, not just element 0.
   - **Semantic** — task-string quality and stream-key clarity (an exact-duplicate key is an error, a
     case/whitespace collision a warning); and language-annotation integrity
-    (`SEMANTIC.ANNOTATION_UNALIGNED` / `_CONFLICT` / `_EMPTY_ANNOTATION`): timestamped language
+    (`SEMANTIC.ANNOTATION_UNALIGNED` / `SEMANTIC.ANNOTATION_CONFLICT` / `SEMANTIC.EMPTY_ANNOTATION`):
+    timestamped language
     annotations are verified — in span, unique per instant, non-empty — never written or modified. The
     LeRobot adapter surfaces mid-episode `task_index` changes as timestamped `language` labels
     (single-task episodes carry none), so the check runs on real multi-task datasets.
@@ -151,8 +152,27 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   subtraction, which overflowed on corrupt timestamps spanning the full `i64` range — a panic in
   debug builds (isolated to an errored check) or a wrapped value in release. They now use saturating
   subtraction, so pathological timestamps are reported rather than crashing the check.
+- The content hash silently omitted four `Stream` stats fields — the stored per-dimension stats
+  (`dim_stats`) and the recomputed `observed_*` fields — because the hand-written canonical encoder
+  had drifted from the struct. Two datasets differing only in a corrupted per-joint stat vector
+  hashed identically. The encoder now binds every content-bearing stream field, a regression test
+  guards each one, and `CANONICAL_VERSION` bumps 1 → 2.
+- Provenance canonicalization sorted records by scope alone and elements by key alone — neither a
+  total order — so a scope with more than one record, or two elements sharing a key, could hash
+  differently under a mere reordering. Both now sort on full content (permutation-independent).
+- The LeRobot adapter read Arrow bookkeeping cells (`timestamp`, `episode_index`, `task_index`)
+  without consulting the null bitmap, so a null cell read as a fabricated `0` — inventing a
+  mid-stream `ts = 0`, misattributing frames to episode 0, or mislabeling a task. Null cells now
+  abstain, so a null timestamp correctly falls back to `frame_index / fps`.
+- `STATISTICAL.MEAN_OUT_OF_RANGE` compared the stored mean against min/max with no float tolerance,
+  so a source's independently-rounded mean landing one ULP past a bound on a near-constant stream
+  raised a hard error on honest data. It now allows the same small tolerance as the Popoviciu std
+  check.
 
 ### Security
+
+- Certificate verification now uses Ed25519 `verify_strict`, rejecting non-canonical signatures and
+  small-order keys so a given certificate has exactly one valid signature (no malleability).
 
 - Upgraded `pyo3` 0.22 → 0.29, clearing three advisories (RUSTSEC out-of-bounds read in
   `PyList`/`PyTuple` `nth`/`nth_back`, the missing `Sync` bound on `PyCFunction::new_closure`, and

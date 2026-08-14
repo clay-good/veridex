@@ -323,8 +323,12 @@ impl Check for RangeSanity {
                 }
 
                 // The mean must lie within the observed range; otherwise the statistics are
-                // internally inconsistent (min/max and mean cannot describe the same values).
-                if stats.mean < stats.min || stats.mean > stats.max {
+                // internally inconsistent (min/max and mean cannot describe the same values). Allow a
+                // small float tolerance — a source's independently-rounded mean can land one ULP past
+                // a bound on a near-constant stream, which is honest data, not corruption (mirrors the
+                // Popoviciu std check below).
+                let mean_tol = 1e-9 + stats.min.abs().max(stats.max.abs()) * 1e-6;
+                if stats.mean < stats.min - mean_tol || stats.mean > stats.max + mean_tol {
                     findings.push(
                         Finding::new(
                             self.id(),

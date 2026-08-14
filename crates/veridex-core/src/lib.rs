@@ -198,6 +198,48 @@ mod tests {
     }
 
     #[test]
+    fn provenance_hash_is_permutation_insensitive_with_ties() {
+        // Two records in the same scope, and two elements sharing a key — the cases where sorting by
+        // scope-alone / key-alone would leave a non-total order and let a permutation change the hash.
+        let el = |k: &str, v: &str, c: ProvenanceClass| ProvenanceElement {
+            key: k.into(),
+            value: Some(v.into()),
+            class: c,
+        };
+        let mk = |order: bool| Dataset {
+            id: "t".into(),
+            metadata: vec![],
+            provenance: {
+                let a = Provenance {
+                    scope: ProvenanceScope::Dataset,
+                    elements: vec![
+                        el("sensor", "cam-a", ProvenanceClass::Known),
+                        el("sensor", "cam-b", ProvenanceClass::Asserted),
+                    ],
+                };
+                let b = Provenance {
+                    scope: ProvenanceScope::Dataset,
+                    elements: vec![el("license", "mit", ProvenanceClass::Known)],
+                };
+                if order {
+                    vec![a, b]
+                } else {
+                    vec![b, a]
+                }
+            },
+            episodes: vec![],
+        };
+        // Also reverse the tied elements inside the first record.
+        let mut swapped = mk(false);
+        swapped.provenance[1].elements.reverse();
+        assert_eq!(
+            content_hash(&mk(true)),
+            content_hash(&swapped),
+            "provenance record and element order must not change the hash, even with ties"
+        );
+    }
+
+    #[test]
     fn changing_a_timestamp_changes_the_hash() {
         let d = sample_dataset();
         let base = content_hash(&d);
@@ -215,6 +257,91 @@ mod tests {
         let mut d2 = d.clone();
         d2.episodes[0].labels[0].ts = Some(42);
         assert_ne!(content_hash(&d2), base);
+    }
+
+    #[test]
+    fn every_stream_stats_field_binds_into_the_hash() {
+        // Guards against the hand-written canonical encoder drifting from the `Stream` struct: each
+        // content-bearing stats field, when populated, must change the content hash. `dim_stats` in
+        // particular is stored source content (parallel to `stats`); omitting it once let two
+        // datasets with different corrupted per-joint stats collide.
+        let stats = StreamStats {
+            min: -1.0,
+            max: 1.0,
+            mean: 0.0,
+            std: 0.5,
+        };
+        let dims = vec![DimStats { dim: 0, stats }];
+        let sat = Saturation {
+            sample_count: 10,
+            at_min: 2,
+            at_max: 3,
+            min: -1.0,
+            max: 1.0,
+            dim: 0,
+        };
+        let base = content_hash(&sample_dataset());
+        type Mutator = fn(&mut Stream);
+        let mutate: [(&str, Mutator); 5] = [
+            ("dim_stats", |s| {
+                s.dim_stats = Some(vec![DimStats {
+                    dim: 0,
+                    stats: StreamStats {
+                        min: -2.0,
+                        max: 2.0,
+                        mean: 0.1,
+                        std: 0.9,
+                    },
+                }])
+            }),
+            ("observed_stats", |s| {
+                s.observed_stats = Some(StreamStats {
+                    min: -3.0,
+                    max: 3.0,
+                    mean: 0.2,
+                    std: 1.1,
+                })
+            }),
+            ("observed_saturation", |s| {
+                s.observed_saturation = Some(Saturation {
+                    sample_count: 9,
+                    at_min: 1,
+                    at_max: 1,
+                    min: -3.0,
+                    max: 3.0,
+                    dim: 1,
+                })
+            }),
+            ("observed_non_finite", |s| s.observed_non_finite = Some(4)),
+            ("observed_dim_stats", |s| {
+                s.observed_dim_stats = Some(vec![DimStats {
+                    dim: 1,
+                    stats: StreamStats {
+                        min: -4.0,
+                        max: 4.0,
+                        mean: 0.3,
+                        std: 1.3,
+                    },
+                }])
+            }),
+        ];
+        for (field, apply) in mutate {
+            let mut d = sample_dataset();
+            // Seed baseline stats so the mutation is a change, not a None→Some appearance alone.
+            d.episodes[0].streams[1].dim_stats = Some(dims.clone());
+            d.episodes[0].streams[1].observed_stats = Some(stats);
+            d.episodes[0].streams[1].observed_saturation = Some(sat);
+            d.episodes[0].streams[1].observed_non_finite = Some(0);
+            d.episodes[0].streams[1].observed_dim_stats = Some(dims.clone());
+            let seeded = content_hash(&d);
+            assert_ne!(seeded, base, "seeding stats fields must change the hash");
+            apply(&mut d.episodes[0].streams[1]);
+            assert_ne!(
+                content_hash(&d),
+                seeded,
+                "changing {field} must change the content hash"
+            );
+        }
     }
 
     #[test]
