@@ -101,21 +101,30 @@ impl Check for TaskQuality {
     }
 }
 
-/// The episode's time span `[lo, hi]` on its clock: the declared `[start_ts, end_ts]` when both are
-/// present and ordered, else the min/max frame timestamp across its streams. `None` when the episode
-/// carries no timestamps at all (nothing to align against).
+/// The episode's time span `[lo, hi]` on its clock: the **union** of the declared `[start_ts, end_ts]`
+/// (when both are present and ordered) and the actual min/max frame timestamp across its streams.
+/// `None` when the episode carries no timestamps at all (nothing to align against).
+///
+/// The union matters: a declared window that is *narrower* than the recorded frames (e.g. episode
+/// metadata that doesn't encompass a late-joining stream) must not be treated as authoritative, or an
+/// annotation on a genuinely recorded frame outside that window would be flagged `ANNOTATION_UNALIGNED`
+/// — a false Error on real data. An annotation is aligned if it falls within any moment the episode
+/// either declares or actually recorded.
 fn episode_time_span(ep: &Episode) -> Option<(TimestampNs, TimestampNs)> {
-    if let (Some(s), Some(e)) = (ep.start_ts, ep.end_ts) {
-        if e >= s {
-            return Some((s, e));
-        }
-    }
     let mut span: Option<(TimestampNs, TimestampNs)> = None;
     for stream in &ep.streams {
         for f in &stream.frames {
             span = Some(match span {
                 Some((lo, hi)) => (lo.min(f.ts), hi.max(f.ts)),
                 None => (f.ts, f.ts),
+            });
+        }
+    }
+    if let (Some(s), Some(e)) = (ep.start_ts, ep.end_ts) {
+        if e >= s {
+            span = Some(match span {
+                Some((lo, hi)) => (lo.min(s), hi.max(e)),
+                None => (s, e),
             });
         }
     }

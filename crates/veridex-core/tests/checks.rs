@@ -1600,6 +1600,18 @@ fn a_language_annotation_outside_the_episode_span_is_unaligned() {
 }
 
 #[test]
+fn an_annotation_on_a_recorded_frame_outside_narrow_declared_bounds_is_aligned() {
+    // The episode declares a window [0, 5] that is narrower than its recorded frames (ts 0..10).
+    // An annotation at ts 8 lands on a genuinely recorded moment, so it must NOT be flagged
+    // unaligned just because the declared bounds under-report the episode's real extent.
+    let mut ep = episode_with_labels(0, vec![lang("grasp", Some(8))]);
+    ep.start_ts = Some(0);
+    ep.end_ts = Some(5);
+    let d = dataset(vec![ep]);
+    assert!(semantic::AnnotationIntegrity.run(&d).is_empty());
+}
+
+#[test]
 fn an_aligned_annotation_is_clean() {
     let d = dataset(vec![episode_with_labels(
         0,
