@@ -100,11 +100,13 @@ pub fn score(verdict: &Verdict, coverage: &ProvenanceCoverage) -> TrustScore {
     }
     let errored = verdict.errored_checks.len() as i32;
 
-    let data_score = (100
-        - errors * ERROR_PENALTY
-        - warnings * WARNING_PENALTY
-        - errored * ERRORED_CHECK_PENALTY)
-        .clamp(0, 100) as u32;
+    // Saturating so a pathological dataset with tens of millions of findings cannot overflow the
+    // penalty multiply (Veridex's posture is "survive bad data"); the result is floored at 0 anyway.
+    let deductions = errors
+        .saturating_mul(ERROR_PENALTY)
+        .saturating_add(warnings.saturating_mul(WARNING_PENALTY))
+        .saturating_add(errored.saturating_mul(ERRORED_CHECK_PENALTY));
+    let data_score = 100i32.saturating_sub(deductions).clamp(0, 100) as u32;
 
     let provenance_pct = coverage.covered_pct();
 

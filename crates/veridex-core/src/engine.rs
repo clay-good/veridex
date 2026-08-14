@@ -53,6 +53,26 @@ pub struct Tolerances {
     pub saturation_min_samples: u64,
 }
 
+impl Tolerances {
+    /// Replace any non-finite float field with its default. A `NaN`/`inf` tolerance would (a) serialize
+    /// to JSON `null`, so a signed certificate embedding it could never be re-verified (the field is
+    /// non-optional), and (b) silently disable the checks that guard on it (`x > NaN` is always false).
+    /// The CLI/TOML config layer already rejects non-finite tolerances; this guards the direct
+    /// library/Python path that constructs a [`Tolerances`] by hand.
+    pub fn finite_or_default(self) -> Tolerances {
+        let d = Tolerances::default();
+        let fix = |v: f64, default: f64| if v.is_finite() { v } else { default };
+        Tolerances {
+            rate_deviation: fix(self.rate_deviation, d.rate_deviation),
+            gap_factor: fix(self.gap_factor, d.gap_factor),
+            jitter_cv: fix(self.jitter_cv, d.jitter_cv),
+            episode_duration_factor: fix(self.episode_duration_factor, d.episode_duration_factor),
+            saturation_fraction: fix(self.saturation_fraction, d.saturation_fraction),
+            ..self
+        }
+    }
+}
+
 impl Default for Tolerances {
     fn default() -> Self {
         Tolerances {
@@ -107,7 +127,9 @@ impl From<&RunConfig> for EffectiveConfig {
             only_checks: c.only_checks.as_ref().map(|s| s.iter().cloned().collect()),
             disabled_checks: c.disabled_checks.iter().cloned().collect(),
             severity_overrides: c.severity_overrides.clone(),
-            tolerances: c.tolerances,
+            // Sanitize so the serialized snapshot is always finite and the certificate round-trips,
+            // even if a direct library caller built the config with a non-finite tolerance.
+            tolerances: c.tolerances.finite_or_default(),
         }
     }
 }

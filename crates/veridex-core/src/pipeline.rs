@@ -40,17 +40,26 @@ pub fn run_check_with(
     options: &IngestOptions,
     run_config: &RunConfig,
 ) -> Result<CheckOutput, IngestError> {
-    let ingested = match format {
+    let mut ingested = match format {
         Some(f) => registry.ingest_as(f, source, options)?,
         None => registry.ingest(source, options)?,
     };
 
+    // Normalize episode/stream order before validating so the verdict and reports are
+    // order-independent, matching the order-independent content hash. The hash itself is unaffected
+    // (it canonicalizes order internally); this aligns what the checks and reports see with it.
+    ingested.dataset.canonicalize_order();
+
     let hash = content_hash(&ingested.dataset);
+    // Sanitize tolerances (a non-finite value would silently disable the checks that guard on it and
+    // break certificate round-tripping) so the checks and the recorded snapshot agree.
+    let mut run_config = run_config.clone();
+    run_config.tolerances = run_config.tolerances.finite_or_default();
     // The standard check set has unique ids by construction (asserted by tests). Build it with the
     // run's tolerances so a configured threshold takes effect.
     let engine =
         default_engine_with(&run_config.tolerances).expect("standard checks have unique ids");
-    let verdict = engine.run(&ingested.dataset, hash, run_config);
+    let verdict = engine.run(&ingested.dataset, hash, &run_config);
     let trust = score(&verdict, &ProvenanceCoverage::of(&ingested.dataset));
 
     Ok(CheckOutput {

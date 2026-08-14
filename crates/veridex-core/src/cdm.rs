@@ -68,6 +68,22 @@ pub struct Episode {
     pub declared_frame_count: Option<u64>,
 }
 
+impl Dataset {
+    /// Reorder the dataset into canonical order in place: episodes ascending by [`Episode::index`],
+    /// and each episode's streams ascending by [`Stream::name`] — the same order the content hash
+    /// canonicalizes to. This makes the *verdict and reports* order-independent to match the
+    /// order-independent [`content_hash`](crate::canonical::content_hash): two datasets that hash
+    /// identically but were built with their episodes/streams in a different `Vec` order then also
+    /// produce byte-identical findings and `result_content_hash`. Only the top-level `Vec`s are
+    /// reordered (cheap struct moves); frames are never touched. Idempotent.
+    pub fn canonicalize_order(&mut self) {
+        self.episodes.sort_by_key(|ep| ep.index);
+        for ep in &mut self.episodes {
+            ep.streams.sort_by(|a, b| a.name.cmp(&b.name));
+        }
+    }
+}
+
 impl Episode {
     /// The episode's overall wall-clock duration in nanoseconds, if measurable. Prefers the declared
     /// `[start_ts, end_ts]`; otherwise falls back to the longest single-stream frame span — a

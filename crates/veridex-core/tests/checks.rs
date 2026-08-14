@@ -1794,3 +1794,65 @@ fn every_check_declares_at_least_one_unique_finding_code() {
         }
     }
 }
+
+#[test]
+fn canonicalizing_order_makes_the_verdict_order_independent() {
+    // The content hash is order-independent (episodes sort by index, streams by name). After
+    // `canonicalize_order`, the verdict and its `result_content_hash` must be too: two datasets that
+    // differ only in episode/stream `Vec` order produce byte-identical verdicts. Uses a shape
+    // mismatch across episodes — an order-sensitive check (its "baseline" was first-seen) — as the probe.
+    let build = |episodes: Vec<Episode>| {
+        let mut d = dataset(episodes);
+        d.canonicalize_order();
+        d
+    };
+    let ep0 = episode(
+        0,
+        vec![
+            shaped("action", Some("float32"), Some(vec![6]), &[0]),
+            shaped("observation.state", Some("float32"), Some(vec![6]), &[0]),
+        ],
+    );
+    let ep1 = episode(
+        1,
+        vec![
+            shaped("observation.state", Some("float32"), Some(vec![7]), &[0]),
+            shaped("action", Some("float32"), Some(vec![6]), &[0]),
+        ],
+    );
+    // Same content, opposite episode order and opposite stream order within an episode.
+    let a = build(vec![ep0.clone(), ep1.clone()]);
+    let b = build(vec![ep1, ep0]);
+
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let cfg = veridex_core::RunConfig::default();
+    let va = engine.run(&a, veridex_core::content_hash(&a), &cfg);
+    let vb = engine.run(&b, veridex_core::content_hash(&b), &cfg);
+
+    assert_eq!(
+        va.result_content_hash, vb.result_content_hash,
+        "canonicalized order must yield identical verdict hashes"
+    );
+    assert_eq!(
+        veridex_core::render_json(&va, None),
+        veridex_core::render_json(&vb, None),
+        "canonicalized order must yield byte-identical report JSON"
+    );
+}
+
+#[test]
+fn non_finite_tolerances_are_sanitized_to_defaults() {
+    // A direct library caller can build a Tolerances with a non-finite field; that would serialize to
+    // JSON `null` (breaking certificate round-trip) and silently disable the guarding check. The
+    // sanitizer replaces it with the finite default.
+    let dirty = veridex_core::engine::Tolerances {
+        rate_deviation: f64::NAN,
+        gap_factor: f64::INFINITY,
+        ..veridex_core::engine::Tolerances::default()
+    };
+    let clean = dirty.finite_or_default();
+    let d = veridex_core::engine::Tolerances::default();
+    assert_eq!(clean.rate_deviation, d.rate_deviation);
+    assert_eq!(clean.gap_factor, d.gap_factor);
+    assert!(clean.rate_deviation.is_finite() && clean.gap_factor.is_finite());
+}
