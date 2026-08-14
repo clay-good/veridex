@@ -115,8 +115,10 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   score (`min_score`, overridable by `--min-score`); the effective config is recorded in every
   verdict. Unknown TOML keys are rejected, and a check id that names no real check (a typo in
   `disabled_checks`, `only_checks`, or a `severity_overrides` key) is a hard error rather than a
-  silent no-op. A `[tolerances]` table tunes the temporal checks' numeric thresholds
-  (`clock_skew_ms`, `start_offset_ms`, `rate_deviation`, `gap_factor`); each is optional, validated
+  silent no-op. A `[tolerances]` table tunes the temporal and statistical checks' numeric thresholds
+  (`clock_skew_ms`, `start_offset_ms`, `end_offset_ms`, `rate_deviation`, `gap_factor`, `jitter_cv`,
+  `episode_duration_factor`, `saturation_fraction`, `saturation_min_samples` — see
+  [docs/veridex.toml.example](docs/veridex.toml.example)); each is optional, validated
   (finite, non-negative; positive `gap_factor`), and falls back to the check's default. The
   tolerances the run used are recorded in the verdict's effective config, so a result is fully
   reproducible from what it reports.
@@ -168,11 +170,43 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   so a source's independently-rounded mean landing one ULP past a bound on a near-constant stream
   raised a hard error on honest data. It now allows the same small tolerance as the Popoviciu std
   check.
+- The LeRobot per-dimension statistics silently misaligned when a multi-DoF cell had a **null leaf**:
+  a dropped joint contributed nothing, sliding every later dimension down one and polluting their
+  min/max/mean/std (false `STATS_STALE`/`SATURATED`, misattributed dimensions). A null leaf now holds
+  its dimension slot (absent, not shifted), matching the content-hash path; a regression test covers it.
+- The verdict and human/JSON/SARIF reports were **input-order-dependent** while the content hash was
+  order-independent, so two datasets that hashed identically but were built with their episodes/streams
+  in a different order could produce different `result_content_hash` and report bytes. The pipeline now
+  canonicalizes episode order (by index) and stream order (by name) before validating, so the verdict
+  matches the hash's order-independence.
+- A non-finite tolerance (`NaN`/`inf`) constructed via the library/Python API serialized to JSON
+  `null` — a signed certificate embedding it could never be re-verified — and silently disabled the
+  checks that guard on it. Tolerances are now sanitized to their finite defaults before the run and in
+  the recorded config.
+- `veridex check --min-scor 90` (any mistyped or unknown flag) was silently ignored, quietly dropping
+  the CI gate the user asked for; a value-flag could also swallow the next flag as its value
+  (`--key --format`). Unknown options and missing flag values are now exit-2 errors.
+- The LeRobot adapter never validated `codebase_version`, so a v2.x export (which still has
+  `meta/info.json`) was misparsed as v3. A recognized-but-unsupported version is now rejected cleanly
+  with `IngestError::UnsupportedVersion`.
+- Recomputed per-dimension variance used the one-pass `E[x²]−E[x]²` formula, which loses precision
+  (and can clamp a real variance to 0 → spurious `DEGENERATE`) for signals riding a large DC offset.
+  It now uses Welford's numerically stable online algorithm. Integer index columns stored as an
+  unsigned or narrower Arrow type are now accepted instead of falsely rejecting the dataset, and the
+  Parquet directory walk no longer follows symlinks (a self-referential link could recurse unbounded).
+- Robustness: MCAP `log_time` above `i64::MAX` now saturates instead of wrapping negative and
+  corrupting frame ordering; `STREAM_ABSENT` no longer lists a duplicate episode index twice; and the
+  saturation check skips a zero-sample summary rather than emitting a `NaN%` finding, while the score's
+  penalty arithmetic saturates so a pathological finding count cannot overflow.
 
 ### Security
 
 - Certificate verification now uses Ed25519 `verify_strict`, rejecting non-canonical signatures and
   small-order keys so a given certificate has exactly one valid signature (no malleability).
+
+- `veridex keygen` wrote the secret signing key world/group-readable (default umask), so another local
+  user on a shared host or CI runner could read it and forge certificates. On Unix the secret key is
+  now created `0600` (owner-only); the public `.pub` file is unchanged.
 
 - Upgraded `pyo3` 0.22 → 0.29, clearing three advisories (RUSTSEC out-of-bounds read in
   `PyList`/`PyTuple` `nth`/`nth_back`, the missing `Sync` bound on `PyCFunction::new_closure`, and
@@ -181,5 +215,4 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Not yet included
 
-Streaming / large-than-memory and remote Hub ingestion; actuator-saturation detection; and
-publishing to PyPI / crates.io.
+Streaming / large-than-memory and remote Hub ingestion; and publishing to PyPI / crates.io.

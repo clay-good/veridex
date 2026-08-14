@@ -17,12 +17,15 @@ portable, signed **trust certificate** you can hand to anyone.
 veridex check my-dataset/
 ```
 
+An illustrative summary of what a run tells you (the real terminal report lists each finding with
+its risk and remedy, worst episodes first):
+
 ```
 Veridex Trust Report
   Score      82 / 100   (B)
   Structure  ✓ episodes intact, timestamps monotonic
   Temporal   ⚠ TEMPORAL.CLOCK_SKEW  camera vs. arm drift 41ms  → resync before training
-  Provenance ⚠ missing sensor + license metadata on 3 streams
+  Provenance ⚠ missing sensor + license metadata
 ```
 
 ## Why it's useful
