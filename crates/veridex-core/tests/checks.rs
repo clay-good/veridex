@@ -758,6 +758,29 @@ fn gaps_are_detected_against_declared_rate() {
 }
 
 #[test]
+fn a_grossly_overstated_rate_does_not_flood_the_gap_report() {
+    // A stream declares 1 kHz (1 ms expected) but is actually sampled at ~10 Hz (100 ms intervals).
+    // Trusting the declared rate would flag every one of the real intervals as a gap; the check must
+    // fall back to the observed median and stay quiet on an otherwise-regular timeline. The wrong rate
+    // itself is RateConformance's to report.
+    let ts: Vec<i64> = (0..12).map(|i| i * 100_000_000).collect();
+    let d = dataset(vec![episode(0, vec![stream("s", "c", Some(1000.0), &ts)])]);
+    let gaps = temporal::Gaps::default().run(&d);
+    assert!(
+        gaps.is_empty(),
+        "an overstated declared rate must not turn every interval into a gap: {} findings",
+        gaps.len()
+    );
+    // A genuine gap on the same overstated-rate stream is still caught (observed-median baseline).
+    let mut ts2: Vec<i64> = (0..12).map(|i| i * 100_000_000).collect();
+    ts2.push(ts2.last().unwrap() + 1_000_000_000); // a 1 s hole ~10x the median
+    let d2 = dataset(vec![episode(0, vec![stream("s", "c", Some(1000.0), &ts2)])]);
+    let gaps2 = temporal::Gaps::default().run(&d2);
+    assert_eq!(gaps2.len(), 1, "a real gap is still detected");
+    assert_eq!(gaps2[0].code, "TEMPORAL.GAP");
+}
+
+#[test]
 fn jitter_flags_an_irregular_timeline() {
     // Intervals alternate 40 ms / 160 ms: mean 100 ms, std 60 ms → cv 0.6, above the 0.5 default.
     // The mean rate is a clean 10 Hz, so RATE would not fire — jitter is the distinct signal.

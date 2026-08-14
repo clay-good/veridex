@@ -269,24 +269,47 @@ impl Default for Gaps {
 }
 
 impl Gaps {
-    /// Expected interval (ns): from the declared rate if present, else the median positive interval.
-    fn expected_interval_ns(stream: &Stream) -> Option<f64> {
+    /// Expected inter-frame interval (ns) to measure gaps against.
+    ///
+    /// The declared rate is preferred — a gap is a frame missing relative to the intended cadence —
+    /// but only when it is roughly consistent with the stream's own median interval. A grossly
+    /// overstated rate (declared 1 kHz on a 10 Hz stream) would otherwise make the expected interval
+    /// tiny and flag *every* real interval as a gap, drowning the report in spurious findings for what
+    /// is really one wrong-rate value (already reported by `RateConformance`/`RateValidity`). When the
+    /// declared and observed intervals disagree by more than `gap_factor`, the declared rate can't be
+    /// trusted as the baseline, so the observed median is used instead.
+    fn expected_interval_ns(stream: &Stream, gap_factor: f64) -> Option<f64> {
+        let observed_median = {
+            let mut intervals: Vec<i64> = stream
+                .frames
+                .windows(2)
+                .map(|w| w[1].ts.saturating_sub(w[0].ts))
+                .filter(|d| *d > 0)
+                .collect();
+            if intervals.is_empty() {
+                None
+            } else {
+                intervals.sort_unstable();
+                Some(intervals[intervals.len() / 2] as f64)
+            }
+        };
+
         if let Some(rate) = stream.declared_rate_hz {
             if rate > 0.0 {
-                return Some(NS_PER_S / rate);
+                let declared = NS_PER_S / rate;
+                match observed_median {
+                    // Declared and observed agree (within the gap factor): trust the declared cadence.
+                    Some(obs) if declared <= obs * gap_factor && obs <= declared * gap_factor => {
+                        return Some(declared)
+                    }
+                    // They disagree wildly (corrupt declared rate) — fall back to the observed median
+                    // rather than flooding with gaps. With no positive intervals at all, abstain.
+                    Some(obs) => return Some(obs),
+                    None => return None,
+                }
             }
         }
-        let mut intervals: Vec<i64> = stream
-            .frames
-            .windows(2)
-            .map(|w| w[1].ts.saturating_sub(w[0].ts))
-            .filter(|d| *d > 0)
-            .collect();
-        if intervals.is_empty() {
-            return None;
-        }
-        intervals.sort_unstable();
-        Some(intervals[intervals.len() / 2] as f64)
+        observed_median
     }
 }
 
@@ -319,7 +342,7 @@ impl Check for Gaps {
                 if stream.frames.len() < 2 {
                     continue;
                 }
-                let Some(expected) = Gaps::expected_interval_ns(stream) else {
+                let Some(expected) = Gaps::expected_interval_ns(stream, self.gap_factor) else {
                     continue;
                 };
                 let threshold = expected * self.gap_factor;
