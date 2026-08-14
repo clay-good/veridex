@@ -1211,3 +1211,136 @@ fn stored_stats_that_bound_the_data_are_clean() {
         .iter()
         .all(|f| f.code != "STATISTICAL.STATS_STALE"));
 }
+
+/// Write a LeRobot dataset with one `FixedSizeList<Float32, width>` feature whose leaves may be null:
+/// `rows[i][d]` is `Some(v)` for a present scalar or `None` for a dropped (null) leaf at dimension `d`.
+fn write_lerobot_vector_feature_nullable(
+    dir: &Path,
+    feature: &str,
+    width: i32,
+    rows: &[Vec<Option<f32>>],
+) {
+    fs::create_dir_all(dir.join("meta")).unwrap();
+    fs::create_dir_all(dir.join("data/chunk-000")).unwrap();
+    let info = serde_json::json!({
+        "codebase_version": "v3.0",
+        "fps": 10.0,
+        "robot_type": "so100",
+        "features": { feature: { "dtype": "float32", "shape": [width] } },
+    });
+    fs::write(
+        dir.join("meta/info.json"),
+        serde_json::to_string_pretty(&info).unwrap(),
+    )
+    .unwrap();
+
+    let item = Arc::new(Field::new("item", DataType::Float32, true));
+    let list_ty = DataType::FixedSizeList(item.clone(), width);
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("episode_index", DataType::Int64, false),
+        Field::new("frame_index", DataType::Int64, false),
+        Field::new("timestamp", DataType::Float64, false),
+        Field::new(feature, list_ty, false),
+    ]));
+    let eps: Vec<i64> = vec![0; rows.len()];
+    let frames: Vec<i64> = (0..rows.len() as i64).collect();
+    let ts: Vec<f64> = (0..rows.len()).map(|i| i as f64 * 0.1).collect();
+    let flat: Vec<Option<f32>> = rows.iter().flatten().copied().collect();
+    let values: ArrayRef = Arc::new(Float32Array::from(flat));
+    let list = FixedSizeListArray::new(item, width, values, None);
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int64Array::from(eps)),
+            Arc::new(Int64Array::from(frames)),
+            Arc::new(Float64Array::from(ts)),
+            Arc::new(list),
+        ],
+    )
+    .unwrap();
+    let file = fs::File::create(dir.join("data/chunk-000/file-000.parquet")).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
+#[test]
+fn a_null_leaf_does_not_shift_later_dimensions_stats() {
+    // Regression: a 3-DoF feature whose middle joint (dimension 1) is null on every frame, while the
+    // gripper (dimension 2) saturates pinned at its maximum. A null leaf must hold its dimension slot
+    // — if it were dropped, the gripper's values would slide into dimension 1 and the saturation would
+    // be misattributed there. The finding must name dimension 2.
+    let dir = tempfile::tempdir().unwrap();
+    let rows: Vec<Vec<Option<f32>>> = (0..30i64)
+        .map(|i| {
+            let gripper = if i < 24 {
+                1.0
+            } else {
+                1.0 - (i - 23) as f32 * 0.1
+            };
+            vec![Some(i as f32 * 0.5), None, Some(gripper)]
+        })
+        .collect();
+    write_lerobot_vector_feature_nullable(dir.path(), "action", 3, &rows);
+    let d = ingest_lerobot(dir.path());
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let hash = veridex_core::content_hash(&d);
+    let verdict = engine.run(&d, hash, &veridex_core::RunConfig::default());
+    let sat: Vec<_> = verdict
+        .findings
+        .iter()
+        .filter(|f| f.code == "STATISTICAL.SATURATED")
+        .collect();
+    assert_eq!(sat.len(), 1, "the pinned gripper dimension is flagged once");
+    assert!(
+        sat[0].message.contains("dimension 2"),
+        "the null middle joint must not shift the gripper off dimension 2: {}",
+        sat[0].message
+    );
+    // The all-null middle joint contributes no non-finite tally (absent != NaN observed).
+    assert!(
+        verdict
+            .findings
+            .iter()
+            .all(|f| f.code != "STATISTICAL.NON_FINITE_OBSERVED"),
+        "a null leaf is absent data, not an observed non-finite value"
+    );
+}
+
+#[test]
+fn an_unsupported_lerobot_version_is_rejected() {
+    // A v2.x export still has meta/info.json, so detect() matches it; ingest must reject it cleanly
+    // as an unsupported version rather than misparsing it as v3.
+    let dir = tempfile::tempdir().unwrap();
+    write_lerobot(
+        dir.path(),
+        &[("observation.state", "float32")],
+        10.0,
+        &[(0, 0.0)],
+    );
+    // Overwrite the version to an unsupported major.
+    let info = serde_json::json!({
+        "codebase_version": "v2.0",
+        "fps": 10.0,
+        "features": { "observation.state": { "dtype": "float32", "shape": [1] } },
+    });
+    fs::write(
+        dir.path().join("meta/info.json"),
+        serde_json::to_string_pretty(&info).unwrap(),
+    )
+    .unwrap();
+    let adapter = LeRobotAdapter;
+    let err = adapter
+        .ingest(
+            &Source::Local(dir.path().to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            veridex_core::adapter::IngestError::UnsupportedVersion { .. }
+        ),
+        "expected UnsupportedVersion, got {err:?}"
+    );
+}

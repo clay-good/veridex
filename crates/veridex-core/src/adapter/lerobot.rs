@@ -23,8 +23,8 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use arrow::array::{
-    Array, BooleanArray, FixedSizeListArray, Float32Array, Float64Array, Int32Array, Int64Array,
-    ListArray,
+    Array, BooleanArray, FixedSizeListArray, Float32Array, Float64Array, Int16Array, Int32Array,
+    Int64Array, ListArray, UInt16Array, UInt32Array, UInt64Array,
 };
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde::Deserialize;
@@ -186,6 +186,19 @@ fn load_stats(dir: &Path) -> StoredStats {
     out
 }
 
+/// Whether a declared LeRobot `codebase_version` is one this adapter supports. Normalizes an optional
+/// leading `v` (LeRobot writes `"v3.0"`; the supported list is `"3.0"`) and matches on the major
+/// version so a compatible minor revision (`v3.1`) is accepted while a different major (`v2.0`) is not.
+fn version_supported(declared: &str, supported: &[&str]) -> bool {
+    fn major(s: &str) -> &str {
+        s.split('.').next().unwrap_or(s)
+    }
+    let norm = declared.trim().trim_start_matches(['v', 'V']);
+    supported
+        .iter()
+        .any(|s| norm == *s || major(norm) == major(s))
+}
+
 /// Recursively collect `.parquet` files under `dir`, in a deterministic sorted order.
 fn find_parquet(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -194,7 +207,15 @@ fn find_parquet(dir: &Path, out: &mut Vec<PathBuf>) {
     let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
     paths.sort();
     for p in paths {
-        if p.is_dir() {
+        // Use `symlink_metadata` (does not follow) so a symlinked directory pointing at an ancestor
+        // can't send this into unbounded recursion — Veridex's job is to survive malformed input.
+        let Ok(meta) = std::fs::symlink_metadata(&p) else {
+            continue;
+        };
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        if meta.is_dir() {
             find_parquet(&p, out);
         } else if p.extension().and_then(|e| e.to_str()) == Some("parquet") {
             out.push(p);
@@ -208,12 +229,22 @@ fn column_i64(array: &dyn Array, row: usize) -> Option<i64> {
     if array.is_null(row) {
         return None;
     }
-    if let Some(a) = array.as_any().downcast_ref::<Int64Array>() {
+    let any = array.as_any();
+    // LeRobot v3 writes int64 index columns today, but accept the other integer widths a valid
+    // export could use rather than falsely rejecting the dataset. An unsigned value above `i64::MAX`
+    // can't be represented, so abstain on it (yields a clean parse error upstream) instead of wrapping.
+    if let Some(a) = any.downcast_ref::<Int64Array>() {
         Some(a.value(row))
+    } else if let Some(a) = any.downcast_ref::<Int32Array>() {
+        Some(a.value(row) as i64)
+    } else if let Some(a) = any.downcast_ref::<Int16Array>() {
+        Some(a.value(row) as i64)
+    } else if let Some(a) = any.downcast_ref::<UInt64Array>() {
+        i64::try_from(a.value(row)).ok()
+    } else if let Some(a) = any.downcast_ref::<UInt32Array>() {
+        Some(a.value(row) as i64)
     } else {
-        array
-            .as_any()
-            .downcast_ref::<Int32Array>()
+        any.downcast_ref::<UInt16Array>()
             .map(|a| a.value(row) as i64)
     }
 }
@@ -283,33 +314,38 @@ fn feed_cell(array: &dyn Array, row: usize, hasher: &mut Sha256) -> bool {
     true
 }
 
-/// Collect **every leaf scalar** of one feature cell, in dimension order, as `f64` (non-finite values
-/// included — callers separate them). Element `i` of `out` is dimension `i` of the cell: a scalar
-/// column yields one value, a `FixedSizeList`/`List` yields one per element. This is the multi-DoF
-/// generalization that lets the recompute see past element 0 — a saturating gripper or a NaN buried
-/// in joint 6 is invisible to a first-scalar-only read. A null leaf is absent data and contributes
-/// nothing (so a dimension's sample count only ever reflects present values).
-fn cell_scalars(array: &dyn Array, row: usize, out: &mut Vec<f64>) {
-    if array.is_null(row) {
-        return;
-    }
+/// Collect **every leaf scalar** of one feature cell, in dimension order. Element `i` of `out` is
+/// dimension `i` of the cell: a scalar column yields one value, a `FixedSizeList`/`List` yields one
+/// per element. This is the multi-DoF generalization that lets the recompute see past element 0 — a
+/// saturating gripper or a NaN buried in joint 6 is invisible to a first-scalar-only read.
+///
+/// A null **leaf** yields `None` — absent data that still holds its dimension slot, so a dropout in
+/// joint 1 does not shift joints 2..N down a dimension and corrupt their per-dimension stats. (An
+/// entirely-null container cell contributes no dimensions, exactly as a missing feature would.)
+fn cell_scalars(array: &dyn Array, row: usize, out: &mut Vec<Option<f64>>) {
     let any = array.as_any();
     if let Some(a) = any.downcast_ref::<Float32Array>() {
-        out.push(a.value(row) as f64);
+        out.push((!a.is_null(row)).then(|| a.value(row) as f64));
     } else if let Some(a) = any.downcast_ref::<Float64Array>() {
-        out.push(a.value(row));
+        out.push((!a.is_null(row)).then(|| a.value(row)));
     } else if let Some(a) = any.downcast_ref::<Int64Array>() {
-        out.push(a.value(row) as f64);
+        out.push((!a.is_null(row)).then(|| a.value(row) as f64));
     } else if let Some(a) = any.downcast_ref::<Int32Array>() {
-        out.push(a.value(row) as f64);
+        out.push((!a.is_null(row)).then(|| a.value(row) as f64));
     } else if let Some(a) = any.downcast_ref::<BooleanArray>() {
-        out.push(a.value(row) as u8 as f64);
+        out.push((!a.is_null(row)).then(|| a.value(row) as u8 as f64));
     } else if let Some(a) = any.downcast_ref::<FixedSizeListArray>() {
+        if a.is_null(row) {
+            return;
+        }
         let child = a.value(row);
         for i in 0..child.len() {
             cell_scalars(child.as_ref(), i, out);
         }
     } else if let Some(a) = any.downcast_ref::<ListArray>() {
+        if a.is_null(row) {
+            return;
+        }
         let child = a.value(row);
         for i in 0..child.len() {
             cell_scalars(child.as_ref(), i, out);
@@ -330,9 +366,11 @@ struct FeatureAccum {
 
 impl FeatureAccum {
     /// Feed one cell's dimension-ordered scalars: finite values grow their dimension's accumulator;
-    /// non-finite values are tallied and held out (a NaN would poison the summary).
-    fn push_cell(&mut self, scalars: &[f64]) {
-        for (dim, &v) in scalars.iter().enumerate() {
+    /// non-finite values are tallied and held out (a NaN would poison the summary). A `None` leaf is
+    /// absent data — it is skipped, but its position is still consumed so later dimensions stay aligned.
+    fn push_cell(&mut self, scalars: &[Option<f64>]) {
+        for (dim, v) in scalars.iter().enumerate() {
+            let Some(v) = *v else { continue };
             if v.is_finite() {
                 if dim >= self.dims.len() {
                     self.dims.resize(dim + 1, StatsAccum::default());
@@ -383,14 +421,20 @@ impl FeatureAccum {
     }
 }
 
-/// Running accumulator for one dimension's recomputed statistics.
+/// Running accumulator for one dimension's recomputed statistics. Mean and variance use Welford's
+/// online algorithm rather than accumulating `sum`/`sum_sq`: real robot signals often ride a large DC
+/// offset (encoder counts ~1e6 with sub-unit variance), where `E[x²]−E[x]²` suffers catastrophic
+/// cancellation and can clamp a real variance to 0 (a spurious `DEGENERATE`). Welford is single-pass
+/// and numerically stable.
 #[derive(Default, Clone, Copy)]
 struct StatsAccum {
     count: u64,
     min: f64,
     max: f64,
-    sum: f64,
-    sum_sq: f64,
+    /// Running mean (Welford).
+    mean: f64,
+    /// Running sum of squared deviations from the mean (Welford's M2); population variance is `m2/n`.
+    m2: f64,
     /// Values seen exactly equal to the running `min` / `max`. Reset to 1 whenever a new extreme
     /// appears, so at the end they count values equal to the *final* min/max in a single pass —
     /// no need to retain the values (mirrors the streaming stats above).
@@ -420,8 +464,11 @@ impl StatsAccum {
             }
         }
         self.count += 1;
-        self.sum += v;
-        self.sum_sq += v * v;
+        // Welford update.
+        let delta = v - self.mean;
+        self.mean += delta / self.count as f64;
+        let delta2 = v - self.mean;
+        self.m2 += delta * delta2;
     }
 
     /// Finalize to a [`StreamStats`] (population std), or `None` if nothing was accumulated.
@@ -429,13 +476,11 @@ impl StatsAccum {
         if self.count == 0 {
             return None;
         }
-        let n = self.count as f64;
-        let mean = self.sum / n;
-        let variance = (self.sum_sq / n - mean * mean).max(0.0);
+        let variance = (self.m2 / self.count as f64).max(0.0);
         Some(StreamStats {
             min: self.min,
             max: self.max,
-            mean,
+            mean: self.mean,
             std: variance.sqrt(),
         })
     }
@@ -457,9 +502,9 @@ impl StatsAccum {
 }
 
 /// One feature's per-row extraction: `(name, content hash — `None` if the type isn't hashable, the
-/// cell's dimension-ordered scalars — empty if not numeric)`. The scalars drive the per-dimension
-/// statistics recompute (see [`FeatureAccum`]).
-type FeatureValue = (String, Option<[u8; 32]>, Vec<f64>);
+/// cell's dimension-ordered scalars — empty if not numeric, `None` per absent leaf)`. The scalars
+/// drive the per-dimension statistics recompute (see [`FeatureAccum`]).
+type FeatureValue = (String, Option<[u8; 32]>, Vec<Option<f64>>);
 
 type Row = (u64, i64, Option<i64>, Vec<FeatureValue>);
 
@@ -684,6 +729,19 @@ impl Adapter for LeRobotAdapter {
                 format_id: "lerobot",
                 message: format!("meta/info.json: {e}"),
             })?;
+
+        // Reject a recognized-but-unsupported layout cleanly rather than misparsing it as v3 (a v2.x
+        // export still has a `meta/info.json`, so `detect` matches it). Only reject when the manifest
+        // actually declares a version we don't support; an absent version is abstained on, not failed.
+        if let Some(declared) = info.codebase_version.as_deref() {
+            if !version_supported(declared, self.supported_versions()) {
+                return Err(IngestError::UnsupportedVersion {
+                    format_id: "lerobot",
+                    version: Some(declared.to_string()),
+                    supported: self.supported_versions(),
+                });
+            }
+        }
 
         let fps = info.fps.unwrap_or(0.0);
 
