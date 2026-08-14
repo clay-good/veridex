@@ -180,7 +180,10 @@ impl Adapter for McapAdapter {
                 .as_ref()
                 .map(|s| s.name.as_str())
                 .unwrap_or("");
-            let ts = message.log_time as i64;
+            // `log_time` is a u64 nanosecond stamp; the CDM stores i64. Saturate rather than wrap so a
+            // value past i64::MAX (nanoseconds beyond ~year 2262, i.e. corrupt) can't flip negative and
+            // corrupt min/max/ordering. Real timestamps are far below the cap, so this is lossless.
+            let ts = i64::try_from(message.log_time).unwrap_or(i64::MAX);
             min_ts = Some(min_ts.map_or(ts, |m| m.min(ts)));
             max_ts = Some(max_ts.map_or(ts, |m| m.max(ts)));
 
