@@ -1344,3 +1344,53 @@ fn an_unsupported_lerobot_version_is_rejected() {
         "expected UnsupportedVersion, got {err:?}"
     );
 }
+
+#[test]
+fn parquet_columns_and_declared_features_are_reconciled_in_the_report() {
+    // Desync the two column sets: the Parquet carries `observation.state`, but info.json declares
+    // only `observation.phantom`. The undeclared real column must be surfaced as unmapped (not
+    // silently dropped), and the declared-but-absent feature as omitted (not a silent phantom stream).
+    let dir = tempfile::tempdir().unwrap();
+    write_lerobot_with_values(
+        dir.path(),
+        "observation.state",
+        10.0,
+        &[(0, 0.0, 1.0), (0, 0.1, 2.0), (0, 0.2, 3.0)],
+    );
+    // Overwrite info.json to declare a different feature than the Parquet actually holds.
+    let info = serde_json::json!({
+        "codebase_version": "v3.0",
+        "fps": 10.0,
+        "features": { "observation.phantom": { "dtype": "float32", "shape": [1] } },
+    });
+    fs::write(
+        dir.path().join("meta/info.json"),
+        serde_json::to_string_pretty(&info).unwrap(),
+    )
+    .unwrap();
+
+    let ingested = LeRobotAdapter
+        .ingest(
+            &Source::Local(dir.path().to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .unwrap();
+    assert!(
+        ingested
+            .report
+            .unmapped_fields
+            .iter()
+            .any(|u| u.source_path.contains("observation.state")),
+        "an undeclared Parquet column must be reported as unmapped: {:?}",
+        ingested.report.unmapped_fields
+    );
+    assert!(
+        ingested
+            .report
+            .omitted_fields
+            .iter()
+            .any(|o| o.contains("observation.phantom")),
+        "a declared-but-absent feature must be reported as omitted: {:?}",
+        ingested.report.omitted_fields
+    );
+}

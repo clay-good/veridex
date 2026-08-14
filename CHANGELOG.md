@@ -186,6 +186,10 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 - `veridex check --min-scor 90` (any mistyped or unknown flag) was silently ignored, quietly dropping
   the CI gate the user asked for; a value-flag could also swallow the next flag as its value
   (`--key --format`). Unknown options and missing flag values are now exit-2 errors.
+- The LeRobot adapter never reconciled the Parquet data columns against the `meta/info.json` feature
+  declarations, so an undeclared data column was silently dropped and a declared-but-absent feature
+  became a phantom stream with no content — neither disclosed. The fidelity report now lists an
+  undeclared column as `unmapped` and a declared-but-absent feature as `omitted`.
 - The LeRobot adapter never validated `codebase_version`, so a v2.x export (which still has
   `meta/info.json`) was misparsed as v3. A recognized-but-unsupported version is now rejected cleanly
   with `IngestError::UnsupportedVersion`.

@@ -1007,18 +1007,43 @@ impl Adapter for LeRobotAdapter {
             mapped_fields.push("meta/episodes.jsonl length -> episode.declared_frame_count".into());
         }
 
+        // Reconcile the Parquet columns actually present against the info.json feature declarations so
+        // neither direction is dropped silently (the fidelity requirement). `observed` is keyed by the
+        // real non-bookkeeping Parquet columns; `declared_names` is what info.json declared. Both loops
+        // iterate sorted collections so the report is deterministic.
+        let declared_names: std::collections::BTreeSet<&str> =
+            features.iter().map(|(n, ..)| n.as_str()).collect();
+        let mut unmapped_fields = vec![UnmappedField {
+            source_path: "feature array values".into(),
+            note: "feature payloads are fingerprinted (hashed) into content_hash, never decoded \
+                   or interpreted"
+                .into(),
+        }];
+        for col in observed.keys() {
+            if !declared_names.contains(col.as_str()) {
+                unmapped_fields.push(UnmappedField {
+                    source_path: format!("data column `{col}`"),
+                    note: "present in the Parquet data but not declared in meta/info.json \
+                           features; not represented as a stream"
+                        .into(),
+                });
+            }
+        }
+        for name in &declared_names {
+            if !observed.contains_key(*name) {
+                omitted_fields.push(format!(
+                    "feature `{name}` declared in meta/info.json but absent from the Parquet data \
+                     (no values ingested)"
+                ));
+            }
+        }
+
         let report = IngestReport {
             format_id: "lerobot",
             source_version: info.codebase_version.clone(),
             coverage: Coverage::Full,
             mapped_fields,
-            unmapped_fields: vec![UnmappedField {
-                source_path: "feature array values".into(),
-                note:
-                    "feature payloads are fingerprinted (hashed) into content_hash, never decoded \
-                       or interpreted"
-                        .into(),
-            }],
+            unmapped_fields,
             omitted_fields,
         };
 
