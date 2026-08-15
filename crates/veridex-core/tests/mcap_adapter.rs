@@ -903,3 +903,52 @@ fn autonomy_provenance_keys_are_extracted() {
         assert_eq!(e.class, ProvenanceClass::Known, "class for {key}");
     }
 }
+
+#[test]
+fn scenario_metadata_becomes_episode_labels() {
+    let mut out = Vec::new();
+    {
+        let mut w = mcap::Writer::new(Cursor::new(&mut out)).expect("writer");
+        let s = w.add_schema("sensor_msgs/msg/Imu", "ros2msg", b"").unwrap();
+        let c = w.add_channel(s, "/imu", "cdr", &BTreeMap::new()).unwrap();
+        w.write_to_known_channel(
+            &mcap::records::MessageHeader {
+                channel_id: c,
+                sequence: 0,
+                log_time: 0,
+                publish_time: 0,
+            },
+            b"x",
+        )
+        .unwrap();
+        let mut meta = BTreeMap::new();
+        meta.insert("weather".to_string(), "rain".to_string());
+        meta.insert("tod".to_string(), "night".to_string()); // → time_of_day
+        w.write_metadata(&mcap::records::Metadata {
+            name: "scene".to_string(),
+            metadata: meta,
+        })
+        .expect("write metadata");
+        w.finish().expect("finish");
+    }
+    let path = write_temp_mcap(&out);
+    let d = McapAdapter
+        .ingest(
+            &Source::Local(path.to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest")
+        .dataset;
+    let label = |key: &str| {
+        d.episodes[0]
+            .labels
+            .iter()
+            .find(|l| l.key == key)
+            .map(|l| l.value.clone())
+    };
+    assert_eq!(label("weather").as_deref(), Some("rain"));
+    assert_eq!(label("time_of_day").as_deref(), Some("night"));
+    // And the descriptive report picks them up.
+    let cov = veridex_core::scenario::coverage(&d);
+    assert_eq!(cov.len(), 2);
+}

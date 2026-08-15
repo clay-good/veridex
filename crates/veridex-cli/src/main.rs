@@ -477,6 +477,7 @@ fn cmd_inspect(rest: &[String]) -> ExitCode {
         }
     }
     print!("{}", provenance_summary(d));
+    print!("{}", veridex_core::scenario::render_coverage(d));
     ExitCode::SUCCESS
 }
 

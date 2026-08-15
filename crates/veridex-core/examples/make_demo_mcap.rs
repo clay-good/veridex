@@ -60,6 +60,10 @@ fn main() {
             meta.insert("map_version".to_string(), "demo-hdmap-1.9".to_string());
             meta.insert("consent_status".to_string(), "obtained".to_string());
             meta.insert("redaction".to_string(), "faces+plates".to_string());
+            // Scenario dimensions (A3/A6): descriptive recording conditions.
+            meta.insert("weather".to_string(), "rain".to_string());
+            meta.insert("time_of_day".to_string(), "night".to_string());
+            meta.insert("environment".to_string(), "urban".to_string());
         }
         w.write_metadata(&mcap::records::Metadata {
             name: "recording_info".to_string(),

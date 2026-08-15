@@ -25,6 +25,7 @@ pub mod engine;
 pub mod pipeline;
 pub mod profile;
 pub mod report;
+pub mod scenario;
 
 pub use adapter::lerobot::LeRobotAdapter;
 pub use adapter::mcap::McapAdapter;

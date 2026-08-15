@@ -28,7 +28,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use crate::cdm::{
-    Calibration, CameraIntrinsics, Dataset, EgoPose, Episode, Frame, Modality, PointField,
+    Calibration, CameraIntrinsics, Dataset, EgoPose, Episode, Frame, Label, Modality, PointField,
     Provenance, ProvenanceClass, ProvenanceElement, ProvenanceScope, Stream, Transform, ValueRef,
 };
 
@@ -363,6 +363,10 @@ impl Adapter for McapAdapter {
         // (namespaced by record name), and map well-known keys to typed provenance. First value wins
         // per provenance key so the result is deterministic in file order.
         let mut mapped: BTreeSet<&'static str> = BTreeSet::new();
+        // Recognized scenario-dimension tags become episode labels (first value per dimension wins),
+        // for the descriptive scenario-coverage report (design A3/A6).
+        let mut scenario_dims: BTreeSet<&'static str> = BTreeSet::new();
+        let mut scenario_labels: Vec<Label> = Vec::new();
         for m in &records.metadata {
             for (k, v) in &m.metadata {
                 if v.trim().is_empty() {
@@ -378,8 +382,18 @@ impl Adapter for McapAdapter {
                         });
                     }
                 }
+                if let Some(dim) = crate::scenario::scenario_dim_for(k) {
+                    if scenario_dims.insert(dim) {
+                        scenario_labels.push(Label {
+                            key: dim.into(),
+                            value: v.clone(),
+                            ts: None,
+                        });
+                    }
+                }
             }
         }
+        // Labels are canonicalized by (key, value, ts), so a stable order in is not required.
         // Attachments: record their presence, and let a calibration-looking attachment supply the
         // `calibration` element when no metadata key already did. This is inferred from the file
         // *name* (a "calib" substring), not extracted calibration content, so it is classed
@@ -413,7 +427,7 @@ impl Adapter for McapAdapter {
                 end_ts: max_ts,
                 streams: cdm_streams,
                 task: None,
-                labels: vec![],
+                labels: scenario_labels,
                 ego_poses,
                 declared_frame_count: None,
             }],

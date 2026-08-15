@@ -200,6 +200,13 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   Croissant `veridex:provenance` list and the PROV entity as `veridex:` properties. Extracted without
   changing the coverage denominator, so a manipulation dataset's coverage score is unchanged. The `av`
   demo carries the lineage end-to-end.
+- **Scenario-dimension coverage (A3/A6)** — a **descriptive** report of the conditions a dataset was
+  recorded under. `crate::scenario` recognizes scenario tags (weather, time-of-day, environment,
+  lighting, season, traffic) from episode labels and reports each dimension's value distribution across
+  episodes, marking a **sparse** cell (a value in under 10% of covered episodes). It is descriptive by
+  design (A6): never a finding, never a score change, never a required balance — the target
+  distribution is the training team's call. The MCAP adapter extracts recognized scenario metadata
+  keys into episode labels, and `veridex inspect` shows a "scenario coverage" section.
 
 ### Fixed
 

@@ -65,7 +65,12 @@ No code until this change is approved; this is the build plan.
       PROV emit surfaces the rig lineage as `veridex:` entity properties. Extracted freely without
       changing the coverage denominator, so manipulation datasets are unaffected. The `av` demo carries
       the rig lineage; unit + emit tests cover it. (Rig-aware coverage scoring is a follow-up.)
-- [ ] Scenario-dimension coverage/balance reporting (descriptive only).
+- [x] Scenario-dimension coverage/balance reporting (descriptive only). `crate::scenario` recognizes
+      scenario tags (weather, time_of_day, environment, lighting, season, traffic) from episode labels
+      and reports each dimension's value distribution across episodes, marking sparse cells (a value in
+      <10% of covered episodes) — descriptive only, never a finding or score change (design A6). The
+      MCAP adapter extracts recognized scenario metadata keys into episode labels; `veridex inspect`
+      shows a "scenario coverage" section. The `av` demo carries scenario tags. Unit + e2e tests.
 
 ## A4 — World-model readiness
 - [x] `world-model-ready` policy profile bundling sync/calibration/ego-pose/sequence thresholds
