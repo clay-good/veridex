@@ -40,7 +40,10 @@ No code until this change is approved; this is the build plan.
       offsets (a per-sensor expected-offset table) remain a follow-up — needs decoded per-sensor
       metadata (A1).
 - [ ] `AUTONOMY.LIDAR_CAM_REPROJ` + extrinsic/TF consistency + missing-calibration checks.
-- [ ] `AUTONOMY.EGO_POSE_CONTINUITY` + GNSS/IMU/odometry agreement + GNSS geospatial sanity.
+- [~] `AUTONOMY.EGO_POSE_CONTINUITY` — implemented: flags an ego trajectory step whose implied speed
+      (distance/elapsed) exceeds a plausible max (default 100 m/s), reading the CDR-decoded
+      `Episode.ego_poses`. Runs end-to-end on a teleporting Odometry MCAP + unit tests. GNSS/IMU/odometry
+      cross-agreement and GNSS geospatial sanity remain follow-ups (need those sources decoded/fused).
 - [~] `AUTONOMY.SEQUENCE_COMPLETE` — per-tick sensor completeness + frame-drop tolerance. Implemented
       as an aggregate frame-drop check: per rig sensor, observed frame count vs the count its median
       inter-frame cadence implies over its active span, flagged beyond `max_drop_fraction` (default

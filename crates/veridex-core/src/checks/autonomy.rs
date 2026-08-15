@@ -262,3 +262,111 @@ impl Check for SequenceComplete {
         findings
     }
 }
+
+/// **Ego-pose continuity (design A2).** The ego vehicle's trajectory should evolve smoothly: between
+/// consecutive poses the implied speed (distance moved / elapsed time) must stay physically plausible.
+/// A jump — a GPS glitch, a localization reset, a stitched-together log — teleports the ego frame, so
+/// every sensor observation after it is registered against a wrong pose. This flags an episode whose
+/// `ego_poses` contain a step whose implied speed exceeds [`EgoPoseContinuity::max_speed_mps`],
+/// reporting the worst jump and how many occurred. Translations are metres and timestamps nanoseconds
+/// (per the CDM), so the speed is in m/s. Needs at least two poses with a positive time delta.
+pub struct EgoPoseContinuity {
+    /// Maximum plausible ego speed in metres per second; a step implying more is a discontinuity.
+    pub max_speed_mps: f64,
+}
+
+impl Default for EgoPoseContinuity {
+    fn default() -> Self {
+        // ~360 km/h — far above any ground vehicle, so only a true teleport/reset trips it.
+        EgoPoseContinuity {
+            max_speed_mps: 100.0,
+        }
+    }
+}
+
+impl Check for EgoPoseContinuity {
+    fn id(&self) -> &'static str {
+        "autonomy.ego-pose-continuity"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["AUTONOMY.EGO_POSE_CONTINUITY"]
+    }
+    fn title(&self) -> &'static str {
+        "Ego-pose continuity"
+    }
+    fn category(&self) -> Category {
+        Category::Autonomy
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Error
+    }
+    fn scope(&self) -> Scope {
+        Scope::Episode
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        const NS_PER_S: f64 = 1_000_000_000.0;
+        let mut findings = Vec::new();
+        for ep in &dataset.episodes {
+            let Some(poses) = &ep.ego_poses else {
+                continue;
+            };
+            if poses.len() < 2 {
+                continue;
+            }
+            let mut breaks = 0u64;
+            let mut worst_speed = 0.0f64;
+            let mut worst_ts = 0i64;
+            for pair in poses.windows(2) {
+                let (a, b) = (&pair[0], &pair[1]);
+                let dt = (b.ts - a.ts) as f64 / NS_PER_S;
+                if dt <= 0.0 {
+                    // Non-increasing pose timestamps are a monotonicity fault, not this check's.
+                    continue;
+                }
+                let dx = b.pose.translation[0] - a.pose.translation[0];
+                let dy = b.pose.translation[1] - a.pose.translation[1];
+                let dz = b.pose.translation[2] - a.pose.translation[2];
+                let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+                let speed = dist / dt;
+                if speed > self.max_speed_mps {
+                    breaks += 1;
+                    if speed > worst_speed {
+                        worst_speed = speed;
+                        worst_ts = b.ts;
+                    }
+                }
+            }
+            if breaks > 0 {
+                findings.push(
+                    Finding::new(
+                        self.id(),
+                        Category::Autonomy,
+                        Severity::Error,
+                        Location::Episode { episode: ep.index },
+                        "AUTONOMY.EGO_POSE_CONTINUITY",
+                        format!(
+                            "episode {}: ego trajectory has {breaks} discontinuit{} — the worst \
+                             implies {worst_speed:.0} m/s at ts {worst_ts} (max plausible {:.0} m/s)",
+                            ep.index,
+                            if breaks == 1 { "y" } else { "ies" },
+                            self.max_speed_mps,
+                        ),
+                    )
+                    .with_risk(
+                        "A jump in the ego pose teleports the vehicle frame: every sensor observation \
+                         after it is registered against the wrong world pose, so fused maps and any \
+                         world model trained on them are geometrically inconsistent.",
+                    )
+                    .with_remedy(
+                        "Inspect the localization/GNSS source for resets or glitches; drop or re-solve \
+                         the affected segment, or split the log where it was stitched.",
+                    ),
+                );
+            }
+        }
+        findings
+    }
+}

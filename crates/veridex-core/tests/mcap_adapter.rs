@@ -751,3 +751,53 @@ fn ros_message_bodies_populate_the_autonomy_cdm_end_to_end() {
     assert_eq!(ego.len(), 1);
     assert_eq!(ego[0].pose.translation, [1.0, 2.0, 3.0]);
 }
+
+#[test]
+fn a_teleporting_ego_trajectory_is_flagged_end_to_end() {
+    use veridex_core::checks::autonomy::EgoPoseContinuity;
+
+    // Three Odometry messages: smooth, then a 500 m jump in 100 ms (a teleport).
+    let poses = [(0u64, 0.0f64), (100_000_000, 0.1), (200_000_000, 500.0)];
+    let mut out = Vec::new();
+    {
+        let mut w = mcap::Writer::new(Cursor::new(&mut out)).expect("writer");
+        let sid = w
+            .add_schema("nav_msgs/msg/Odometry", "ros2msg", b"")
+            .unwrap();
+        let cid = w
+            .add_channel(sid, "/odom", "cdr", &BTreeMap::new())
+            .unwrap();
+        for (seq, (t, x)) in poses.iter().enumerate() {
+            let mut c = Cdr::new();
+            c.header("odom");
+            c.string("base_link");
+            for v in [*x, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0] {
+                c.f64(v);
+            }
+            w.write_to_known_channel(
+                &mcap::records::MessageHeader {
+                    channel_id: cid,
+                    sequence: seq as u32,
+                    log_time: *t,
+                    publish_time: *t,
+                },
+                &c.buf,
+            )
+            .unwrap();
+        }
+        w.finish().unwrap();
+    }
+    let path = write_temp_mcap(&out);
+    let d = McapAdapter
+        .ingest(
+            &Source::Local(path.to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest")
+        .dataset;
+    let ego = d.episodes[0].ego_poses.as_ref().expect("ego_poses decoded");
+    assert_eq!(ego.len(), 3);
+    let f = EgoPoseContinuity::default().run(&d);
+    assert_eq!(f.len(), 1, "the teleport must be flagged");
+    assert_eq!(f[0].code, "AUTONOMY.EGO_POSE_CONTINUITY");
+}

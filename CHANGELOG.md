@@ -37,7 +37,7 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 - **Validation engine** — check registry with duplicate-id rejection, category/id selection,
   severity overrides, deterministic stably-ordered verdicts with a result content hash, fault
   isolation for panicking checks, and reproducibility metadata.
-- **Checks catalog** — 30 checks across six families (the sixth, **autonomy**, is described in its own
+- **Checks catalog** — 31 checks across six families (the sixth, **autonomy**, is described in its own
   entries below), each finding carrying a training **risk** and a **remedy** and located to the exact
   episode / stream / frame:
   - **Structural** — episode-boundary integrity (the lerobot#4143 class: a per-episode declared
@@ -172,6 +172,12 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   rigs lack) both miss. Rig-only, median-baseline (robust to the drops it hunts, no declared rate or
   shared clock needed), and skips streams with too few frames for a stable estimate. Proven end-to-end
   through the MCAP adapter (`a_frame_dropping_sensor_is_flagged_incomplete_end_to_end`).
+- **`AUTONOMY.EGO_POSE_CONTINUITY` — ego trajectory continuity (A2)** — flags an episode whose ego
+  trajectory (`Episode.ego_poses`, decoded from Odometry) contains a step whose implied speed
+  (distance / elapsed time) exceeds the plausible maximum (default 100 m/s ≈ 360 km/h): a GPS glitch,
+  localization reset, or stitched log that teleports the ego frame, so every later sensor observation
+  registers against a wrong world pose. Reports the worst jump and how many occurred. Runs end-to-end
+  on the CDR-decoded ego trajectory (`a_teleporting_ego_trajectory_is_flagged_end_to_end`).
 
 ### Fixed
 

@@ -1082,7 +1082,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 30);
+    assert_eq!(verdict.executed_checks.len(), 31);
 }
 
 #[test]
@@ -2044,6 +2044,75 @@ fn sequence_completeness_only_runs_on_rigs() {
         ],
     );
     assert!(autonomy::SequenceComplete::default()
+        .run(&dataset(vec![ep]))
+        .is_empty());
+}
+
+// ---- autonomy: ego-pose continuity ----
+
+fn ego(ts: i64, x: f64, y: f64) -> veridex_core::cdm::EgoPose {
+    veridex_core::cdm::EgoPose {
+        ts,
+        pose: veridex_core::cdm::Pose {
+            translation: [x, y, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+        },
+    }
+}
+
+/// A rig episode carrying the given ego trajectory (three rig sensors present just so it's a rig,
+/// though EgoPoseContinuity itself only needs `ego_poses`).
+fn rig_episode_with_ego(poses: Vec<veridex_core::cdm::EgoPose>) -> Episode {
+    let mut ep = episode(
+        0,
+        vec![
+            rig_stream("lidar", Modality::PointCloud, 1_000_000_000),
+            rig_stream("gnss", Modality::Gnss, 1_000_000_000),
+            rig_stream("imu", Modality::Imu, 1_000_000_000),
+        ],
+    );
+    ep.ego_poses = Some(poses);
+    ep
+}
+
+#[test]
+fn a_teleporting_ego_trajectory_is_flagged() {
+    // Smooth ~1 m/s for two steps, then a 500 m jump in 100 ms (5000 m/s) — a teleport.
+    let poses = vec![
+        ego(0, 0.0, 0.0),
+        ego(100_000_000, 0.1, 0.0),
+        ego(200_000_000, 0.2, 0.0),
+        ego(300_000_000, 500.2, 0.0),
+    ];
+    let f = autonomy::EgoPoseContinuity::default().run(&dataset(vec![rig_episode_with_ego(poses)]));
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].code, "AUTONOMY.EGO_POSE_CONTINUITY");
+    assert_eq!(f[0].severity, Severity::Error);
+}
+
+#[test]
+fn a_smooth_ego_trajectory_is_clean() {
+    // Steady 10 m/s (1 m per 100 ms) — well under the 100 m/s ceiling.
+    let poses: Vec<_> = (0..10)
+        .map(|i| ego(i * 100_000_000, i as f64, 0.0))
+        .collect();
+    assert!(autonomy::EgoPoseContinuity::default()
+        .run(&dataset(vec![rig_episode_with_ego(poses)]))
+        .is_empty());
+}
+
+#[test]
+fn ego_pose_continuity_abstains_without_a_trajectory() {
+    // A rig with no ego_poses: nothing to check.
+    let ep = episode(
+        0,
+        vec![
+            rig_stream("lidar", Modality::PointCloud, 1_000_000_000),
+            rig_stream("gnss", Modality::Gnss, 1_000_000_000),
+            rig_stream("imu", Modality::Imu, 1_000_000_000),
+        ],
+    );
+    assert!(autonomy::EgoPoseContinuity::default()
         .run(&dataset(vec![ep]))
         .is_empty());
 }
