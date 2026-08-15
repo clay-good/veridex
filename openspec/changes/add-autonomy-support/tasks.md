@@ -39,7 +39,13 @@ No code until this change is approved; this is the build plan.
       check family/category. Proven end-to-end on the `av` demo + unit tests. Explicit trigger/latency
       offsets (a per-sensor expected-offset table) remain a follow-up — needs decoded per-sensor
       metadata (A1).
-- [ ] `AUTONOMY.LIDAR_CAM_REPROJ` + extrinsic/TF consistency + missing-calibration checks.
+- [~] `AUTONOMY.LIDAR_CAM_REPROJ` + extrinsic/TF consistency + missing-calibration checks. Realized as
+      `AUTONOMY.CALIBRATION_INCOMPLETE` (`autonomy.calibration-completeness`): since Veridex never
+      decodes the bulk point payload it cannot reproject actual points, so it verifies the calibration
+      is present + coherent instead — flags a spatial rig with no TF tree, a disconnected TF tree
+      (connected-components over the frame graph), or cameras without intrinsics. End-to-end + unit
+      tests. True per-point reprojection error would require decoding point coordinates (deliberately
+      out of scope); per-sensor frame→camera path checks are a refinement (needs per-stream frame_id).
 - [~] `AUTONOMY.EGO_POSE_CONTINUITY` — implemented: flags an ego trajectory step whose implied speed
       (distance/elapsed) exceeds a plausible max (default 100 m/s), reading the CDR-decoded
       `Episode.ego_poses`. Runs end-to-end on a teleporting Odometry MCAP + unit tests. GNSS/IMU/odometry

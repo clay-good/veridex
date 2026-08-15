@@ -37,7 +37,7 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 - **Validation engine** — check registry with duplicate-id rejection, category/id selection,
   severity overrides, deterministic stably-ordered verdicts with a result content hash, fault
   isolation for panicking checks, and reproducibility metadata.
-- **Checks catalog** — 31 checks across six families (the sixth, **autonomy**, is described in its own
+- **Checks catalog** — 32 checks across six families (the sixth, **autonomy**, is described in its own
   entries below), each finding carrying a training **risk** and a **remedy** and located to the exact
   episode / stream / frame:
   - **Structural** — episode-boundary integrity (the lerobot#4143 class: a per-episode declared
@@ -178,6 +178,13 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   localization reset, or stitched log that teleports the ego frame, so every later sensor observation
   registers against a wrong world pose. Reports the worst jump and how many occurred. Runs end-to-end
   on the CDR-decoded ego trajectory (`a_teleporting_ego_trajectory_is_flagged_end_to_end`).
+- **`AUTONOMY.CALIBRATION_INCOMPLETE` — rig calibration completeness (A2)** — the principle-respecting
+  form of the LiDAR-camera reprojection check. Veridex never decodes the bulk point/pixel payload, so
+  it cannot reproject actual points; instead it verifies the calibration needed to *is present and
+  coherent*. On a rig with spatial sensors it flags: no transform (TF) tree at all; a TF tree split
+  into disconnected components (sensors that can't be related, found by connected-components over the
+  frame graph); or cameras with no intrinsics. Runs on the CDR-decoded TF tree + intrinsics, proven
+  end-to-end (`a_rig_without_a_transform_tree_is_flagged_incomplete_end_to_end`).
 
 ### Fixed
 

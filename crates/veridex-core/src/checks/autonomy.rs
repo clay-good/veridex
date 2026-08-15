@@ -1,7 +1,9 @@
 //! Autonomy sensor-rig checks (`autonomy-sensor-data`). The first is rig-wide time sync, the
 //! N-sensor generalization of the core pairwise [`ClockSkew`](crate::checks::temporal::ClockSkew).
 
-use crate::cdm::{Dataset, Episode, Stream};
+use std::collections::{BTreeSet, HashMap, HashSet};
+
+use crate::cdm::{Dataset, Episode, Modality, Stream, Transform};
 use crate::check::{Category, Check, Finding, Location, Scope, Severity};
 
 /// Number of AV-native rig sensors (LiDAR/IMU/GNSS/CAN/ego-pose) an episode must carry to be treated
@@ -365,6 +367,157 @@ impl Check for EgoPoseContinuity {
                          the affected segment, or split the log where it was stitched.",
                     ),
                 );
+            }
+        }
+        findings
+    }
+}
+
+/// The number of connected components in the coordinate-frame graph induced by `transforms` (each
+/// transform is an undirected edge between its parent and child frame). One component means every
+/// frame can be related to every other; more than one means the tree is split and sensors in different
+/// components cannot be spatially related.
+fn tf_component_count(transforms: &[Transform]) -> usize {
+    // Adjacency over frame names.
+    let mut adj: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut frames: BTreeSet<&str> = BTreeSet::new();
+    for t in transforms {
+        adj.entry(&t.parent_frame).or_default().push(&t.child_frame);
+        adj.entry(&t.child_frame).or_default().push(&t.parent_frame);
+        frames.insert(&t.parent_frame);
+        frames.insert(&t.child_frame);
+    }
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut components = 0;
+    for &start in &frames {
+        if !seen.insert(start) {
+            continue;
+        }
+        components += 1;
+        // BFS the component.
+        let mut stack = vec![start];
+        while let Some(f) = stack.pop() {
+            if let Some(neighbors) = adj.get(f) {
+                for &n in neighbors {
+                    if seen.insert(n) {
+                        stack.push(n);
+                    }
+                }
+            }
+        }
+    }
+    components
+}
+
+/// **Rig calibration completeness (design A2, the missing-calibration checks).** Spatial fusion — the
+/// whole point of a multi-sensor rig — needs the extrinsic transform (TF) tree relating the sensors
+/// and camera intrinsics to project into the image. This is the principle-respecting form of the
+/// LiDAR-camera reprojection check: Veridex never decodes the bulk point/pixel payload, so it cannot
+/// reproject actual points, but it *can* verify the calibration needed to is present and coherent. On
+/// a rig with spatial sensors (point-cloud or camera) it flags: no transform tree at all; a transform
+/// tree split into disconnected components (sensors that can't be related); or cameras with no
+/// intrinsics. Each is a distinct reason the rig cannot be spatially fused.
+pub struct CalibrationCompleteness;
+
+impl Check for CalibrationCompleteness {
+    fn id(&self) -> &'static str {
+        "autonomy.calibration-completeness"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["AUTONOMY.CALIBRATION_INCOMPLETE"]
+    }
+    fn title(&self) -> &'static str {
+        "Rig calibration completeness"
+    }
+    fn category(&self) -> Category {
+        Category::Autonomy
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Warning
+    }
+    fn scope(&self) -> Scope {
+        Scope::Episode
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        let flag = |episode: u64, msg: String| {
+            Finding::new(
+                "autonomy.calibration-completeness",
+                Category::Autonomy,
+                Severity::Warning,
+                Location::Episode { episode },
+                "AUTONOMY.CALIBRATION_INCOMPLETE",
+                msg,
+            )
+            .with_risk(
+                "Without the extrinsic transform tree and camera intrinsics, sensor observations \
+                 cannot be projected into a common frame: LiDAR-camera fusion and any world model \
+                 built on it are geometrically undefined.",
+            )
+            .with_remedy(
+                "Record the full static TF tree relating every sensor frame, and a CameraInfo \
+                 (intrinsics) for each camera, in the log.",
+            )
+        };
+        for ep in &dataset.episodes {
+            if !is_rig_episode(ep) {
+                continue;
+            }
+            let has_cloud = ep
+                .streams
+                .iter()
+                .any(|s| s.modality == Modality::PointCloud);
+            let has_camera = ep.streams.iter().any(|s| s.modality == Modality::Video);
+            if !has_cloud && !has_camera {
+                continue; // no spatial sensors that need extrinsics/intrinsics
+            }
+
+            let transforms = dataset
+                .calibration
+                .as_ref()
+                .map(|c| c.transforms.as_slice())
+                .unwrap_or(&[]);
+            let intrinsics_empty = dataset
+                .calibration
+                .as_ref()
+                .map(|c| c.intrinsics.is_empty())
+                .unwrap_or(true);
+
+            if transforms.is_empty() {
+                findings.push(flag(
+                    ep.index,
+                    format!(
+                        "episode {}: the rig has spatial sensors but no transform (TF) tree — the \
+                         extrinsics relating the sensors are unknown, so they cannot be fused",
+                        ep.index
+                    ),
+                ));
+            } else {
+                let components = tf_component_count(transforms);
+                if components > 1 {
+                    findings.push(flag(
+                        ep.index,
+                        format!(
+                            "episode {}: the transform tree is disconnected ({components} separate \
+                             components) — sensors in different components cannot be spatially related",
+                            ep.index
+                        ),
+                    ));
+                }
+            }
+
+            if has_camera && intrinsics_empty {
+                findings.push(flag(
+                    ep.index,
+                    format!(
+                        "episode {}: the rig has camera(s) but no camera intrinsics (CameraInfo) — \
+                         projecting points into the image is undefined",
+                        ep.index
+                    ),
+                ));
             }
         }
         findings

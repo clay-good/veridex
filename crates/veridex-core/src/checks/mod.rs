@@ -62,6 +62,7 @@ pub fn standard_checks_with(t: &Tolerances) -> Vec<Box<dyn Check>> {
         }),
         Box::new(autonomy::SequenceComplete::default()),
         Box::new(autonomy::EgoPoseContinuity::default()),
+        Box::new(autonomy::CalibrationCompleteness),
         Box::new(statistical::RangeSanity),
         Box::new(statistical::StoredVsObserved),
         Box::new(statistical::Saturation {

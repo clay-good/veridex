@@ -1082,7 +1082,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 31);
+    assert_eq!(verdict.executed_checks.len(), 32);
 }
 
 #[test]
@@ -2115,4 +2115,91 @@ fn ego_pose_continuity_abstains_without_a_trajectory() {
     assert!(autonomy::EgoPoseContinuity::default()
         .run(&dataset(vec![ep]))
         .is_empty());
+}
+
+// ---- autonomy: calibration completeness ----
+
+fn xf(parent: &str, child: &str) -> veridex_core::cdm::Transform {
+    veridex_core::cdm::Transform {
+        parent_frame: parent.into(),
+        child_frame: child.into(),
+        pose: veridex_core::cdm::Pose {
+            translation: [0.0, 0.0, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+        },
+        valid_from: None,
+        valid_to: None,
+    }
+}
+
+fn intr(stream: &str) -> veridex_core::cdm::CameraIntrinsics {
+    veridex_core::cdm::CameraIntrinsics {
+        stream: stream.into(),
+        fx: 600.0,
+        fy: 600.0,
+        cx: 320.0,
+        cy: 240.0,
+        distortion: vec![],
+        valid_from: None,
+        valid_to: None,
+    }
+}
+
+/// A rig (lidar+gnss+imu = 3 AV-native) plus a camera, with the given calibration.
+fn rig_with_calibration(cal: Option<veridex_core::cdm::Calibration>) -> Dataset {
+    let ep = episode(
+        0,
+        vec![
+            rig_stream("lidar", Modality::PointCloud, 1_000_000_000),
+            rig_stream("gnss", Modality::Gnss, 1_000_000_000),
+            rig_stream("imu", Modality::Imu, 1_000_000_000),
+            rig_stream("cam", Modality::Video, 1_000_000_000),
+        ],
+    );
+    let mut d = dataset(vec![ep]);
+    d.calibration = cal;
+    d
+}
+
+#[test]
+fn a_rig_without_calibration_is_flagged() {
+    let d = rig_with_calibration(None);
+    let f = autonomy::CalibrationCompleteness.run(&d);
+    assert!(f
+        .iter()
+        .any(|x| x.code == "AUTONOMY.CALIBRATION_INCOMPLETE"));
+    assert!(f[0].message.contains("no transform"));
+}
+
+#[test]
+fn a_fully_calibrated_rig_is_clean() {
+    let cal = veridex_core::cdm::Calibration {
+        transforms: vec![xf("base_link", "lidar"), xf("base_link", "cam")],
+        intrinsics: vec![intr("cam")],
+    };
+    let d = rig_with_calibration(Some(cal));
+    assert!(autonomy::CalibrationCompleteness.run(&d).is_empty());
+}
+
+#[test]
+fn a_disconnected_transform_tree_is_flagged() {
+    // Two components: {base_link, lidar} and {map, cam}.
+    let cal = veridex_core::cdm::Calibration {
+        transforms: vec![xf("base_link", "lidar"), xf("map", "cam")],
+        intrinsics: vec![intr("cam")],
+    };
+    let d = rig_with_calibration(Some(cal));
+    let f = autonomy::CalibrationCompleteness.run(&d);
+    assert!(f.iter().any(|x| x.message.contains("disconnected")));
+}
+
+#[test]
+fn a_rig_camera_without_intrinsics_is_flagged() {
+    let cal = veridex_core::cdm::Calibration {
+        transforms: vec![xf("base_link", "lidar"), xf("base_link", "cam")],
+        intrinsics: vec![], // no CameraInfo
+    };
+    let d = rig_with_calibration(Some(cal));
+    let f = autonomy::CalibrationCompleteness.run(&d);
+    assert!(f.iter().any(|x| x.message.contains("no camera intrinsics")));
 }

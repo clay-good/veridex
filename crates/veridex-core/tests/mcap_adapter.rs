@@ -801,3 +801,42 @@ fn a_teleporting_ego_trajectory_is_flagged_end_to_end() {
     assert_eq!(f.len(), 1, "the teleport must be flagged");
     assert_eq!(f[0].code, "AUTONOMY.EGO_POSE_CONTINUITY");
 }
+
+#[test]
+fn a_rig_without_a_transform_tree_is_flagged_incomplete_end_to_end() {
+    use veridex_core::checks::autonomy::CalibrationCompleteness;
+    // A rig with LiDAR + GNSS + IMU (3 AV-native sensors, LiDAR is a spatial sensor) but no TF or
+    // CameraInfo messages, so no calibration is decoded — fusion is impossible.
+    let bytes = build_mcap(&[
+        Chan {
+            schema: "sensor_msgs/msg/PointCloud2",
+            topic: "/lidar/points",
+            times: vec![0, 100_000_000, 200_000_000],
+        },
+        Chan {
+            schema: "sensor_msgs/msg/NavSatFix",
+            topic: "/gps/fix",
+            times: vec![0, 100_000_000, 200_000_000],
+        },
+        Chan {
+            schema: "sensor_msgs/msg/Imu",
+            topic: "/imu/data",
+            times: vec![0, 100_000_000, 200_000_000],
+        },
+    ]);
+    let path = write_temp_mcap(&bytes);
+    let d = McapAdapter
+        .ingest(
+            &Source::Local(path.to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest")
+        .dataset;
+    assert!(d.calibration.is_none(), "no TF/CameraInfo → no calibration");
+    let f = CalibrationCompleteness.run(&d);
+    assert!(
+        f.iter()
+            .any(|x| x.code == "AUTONOMY.CALIBRATION_INCOMPLETE"),
+        "a spatial rig with no transform tree must be flagged"
+    );
+}
