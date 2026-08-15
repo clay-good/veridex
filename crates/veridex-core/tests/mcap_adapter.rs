@@ -130,6 +130,60 @@ fn maps_channels_to_streams_and_messages_to_frames() {
 }
 
 #[test]
+fn av_rig_message_types_map_to_the_autonomy_modalities() {
+    // A ROS 2 autonomy rig: LiDAR, IMU, GNSS, ego-odometry, and a CAN channel. Each schema name must
+    // classify to its rig modality (A1), not fall back to the generic ScalarState.
+    let bytes = build_mcap(&[
+        Chan {
+            schema: "sensor_msgs/msg/PointCloud2",
+            topic: "/lidar/points",
+            times: vec![0, 100_000_000],
+        },
+        Chan {
+            schema: "sensor_msgs/msg/Imu",
+            topic: "/imu/data",
+            times: vec![0, 10_000_000],
+        },
+        Chan {
+            schema: "sensor_msgs/msg/NavSatFix",
+            topic: "/gps/fix",
+            times: vec![0, 200_000_000],
+        },
+        Chan {
+            schema: "nav_msgs/msg/Odometry",
+            topic: "/odom",
+            times: vec![0, 50_000_000],
+        },
+        Chan {
+            schema: "can_msgs/msg/Frame",
+            topic: "/can/rx",
+            times: vec![0, 5_000_000],
+        },
+    ]);
+    let path = write_temp_mcap(&bytes);
+
+    let ingested = McapAdapter
+        .ingest(
+            &Source::Local(path.to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest");
+    let ep = &ingested.dataset.episodes[0];
+    let modality = |name: &str| {
+        ep.streams
+            .iter()
+            .find(|s| s.name == name)
+            .unwrap_or_else(|| panic!("stream {name} missing"))
+            .modality
+    };
+    assert_eq!(modality("/lidar/points"), Modality::PointCloud);
+    assert_eq!(modality("/imu/data"), Modality::Imu);
+    assert_eq!(modality("/gps/fix"), Modality::Gnss);
+    assert_eq!(modality("/odom"), Modality::EgoPose);
+    assert_eq!(modality("/can/rx"), Modality::CanSignal);
+}
+
+#[test]
 fn header_library_is_extracted_as_recorder_provenance() {
     // The `mcap` writer stamps its library into the header; the adapter surfaces it as honest
     // `recorder` provenance (class Known) and as `mcap_library` dataset metadata.

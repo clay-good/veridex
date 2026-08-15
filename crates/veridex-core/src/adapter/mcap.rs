@@ -45,6 +45,11 @@ impl McapAdapter {
 }
 
 /// Infer a CDM modality from an MCAP schema name and topic using conservative keyword heuristics.
+///
+/// Recognizes the common ROS/ROS 2 autonomy sensor message types (PointCloud2/LaserScan, Imu,
+/// NavSatFix, Odometry, CAN frames) so an AV rig log's streams are typed as the rig modalities the
+/// autonomy checks expect, falling back to the manipulation modalities and finally `ScalarState`.
+/// The order matters: more specific message types are tested first.
 fn infer_modality(schema_name: &str, topic: &str) -> Modality {
     let hay = format!(
         "{} {}",
@@ -53,8 +58,24 @@ fn infer_modality(schema_name: &str, topic: &str) -> Modality {
     );
     let has = |kw: &str| hay.contains(kw);
 
+    // Camera imagery first (a CameraInfo channel is camera-related telemetry, still Video here).
     if has("image") || has("camera") || has("compressedimage") || has("video") {
         Modality::Video
+    } else if has("pointcloud")
+        || has("laserscan")
+        || has("lidar")
+        || has("radar")
+        || has("velodyne")
+    {
+        Modality::PointCloud
+    } else if has("imu") {
+        Modality::Imu
+    } else if has("navsatfix") || has("gnss") || has("gps") || has("/fix") {
+        Modality::Gnss
+    } else if has("odometry") || has("odom") {
+        Modality::EgoPose
+    } else if has("can_msgs") || has("can_frame") || has("canbus") || has("/can/") {
+        Modality::CanSignal
     } else if has("audio") {
         Modality::Audio
     } else if has("wrench") || has("force") || has("torque") || has("tactile") || has("contact") {
@@ -62,7 +83,7 @@ fn infer_modality(schema_name: &str, topic: &str) -> Modality {
     } else if has("command") || has("/cmd") || has("action") || has("setpoint") || has("control") {
         Modality::Action
     } else {
-        // joint states, IMU, odometry, generic telemetry
+        // joint states, generic telemetry
         Modality::ScalarState
     }
 }

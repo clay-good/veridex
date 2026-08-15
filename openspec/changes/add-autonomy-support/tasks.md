@@ -19,8 +19,12 @@ No code until this change is approved; this is the build plan.
       the extensions. Adapters that don't populate them are unaffected.
 
 ## A1 — Adapters (phased per design A3)
-- [ ] Extend the MCAP/ROS path to AV message types (PointCloud2, Image/CameraInfo, Imu, NavSatFix,
-      TF).
+- [~] Extend the MCAP/ROS path to AV message types (PointCloud2, Image/CameraInfo, Imu, NavSatFix,
+      TF). Schema-name classification lands first: the MCAP adapter now maps PointCloud2/LaserScan,
+      Imu, NavSatFix, Odometry, and CAN-frame schema names to the `PointCloud`/`Imu`/`Gnss`/`EgoPose`/
+      `CanSignal` modalities (`av_rig_message_types_map_to_the_autonomy_modalities`). Decoding message
+      *bodies* to populate `point_fields` (PointCloud2 fields), `CameraIntrinsics` (CameraInfo), and
+      the TF tree / `ego_poses` (TF, Odometry) — which needs CDR/schema decoding — remains a follow-up.
 - [ ] ASAM MDF/MF4 adapter → CDM; record unmapped channels.
 - [ ] CAN + DBC decoding → named signal streams; surface DBC-coverage gaps and decode errors.
 - [ ] Read scenario/map/sim references (OpenSCENARIO/OpenDRIVE/OSI) and versions.

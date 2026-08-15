@@ -142,8 +142,13 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   All are optional and absent for manipulation datasets, whose CDM and verdicts are unchanged. Every
   content-bearing field is bound into the content hash — the TF tree, intrinsics, and ego trajectory
   canonicalized order-independently, the point-field layout order-significant — with
-  `CANONICAL_VERSION` bumped 2 → 3. No AV adapter or spatial check populates or reads these yet (that
-  is A1/A2); this lands the neutral data model they will share.
+  `CANONICAL_VERSION` bumped 2 → 3. The spatial/sequence checks that read these are still to come (A2).
+- **MCAP autonomy message classification (A1, first slice)** — the MCAP adapter now recognizes the
+  common ROS/ROS 2 autonomy message types by schema name and maps them to the new rig modalities
+  (`PointCloud2`/`LaserScan` → point-cloud, `Imu` → imu, `NavSatFix` → gnss, `Odometry` → ego-pose,
+  CAN frames → can-signal), instead of lumping them into `scalar-state`. So an AV rig log's streams
+  are typed correctly at ingest; payload decoding (extracting point-field layouts, intrinsics, and TF
+  transforms from message bodies) remains a follow-up.
 
 ### Fixed
 
