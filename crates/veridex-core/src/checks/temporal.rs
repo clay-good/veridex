@@ -529,6 +529,12 @@ impl Check for ClockSkew {
     fn run(&self, dataset: &Dataset) -> Vec<Finding> {
         let mut findings = Vec::new();
         for ep in &dataset.episodes {
+            // On an autonomy rig, cross-sensor sync is reported rig-wide by `AUTONOMY.RIG_SYNC` (one
+            // finding), so skip the pairwise report here to avoid O(n²) duplicate findings. A
+            // manipulation dataset is never a rig, so its behavior is unchanged.
+            if crate::checks::autonomy::is_rig_episode(ep) {
+                continue;
+            }
             // (name, clock_id, span) for streams with a measurable span.
             let spans: Vec<(&str, &str, i64)> = ep
                 .streams

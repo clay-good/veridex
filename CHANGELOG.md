@@ -37,8 +37,9 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 - **Validation engine** — check registry with duplicate-id rejection, category/id selection,
   severity overrides, deterministic stably-ordered verdicts with a result content hash, fault
   isolation for panicking checks, and reproducibility metadata.
-- **Checks catalog** — 28 checks across five families, each finding carrying a training **risk** and
-  a **remedy** and located to the exact episode / stream / frame:
+- **Checks catalog** — 29 checks across six families (the sixth, **autonomy**, is described in its own
+  entry below), each finding carrying a training **risk** and a **remedy** and located to the exact
+  episode / stream / frame:
   - **Structural** — episode-boundary integrity (the lerobot#4143 class: a per-episode declared
     `length` from `meta/episodes.jsonl` that disagrees with the frames ingested, duplicate episode
     indices, or inverted `start_ts`/`end_ts`), degenerate
@@ -150,8 +151,16 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   are typed correctly at ingest; payload decoding (extracting point-field layouts, intrinsics, and TF
   transforms from message bodies) remains a follow-up. A new `make_demo_mcap -- <out> av` variant
   writes a five-sensor rig (camera, LiDAR, IMU, GNSS, ego-odometry) with a single-sensor sync drift
-  injected on the IMU; `veridex inspect` shows the typed rig and `veridex check` flags the drift as
-  `TEMPORAL.CLOCK_SKEW` — the neutral CDM catching a rig-sync fault on AV data end-to-end today.
+  injected on the IMU; `veridex inspect` shows the typed rig and `veridex check` flags the drift.
+- **`AUTONOMY.RIG_SYNC` — rig-wide time sync (A2)** — the first autonomy check and a new `autonomy`
+  check family. It generalizes the pairwise `TEMPORAL.CLOCK_SKEW` to N sensors: on an episode that is
+  a sensor rig (≥3 AV-native rig sensors), it reports the rig-wide sync spread — the widest sensor
+  span minus the tightest — as a **single** error naming the tightest- and widest-spanning sensors,
+  instead of O(n²) pairwise findings. On a rig it *supersedes* `CLOCK_SKEW` (which now skips rig
+  episodes), so a drifting sensor no longer floods the report; a manipulation dataset has no rig
+  sensors, so it never enters rig mode and `CLOCK_SKEW` behaves exactly as before. It shares the
+  `clock_skew_ms` tolerance (same semantics, one knob). On the `av` demo this turns four pairwise
+  `CLOCK_SKEW` errors into one clear `AUTONOMY.RIG_SYNC` finding.
 
 ### Fixed
 

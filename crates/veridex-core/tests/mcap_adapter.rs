@@ -7,6 +7,7 @@ use veridex_core::adapter::mcap::McapAdapter;
 use veridex_core::adapter::{Adapter, Coverage, Detection, IngestOptions, Source};
 use veridex_core::cdm::Modality;
 use veridex_core::check::Check;
+use veridex_core::checks::autonomy::RigSync;
 use veridex_core::checks::temporal::ClockSkew;
 
 /// One channel's messages: (schema_name, topic, message_encoding, log_times_ns).
@@ -219,15 +220,24 @@ fn an_injected_single_sensor_sync_drift_is_flagged_on_an_av_rig() {
         )
         .expect("ingest");
 
-    let findings = ClockSkew::default().run(&ingested.dataset);
-    assert!(
-        !findings.is_empty(),
-        "the drifted IMU should produce a clock-skew finding"
+    // This is a rig (4 AV-native sensors), so the rig-wide check reports the drift as a single
+    // finding naming the drifted IMU...
+    let rig = RigSync::default().run(&ingested.dataset);
+    assert_eq!(
+        rig.len(),
+        1,
+        "one rig-wide sync finding, not O(n^2) pairwise"
     );
-    assert!(findings.iter().all(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
+    assert_eq!(rig[0].code, "AUTONOMY.RIG_SYNC");
     assert!(
-        findings.iter().any(|f| f.message.contains("/imu/data")),
-        "the drifted sensor must be named in the finding"
+        rig[0].message.contains("/imu/data"),
+        "the drifted sensor must be named: {}",
+        rig[0].message
+    );
+    // ...and the pairwise clock-skew check stays quiet on a rig (RigSync supersedes it).
+    assert!(
+        ClockSkew::default().run(&ingested.dataset).is_empty(),
+        "pairwise CLOCK_SKEW must not double-report on a rig"
     );
 }
 

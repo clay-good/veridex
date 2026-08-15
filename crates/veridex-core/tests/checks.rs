@@ -5,7 +5,7 @@ use veridex_core::cdm::{
     ProvenanceScope, Stream, ValueRef,
 };
 use veridex_core::check::{Check, Severity};
-use veridex_core::checks::{provenance, semantic, statistical, structural, temporal};
+use veridex_core::checks::{autonomy, provenance, semantic, statistical, structural, temporal};
 
 fn vref() -> ValueRef {
     ValueRef {
@@ -1082,7 +1082,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 28);
+    assert_eq!(verdict.executed_checks.len(), 29);
 }
 
 #[test]
@@ -1896,4 +1896,85 @@ fn non_finite_tolerances_are_sanitized_to_defaults() {
     assert_eq!(clean.rate_deviation, d.rate_deviation);
     assert_eq!(clean.gap_factor, d.gap_factor);
     assert!(clean.rate_deviation.is_finite() && clean.gap_factor.is_finite());
+}
+
+// ---- autonomy: rig-wide sync ----
+
+/// A rig-sensor stream of a given modality spanning `span_ns` from t=0.
+fn rig_stream(name: &str, modality: Modality, span_ns: i64) -> Stream {
+    let mut s = stream(name, "rig", None, &[0, span_ns]);
+    s.modality = modality;
+    s
+}
+
+#[test]
+fn a_rig_with_a_drifting_sensor_is_flagged_once() {
+    // Three AV-native rig sensors: LiDAR and GNSS span 1.0 s, the IMU only 0.7 s (0.3 s drift).
+    let ep = episode(
+        0,
+        vec![
+            rig_stream("lidar", Modality::PointCloud, 1_000_000_000),
+            rig_stream("gnss", Modality::Gnss, 1_000_000_000),
+            rig_stream("imu", Modality::Imu, 700_000_000),
+        ],
+    );
+    let f = autonomy::RigSync::default().run(&dataset(vec![ep]));
+    assert_eq!(f.len(), 1, "one rig-wide finding, not pairwise");
+    assert_eq!(f[0].code, "AUTONOMY.RIG_SYNC");
+    assert_eq!(f[0].severity, Severity::Error);
+    assert!(f[0].message.contains("imu"), "names the drifted sensor");
+}
+
+#[test]
+fn a_synced_rig_is_clean() {
+    let ep = episode(
+        0,
+        vec![
+            rig_stream("lidar", Modality::PointCloud, 1_000_000_000),
+            rig_stream("gnss", Modality::Gnss, 1_000_000_000),
+            rig_stream("imu", Modality::Imu, 1_000_000_000),
+        ],
+    );
+    assert!(autonomy::RigSync::default()
+        .run(&dataset(vec![ep]))
+        .is_empty());
+}
+
+#[test]
+fn too_few_rig_sensors_is_not_a_rig() {
+    // Only two AV-native sensors — below the rig threshold, so the rig check abstains entirely
+    // (the pairwise TEMPORAL.CLOCK_SKEW still covers this case).
+    let ep = episode(
+        0,
+        vec![
+            rig_stream("lidar", Modality::PointCloud, 1_000_000_000),
+            rig_stream("imu", Modality::Imu, 700_000_000),
+        ],
+    );
+    assert!(autonomy::RigSync::default()
+        .run(&dataset(vec![ep]))
+        .is_empty());
+}
+
+#[test]
+fn a_manipulation_dataset_is_never_a_rig() {
+    // Video + scalar-state streams with a big duration drift: RigSync must abstain (not a rig), while
+    // the pairwise ClockSkew still fires — manipulation behavior is unchanged.
+    let ep = episode(
+        0,
+        vec![
+            rig_stream("cam", Modality::Video, 1_000_000_000),
+            rig_stream("state", Modality::ScalarState, 1_500_000_000),
+            rig_stream("action", Modality::Action, 1_000_000_000),
+        ],
+    );
+    let d = dataset(vec![ep]);
+    assert!(autonomy::RigSync::default().run(&d).is_empty());
+    assert!(
+        temporal::ClockSkew::default()
+            .run(&d)
+            .iter()
+            .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"),
+        "pairwise clock-skew still applies to a manipulation dataset"
+    );
 }

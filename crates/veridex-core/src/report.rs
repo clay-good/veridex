@@ -433,5 +433,6 @@ fn category_tag(f: &crate::check::Finding) -> &'static str {
         Semantic => "semantic",
         Video => "video",
         Provenance => "provenance",
+        Autonomy => "autonomy",
     }
 }

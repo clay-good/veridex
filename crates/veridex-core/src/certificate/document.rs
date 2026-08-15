@@ -24,6 +24,7 @@ const ALL_CATEGORIES: &[Category] = &[
     Category::Semantic,
     Category::Video,
     Category::Provenance,
+    Category::Autonomy,
 ];
 
 /// Caller-supplied issuance metadata. Timestamps are caller-supplied so signing stays reproducible
@@ -127,5 +128,6 @@ fn category_tag(c: Category) -> &'static str {
         Category::Semantic => "semantic",
         Category::Video => "video",
         Category::Provenance => "provenance",
+        Category::Autonomy => "autonomy",
     }
 }

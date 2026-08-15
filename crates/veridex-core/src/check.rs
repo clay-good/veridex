@@ -48,6 +48,8 @@ pub enum Category {
     Video,
     /// Provenance presence and consistency.
     Provenance,
+    /// Autonomy sensor-rig checks (rig-wide sync, spatial calibration, ego-pose, sequence).
+    Autonomy,
 }
 
 impl Category {
@@ -60,6 +62,7 @@ impl Category {
             Category::Semantic => "semantic",
             Category::Video => "video",
             Category::Provenance => "provenance",
+            Category::Autonomy => "autonomy",
         }
     }
 }

@@ -30,7 +30,12 @@ No code until this change is approved; this is the build plan.
 - [ ] Read scenario/map/sim references (OpenSCENARIO/OpenDRIVE/OSI) and versions.
 
 ## A2 — Autonomy checks
-- [ ] `AUTONOMY.RIG_SYNC` — rig-wide time sync with trigger/latency offsets.
+- [~] `AUTONOMY.RIG_SYNC` — rig-wide time sync. Implemented in `checks/autonomy.rs` as the N-sensor
+      generalization of `TEMPORAL.CLOCK_SKEW`: on a rig episode (≥3 AV-native sensors) it reports the
+      rig-wide span spread as one finding and suppresses the pairwise `CLOCK_SKEW`. New `autonomy`
+      check family/category. Proven end-to-end on the `av` demo + unit tests. Explicit trigger/latency
+      offsets (a per-sensor expected-offset table) remain a follow-up — needs decoded per-sensor
+      metadata (A1).
 - [ ] `AUTONOMY.LIDAR_CAM_REPROJ` + extrinsic/TF consistency + missing-calibration checks.
 - [ ] `AUTONOMY.EGO_POSE_CONTINUITY` + GNSS/IMU/odometry agreement + GNSS geospatial sanity.
 - [ ] `AUTONOMY.SEQUENCE_COMPLETE` — per-tick sensor completeness + frame-drop tolerance.

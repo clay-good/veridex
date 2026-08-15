@@ -169,6 +169,22 @@ impl Modality {
             Modality::EgoPose => "ego-pose",
         }
     }
+
+    /// Whether this modality is an **AV-native rig sensor** (LiDAR/radar, IMU, GNSS, CAN, ego-pose).
+    /// Used to detect an autonomy rig: these modalities never appear in a manipulation dataset, so a
+    /// dataset carrying several is a sensor rig, which routes cross-sensor sync to the rig-wide
+    /// `AUTONOMY.RIG_SYNC` check instead of the pairwise `TEMPORAL.CLOCK_SKEW`. Camera (`Video`) is a
+    /// rig sensor too but also appears in manipulation, so it does not mark a rig on its own.
+    pub fn is_rig_sensor(self) -> bool {
+        matches!(
+            self,
+            Modality::PointCloud
+                | Modality::Imu
+                | Modality::Gnss
+                | Modality::CanSignal
+                | Modality::EgoPose
+        )
+    }
 }
 
 /// One stream within an episode (e.g. a camera, a joint-state channel).

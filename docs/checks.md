@@ -83,3 +83,13 @@ Severities below are the defaults.
 
 Provenance findings do not lower the data-quality sub-score; provenance coverage is a separate 30%
 axis of the [trust score](rubric-v1.md).
+
+## Autonomy — is the sensor rig internally consistent?
+
+These checks run only on an **autonomy sensor rig** — an episode carrying at least three AV-native
+rig sensors (LiDAR/radar, IMU, GNSS, CAN, or ego-pose). A manipulation dataset has none, so they
+never fire on it.
+
+| Check id | Finding code | Severity | Fires when |
+|---|---|---|---|
+| `autonomy.rig-sync` | `AUTONOMY.RIG_SYNC` | error | The rig's sensors span materially different durations over an episode — the widest sensor span minus the tightest exceeds the tolerance (default 50 ms, shares `clock_skew_ms`). The N-sensor generalization of `TEMPORAL.CLOCK_SKEW`: one finding names the tightest- and widest-spanning sensors and the drift, and on a rig it *replaces* the pairwise clock-skew report to avoid O(n²) findings for one drifting sensor. |

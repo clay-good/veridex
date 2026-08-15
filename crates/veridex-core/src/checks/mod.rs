@@ -4,6 +4,7 @@
 //! [`statistical`] (range/sanity over stored stats), [`semantic`] (task-string quality, stream-key clarity), and
 //! [`provenance`] completeness.
 
+pub mod autonomy;
 pub mod provenance;
 pub mod semantic;
 pub mod statistical;
@@ -54,6 +55,10 @@ pub fn standard_checks_with(t: &Tolerances) -> Vec<Box<dyn Check>> {
         Box::new(temporal::RateConsistency),
         Box::new(temporal::EpisodeDuration {
             factor: t.episode_duration_factor,
+        }),
+        Box::new(autonomy::RigSync {
+            // Shares the cross-sensor sync tolerance with ClockSkew: same semantics, one knob.
+            tolerance_ns: t.clock_skew_ns,
         }),
         Box::new(statistical::RangeSanity),
         Box::new(statistical::StoredVsObserved),
