@@ -133,3 +133,132 @@ impl Check for RigSync {
         findings
     }
 }
+
+/// **Rig sequence completeness (design A2).** Over an episode, each rig sensor should deliver frames
+/// steadily at its own cadence; a sensor that quietly drops a fraction of its frames leaves the rig
+/// with incomplete per-tick snapshots — holes a world model trains straight through. This measures the
+/// **aggregate** drop rate: the observed frame count against the count the sensor's own median
+/// inter-frame interval implies over its active span, flagging a shortfall beyond
+/// [`SequenceComplete::max_drop_fraction`].
+///
+/// It is complementary to the per-stream checks: [`Gaps`](crate::checks::temporal::Gaps) catches a
+/// *single* oversized interval, and [`RateConformance`](crate::checks::temporal::RateConformance)
+/// needs a *declared* rate (which MCAP rigs don't carry) — a rig sensor can slip past both while
+/// still dropping, say, 15% of its frames as many small holes. The median-interval baseline is robust
+/// to those holes (most intervals are still nominal), so it needs no declared rate and no shared clock.
+/// Only rig episodes are checked, and only streams with enough frames for a stable median.
+pub struct SequenceComplete {
+    /// Maximum tolerated fraction of expected frames a sensor may be missing before it is flagged.
+    pub max_drop_fraction: f64,
+}
+
+impl Default for SequenceComplete {
+    fn default() -> Self {
+        SequenceComplete {
+            max_drop_fraction: 0.05, // 5%
+        }
+    }
+}
+
+impl SequenceComplete {
+    /// Minimum frames for a stable median inter-frame interval; below this the drop estimate is noise.
+    const MIN_FRAMES: usize = 8;
+}
+
+impl Check for SequenceComplete {
+    fn id(&self) -> &'static str {
+        "autonomy.sequence-complete"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["AUTONOMY.SEQUENCE_COMPLETE"]
+    }
+    fn title(&self) -> &'static str {
+        "Rig sequence completeness"
+    }
+    fn category(&self) -> Category {
+        Category::Autonomy
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Warning
+    }
+    fn scope(&self) -> Scope {
+        Scope::Episode
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        for ep in &dataset.episodes {
+            if !is_rig_episode(ep) {
+                continue;
+            }
+            for stream in &ep.streams {
+                if stream.frames.len() < Self::MIN_FRAMES {
+                    continue;
+                }
+                // Median positive inter-frame interval — the sensor's own cadence, robust to the very
+                // drops we are hunting (a minority of doubled intervals doesn't move the median).
+                let mut intervals: Vec<i64> = stream
+                    .frames
+                    .windows(2)
+                    .map(|w| w[1].ts.saturating_sub(w[0].ts))
+                    .filter(|d| *d > 0)
+                    .collect();
+                if intervals.is_empty() {
+                    continue;
+                }
+                intervals.sort_unstable();
+                let median = intervals[intervals.len() / 2] as f64;
+                let Some((lo, hi)) = span_bounds(stream) else {
+                    continue;
+                };
+                let span = (hi - lo) as f64;
+                if median <= 0.0 || span <= 0.0 {
+                    continue;
+                }
+                // Frames the cadence implies over the active span, vs what actually arrived.
+                let expected = span / median + 1.0;
+                let observed = stream.frames.len() as f64;
+                if observed >= expected {
+                    continue;
+                }
+                let drop_fraction = (expected - observed) / expected;
+                if drop_fraction > self.max_drop_fraction {
+                    findings.push(
+                        Finding::new(
+                            self.id(),
+                            Category::Autonomy,
+                            Severity::Warning,
+                            Location::Stream {
+                                episode: ep.index,
+                                stream: stream.name.clone(),
+                            },
+                            "AUTONOMY.SEQUENCE_COMPLETE",
+                            format!(
+                                "episode {}: sensor `{}` dropped ~{:.0}% of its frames — {} arrived \
+                                 but its ~{:.1} ms cadence over the episode implies ~{:.0}",
+                                ep.index,
+                                stream.name,
+                                drop_fraction * 100.0,
+                                stream.frames.len(),
+                                median / 1e6,
+                                expected,
+                            ),
+                        )
+                        .with_risk(
+                            "A sensor missing a fraction of its frames leaves the rig with incomplete \
+                             per-tick snapshots: fusion and world-model training fill or skip the \
+                             holes, learning from moments where that modality was absent.",
+                        )
+                        .with_remedy(
+                            "Investigate the recorder/transport for that sensor (bandwidth, buffer \
+                             overruns, cabling); re-record or mark the affected segments.",
+                        ),
+                    );
+                }
+            }
+        }
+        findings
+    }
+}

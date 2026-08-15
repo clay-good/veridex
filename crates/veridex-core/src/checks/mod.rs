@@ -60,6 +60,7 @@ pub fn standard_checks_with(t: &Tolerances) -> Vec<Box<dyn Check>> {
             // Shares the cross-sensor sync tolerance with ClockSkew: same semantics, one knob.
             tolerance_ns: t.clock_skew_ns,
         }),
+        Box::new(autonomy::SequenceComplete::default()),
         Box::new(statistical::RangeSanity),
         Box::new(statistical::StoredVsObserved),
         Box::new(statistical::Saturation {

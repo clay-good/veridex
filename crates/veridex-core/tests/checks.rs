@@ -1082,7 +1082,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 29);
+    assert_eq!(verdict.executed_checks.len(), 30);
 }
 
 #[test]
@@ -1977,4 +1977,73 @@ fn a_manipulation_dataset_is_never_a_rig() {
             .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"),
         "pairwise clock-skew still applies to a manipulation dataset"
     );
+}
+
+// ---- autonomy: sequence completeness ----
+
+/// A rig-sensor stream of a given modality at explicit frame timestamps.
+fn rig_stream_ts(name: &str, modality: Modality, ts: &[i64]) -> Stream {
+    let mut s = stream(name, "rig", None, ts);
+    s.modality = modality;
+    s
+}
+
+#[test]
+fn a_dropped_frame_sensor_is_flagged_incomplete() {
+    // 20 nominal ticks at 100 ms (0..1900 ms). LiDAR and GNSS are complete; the IMU is missing 5 of
+    // its 20 frames (25% drop), spread out so no single gap is huge and the median stays ~100 ms.
+    let full: Vec<i64> = (0..20).map(|i| i * 100_000_000).collect();
+    let dropped: Vec<i64> = full
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| ![3usize, 7, 11, 15, 17].contains(i))
+        .map(|(_, t)| *t)
+        .collect();
+    let ep = episode(
+        0,
+        vec![
+            rig_stream_ts("lidar", Modality::PointCloud, &full),
+            rig_stream_ts("gnss", Modality::Gnss, &full),
+            rig_stream_ts("imu", Modality::Imu, &dropped),
+        ],
+    );
+    let f = autonomy::SequenceComplete::default().run(&dataset(vec![ep]));
+    assert_eq!(f.len(), 1, "only the dropping sensor is flagged");
+    assert_eq!(f[0].code, "AUTONOMY.SEQUENCE_COMPLETE");
+    assert_eq!(f[0].severity, Severity::Warning);
+    assert!(f[0].message.contains("imu"), "names the incomplete sensor");
+}
+
+#[test]
+fn a_complete_rig_sequence_is_clean() {
+    let full: Vec<i64> = (0..20).map(|i| i * 100_000_000).collect();
+    let ep = episode(
+        0,
+        vec![
+            rig_stream_ts("lidar", Modality::PointCloud, &full),
+            rig_stream_ts("gnss", Modality::Gnss, &full),
+            rig_stream_ts("imu", Modality::Imu, &full),
+        ],
+    );
+    assert!(autonomy::SequenceComplete::default()
+        .run(&dataset(vec![ep]))
+        .is_empty());
+}
+
+#[test]
+fn sequence_completeness_only_runs_on_rigs() {
+    // A manipulation dataset with a dropping stream is not a rig, so the check abstains.
+    let full: Vec<i64> = (0..20).map(|i| i * 100_000_000).collect();
+    let dropped: Vec<i64> = full.iter().step_by(2).copied().collect();
+    let ep = episode(
+        0,
+        vec![
+            rig_stream_ts("cam", Modality::Video, &full),
+            rig_stream_ts("state", Modality::ScalarState, &dropped),
+            rig_stream_ts("action", Modality::Action, &full),
+        ],
+    );
+    assert!(autonomy::SequenceComplete::default()
+        .run(&dataset(vec![ep]))
+        .is_empty());
 }

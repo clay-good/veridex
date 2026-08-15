@@ -7,7 +7,7 @@ use veridex_core::adapter::mcap::McapAdapter;
 use veridex_core::adapter::{Adapter, Coverage, Detection, IngestOptions, Source};
 use veridex_core::cdm::Modality;
 use veridex_core::check::Check;
-use veridex_core::checks::autonomy::RigSync;
+use veridex_core::checks::autonomy::{RigSync, SequenceComplete};
 use veridex_core::checks::temporal::ClockSkew;
 
 /// One channel's messages: (schema_name, topic, message_encoding, log_times_ns).
@@ -560,5 +560,51 @@ fn different_frame_content_changes_the_cdm_hash() {
         veridex_core::content_hash(&a),
         veridex_core::content_hash(&b),
         "differing frame content must change the CDM hash"
+    );
+}
+
+#[test]
+fn a_frame_dropping_sensor_is_flagged_incomplete_end_to_end() {
+    // A rig where LiDAR and GNSS record 20 steady 100 ms ticks, but the IMU (nominally 100 ms too)
+    // drops 5 of its 20 frames — a 25% aggregate drop with no single huge gap. The completeness check
+    // must flag the IMU by name, through the real MCAP adapter.
+    let full: Vec<u64> = (0..20).map(|i| i * 100_000_000).collect();
+    let dropped: Vec<u64> = full
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| ![3usize, 7, 11, 15, 17].contains(i))
+        .map(|(_, t)| *t)
+        .collect();
+    let bytes = build_mcap(&[
+        Chan {
+            schema: "sensor_msgs/msg/PointCloud2",
+            topic: "/lidar/points",
+            times: full.clone(),
+        },
+        Chan {
+            schema: "sensor_msgs/msg/NavSatFix",
+            topic: "/gps/fix",
+            times: full,
+        },
+        Chan {
+            schema: "sensor_msgs/msg/Imu",
+            topic: "/imu/data",
+            times: dropped,
+        },
+    ]);
+    let path = write_temp_mcap(&bytes);
+    let ingested = McapAdapter
+        .ingest(
+            &Source::Local(path.to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest");
+    let f = SequenceComplete::default().run(&ingested.dataset);
+    assert_eq!(f.len(), 1, "only the dropping sensor is flagged");
+    assert_eq!(f[0].code, "AUTONOMY.SEQUENCE_COMPLETE");
+    assert!(
+        f[0].message.contains("/imu/data"),
+        "names the incomplete sensor: {}",
+        f[0].message
     );
 }

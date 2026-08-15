@@ -38,7 +38,12 @@ No code until this change is approved; this is the build plan.
       metadata (A1).
 - [ ] `AUTONOMY.LIDAR_CAM_REPROJ` + extrinsic/TF consistency + missing-calibration checks.
 - [ ] `AUTONOMY.EGO_POSE_CONTINUITY` + GNSS/IMU/odometry agreement + GNSS geospatial sanity.
-- [ ] `AUTONOMY.SEQUENCE_COMPLETE` — per-tick sensor completeness + frame-drop tolerance.
+- [~] `AUTONOMY.SEQUENCE_COMPLETE` — per-tick sensor completeness + frame-drop tolerance. Implemented
+      as an aggregate frame-drop check: per rig sensor, observed frame count vs the count its median
+      inter-frame cadence implies over its active span, flagged beyond `max_drop_fraction` (default
+      5%). Robust median baseline, no declared rate needed; rig-only. Proven end-to-end through the
+      MCAP adapter + unit tests. Windowed cross-sensor per-tick alignment (all sensors present in each
+      tick) is a richer follow-up once decoded per-sensor cadences/offsets exist.
 
 ## A3 — Provenance + coverage
 - [ ] Autonomy provenance elements (sensor/firmware, calibration session, platform/drive IDs,

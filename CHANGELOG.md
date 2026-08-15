@@ -37,8 +37,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 - **Validation engine** — check registry with duplicate-id rejection, category/id selection,
   severity overrides, deterministic stably-ordered verdicts with a result content hash, fault
   isolation for panicking checks, and reproducibility metadata.
-- **Checks catalog** — 29 checks across six families (the sixth, **autonomy**, is described in its own
-  entry below), each finding carrying a training **risk** and a **remedy** and located to the exact
+- **Checks catalog** — 30 checks across six families (the sixth, **autonomy**, is described in its own
+  entries below), each finding carrying a training **risk** and a **remedy** and located to the exact
   episode / stream / frame:
   - **Structural** — episode-boundary integrity (the lerobot#4143 class: a per-episode declared
     `length` from `meta/episodes.jsonl` that disagrees with the frames ingested, duplicate episode
@@ -161,6 +161,13 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   sensors, so it never enters rig mode and `CLOCK_SKEW` behaves exactly as before. It shares the
   `clock_skew_ms` tolerance (same semantics, one knob). On the `av` demo this turns four pairwise
   `CLOCK_SKEW` errors into one clear `AUTONOMY.RIG_SYNC` finding.
+- **`AUTONOMY.SEQUENCE_COMPLETE` — rig sequence completeness (A2)** — flags a rig sensor that quietly
+  drops an aggregate fraction of its frames (default > 5%): its observed frame count against the count
+  its own median inter-frame cadence implies over its active span. It catches many small drops that
+  `TEMPORAL.GAP` (a single oversized interval) and `TEMPORAL.RATE` (which needs a declared rate MCAP
+  rigs lack) both miss. Rig-only, median-baseline (robust to the drops it hunts, no declared rate or
+  shared clock needed), and skips streams with too few frames for a stable estimate. Proven end-to-end
+  through the MCAP adapter (`a_frame_dropping_sensor_is_flagged_incomplete_end_to_end`).
 
 ### Fixed
 
