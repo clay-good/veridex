@@ -207,11 +207,13 @@ cargo clippy --all-targets
 
 **Early implementation, runs end-to-end.** Against a full [OpenSpec](openspec/) design, these are
 in and tested: the Canonical Dataset Model with deterministic content hashing; the validation
-engine; the structural / temporal / statistical / semantic / provenance check catalog (including the headline
-`TEMPORAL.CLOCK_SKEW` and cross-episode dtype/shape consistency); the v1 trust-score rubric;
-terminal + JSON reporting; **LeRobot v3 and MCAP
-adapters** with a passing cross-format neutrality gate (the same logical dataset yields equivalent
-CDMs in both formats); Croissant + W3C PROV provenance emit; Ed25519 **certificate signing with
+engine; the structural / temporal / statistical / semantic / provenance / **autonomy** check catalog
+(including the headline `TEMPORAL.CLOCK_SKEW`, cross-episode dtype/shape consistency, and the
+sensor-rig checks `AUTONOMY.RIG_SYNC` / `SEQUENCE_COMPLETE` / `EGO_POSE_CONTINUITY` /
+`CALIBRATION_INCOMPLETE`); the v1 trust-score rubric and the `world-model-ready` readiness profile;
+terminal + JSON reporting; **LeRobot v3, MCAP (with ROS-message decode into an autonomy rig), and
+CAN+DBC adapters** with a passing cross-format neutrality gate (the same logical dataset yields
+equivalent CDMs in both formats); Croissant + W3C PROV provenance emit; Ed25519 **certificate signing with
 offline verification** (tamper + transplant rejection); a working CLI (`check`, `inspect`, `checks`,
 `certify`, `verify`, `provenance`, `keygen`, `diff`) — see the [Quickstart](#quickstart); and **Python
 bindings** (`import veridex`, exposing `check`/`inspect`/`content_hash`/`catalog`/`provenance`/`diff`/`keygen`/`certify`/`verify`) that call the same

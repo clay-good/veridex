@@ -29,7 +29,14 @@ No code until this change is approved; this is the build plan.
       per-decoder unit tests. Validity ranges on decoded transforms/intrinsics are left open (time-
       varying calibration from per-message stamps is a refinement).
 - [ ] ASAM MDF/MF4 adapter → CDM; record unmapped channels.
-- [ ] CAN + DBC decoding → named signal streams; surface DBC-coverage gaps and decode errors.
+- [~] CAN + DBC decoding → named signal streams; surface DBC-coverage gaps and decode errors.
+      `adapter/candbc.rs`: ingests a directory holding a `.dbc` + candump `.log`/`.asc`, parses the
+      DBC (`BO_`/`SG_`), decodes each frame's little-endian (Intel) signals (factor/offset, sign
+      extension) into one `CanSignal` stream per `Message.Signal`, and reports DBC-coverage gaps
+      (undefined CAN ids) and undecoded Motorola signals as `unmapped` fields. Registered in
+      `default_registry` (autodetected). Decoded values fingerprinted into the content hash. Unit +
+      integration + CLI e2e tests. Motorola/big-endian bit numbering and recomputed signal stats
+      (for statistical checks) remain follow-ups.
 - [ ] Read scenario/map/sim references (OpenSCENARIO/OpenDRIVE/OSI) and versions.
 
 ## A2 — Autonomy checks

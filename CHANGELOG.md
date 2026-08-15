@@ -208,6 +208,16 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   distribution is the training team's call. The MCAP adapter extracts recognized scenario metadata
   keys into episode labels, and `veridex inspect` shows a "scenario coverage" section.
 
+- **CAN + DBC adapter** — a new AV-native ingestion path (`adapter/candbc.rs`). It ingests a directory
+  holding a `.dbc` signal database and one or more candump ASCII logs (`.log`/`.asc`), parses the DBC
+  (`BO_` messages, `SG_` signals), and decodes each CAN frame's little-endian (Intel) signals —
+  applying the factor/offset and sign-extension — into one `CanSignal` stream per `Message.Signal`.
+  Two fidelity signals are surfaced as `unmapped` fields: DBC-coverage gaps (CAN ids seen in the log
+  with no DBC definition) and signals not yet decoded (Motorola/big-endian byte order). Decoded values
+  are fingerprinted into the CDM content hash. Autodetected by the registry (a directory with a
+  `.dbc`). Dependency-free text parsing; unit, integration, and CLI end-to-end tests. Motorola bit
+  numbering and recomputed signal stats (to feed the statistical checks) are follow-ups.
+
 ### Fixed
 
 - The `veridex-data` wheel could not build: `pyproject.toml` was missing a `version` (now taken

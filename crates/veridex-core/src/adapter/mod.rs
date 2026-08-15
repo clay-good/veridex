@@ -12,6 +12,7 @@
 //!   [`IngestError::UnsupportedFormat`], which lists the formats that *are* supported, rather than
 //!   partially parsing.
 
+pub mod candbc;
 pub(crate) mod cdr;
 pub mod lerobot;
 pub mod mcap;
@@ -264,10 +265,11 @@ fn check_source_exists(source: &Source) -> Result<(), IngestError> {
     Ok(())
 }
 
-/// A registry preloaded with the standard v0.1 adapters: LeRobot v3 and MCAP.
+/// A registry preloaded with the standard adapters: LeRobot v3, MCAP, and CAN+DBC.
 pub fn default_registry() -> AdapterRegistry {
     let mut reg = AdapterRegistry::new();
     reg.register(Box::new(lerobot::LeRobotAdapter));
     reg.register(Box::new(mcap::McapAdapter));
+    reg.register(Box::new(candbc::CanDbcAdapter));
     reg
 }
