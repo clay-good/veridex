@@ -47,6 +47,11 @@ No code until this change is approved; this is the build plan.
 ## A5 — Proof
 - [ ] End-to-end on a real multi-sensor rig log (MF4 and/or ROS bag): LiDAR + multi-camera + CAN +
       GNSS/IMU.
-- [ ] Reproduce detection of an injected single-sensor sync drift and a LiDAR-camera miscalibration.
+- [~] Reproduce detection of an injected single-sensor sync drift and a LiDAR-camera miscalibration.
+      The sync-drift half is reproduced end-to-end on a synthetic rig: `make_demo_mcap -- <out> av`
+      writes a five-sensor MCAP rig (camera/LiDAR/IMU/GNSS/odometry) with the IMU span cut ~0.30 s,
+      which `veridex check` flags as `TEMPORAL.CLOCK_SKEW` naming the IMU
+      (`an_injected_single_sensor_sync_drift_is_flagged_on_an_av_rig`). The LiDAR-camera
+      miscalibration half needs the reprojection check (A2) and decoded calibration (A1).
 - [ ] Issue and offline-verify a world-model-readiness certificate.
 - [ ] Docs: an autonomy quickstart and the readiness-profile reference.

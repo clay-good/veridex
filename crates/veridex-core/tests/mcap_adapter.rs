@@ -6,6 +6,8 @@ use std::io::Cursor;
 use veridex_core::adapter::mcap::McapAdapter;
 use veridex_core::adapter::{Adapter, Coverage, Detection, IngestOptions, Source};
 use veridex_core::cdm::Modality;
+use veridex_core::check::Check;
+use veridex_core::checks::temporal::ClockSkew;
 
 /// One channel's messages: (schema_name, topic, message_encoding, log_times_ns).
 struct Chan {
@@ -181,6 +183,52 @@ fn av_rig_message_types_map_to_the_autonomy_modalities() {
     assert_eq!(modality("/gps/fix"), Modality::Gnss);
     assert_eq!(modality("/odom"), Modality::EgoPose);
     assert_eq!(modality("/can/rx"), Modality::CanSignal);
+}
+
+#[test]
+fn an_injected_single_sensor_sync_drift_is_flagged_on_an_av_rig() {
+    // A rig where camera/LiDAR/GNSS span ~1.0 s but the IMU is cut to ~0.70 s — a single-sensor sync
+    // drift of ~0.30 s. The duration-based cross-stream skew check must flag it and name the IMU.
+    let bytes = build_mcap(&[
+        Chan {
+            schema: "sensor_msgs/msg/Image",
+            topic: "/camera/image",
+            times: (0..31).map(|i| i * 33_000_000).collect(),
+        },
+        Chan {
+            schema: "sensor_msgs/msg/PointCloud2",
+            topic: "/lidar/points",
+            times: (0..11).map(|i| i * 100_000_000).collect(),
+        },
+        Chan {
+            schema: "sensor_msgs/msg/NavSatFix",
+            topic: "/gps/fix",
+            times: (0..11).map(|i| i * 100_000_000).collect(),
+        },
+        Chan {
+            schema: "sensor_msgs/msg/Imu",
+            topic: "/imu/data",
+            times: (0..101).map(|i| i * 7_000_000).collect(),
+        },
+    ]);
+    let path = write_temp_mcap(&bytes);
+    let ingested = McapAdapter
+        .ingest(
+            &Source::Local(path.to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest");
+
+    let findings = ClockSkew::default().run(&ingested.dataset);
+    assert!(
+        !findings.is_empty(),
+        "the drifted IMU should produce a clock-skew finding"
+    );
+    assert!(findings.iter().all(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
+    assert!(
+        findings.iter().any(|f| f.message.contains("/imu/data")),
+        "the drifted sensor must be named in the finding"
+    );
 }
 
 #[test]

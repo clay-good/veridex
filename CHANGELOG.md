@@ -148,7 +148,10 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   (`PointCloud2`/`LaserScan` → point-cloud, `Imu` → imu, `NavSatFix` → gnss, `Odometry` → ego-pose,
   CAN frames → can-signal), instead of lumping them into `scalar-state`. So an AV rig log's streams
   are typed correctly at ingest; payload decoding (extracting point-field layouts, intrinsics, and TF
-  transforms from message bodies) remains a follow-up.
+  transforms from message bodies) remains a follow-up. A new `make_demo_mcap -- <out> av` variant
+  writes a five-sensor rig (camera, LiDAR, IMU, GNSS, ego-odometry) with a single-sensor sync drift
+  injected on the IMU; `veridex inspect` shows the typed rig and `veridex check` flags the drift as
+  `TEMPORAL.CLOCK_SKEW` — the neutral CDM catching a rig-sync fault on AV data end-to-end today.
 
 ### Fixed
 
