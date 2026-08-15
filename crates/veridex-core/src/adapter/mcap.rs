@@ -6,6 +6,9 @@
 //! Mapping:
 //! - each MCAP **channel** (topic) → a CDM [`Stream`], with modality inferred from the schema name
 //!   and topic;
+//! - for the common ROS 2 autonomy message types, the message **header** (never the bulk payload) is
+//!   CDR-decoded to populate the rig CDM: `PointCloud2` → `Stream.point_fields`, `CameraInfo` and
+//!   `TFMessage` → `Dataset.calibration`, `Odometry` → `Episode.ego_poses` (see [`super::cdr`]);
 //! - each **message** → a [`Frame`] whose timestamp is the message `log_time` (ns);
 //! - all channels share the single MCAP log clock (`clock_id = "mcap-log"`); MCAP does not separate
 //!   per-sensor clocks, so cross-stream skew is inferred from duration drift (the `TEMPORAL.CLOCK_SKEW`
@@ -23,8 +26,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use crate::cdm::{
-    Dataset, Episode, Frame, Modality, Provenance, ProvenanceClass, ProvenanceElement,
-    ProvenanceScope, Stream, ValueRef,
+    Calibration, CameraIntrinsics, Dataset, EgoPose, Episode, Frame, Modality, PointField,
+    Provenance, ProvenanceClass, ProvenanceElement, ProvenanceScope, Stream, Transform, ValueRef,
 };
 
 use super::{
@@ -92,6 +95,18 @@ fn infer_modality(schema_name: &str, topic: &str) -> Modality {
 struct StreamBuilder {
     modality: Modality,
     frames: Vec<Frame>,
+    /// Per-point field layout, decoded from the first `PointCloud2` message on this topic (if any).
+    point_fields: Option<Vec<PointField>>,
+}
+
+/// Match a ROS message schema name (e.g. `sensor_msgs/msg/PointCloud2`) by its final type segment,
+/// tolerant of the `pkg/msg/Type` and older `pkg/Type` spellings.
+fn schema_is(schema_name: &str, ty: &str) -> bool {
+    schema_name
+        .rsplit('/')
+        .next()
+        .map(|last| last == ty)
+        .unwrap_or(false)
 }
 
 /// Honest provenance records read from an MCAP file: the header, any Metadata records (a name plus a
@@ -185,6 +200,13 @@ impl Adapter for McapAdapter {
         let mut min_ts: Option<i64> = None;
         let mut max_ts: Option<i64> = None;
 
+        // Autonomy rig metadata decoded from AV message *headers* (not their bulk payload): the ego
+        // trajectory from Odometry, camera intrinsics from CameraInfo (first per camera topic), and the
+        // static transform tree from TFMessage (first per parent→child edge). See `super::cdr`.
+        let mut ego_poses: Vec<EgoPose> = Vec::new();
+        let mut intrinsics: BTreeMap<String, CameraIntrinsics> = BTreeMap::new();
+        let mut transforms: BTreeMap<(String, String), Transform> = BTreeMap::new();
+
         for message in mcap::MessageStream::new(&bytes).map_err(|e| IngestError::Parse {
             format_id: "mcap",
             message: e.to_string(),
@@ -213,19 +235,46 @@ impl Adapter for McapAdapter {
                 .or_insert_with(|| StreamBuilder {
                     modality: infer_modality(schema_name, &topic),
                     frames: Vec::new(),
+                    point_fields: None,
                 });
             builder.frames.push(Frame {
                 ts,
                 value_ref: ValueRef {
-                    uri: topic,
+                    uri: topic.clone(),
                     byte_offset: None,
                     byte_len: Some(message.data.len() as u64),
-                    // Fingerprint the raw message bytes (a hash, not a decode — Veridex never
-                    // interprets the payload). This gives content-level checks (e.g. duplicate-episode
-                    // detection) something exact to compare, and records provenance of the bytes.
+                    // Fingerprint the raw message bytes (a hash, not a decode of the payload). This
+                    // gives content-level checks (e.g. duplicate-episode detection) something exact to
+                    // compare, and records provenance of the bytes.
                     content_hash: Some(Sha256::digest(&message.data).into()),
                 },
             });
+
+            // Decode the AV message header (never the bulk payload) to populate the autonomy CDM.
+            if schema_is(schema_name, "PointCloud2") {
+                if builder.point_fields.is_none() {
+                    builder.point_fields = super::cdr::decode_point_cloud2_fields(&message.data);
+                }
+            } else if schema_is(schema_name, "CameraInfo") {
+                // First successfully-decoded intrinsics per camera topic wins.
+                if !intrinsics.contains_key(&topic) {
+                    if let Some(ci) = super::cdr::decode_camera_info(&message.data, &topic) {
+                        intrinsics.insert(topic.clone(), ci);
+                    }
+                }
+            } else if schema_is(schema_name, "Odometry") {
+                if let Some(pose) = super::cdr::decode_odometry_pose(&message.data) {
+                    ego_poses.push(EgoPose { ts, pose });
+                }
+            } else if schema_is(schema_name, "TFMessage") {
+                if let Some(edges) = super::cdr::decode_tf_message(&message.data) {
+                    for t in edges {
+                        transforms
+                            .entry((t.parent_frame.clone(), t.child_frame.clone()))
+                            .or_insert(t);
+                    }
+                }
+            }
         }
 
         let cdm_streams: Vec<Stream> = streams
@@ -246,11 +295,27 @@ impl Adapter for McapAdapter {
                 observed_saturation: None,
                 observed_non_finite: None,
                 observed_dim_stats: None,
-                // AV point-cloud field extraction (PointCloud2 → point_fields) is a later phase (A1);
-                // the generic MCAP path declares no per-point layout.
-                point_fields: None,
+                // Per-point field layout decoded from a PointCloud2 header, when this is a cloud stream.
+                point_fields: b.point_fields,
             })
             .collect();
+
+        // Assemble the decoded rig calibration (transform tree + camera intrinsics), if any.
+        let calibration = if transforms.is_empty() && intrinsics.is_empty() {
+            None
+        } else {
+            Some(Calibration {
+                transforms: transforms.into_values().collect(),
+                intrinsics: intrinsics.into_values().collect(),
+            })
+        };
+        // The ego trajectory, ordered by timestamp (messages arrive in log order, but sort to be safe).
+        let ego_poses = if ego_poses.is_empty() {
+            None
+        } else {
+            ego_poses.sort_by_key(|p| p.ts);
+            Some(ego_poses)
+        };
 
         // Dataset metadata and provenance: the format plus whatever the header honestly records.
         let mut metadata = vec![("source_format".into(), "mcap".into())];
@@ -331,12 +396,10 @@ impl Adapter for McapAdapter {
                 streams: cdm_streams,
                 task: None,
                 labels: vec![],
-                // Ego-pose (odometry/TF) extraction from AV message types is a later phase (A1).
-                ego_poses: None,
+                ego_poses,
                 declared_frame_count: None,
             }],
-            // Rig-calibration extraction (TF tree / CameraInfo) is a later phase (A1).
-            calibration: None,
+            calibration,
         };
 
         let report = IngestReport {
@@ -362,6 +425,21 @@ impl Adapter for McapAdapter {
                 }
                 if !records.attachments.is_empty() {
                     m.push("attachment names -> dataset metadata (+ calibration)".into());
+                }
+                // AV message-body decode (CDR headers, never the bulk payload).
+                if dataset
+                    .episodes
+                    .iter()
+                    .flat_map(|e| &e.streams)
+                    .any(|s| s.point_fields.is_some())
+                {
+                    m.push("PointCloud2.fields -> stream.point_fields".into());
+                }
+                if dataset.calibration.is_some() {
+                    m.push("CameraInfo.k/d + TFMessage -> dataset.calibration".into());
+                }
+                if dataset.episodes.iter().any(|e| e.ego_poses.is_some()) {
+                    m.push("Odometry.pose -> episode.ego_poses".into());
                 }
                 m
             },

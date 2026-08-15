@@ -148,8 +148,12 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   common ROS/ROS 2 autonomy message types by schema name and maps them to the new rig modalities
   (`PointCloud2`/`LaserScan` → point-cloud, `Imu` → imu, `NavSatFix` → gnss, `Odometry` → ego-pose,
   CAN frames → can-signal), instead of lumping them into `scalar-state`. So an AV rig log's streams
-  are typed correctly at ingest; payload decoding (extracting point-field layouts, intrinsics, and TF
-  transforms from message bodies) remains a follow-up. A new `make_demo_mcap -- <out> av` variant
+  are typed correctly at ingest. The message **bodies** are now CDR-decoded too: a hand-rolled,
+  bounds-checked ROS 2 CDR reader (`adapter/cdr.rs` — no new dependency, `#![forbid(unsafe_code)]`,
+  declines malformed/big-endian bodies without panicking) reads each AV message's structural *header*
+  (never the bulk point/pixel payload) to populate the rig CDM: `PointCloud2` → `Stream.point_fields`,
+  `CameraInfo` → camera intrinsics, `TFMessage` → the transform tree, `Odometry` → the ego trajectory.
+  Proven end-to-end through the adapter and by per-decoder unit tests. A new `make_demo_mcap -- <out> av` variant
   writes a five-sensor rig (camera, LiDAR, IMU, GNSS, ego-odometry) with a single-sensor sync drift
   injected on the IMU; `veridex inspect` shows the typed rig and `veridex check` flags the drift.
 - **`AUTONOMY.RIG_SYNC` — rig-wide time sync (A2)** — the first autonomy check and a new `autonomy`

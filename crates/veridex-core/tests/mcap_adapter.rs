@@ -608,3 +608,146 @@ fn a_frame_dropping_sensor_is_flagged_incomplete_end_to_end() {
         f[0].message
     );
 }
+
+// ---- ROS message-body decode (CDR) end-to-end ----
+
+/// A minimal CDR (little-endian, ROS 2 default) writer for building message-body fixtures.
+struct Cdr {
+    buf: Vec<u8>,
+}
+impl Cdr {
+    fn new() -> Cdr {
+        Cdr {
+            buf: vec![0x00, 0x01, 0x00, 0x00],
+        }
+    }
+    fn align(&mut self, n: usize) {
+        while (self.buf.len() - 4) % n != 0 {
+            self.buf.push(0);
+        }
+    }
+    fn u8(&mut self, v: u8) {
+        self.buf.push(v);
+    }
+    fn u32(&mut self, v: u32) {
+        self.align(4);
+        self.buf.extend_from_slice(&v.to_le_bytes());
+    }
+    fn f64(&mut self, v: f64) {
+        self.align(8);
+        self.buf.extend_from_slice(&v.to_le_bytes());
+    }
+    fn string(&mut self, s: &str) {
+        self.u32((s.len() + 1) as u32);
+        self.buf.extend_from_slice(s.as_bytes());
+        self.buf.push(0);
+    }
+    fn header(&mut self, frame: &str) {
+        self.u32(0);
+        self.u32(0);
+        self.string(frame);
+    }
+}
+
+/// Build an MCAP where each channel carries one custom-payload message at t=0.
+fn build_mcap_one_shot(channels: &[(&str, &str, Vec<u8>)]) -> Vec<u8> {
+    let mut out = Vec::new();
+    {
+        let mut w = mcap::Writer::new(Cursor::new(&mut out)).expect("writer");
+        for (schema, topic, payload) in channels {
+            let sid = w.add_schema(schema, "ros2msg", b"").unwrap();
+            let cid = w.add_channel(sid, topic, "cdr", &BTreeMap::new()).unwrap();
+            w.write_to_known_channel(
+                &mcap::records::MessageHeader {
+                    channel_id: cid,
+                    sequence: 0,
+                    log_time: 0,
+                    publish_time: 0,
+                },
+                payload,
+            )
+            .unwrap();
+        }
+        w.finish().unwrap();
+    }
+    out
+}
+
+#[test]
+fn ros_message_bodies_populate_the_autonomy_cdm_end_to_end() {
+    // PointCloud2 with x/y/z/intensity fields.
+    let mut pc = Cdr::new();
+    pc.header("lidar");
+    pc.u32(1);
+    pc.u32(1000);
+    pc.u32(4);
+    for name in ["x", "y", "z", "intensity"] {
+        pc.string(name);
+        pc.u32(0);
+        pc.u8(7); // FLOAT32
+        pc.u32(1);
+    }
+    // CameraInfo with fx=600, fy=600, cx=320, cy=240.
+    let mut cam = Cdr::new();
+    cam.header("cam");
+    cam.u32(480);
+    cam.u32(640);
+    cam.string("plumb_bob");
+    cam.u32(0); // no distortion coeffs
+    for v in [600.0, 0.0, 320.0, 0.0, 600.0, 240.0, 0.0, 0.0, 1.0] {
+        cam.f64(v);
+    }
+    // Odometry pose at (1,2,3).
+    let mut odom = Cdr::new();
+    odom.header("odom");
+    odom.string("base_link");
+    for v in [1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0] {
+        odom.f64(v);
+    }
+    // TF: base_link -> lidar.
+    let mut tf = Cdr::new();
+    tf.u32(1);
+    tf.header("base_link");
+    tf.string("lidar");
+    for v in [0.5, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0] {
+        tf.f64(v);
+    }
+
+    let bytes = build_mcap_one_shot(&[
+        ("sensor_msgs/msg/PointCloud2", "/lidar/points", pc.buf),
+        ("sensor_msgs/msg/CameraInfo", "/cam/info", cam.buf),
+        ("nav_msgs/msg/Odometry", "/odom", odom.buf),
+        ("tf2_msgs/msg/TFMessage", "/tf", tf.buf),
+    ]);
+    let path = write_temp_mcap(&bytes);
+    let d = McapAdapter
+        .ingest(
+            &Source::Local(path.to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest")
+        .dataset;
+
+    // point_fields on the LiDAR stream.
+    let lidar = d.episodes[0]
+        .streams
+        .iter()
+        .find(|s| s.name == "/lidar/points")
+        .unwrap();
+    let pf = lidar.point_fields.as_ref().expect("point_fields decoded");
+    let names: Vec<&str> = pf.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["x", "y", "z", "intensity"]);
+
+    // Calibration: intrinsics + the transform tree.
+    let calib = d.calibration.as_ref().expect("calibration decoded");
+    assert_eq!(calib.intrinsics.len(), 1);
+    assert_eq!(calib.intrinsics[0].fx, 600.0);
+    assert_eq!(calib.transforms.len(), 1);
+    assert_eq!(calib.transforms[0].parent_frame, "base_link");
+    assert_eq!(calib.transforms[0].child_frame, "lidar");
+
+    // Ego trajectory.
+    let ego = d.episodes[0].ego_poses.as_ref().expect("ego_poses decoded");
+    assert_eq!(ego.len(), 1);
+    assert_eq!(ego[0].pose.translation, [1.0, 2.0, 3.0]);
+}

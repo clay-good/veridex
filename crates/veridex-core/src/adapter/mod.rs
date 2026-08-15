@@ -12,6 +12,7 @@
 //!   [`IngestError::UnsupportedFormat`], which lists the formats that *are* supported, rather than
 //!   partially parsing.
 
+pub(crate) mod cdr;
 pub mod lerobot;
 pub mod mcap;
 
