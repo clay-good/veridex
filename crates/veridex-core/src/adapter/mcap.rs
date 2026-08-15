@@ -225,6 +225,9 @@ impl Adapter for McapAdapter {
                 observed_saturation: None,
                 observed_non_finite: None,
                 observed_dim_stats: None,
+                // AV point-cloud field extraction (PointCloud2 → point_fields) is a later phase (A1);
+                // the generic MCAP path declares no per-point layout.
+                point_fields: None,
             })
             .collect();
 
@@ -307,8 +310,12 @@ impl Adapter for McapAdapter {
                 streams: cdm_streams,
                 task: None,
                 labels: vec![],
+                // Ego-pose (odometry/TF) extraction from AV message types is a later phase (A1).
+                ego_poses: None,
                 declared_frame_count: None,
             }],
+            // Rig-calibration extraction (TF tree / CameraInfo) is a later phase (A1).
+            calibration: None,
         };
 
         let report = IngestReport {

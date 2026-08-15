@@ -11,8 +11,8 @@
 use sha2::{Digest, Sha256};
 
 use crate::cdm::{
-    Dataset, DimStats, Episode, Frame, Label, Provenance, ProvenanceElement, ProvenanceScope,
-    Stream, StreamStats, ValueRef,
+    Calibration, CameraIntrinsics, Dataset, DimStats, EgoPose, Episode, Frame, Label, PointField,
+    Pose, Provenance, ProvenanceElement, ProvenanceScope, Stream, StreamStats, Transform, ValueRef,
 };
 
 /// Version of the canonical encoding. Bumping this deliberately changes every content hash; it is
@@ -21,7 +21,13 @@ use crate::cdm::{
 /// v2 binds every content-bearing `Stream` field into the hash — the stored per-dimension stats
 /// (`dim_stats`) and the recomputed `observed_*` fields, which v1's hand-written encoder silently
 /// dropped, so two datasets differing only in those fields no longer collide.
-pub const CANONICAL_VERSION: u32 = 2;
+///
+/// v3 binds the autonomy sensor-rig extensions (`autonomy-sensor-data` A0): the dataset's rig
+/// `calibration` (the TF tree + camera intrinsics), each episode's `ego_poses` trajectory, and each
+/// stream's declared `point_fields`. A manipulation dataset leaves all three empty, so they add only
+/// a fixed "absent" marker to its encoding — but every content-bearing field is still hashed, keeping
+/// the "no silently-dropped field" invariant intact.
+pub const CANONICAL_VERSION: u32 = 3;
 
 const DOMAIN: &[u8] = b"veridex.cdm.v1\0";
 
@@ -86,14 +92,7 @@ impl Encoder {
     /// Canonical f64: normalize signed zero and all NaN payloads to single bit patterns so that
     /// `-0.0`/`+0.0` and any NaN never split a hash.
     fn f64(&mut self, v: f64) {
-        let bits = if v.is_nan() {
-            0x7ff8_0000_0000_0000u64
-        } else if v == 0.0 {
-            0u64 // collapses -0.0 to +0.0
-        } else {
-            v.to_bits()
-        };
-        self.u64(bits);
+        self.u64(canon_f64_bits(v));
     }
 
     /// A `StreamStats` quadruple (min/max/mean/std), used for stored and per-dimension stats alike.
@@ -110,6 +109,16 @@ impl Encoder {
             e.u64(d.dim);
             e.stats(&d.stats);
         });
+    }
+
+    /// A 6-DoF pose (translation `[x,y,z]` + quaternion `[x,y,z,w]`), each component canonical-f64.
+    fn pose(&mut self, p: &Pose) {
+        for v in p.translation {
+            self.f64(v);
+        }
+        for v in p.rotation {
+            self.f64(v);
+        }
     }
 
     /// Length-prefixed bytes; unambiguous for concatenation.
@@ -163,6 +172,39 @@ impl Dataset {
         let mut episodes: Vec<&Episode> = self.episodes.iter().collect();
         episodes.sort_by_key(|ep| ep.index);
         e.seq(&episodes, |e, ep| ep.encode(e));
+
+        // calibration (autonomy rig): absent for manipulation datasets, so this is a single `0` byte
+        // there. Present rig calibration is order-insensitive and canonicalized by content.
+        e.opt(&self.calibration, |e, c| c.encode(e));
+    }
+}
+
+impl Calibration {
+    fn encode(&self, e: &mut Encoder) {
+        // transforms: order-insensitive, canonicalized by full content (frames + validity + pose), so
+        // a rig that records the same tree in a different order hashes identically.
+        let mut transforms: Vec<&Transform> = self.transforms.iter().collect();
+        transforms.sort_by(|a, b| transform_sort_key(a).cmp(&transform_sort_key(b)));
+        e.seq(&transforms, |e, t| {
+            e.str(&t.parent_frame);
+            e.str(&t.child_frame);
+            e.pose(&t.pose);
+            e.opt(&t.valid_from, |e, v| e.i64(*v));
+            e.opt(&t.valid_to, |e, v| e.i64(*v));
+        });
+        // intrinsics: order-insensitive, canonicalized by full content.
+        let mut intrinsics: Vec<&CameraIntrinsics> = self.intrinsics.iter().collect();
+        intrinsics.sort_by(|a, b| intrinsics_sort_key(a).cmp(&intrinsics_sort_key(b)));
+        e.seq(&intrinsics, |e, c| {
+            e.str(&c.stream);
+            e.f64(c.fx);
+            e.f64(c.fy);
+            e.f64(c.cx);
+            e.f64(c.cy);
+            e.seq(&c.distortion, |e, d| e.f64(*d));
+            e.opt(&c.valid_from, |e, v| e.i64(*v));
+            e.opt(&c.valid_to, |e, v| e.i64(*v));
+        });
     }
 }
 
@@ -191,6 +233,21 @@ impl Episode {
             e.str(&l.key);
             e.str(&l.value);
             e.opt(&l.ts, |e, t| e.i64(*t));
+        });
+
+        // ego_poses (autonomy trajectory): absent for manipulation episodes. Order-insensitive —
+        // canonicalized by (ts, pose) — so the same set of poses hashes identically regardless of the
+        // Vec order it was built in.
+        e.opt(&self.ego_poses, |e, poses| {
+            let mut v: Vec<&EgoPose> = poses.iter().collect();
+            v.sort_by(|a, b| {
+                a.ts.cmp(&b.ts)
+                    .then_with(|| ego_pose_bits(a).cmp(&ego_pose_bits(b)))
+            });
+            e.seq(&v, |e, p| {
+                e.i64(p.ts);
+                e.pose(&p.pose);
+            });
         });
     }
 }
@@ -222,6 +279,14 @@ impl Stream {
         });
         e.opt(&self.observed_non_finite, |e, n| e.u64(*n));
         e.opt(&self.observed_dim_stats, |e, dims| e.dim_stats(dims));
+        // point_fields (autonomy point-cloud layout): absent for non-cloud streams. Order is
+        // significant (the point record's field order), so it is preserved, not sorted.
+        e.opt(&self.point_fields, |e, pfs| {
+            e.seq(pfs, |e, pf: &PointField| {
+                e.str(&pf.name);
+                e.opt(&pf.dtype, |e, d| e.str(d));
+            })
+        });
         // frames: order is data-defined and preserved (the recorded timeline)
         e.seq(&self.frames, |e, f| f.encode(e));
     }
@@ -298,4 +363,65 @@ fn prov_sort_key(p: &Provenance) -> ProvKey<'_> {
     let mut elements: Vec<_> = p.elements.iter().map(element_sort_key).collect();
     elements.sort();
     (scope_key(&p.scope), elements)
+}
+
+/// Canonical f64 bit pattern: normalize signed zero and all NaN payloads so `-0.0`/`+0.0` and any NaN
+/// map to one value. Shared by the encoder (so the hash is stable) and the content sort keys below (so
+/// the order canonicalization stays in lockstep with what is hashed).
+fn canon_f64_bits(v: f64) -> u64 {
+    if v.is_nan() {
+        0x7ff8_0000_0000_0000
+    } else if v == 0.0 {
+        0 // collapses -0.0 to +0.0
+    } else {
+        v.to_bits()
+    }
+}
+
+/// A total ordering key for a [`Transform`]: its full content, so two transforms sharing frames and a
+/// validity range never tie and the tree encoding is permutation-independent.
+type TransformKey<'a> = (
+    &'a str,
+    &'a str,
+    Option<i64>,
+    Option<i64>,
+    [u64; 3],
+    [u64; 4],
+);
+
+fn transform_sort_key(t: &Transform) -> TransformKey<'_> {
+    (
+        t.parent_frame.as_str(),
+        t.child_frame.as_str(),
+        t.valid_from,
+        t.valid_to,
+        t.pose.translation.map(canon_f64_bits),
+        t.pose.rotation.map(canon_f64_bits),
+    )
+}
+
+/// A total ordering key for [`CameraIntrinsics`]: its full content.
+type IntrinsicsKey<'a> = (&'a str, Option<i64>, Option<i64>, [u64; 4], Vec<u64>);
+
+fn intrinsics_sort_key(c: &CameraIntrinsics) -> IntrinsicsKey<'_> {
+    (
+        c.stream.as_str(),
+        c.valid_from,
+        c.valid_to,
+        [
+            canon_f64_bits(c.fx),
+            canon_f64_bits(c.fy),
+            canon_f64_bits(c.cx),
+            canon_f64_bits(c.cy),
+        ],
+        c.distortion.iter().copied().map(canon_f64_bits).collect(),
+    )
+}
+
+/// Content tie-break key for an [`EgoPose`] (used only to order poses that share a timestamp).
+fn ego_pose_bits(p: &EgoPose) -> ([u64; 3], [u64; 4]) {
+    (
+        p.pose.translation.map(canon_f64_bits),
+        p.pose.rotation.map(canon_f64_bits),
+    )
 }

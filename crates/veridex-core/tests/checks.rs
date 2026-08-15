@@ -39,6 +39,7 @@ fn stream(name: &str, clock: &str, rate: Option<f64>, ts: &[i64]) -> Stream {
         observed_saturation: None,
         observed_non_finite: None,
         observed_dim_stats: None,
+        point_fields: None,
         frames: frames_at(ts),
     }
 }
@@ -51,6 +52,7 @@ fn episode(index: u64, streams: Vec<Stream>) -> Episode {
         streams,
         task: None,
         labels: vec![],
+        ego_poses: None,
         declared_frame_count: None,
     }
 }
@@ -58,6 +60,7 @@ fn episode(index: u64, streams: Vec<Stream>) -> Episode {
 fn dataset(episodes: Vec<Episode>) -> Dataset {
     Dataset {
         id: "t".into(),
+        calibration: None,
         metadata: vec![],
         provenance: vec![],
         episodes,
@@ -300,6 +303,7 @@ fn stream_hashed(name: &str, clock: &str, ts: &[i64], contents: &[u8]) -> Stream
         observed_saturation: None,
         observed_non_finite: None,
         observed_dim_stats: None,
+        point_fields: None,
         frames,
     }
 }
@@ -382,6 +386,7 @@ fn stream_with_content(name: &str, modality: Modality, contents: &[u8]) -> Strea
         observed_saturation: None,
         observed_non_finite: None,
         observed_dim_stats: None,
+        point_fields: None,
         frames,
     }
 }
@@ -453,6 +458,7 @@ fn shaped(name: &str, dtype: Option<&str>, shape: Option<Vec<u64>>, ts: &[i64]) 
         observed_saturation: None,
         observed_non_finite: None,
         observed_dim_stats: None,
+        point_fields: None,
         frames: frames_at(ts),
     }
 }

@@ -32,6 +32,7 @@ impl Adapter for FakeAdapter {
         Ok(Ingested {
             dataset: Dataset {
                 id: "fake/ds".into(),
+                calibration: None,
                 metadata: vec![],
                 provenance: vec![],
                 episodes: vec![],

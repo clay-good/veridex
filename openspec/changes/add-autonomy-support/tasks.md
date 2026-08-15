@@ -4,9 +4,19 @@ Gated on the core being built and tested (bootstrap MVP). Ordered so each milest
 No code until this change is approved; this is the build plan.
 
 ## A0 — CDM extensions
-- [ ] Extend CDM with point-cloud streams (per-point fields), the transform (TF) tree, timestamped
+- [x] Extend CDM with point-cloud streams (per-point fields), the transform (TF) tree, timestamped
       per-sensor calibration (intrinsics/extrinsics with validity ranges), and ego-pose/trajectory.
-- [ ] Confirm manipulation datasets still round-trip and validate identically (no regression).
+      Added as optional extensions (design A1: extend, don't fork): `Modality::{PointCloud, Imu, Gnss,
+      CanSignal, EgoPose}`, `Stream.point_fields`, `Dataset.calibration` (`Calibration` = TF
+      `Transform`s + `CameraIntrinsics`, each with `valid_from`/`valid_to`), and `Episode.ego_poses`
+      (`EgoPose` = ts + `Pose`). All content-bearing fields are bound into the content hash — the
+      TF tree, intrinsics, and ego trajectory are canonicalized order-independently while a
+      point-field layout is order-significant — with `CANONICAL_VERSION` bumped 2 → 3.
+- [x] Confirm manipulation datasets still round-trip and validate identically (no regression).
+      The full existing suite (LeRobot/MCAP ingest, checks, scoring, certificate, reports, Python
+      parity) passes unchanged with the new optional fields defaulting to absent, and
+      `tests/autonomy_cdm.rs` adds round-trip, order-independence, and hash-sensitivity coverage for
+      the extensions. Adapters that don't populate them are unaffected.
 
 ## A1 — Adapters (phased per design A3)
 - [ ] Extend the MCAP/ROS path to AV message types (PointCloud2, Image/CameraInfo, Imu, NavSatFix,

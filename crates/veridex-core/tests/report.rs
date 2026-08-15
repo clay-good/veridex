@@ -21,6 +21,7 @@ fn stream(name: &str, clock: &str, ts: &[i64]) -> Stream {
         observed_saturation: None,
         observed_non_finite: None,
         observed_dim_stats: None,
+        point_fields: None,
         frames: ts
             .iter()
             .map(|t| Frame {
@@ -44,6 +45,7 @@ fn episode(index: u64, streams: Vec<Stream>) -> Episode {
         streams,
         task: None,
         labels: vec![],
+        ego_poses: None,
         declared_frame_count: None,
     }
 }
@@ -52,6 +54,7 @@ fn episode(index: u64, streams: Vec<Stream>) -> Episode {
 fn skewed_dataset() -> Dataset {
     Dataset {
         id: "acme/demo".into(),
+        calibration: None,
         metadata: vec![],
         provenance: vec![],
         episodes: vec![
@@ -222,6 +225,7 @@ fn html_escapes_special_characters() {
     // A stream name with angle brackets flows into a finding message; it must be escaped.
     let d = Dataset {
         id: "t".into(),
+        calibration: None,
         metadata: vec![],
         provenance: vec![],
         episodes: vec![episode(

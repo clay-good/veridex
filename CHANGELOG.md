@@ -133,6 +133,17 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   Python job that builds the extension with maturin and runs the CLI ⇄ Python parity test on every
   push. The `veridex` binary has its own integration tests (`crates/veridex-cli/tests/cli.rs`)
   asserting command dispatch, argument validation, and the CI exit-code contract (0 · 10 · 20 · 2).
+- **Autonomy sensor-rig CDM extensions (A0)** — the first slice of `autonomy-sensor-data`: the CDM now
+  represents a multi-sensor rig as *extensions* of the existing model, not a fork (design A1). New
+  modalities (`point-cloud`, `imu`, `gnss`, `can-signal`, `ego-pose`); a declared per-point field
+  layout on a stream (`Stream.point_fields`); a rig `Calibration` on the dataset — the coordinate-frame
+  transform (TF) tree plus per-camera intrinsics, each with a `valid_from`/`valid_to` validity range so
+  a recalibration mid-log is representable; and a per-episode ego-vehicle trajectory (`Episode.ego_poses`).
+  All are optional and absent for manipulation datasets, whose CDM and verdicts are unchanged. Every
+  content-bearing field is bound into the content hash — the TF tree, intrinsics, and ego trajectory
+  canonicalized order-independently, the point-field layout order-significant — with
+  `CANONICAL_VERSION` bumped 2 → 3. No AV adapter or spatial check populates or reads these yet (that
+  is A1/A2); this lands the neutral data model they will share.
 
 ### Fixed
 

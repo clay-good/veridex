@@ -84,6 +84,7 @@ impl Check for Crasher {
 fn ds(n: u64) -> Dataset {
     Dataset {
         id: "t".into(),
+        calibration: None,
         metadata: vec![],
         provenance: vec![],
         episodes: (0..n)
@@ -94,6 +95,7 @@ fn ds(n: u64) -> Dataset {
                 streams: vec![],
                 task: None,
                 labels: vec![],
+                ego_poses: None,
                 declared_frame_count: None,
             })
             .collect(),

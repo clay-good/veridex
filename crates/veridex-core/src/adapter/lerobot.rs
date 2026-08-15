@@ -882,6 +882,8 @@ impl Adapter for LeRobotAdapter {
                         observed_saturation: observed_saturation.get(name).copied(),
                         observed_non_finite: observed_non_finite.get(name).copied(),
                         observed_dim_stats: observed_dim_stats.get(name).cloned(),
+                        // LeRobot is a manipulation format: no point-cloud streams.
+                        point_fields: None,
                     })
                     .collect();
                 // Resolve this episode's task string, if its task_index maps to one.
@@ -911,6 +913,8 @@ impl Adapter for LeRobotAdapter {
                     streams,
                     task,
                     labels,
+                    // LeRobot carries no ego-vehicle trajectory.
+                    ego_poses: None,
                     declared_frame_count: declared_lengths.get(&index).copied(),
                 }
             })
@@ -973,6 +977,8 @@ impl Adapter for LeRobotAdapter {
                 elements,
             }],
             episodes,
+            // LeRobot is a manipulation format with no sensor-rig calibration.
+            calibration: None,
         };
 
         let mut mapped_fields = vec![

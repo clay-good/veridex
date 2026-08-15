@@ -42,6 +42,12 @@ pub struct Dataset {
     pub provenance: Vec<Provenance>,
     /// The episodes. Canonicalized in ascending [`Episode::index`] order.
     pub episodes: Vec<Episode>,
+    /// Sensor-rig calibration — the coordinate-frame transform (TF) tree and per-camera intrinsics,
+    /// each time-scoped — when the source records one (an autonomy rig log). `None` for a manipulation
+    /// dataset, which has no rig calibration; the autonomy spatial checks resolve the transform valid
+    /// at each timestamp from this (design A2). Extension for `autonomy-sensor-data` A0.
+    #[serde(default)]
+    pub calibration: Option<Calibration>,
 }
 
 /// One episode (a contiguous recorded trajectory).
@@ -59,6 +65,12 @@ pub struct Episode {
     pub task: Option<String>,
     /// Labels/annotations attached to the episode.
     pub labels: Vec<Label>,
+    /// The ego-vehicle trajectory over this episode — a sequence of timestamped 6-DoF poses on the
+    /// episode's clock — when the source records one (an autonomy rig log). `None` for a manipulation
+    /// dataset. The `AUTONOMY.EGO_POSE_CONTINUITY` check (A2) reads this. Extension for
+    /// `autonomy-sensor-data` A0.
+    #[serde(default)]
+    pub ego_poses: Option<Vec<EgoPose>>,
     /// Frame count the **source manifest** declares for this episode (e.g. LeRobot
     /// `meta/episodes.jsonl` `length`), if any. This is an assertion *about* the content, not the
     /// content itself: a structural check compares it against the frames actually ingested to catch
@@ -128,6 +140,17 @@ pub enum Modality {
     Audio,
     /// Tactile or force/torque sensing.
     TactileForceTorque,
+    /// LiDAR / radar point-cloud streams (autonomy rig). The per-point field layout is declared in
+    /// [`Stream::point_fields`].
+    PointCloud,
+    /// Inertial measurement unit (linear acceleration + angular velocity).
+    Imu,
+    /// GNSS global-position fix.
+    Gnss,
+    /// A decoded CAN-bus signal (a named channel from a DBC).
+    CanSignal,
+    /// Ego-vehicle pose / odometry.
+    EgoPose,
 }
 
 impl Modality {
@@ -139,6 +162,11 @@ impl Modality {
             Modality::Action => "action",
             Modality::Audio => "audio",
             Modality::TactileForceTorque => "tactile-force-torque",
+            Modality::PointCloud => "point-cloud",
+            Modality::Imu => "imu",
+            Modality::Gnss => "gnss",
+            Modality::CanSignal => "can-signal",
+            Modality::EgoPose => "ego-pose",
         }
     }
 }
@@ -197,6 +225,12 @@ pub struct Stream {
     /// `statistical.extreme-outlier` check scans these so a spike buried in one joint of a 7-DoF
     /// `action` is caught, not just element 0.
     pub observed_dim_stats: Option<Vec<DimStats>>,
+    /// Declared per-point field layout (e.g. `x`, `y`, `z`, `intensity`, `ring`) for a point-cloud
+    /// stream (LiDAR/radar). `None` for every non-cloud stream. Order is significant (it is the
+    /// point record's field order), so it is preserved, not sorted. Veridex records the declared
+    /// schema, never the point payloads. Extension for `autonomy-sensor-data` A0.
+    #[serde(default)]
+    pub point_fields: Option<Vec<PointField>>,
 }
 
 /// Recomputed summary statistics for one dimension of a multi-DoF feature, tagged with its index.
@@ -241,6 +275,98 @@ pub struct StreamStats {
     pub mean: f64,
     /// Standard deviation.
     pub std: f64,
+}
+
+// ---- Autonomy / world-model sensor-rig extensions (autonomy-sensor-data A0) ----
+//
+// These types extend the CDM to represent a multi-sensor autonomy rig without forking the model
+// (design A1): a LiDAR is just a [`Stream`] with `Modality::PointCloud`, calibration and the
+// transform tree are first-class and time-scoped (A2), and the ego trajectory is a sequence of
+// timestamped poses. They are all optional; a manipulation dataset leaves them empty and is
+// unaffected.
+
+/// One field of a point-cloud stream's per-point record layout (e.g. `x`, `y`, `z`, `intensity`,
+/// `ring`). Veridex records the declared schema, never the point payloads.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PointField {
+    /// The field name (e.g. `x`, `intensity`).
+    pub name: String,
+    /// The field's declared element type (e.g. `float32`, `uint16`), if the source states one.
+    pub dtype: Option<String>,
+}
+
+/// A 6-DoF pose: a translation in metres and a unit-quaternion rotation `[x, y, z, w]`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Pose {
+    /// Translation `[x, y, z]` in metres.
+    pub translation: [f64; 3],
+    /// Rotation as a unit quaternion `[x, y, z, w]`.
+    pub rotation: [f64; 4],
+}
+
+/// A rigid-body transform from `parent_frame` to `child_frame`, valid over an optional
+/// `[valid_from, valid_to]` time range on the rig clock. Rigs are recalibrated and coordinate frames
+/// can move within a log, so a transform is time-scoped; the autonomy spatial checks resolve the
+/// transform valid at each timestamp (design A2). A `None` bound is open-ended.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Transform {
+    /// The parent coordinate frame (e.g. `base_link`).
+    pub parent_frame: FrameId,
+    /// The child coordinate frame (e.g. `lidar_top`).
+    pub child_frame: FrameId,
+    /// The transform itself (parent → child).
+    pub pose: Pose,
+    /// Start of the validity range on the rig clock, or `None` for open-ended.
+    pub valid_from: Option<TimestampNs>,
+    /// End of the validity range on the rig clock, or `None` for open-ended.
+    pub valid_to: Option<TimestampNs>,
+}
+
+/// A coordinate-frame identifier interned as a short string (`base_link`, `lidar_top`, `map`, …).
+pub type FrameId = String;
+
+/// Pinhole camera intrinsics for a named camera stream, with an optional validity range. Distortion
+/// coefficients are recorded verbatim in source order (their meaning is model-specific and Veridex
+/// does not interpret them).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CameraIntrinsics {
+    /// The camera [`Stream::name`] these intrinsics calibrate.
+    pub stream: String,
+    /// Focal length in pixels, x.
+    pub fx: f64,
+    /// Focal length in pixels, y.
+    pub fy: f64,
+    /// Principal point x, in pixels.
+    pub cx: f64,
+    /// Principal point y, in pixels.
+    pub cy: f64,
+    /// Distortion coefficients in source order (empty when the source records none).
+    pub distortion: Vec<f64>,
+    /// Start of the validity range on the rig clock, or `None` for open-ended.
+    pub valid_from: Option<TimestampNs>,
+    /// End of the validity range on the rig clock, or `None` for open-ended.
+    pub valid_to: Option<TimestampNs>,
+}
+
+/// The rig's calibration: the coordinate-frame transform (TF) tree and per-camera intrinsics, each
+/// time-scoped. Both collections are order-insensitive — canonicalized by content — so two logs that
+/// record the same calibration in a different order hash identically.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Calibration {
+    /// The transform tree (edges between coordinate frames), time-scoped.
+    pub transforms: Vec<Transform>,
+    /// Per-camera intrinsics, time-scoped.
+    pub intrinsics: Vec<CameraIntrinsics>,
+}
+
+/// One timestamped ego-vehicle pose on the episode's clock. The sequence over an episode forms the
+/// ego trajectory the `AUTONOMY.EGO_POSE_CONTINUITY` check reads (design A2).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct EgoPose {
+    /// The pose timestamp on the episode's clock.
+    pub ts: TimestampNs,
+    /// The ego-vehicle pose at `ts`.
+    pub pose: Pose,
 }
 
 /// One frame: a timestamped pointer to a value in streamed storage.

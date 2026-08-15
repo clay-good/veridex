@@ -8,6 +8,7 @@ use veridex_core::{content_hash, render_provenance, to_croissant, to_prov};
 fn dataset_with(elements: Vec<ProvenanceElement>) -> Dataset {
     Dataset {
         id: "acme/pick".into(),
+        calibration: None,
         metadata: vec![],
         provenance: vec![Provenance {
             scope: ProvenanceScope::Dataset,
@@ -20,6 +21,7 @@ fn dataset_with(elements: Vec<ProvenanceElement>) -> Dataset {
             streams: vec![],
             task: None,
             labels: vec![],
+            ego_poses: None,
             declared_frame_count: None,
         }],
     }

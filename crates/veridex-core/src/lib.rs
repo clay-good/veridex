@@ -58,6 +58,7 @@ mod tests {
     fn sample_dataset() -> Dataset {
         Dataset {
             id: "acme/pick-place".into(),
+            calibration: None,
             metadata: vec![
                 ("robot".into(), "so100".into()),
                 ("source".into(), "lerobot-v3".into()),
@@ -95,6 +96,7 @@ mod tests {
                         observed_saturation: None,
                         observed_non_finite: None,
                         observed_dim_stats: None,
+                        point_fields: None,
                         frames: vec![
                             Frame {
                                 ts: 1_000,
@@ -129,6 +131,7 @@ mod tests {
                         observed_saturation: None,
                         observed_non_finite: None,
                         observed_dim_stats: None,
+                        point_fields: None,
                         frames: vec![Frame {
                             ts: 1_000,
                             value_ref: ValueRef {
@@ -146,6 +149,7 @@ mod tests {
                     value: "pick up the cube".into(),
                     ts: None,
                 }],
+                ego_poses: None,
                 declared_frame_count: None,
             }],
         }
@@ -208,6 +212,7 @@ mod tests {
         };
         let mk = |order: bool| Dataset {
             id: "t".into(),
+            calibration: None,
             metadata: vec![],
             provenance: {
                 let a = Provenance {
@@ -424,6 +429,7 @@ mod proptests {
                 observed_saturation: None,
                 observed_non_finite: None,
                 observed_dim_stats: None,
+                point_fields: None,
             })
     }
 
@@ -441,6 +447,7 @@ mod proptests {
                 streams,
                 task: None,
                 labels: vec![],
+                ego_poses: None,
                 declared_frame_count: None,
             }
         })
@@ -458,6 +465,7 @@ mod proptests {
                     metadata: vec![],
                     provenance: vec![],
                     episodes,
+                    calibration: None,
                 }
             },
         )

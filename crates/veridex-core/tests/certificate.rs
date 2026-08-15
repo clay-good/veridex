@@ -21,6 +21,7 @@ fn stream(name: &str, clock: &str, ts: &[i64]) -> Stream {
         observed_saturation: None,
         observed_non_finite: None,
         observed_dim_stats: None,
+        point_fields: None,
         frames: ts
             .iter()
             .map(|t| Frame {
@@ -39,6 +40,7 @@ fn stream(name: &str, clock: &str, ts: &[i64]) -> Stream {
 fn dataset(streams: Vec<Stream>) -> Dataset {
     Dataset {
         id: "acme/demo".into(),
+        calibration: None,
         metadata: vec![],
         provenance: vec![],
         episodes: vec![Episode {
@@ -48,6 +50,7 @@ fn dataset(streams: Vec<Stream>) -> Dataset {
             streams,
             task: None,
             labels: vec![],
+            ego_poses: None,
             declared_frame_count: None,
         }],
     }

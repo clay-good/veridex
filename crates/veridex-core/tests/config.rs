@@ -18,6 +18,7 @@ fn stream(name: &str, clock: &str, ts: &[i64]) -> Stream {
         observed_saturation: None,
         observed_non_finite: None,
         observed_dim_stats: None,
+        point_fields: None,
         frames: ts
             .iter()
             .map(|t| Frame {
@@ -36,6 +37,7 @@ fn stream(name: &str, clock: &str, ts: &[i64]) -> Stream {
 fn skewed() -> Dataset {
     Dataset {
         id: "t".into(),
+        calibration: None,
         metadata: vec![],
         provenance: vec![],
         episodes: vec![Episode {
@@ -48,6 +50,7 @@ fn skewed() -> Dataset {
             ],
             task: None,
             labels: vec![],
+            ego_poses: None,
             declared_frame_count: None,
         }],
     }
@@ -246,6 +249,7 @@ fn a_loose_end_offset_tolerance_suppresses_the_end_offset_finding() {
     // Two streams on one shared clock, aligned at the start but one ending 500 ms after the other.
     let tail_misaligned = || Dataset {
         id: "t".into(),
+        calibration: None,
         metadata: vec![],
         provenance: vec![],
         episodes: vec![Episode {
@@ -258,6 +262,7 @@ fn a_loose_end_offset_tolerance_suppresses_the_end_offset_finding() {
             ],
             task: None,
             labels: vec![],
+            ego_poses: None,
             declared_frame_count: None,
         }],
     };

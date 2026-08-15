@@ -987,6 +987,7 @@ mod tests {
         };
         let d = Dataset {
             id: "t".into(),
+            calibration: None,
             metadata: vec![],
             provenance: vec![veridex_core::cdm::Provenance {
                 scope: ProvenanceScope::Dataset,
