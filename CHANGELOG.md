@@ -193,6 +193,13 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   construction: a non-rig is `N/A`, never a vacuous pass, and the report claims nothing beyond the
   criteria listed. The block is signed like every other certificate field (verifies offline). See
   [docs/profiles.md](../docs/profiles.md).
+- **Autonomy provenance lineage (A3)** — the MCAP adapter now extracts the sensor-rig lineage a
+  producer records in Metadata: firmware, calibration session, platform/vehicle and drive/run IDs,
+  capture region, HD-map version, and — acute for public-road capture — redaction and consent status.
+  Each is classified `known` (read from the source bytes) and surfaced in both provenance emits: the
+  Croissant `veridex:provenance` list and the PROV entity as `veridex:` properties. Extracted without
+  changing the coverage denominator, so a manipulation dataset's coverage score is unchanged. The `av`
+  demo carries the lineage end-to-end.
 
 ### Fixed
 

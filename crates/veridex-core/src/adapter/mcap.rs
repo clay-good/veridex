@@ -18,9 +18,11 @@
 //!
 //! Provenance: the adapter records the source format, the MCAP header's writing `library` (as a
 //! `recorder` element) and `profile`, every producer-written **Metadata** record (preserved in
-//! dataset metadata, with well-known keys — license/sensor/calibration/operator/upstream — mapped to
-//! typed provenance), and a summary of any **Attachments** (a calibration-looking attachment supplies
-//! the `calibration` element). Everything is read as-is; nothing is fabricated.
+//! dataset metadata, with well-known keys mapped to typed provenance — the core license / sensor /
+//! calibration / operator / upstream, plus the autonomy rig lineage firmware / calibration_session /
+//! platform / drive / region / map_version / redaction / consent), and a summary of any
+//! **Attachments** (a calibration-looking attachment supplies the `calibration` element). Everything
+//! is read as-is; nothing is fabricated.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -144,6 +146,11 @@ fn read_records(bytes: &[u8]) -> McapRecords {
 /// Map an MCAP Metadata key (case-insensitive) to a CDM provenance key, when it names one Veridex
 /// tracks. Conservative: only well-known spellings map, so a producer's arbitrary keys aren't
 /// misread as typed provenance (they are still preserved in dataset metadata).
+///
+/// Covers the core keys (license/sensor/calibration/operator/upstream) plus the autonomy sensor-rig
+/// lineage (design A3): sensor firmware, the calibration session, the platform/vehicle and drive/run
+/// identity, the capture region, the HD-map version, and the redaction/consent status — the last two
+/// being acute for public-road capture (design A7).
 fn provenance_key_for(meta_key: &str) -> Option<&'static str> {
     match meta_key.trim().to_ascii_lowercase().as_str() {
         "license" | "spdx" | "spdx_license" | "license_id" => Some("license"),
@@ -155,6 +162,17 @@ fn provenance_key_for(meta_key: &str) -> Option<&'static str> {
         "upstream" | "derived_from" | "source_dataset" | "parent_dataset" | "upstream_dataset" => {
             Some("upstream")
         }
+        // --- autonomy rig lineage (A3) ---
+        "firmware" | "firmware_version" | "fw" | "fw_version" => Some("firmware"),
+        "calibration_session" | "calib_session" | "calibration_session_id" => {
+            Some("calibration_session")
+        }
+        "platform" | "vehicle" | "vehicle_id" | "platform_id" => Some("platform"),
+        "drive" | "drive_id" | "run_id" | "session_id" | "log_id" => Some("drive"),
+        "region" | "geo_region" | "country" | "locale" => Some("region"),
+        "map_version" | "map" | "hdmap_version" | "map_id" => Some("map_version"),
+        "redaction" | "redacted" | "redaction_status" | "pii_redaction" => Some("redaction"),
+        "consent" | "consent_status" | "data_consent" => Some("consent"),
         _ => None,
     }
 }

@@ -58,8 +58,13 @@ No code until this change is approved; this is the build plan.
       tick) is a richer follow-up once decoded per-sensor cadences/offsets exist.
 
 ## A3 — Provenance + coverage
-- [ ] Autonomy provenance elements (sensor/firmware, calibration session, platform/drive IDs,
-      region, map version, redaction/consent), classified known/asserted/unknown.
+- [x] Autonomy provenance elements (sensor/firmware, calibration session, platform/drive IDs,
+      region, map version, redaction/consent), classified known/asserted/unknown. The MCAP adapter's
+      `provenance_key_for` now recognizes the autonomy metadata-key spellings and maps them to typed
+      provenance (class Known, from the source bytes); the Croissant emit lists every element and the
+      PROV emit surfaces the rig lineage as `veridex:` entity properties. Extracted freely without
+      changing the coverage denominator, so manipulation datasets are unaffected. The `av` demo carries
+      the rig lineage; unit + emit tests cover it. (Rig-aware coverage scoring is a follow-up.)
 - [ ] Scenario-dimension coverage/balance reporting (descriptive only).
 
 ## A4 — World-model readiness

@@ -109,6 +109,20 @@ const PROV_AGENTS: &[(&str, &str)] = &[
     ("sensor", "prov:Agent"),
 ];
 
+/// Autonomy rig-lineage elements (design A3) surfaced as descriptive `veridex:` properties on the
+/// entity — they attribute the recording (firmware, platform, drive, region, map, consent/redaction),
+/// not an agent. Iterated in this order for deterministic output.
+const PROV_ENTITY_PROPERTIES: &[&str] = &[
+    "firmware",
+    "calibration_session",
+    "platform",
+    "drive",
+    "region",
+    "map_version",
+    "redaction",
+    "consent",
+];
+
 /// Emit a minimal W3C PROV document: the dataset as a `prov:Entity`, attributed to each known agent
 /// (recorder / annotator / sensor) and derived from a known upstream dataset. Agents and the
 /// upstream appear as nodes in the graph so the attributions resolve; nothing is fabricated.
@@ -136,6 +150,12 @@ pub fn to_prov(dataset: &Dataset) -> Value {
     entity.insert("@type".into(), json!("prov:Entity"));
     if !attributed.is_empty() {
         entity.insert("prov:wasAttributedTo".into(), json!(attributed));
+    }
+    // Autonomy rig lineage as descriptive properties on the entity (known values only).
+    for key in PROV_ENTITY_PROPERTIES {
+        if let Some(value) = known_value(dataset, key) {
+            entity.insert(format!("veridex:{key}"), json!(value));
+        }
     }
     if let Some(upstream) = known_value(dataset, "upstream") {
         let upstream_id = format!("veridex:dataset/{upstream}");

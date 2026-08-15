@@ -840,3 +840,66 @@ fn a_rig_without_a_transform_tree_is_flagged_incomplete_end_to_end() {
         "a spatial rig with no transform tree must be flagged"
     );
 }
+
+#[test]
+fn autonomy_provenance_keys_are_extracted() {
+    use veridex_core::cdm::ProvenanceClass;
+    let mut out = Vec::new();
+    {
+        let mut w = mcap::Writer::new(Cursor::new(&mut out)).expect("writer");
+        let s = w.add_schema("sensor_msgs/msg/Imu", "ros2msg", b"").unwrap();
+        let c = w.add_channel(s, "/imu", "cdr", &BTreeMap::new()).unwrap();
+        w.write_to_known_channel(
+            &mcap::records::MessageHeader {
+                channel_id: c,
+                sequence: 0,
+                log_time: 0,
+                publish_time: 0,
+            },
+            b"x",
+        )
+        .unwrap();
+        let mut meta = BTreeMap::new();
+        meta.insert("firmware_version".to_string(), "sensorOS 4.2".to_string());
+        meta.insert("vehicle_id".to_string(), "av-07".to_string());
+        meta.insert("drive_id".to_string(), "2026-08-15-run3".to_string());
+        meta.insert("region".to_string(), "us-ca-sf".to_string());
+        meta.insert("map_version".to_string(), "hd-map-1.9".to_string());
+        meta.insert("consent_status".to_string(), "obtained".to_string());
+        meta.insert("redaction".to_string(), "faces+plates".to_string());
+        w.write_metadata(&mcap::records::Metadata {
+            name: "rig_info".to_string(),
+            metadata: meta,
+        })
+        .expect("write metadata");
+        w.finish().expect("finish");
+    }
+    let path = write_temp_mcap(&out);
+    let d = McapAdapter
+        .ingest(
+            &Source::Local(path.to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest")
+        .dataset;
+    let el = |key: &str| {
+        d.provenance
+            .iter()
+            .flat_map(|r| &r.elements)
+            .find(|e| e.key == key)
+            .cloned()
+    };
+    for (key, val) in [
+        ("firmware", "sensorOS 4.2"),
+        ("platform", "av-07"),
+        ("drive", "2026-08-15-run3"),
+        ("region", "us-ca-sf"),
+        ("map_version", "hd-map-1.9"),
+        ("consent", "obtained"),
+        ("redaction", "faces+plates"),
+    ] {
+        let e = el(key).unwrap_or_else(|| panic!("provenance `{key}` not extracted"));
+        assert_eq!(e.value.as_deref(), Some(val), "value for {key}");
+        assert_eq!(e.class, ProvenanceClass::Known, "class for {key}");
+    }
+}

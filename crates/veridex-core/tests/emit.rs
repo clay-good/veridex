@@ -175,3 +175,27 @@ fn render_provenance_matches_the_underlying_emitters_and_rejects_unknown_formats
     let err = render_provenance(&d, "yaml").unwrap_err();
     assert!(err.contains("unknown emit"));
 }
+
+#[test]
+fn autonomy_lineage_appears_in_both_emits() {
+    let d = dataset_with(vec![
+        el("platform", Some("av-07"), ProvenanceClass::Known),
+        el("region", Some("us-ca-sf"), ProvenanceClass::Known),
+        el("consent", Some("obtained"), ProvenanceClass::Known),
+    ]);
+    // PROV: descriptive veridex: properties on the entity.
+    let prov = to_prov(&d);
+    let entity = &prov["@graph"][0];
+    assert_eq!(entity["veridex:platform"], "av-07");
+    assert_eq!(entity["veridex:region"], "us-ca-sf");
+    assert_eq!(entity["veridex:consent"], "obtained");
+    // Croissant: every element in the classified veridex:provenance list.
+    let cr = to_croissant(&d, &content_hash(&d).to_hex());
+    let keys: Vec<&str> = cr["veridex:provenance"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["key"].as_str().unwrap())
+        .collect();
+    assert!(keys.contains(&"platform") && keys.contains(&"region") && keys.contains(&"consent"));
+}

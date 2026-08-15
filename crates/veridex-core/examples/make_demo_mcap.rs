@@ -51,6 +51,16 @@ fn main() {
         meta.insert("license".to_string(), "CC-BY-4.0".to_string());
         meta.insert("sensor".to_string(), "ZED2i stereo camera".to_string());
         meta.insert("operator".to_string(), "demo-operator".to_string());
+        if av {
+            // Autonomy rig lineage (A3): firmware, platform/drive identity, region, map, consent.
+            meta.insert("firmware_version".to_string(), "sensorOS 4.2".to_string());
+            meta.insert("vehicle_id".to_string(), "demo-av-07".to_string());
+            meta.insert("drive_id".to_string(), "demo-run-3".to_string());
+            meta.insert("region".to_string(), "us-ca-sf".to_string());
+            meta.insert("map_version".to_string(), "demo-hdmap-1.9".to_string());
+            meta.insert("consent_status".to_string(), "obtained".to_string());
+            meta.insert("redaction".to_string(), "faces+plates".to_string());
+        }
         w.write_metadata(&mcap::records::Metadata {
             name: "recording_info".to_string(),
             metadata: meta,
