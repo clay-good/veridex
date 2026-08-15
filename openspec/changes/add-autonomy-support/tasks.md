@@ -63,8 +63,15 @@ No code until this change is approved; this is the build plan.
 - [ ] Scenario-dimension coverage/balance reporting (descriptive only).
 
 ## A4 — World-model readiness
-- [ ] `world-model-ready` policy profile bundling sync/calibration/ego-pose/sequence thresholds.
-- [ ] Certificate reports per-criterion pass/fail against that profile.
+- [x] `world-model-ready` policy profile bundling sync/calibration/ego-pose/sequence thresholds
+      (`crate::profile`): tightens cross-sensor sync to 20 ms and names the four autonomy criteria.
+      Applied via `veridex certify --profile world-model-ready`.
+- [x] Certificate reports per-criterion pass/fail against that profile. A `readiness` block
+      (`ReadinessReport`) records profile name, `applicable` (is it a rig), overall `ready`, and each
+      criterion's check id / threshold / passed / finding count — signed like every field, honest by
+      construction (a non-rig is `N/A`, never a vacuous pass). Proven end-to-end (`certify --profile`
+      on the `av` rig prints and signs NOT READY) + unit tests (`tests/profile.rs`). Tolerances for
+      the sequence/ego-pose/calibration criteria are their defaults (config-wiring them is a follow-up).
 
 ## A5 — Proof
 - [ ] End-to-end on a real multi-sensor rig log (MF4 and/or ROS bag): LiDAR + multi-camera + CAN +

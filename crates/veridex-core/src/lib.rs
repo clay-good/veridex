@@ -23,6 +23,7 @@ pub mod diff;
 pub mod emit;
 pub mod engine;
 pub mod pipeline;
+pub mod profile;
 pub mod report;
 
 pub use adapter::lerobot::LeRobotAdapter;

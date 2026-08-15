@@ -93,7 +93,7 @@ sequenceDiagram
 
 ```sh
 veridex check      <dataset>                                      # validate + report
-veridex certify    <dataset> --key issuer.key                     # issue a signed trust certificate
+veridex certify    <dataset> --key issuer.key [--profile world-model-ready]  # issue a signed trust certificate
 veridex verify     <dataset> --certificate c.json --key pub.key   # verify offline
 veridex provenance <dataset> --emit croissant                     # extract + emit provenance
 veridex inspect    <dataset>                                      # summarize the dataset

@@ -16,7 +16,8 @@ use std::process::ExitCode;
 
 use veridex_core::adapter::{IngestOptions, Source};
 use veridex_core::certificate::{
-    sign, verify, Certificate, Issuance, ProvenanceCoverage, SignedCertificate, SigningKeypair,
+    sign, verify, Certificate, Issuance, ProvenanceCoverage, ReadinessReport, SignedCertificate,
+    SigningKeypair,
 };
 use veridex_core::engine::Status;
 
@@ -29,7 +30,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("check", "validate a dataset and report findings"),
     (
         "certify",
-        "issue a signed trust certificate (--key <secret>)",
+        "issue a signed trust certificate (--key <secret>; --profile world-model-ready)",
     ),
     (
         "verify",
@@ -67,6 +68,7 @@ struct Args {
     html: bool,
     config: Option<String>,
     force: bool,
+    profile: Option<String>,
 }
 
 /// Parse the shared flag set. Rejects unknown `--`-flags and value-flags whose value is missing or
@@ -87,6 +89,7 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
     let mut html = false;
     let mut config = None;
     let mut force = false;
+    let mut profile = None;
     let mut it = rest.iter();
     while let Some(arg) = it.next() {
         // Take the value for a value-flag, rejecting a missing value or one that starts with `-`
@@ -111,6 +114,7 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
             "--emit" => emit = Some(value("--emit")?),
             "--fail-on" => fail_on = Some(value("--fail-on")?),
             "--min-score" => min_score = Some(value("--min-score")?),
+            "--profile" => profile = Some(value("--profile")?),
             other if other.starts_with('-') => return Err(format!("unknown option `{other}`")),
             other => path = Some(other.to_string()),
         }
@@ -130,6 +134,7 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
         html,
         config,
         force,
+        profile,
     })
 }
 
@@ -550,13 +555,31 @@ fn cmd_certify(rest: &[String]) -> ExitCode {
         eprintln!("veridex: missing dataset path");
         return ExitCode::from(EXIT_TOOL_ERROR);
     };
+    // Resolve a readiness profile if one was requested; an unknown name is a tool error.
+    let profile = match &args.profile {
+        None => None,
+        Some(name) => match veridex_core::profile::by_name(name) {
+            Some(p) => Some(p),
+            None => {
+                eprintln!("veridex: unknown profile `{name}` (known: world-model-ready)");
+                return ExitCode::from(EXIT_TOOL_ERROR);
+            }
+        },
+    };
+
     let source = Source::Local(PathBuf::from(path));
     let registry = veridex_core::default_registry();
-    let out = match veridex_core::run_check(
+    // A profile applies its own tolerances to the run (e.g. tighter cross-sensor sync).
+    let run_config = veridex_core::RunConfig {
+        tolerances: profile.as_ref().map(|p| p.tolerances).unwrap_or_default(),
+        ..veridex_core::RunConfig::default()
+    };
+    let out = match veridex_core::run_check_with(
         &registry,
         &source,
         args.format.as_deref(),
         &IngestOptions::default(),
+        &run_config,
     ) {
         Ok(o) => o,
         Err(e) => {
@@ -567,7 +590,7 @@ fn cmd_certify(rest: &[String]) -> ExitCode {
 
     // Timestamp is caller-supplied (the core never reads a clock). Default to unix seconds.
     let timestamp = args.timestamp.clone().unwrap_or_else(unix_timestamp);
-    let cert = Certificate::build(
+    let mut cert = Certificate::build(
         out.ingested.dataset.id.clone(),
         &out.verdict,
         out.trust.clone(),
@@ -577,6 +600,14 @@ fn cmd_certify(rest: &[String]) -> ExitCode {
             timestamp,
         },
     );
+    // Attach the per-criterion readiness report when a profile was requested (design A4).
+    if let Some(p) = &profile {
+        cert.readiness = Some(ReadinessReport::evaluate(
+            p,
+            &out.verdict,
+            &out.ingested.dataset,
+        ));
+    }
     let signed = sign(cert, &keypair);
 
     let out_path = args
@@ -601,6 +632,21 @@ fn cmd_certify(rest: &[String]) -> ExitCode {
         signed.certificate.trust_score.score,
         &signed.certificate.cdm_content_hash[..16]
     );
+    // Per-criterion readiness, when a profile was evaluated.
+    if let Some(r) = &signed.certificate.readiness {
+        let verdict = if !r.applicable {
+            "N/A (not a sensor rig)"
+        } else if r.ready {
+            "READY"
+        } else {
+            "NOT READY"
+        };
+        println!("  {} profile: {verdict}", r.profile);
+        for c in &r.criteria {
+            let mark = if c.passed { "✓" } else { "✗" };
+            println!("    {mark} {} — {}", c.check_id, c.threshold);
+        }
+    }
     println!("wrote {out_path}");
     ExitCode::SUCCESS
 }

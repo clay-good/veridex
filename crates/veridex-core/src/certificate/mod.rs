@@ -11,6 +11,9 @@ pub mod score;
 pub mod signing;
 
 pub use coverage::{ProvenanceCoverage, EXPECTED_PROVENANCE_KEYS};
-pub use document::{Certificate, FindingsSummary, Issuance, CERTIFICATE_SCHEMA_VERSION};
+pub use document::{
+    Certificate, CriterionResult, FindingsSummary, Issuance, ReadinessReport,
+    CERTIFICATE_SCHEMA_VERSION,
+};
 pub use score::{score, Grade, TrustScore, RUBRIC_VERSION};
 pub use signing::{sign, verify, CertError, SignedCertificate, SigningKeypair, Verified};

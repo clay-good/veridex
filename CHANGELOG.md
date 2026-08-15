@@ -185,6 +185,14 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   into disconnected components (sensors that can't be related, found by connected-components over the
   frame graph); or cameras with no intrinsics. Runs on the CDR-decoded TF tree + intrinsics, proven
   end-to-end (`a_rig_without_a_transform_tree_is_flagged_incomplete_end_to_end`).
+- **`world-model-ready` profile + readiness certificate (A4)** — a named policy profile
+  (`crate::profile`, applied with `veridex certify --profile world-model-ready`) that tightens
+  cross-sensor sync to 20 ms and bundles the four autonomy criteria a world-model set needs. The
+  certificate gains a signed `readiness` block reporting per-criterion pass/fail and the threshold
+  each attests, plus `applicable` (is the dataset a sensor rig) and an overall `ready` flag. Honest by
+  construction: a non-rig is `N/A`, never a vacuous pass, and the report claims nothing beyond the
+  criteria listed. The block is signed like every other certificate field (verifies offline). See
+  [docs/profiles.md](../docs/profiles.md).
 
 ### Fixed
 

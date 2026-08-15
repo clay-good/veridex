@@ -71,8 +71,81 @@ pub struct Certificate {
     pub trust_score: TrustScore,
     /// Provenance coverage (known/asserted/unknown).
     pub provenance_coverage: ProvenanceCoverage,
+    /// Per-criterion readiness against a named policy profile, when one was requested (design A4).
+    /// Absent for an ordinary certificate; its presence is signed like every other field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readiness: Option<ReadinessReport>,
     /// Caller-supplied issuance metadata.
     pub issuance: Issuance,
+}
+
+/// One readiness criterion's result: a check that must pass for the profile, and whether it did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CriterionResult {
+    /// The check id evaluated (e.g. `autonomy.rig-sync`).
+    pub check_id: String,
+    /// The human-readable threshold/guarantee this criterion attests.
+    pub threshold: String,
+    /// Whether the dataset passed: the check ran and produced no findings.
+    pub passed: bool,
+    /// Number of findings the check produced (0 when passed).
+    pub findings: u64,
+}
+
+/// A per-criterion readiness report against a named policy profile (design A4). Honest by
+/// construction: `ready` is true only when the profile actually applies (the dataset is a sensor rig)
+/// **and** every criterion's check produced no findings, and it claims nothing beyond the criteria
+/// listed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadinessReport {
+    /// The profile evaluated (e.g. `world-model-ready`).
+    pub profile: String,
+    /// Whether the profile applies to this dataset at all (an autonomy profile needs a sensor rig).
+    pub applicable: bool,
+    /// Whether every criterion passed (and the profile applies).
+    pub ready: bool,
+    /// Per-criterion results, in the profile's declared order.
+    pub criteria: Vec<CriterionResult>,
+}
+
+impl ReadinessReport {
+    /// Evaluate a [`Profile`](crate::profile::Profile) against a verdict. `applicable` reflects whether
+    /// the profile's domain applies (for the autonomy profiles, whether the dataset is a sensor rig);
+    /// a non-applicable dataset is never `ready`, so its criteria can't be vacuously satisfied.
+    pub fn evaluate(
+        profile: &crate::profile::Profile,
+        verdict: &Verdict,
+        dataset: &crate::cdm::Dataset,
+    ) -> ReadinessReport {
+        let applicable = dataset
+            .episodes
+            .iter()
+            .any(crate::checks::autonomy::is_rig_episode);
+        let criteria: Vec<CriterionResult> = profile
+            .criteria
+            .iter()
+            .map(|(id, threshold)| {
+                let findings = verdict
+                    .findings
+                    .iter()
+                    .filter(|f| f.check_id == *id)
+                    .count() as u64;
+                CriterionResult {
+                    check_id: (*id).to_string(),
+                    threshold: (*threshold).to_string(),
+                    passed: findings == 0,
+                    findings,
+                }
+            })
+            .collect();
+        let ready = applicable && criteria.iter().all(|c| c.passed);
+        ReadinessReport {
+            profile: profile.name.to_string(),
+            applicable,
+            ready,
+            criteria,
+        }
+    }
 }
 
 impl Certificate {
@@ -115,6 +188,7 @@ impl Certificate {
             },
             trust_score,
             provenance_coverage,
+            readiness: None,
             issuance,
         }
     }
