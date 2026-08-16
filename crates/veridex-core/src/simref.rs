@@ -139,33 +139,109 @@ const SIDECAR_HEADER_BYTES: usize = 64 * 1024;
 /// Read the ASAM revision declared in an XML header — the `revMajor`/`revMinor` attributes that both
 /// OpenSCENARIO's `<FileHeader>` and OpenDRIVE's `<header>` carry — as `"major.minor"`.
 ///
-/// Deliberately a targeted attribute scan, not an XML parse: Veridex reads the declared version and
-/// nothing else, and must survive a malformed or truncated document without erroring.
+/// Deliberately a targeted scan, not an XML parse: Veridex reads the declared version and nothing
+/// else, and must survive a malformed or truncated document without erroring. Both attributes are
+/// read from the **same element**, and only where the name stands alone — otherwise a templated file
+/// whose comment or description mentions `revMajor="0"` would have that version read as its own, and
+/// recorded as extracted-from-bytes.
 pub fn asam_header_version(text: &str) -> Option<String> {
-    let major = xml_attr(text, "revMajor")?;
-    let minor = xml_attr(text, "revMinor")?;
+    let element = header_element(text)?;
+    let major = xml_attr(element, "revMajor")?;
+    let minor = xml_attr(element, "revMinor")?;
+    if major.is_empty() || minor.is_empty() {
+        return None;
+    }
     if !major.chars().all(|c| c.is_ascii_digit()) || !minor.chars().all(|c| c.is_ascii_digit()) {
         return None;
     }
     Some(format!("{major}.{minor}"))
 }
 
-/// The first quoted value of `name="..."` (or `name='...'`) in `text`.
-fn xml_attr<'a>(text: &'a str, name: &str) -> Option<&'a str> {
+/// The text of the first header element — OpenSCENARIO's `<FileHeader …>` or OpenDRIVE's
+/// `<header …>` — up to its closing `>`. Comments are stripped first, so a commented-out template
+/// header is never mistaken for the real one.
+fn header_element(text: &str) -> Option<&str> {
+    // Skip past any comment that precedes the header; scanning is bounded by the input length.
     let mut rest = text;
-    while let Some(at) = rest.find(name) {
-        let after = rest[at + name.len()..].trim_start();
-        if let Some(after) = after.strip_prefix('=') {
-            let after = after.trim_start();
-            let quote = after.chars().next()?;
-            if quote == '"' || quote == '\'' {
-                let body = &after[1..];
-                if let Some(close) = body.find(quote) {
-                    return Some(&body[..close]);
-                }
-            }
+    loop {
+        let open = rest.find('<')?;
+        let after = &rest[open..];
+        if let Some(body) = after.strip_prefix("<!--") {
+            // Unterminated comment: nothing after it can be trusted.
+            let close = body.find("-->")?;
+            rest = &body[close + 3..];
+            continue;
         }
-        rest = &rest[at + name.len()..];
+        let tag_end = after.find('>').unwrap_or(after.len());
+        let tag = &after[..tag_end];
+        let name = tag
+            .trim_start_matches('<')
+            .split(|c: char| c.is_whitespace() || c == '/' || c == '>')
+            .next()
+            .unwrap_or("");
+        if name.eq_ignore_ascii_case("FileHeader") || name.eq_ignore_ascii_case("header") {
+            return Some(tag);
+        }
+        rest = &after[1..];
+    }
+}
+
+/// The value of attribute `name` in an element's text.
+///
+/// Walks the element as a sequence of `name="value"` pairs rather than searching for the name, so a
+/// mention inside *another* attribute's value (`author="see revMajor='9'"`) or a longer name that
+/// merely ends in it (`foo_revMajor`) is never mistaken for the attribute itself.
+fn xml_attr<'a>(text: &'a str, name: &str) -> Option<&'a str> {
+    let b = text.as_bytes();
+    let mut i = 0;
+    // Skip the opening `<` and the element name; attributes start after the first whitespace.
+    if i < b.len() && b[i] == b'<' {
+        i += 1;
+    }
+    while i < b.len() && !b[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    while i < b.len() {
+        while i < b.len() && (b[i].is_ascii_whitespace() || b[i] == b'/' || b[i] == b'>') {
+            i += 1;
+        }
+        if i >= b.len() {
+            break;
+        }
+        let name_start = i;
+        while i < b.len() && b[i] != b'=' && !b[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let attr = &text[name_start..i];
+        while i < b.len() && b[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        // A valueless attribute: nothing to skip over, carry on with the next one.
+        if i >= b.len() || b[i] != b'=' {
+            continue;
+        }
+        i += 1;
+        while i < b.len() && b[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let Some(&quote) = b.get(i) else { break };
+        if quote != b'"' && quote != b'\'' {
+            continue;
+        }
+        i += 1;
+        let value_start = i;
+        while i < b.len() && b[i] != quote {
+            i += 1;
+        }
+        // Unterminated value (a truncated document): there is nothing dependable after it.
+        if i >= b.len() {
+            break;
+        }
+        let value = &text[value_start..i];
+        i += 1;
+        if attr == name {
+            return Some(value);
+        }
     }
     None
 }
@@ -320,6 +396,36 @@ mod tests {
         assert_eq!(asam_header_version(xosc).as_deref(), Some("1.2"));
         let xodr = "<OpenDRIVE>\n  <header revMajor='1' revMinor='7' name='town'>\n";
         assert_eq!(asam_header_version(xodr).as_deref(), Some("1.7"));
+    }
+
+    #[test]
+    fn a_version_mentioned_elsewhere_is_never_read_as_the_declared_one() {
+        // Each of these carries a decoy `revMajor`/`revMinor` before the real header attributes.
+        let cases = [
+            (
+                r#"<FileHeader author="see revMajor='9'" revMajor="1" revMinor="2"/>"#,
+                "1.2",
+            ),
+            (
+                r#"<FileHeader foo_revMajor="9" revMajor="1" revMinor="2"/>"#,
+                "1.2",
+            ),
+            (
+                "<!-- template: revMajor=\"0\" revMinor=\"0\" -->\n<header revMajor=\"1\" revMinor=\"7\"/>",
+                "1.7",
+            ),
+            (
+                r#"<FileHeader description="upgraded from revMajor='0' revMinor='9'" revMajor="1" revMinor="2"/>"#,
+                "1.2",
+            ),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                asam_header_version(input).as_deref(),
+                Some(expected),
+                "misread: {input}"
+            );
+        }
     }
 
     #[test]

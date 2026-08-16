@@ -260,6 +260,14 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **A scenario/map version could be read from the wrong place and recorded as extracted.** The ASAM
+  `revMajor`/`revMinor` scan searched the whole file for each attribute independently, so a templated
+  `.xodr` whose comment or `description` mentioned `revMajor="0"` had that read as its declared
+  version — class `known`, i.e. presented as read from the file's bytes. Both attributes are now read
+  from the same header element, comments are skipped, and the element is walked as `name="value"`
+  pairs, so a mention inside another attribute's value or a longer name ending in `revMajor` no
+  longer matches. Empty values no longer yield the version `"."`, and a bare `name=` at a truncated
+  buffer's end no longer abandons the scan.
 - **Two datasets could share a content hash and disagree on the verdict.** The canonical encoder
   treats several collections as *sets* — the ego trajectory, dataset metadata, provenance records and
   their elements — but `canonicalize_order` sorted only episodes and streams, and some checks read
