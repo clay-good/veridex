@@ -116,6 +116,9 @@ No code until this change is approved; this is the build plan.
       (`veridex.certify(..., profile=…)` is byte-identical to the CLI; `veridex.verify` returns the
       identical summary), enforced by the CI parity suite. Proven on a rig (`tests/profile.rs`) and
       end-to-end through the binary (`tests/cli.rs`).
-- [~] Docs: an autonomy quickstart and the readiness-profile reference. The readiness-profile
-      reference is [docs/profiles.md](../../../docs/profiles.md), now including how to read a
-      readiness certificate back. A standalone autonomy quickstart is still to write.
+- [x] Docs: an autonomy quickstart and the readiness-profile reference.
+      [docs/autonomy-quickstart.md](../../../docs/autonomy-quickstart.md) walks the rig demo end to
+      end (generate → inspect → check → certify readiness → verify offline) with real output, a table
+      of what Veridex reads from a rig log, and the honest limits (no MF4 yet, no trigger/latency
+      offsets, coverage never prescriptive). The readiness-profile reference is
+      [docs/profiles.md](../../../docs/profiles.md), now including how to read a certificate back.

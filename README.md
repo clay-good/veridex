@@ -65,7 +65,8 @@ A single flow: whatever format your data arrives in, an **adapter** maps it into
 Dataset Model. The **validation engine** runs the same checks over that neutral shape, a **trust
 score** summarizes the result, and a **signed certificate** makes it portable — anyone can verify
 it later without re-running Veridex. Every check and the findings it can emit are cataloged in
-[docs/checks.md](docs/checks.md).
+[docs/checks.md](docs/checks.md). Working with an autonomy sensor rig? Start with the
+[autonomy quickstart](docs/autonomy-quickstart.md).
 
 ```mermaid
 sequenceDiagram
