@@ -11,8 +11,9 @@
 use sha2::{Digest, Sha256};
 
 use crate::cdm::{
-    Calibration, CameraIntrinsics, Dataset, DimStats, EgoPose, Episode, Frame, Label, PointField,
-    Pose, Provenance, ProvenanceElement, ProvenanceScope, Stream, StreamStats, Transform, ValueRef,
+    Calibration, CameraIntrinsics, Dataset, DimStats, EgoPose, Episode, Frame, Label, MediaParams,
+    MediaStatus, PointField, Pose, Provenance, ProvenanceElement, ProvenanceScope, Stream,
+    StreamStats, Transform, ValueRef,
 };
 
 /// Version of the canonical encoding. Bumping this deliberately changes every content hash; it is
@@ -38,7 +39,14 @@ use crate::cdm::{
 /// `autonomy.sensor-frame-resolution` fails a stream on it, and the rule is that the hash binds
 /// whatever a check can fail on: a rig whose LiDAR names a frame the TF tree relates and one whose
 /// LiDAR names a frame it does not are a passing and a failing dataset, and must not collide.
-pub const CANONICAL_VERSION: u32 = 5;
+///
+/// v6 binds each stream's `media` — the video file behind a video stream, both what the manifest
+/// declares about its encoding and what the container itself holds. The `video.*` checks fail a
+/// stream on the disagreement between those two, and a re-encoded or half-uploaded video changes
+/// nothing else in the CDM: without this, a dataset whose video matches its data and one whose video
+/// is a different length hashed identically, so a certificate issued for the good one verified
+/// against the broken one.
+pub const CANONICAL_VERSION: u32 = 6;
 
 const DOMAIN: &[u8] = b"veridex.cdm.v1\0";
 
@@ -112,6 +120,15 @@ impl Encoder {
         self.f64(s.max);
         self.f64(s.mean);
         self.f64(s.std);
+    }
+
+    /// A [`MediaParams`] quadruple (codec/width/height/fps), used for the declared and the observed
+    /// encoding alike.
+    fn media_params(&mut self, p: &MediaParams) {
+        self.opt(&p.codec, |e, c| e.str(c));
+        self.opt(&p.width, |e, w| e.u64(*w));
+        self.opt(&p.height, |e, h| e.u64(*h));
+        self.opt(&p.fps, |e, f| e.f64(*f));
     }
 
     /// A per-dimension stats sequence (`dim` index + its quadruple).
@@ -313,6 +330,24 @@ impl Stream {
         // stream on it: two rigs differing only in which frame a sensor claims are a passing dataset
         // and a failing one, and they must not hash alike.
         e.opt(&self.frame_id, |e, f| e.str(f));
+        // The stream's media file. Both halves bind: the container's own numbers are content, and
+        // the manifest's declaration is schema — it sits beside `dtype` and `shape` in the same
+        // `info.json` feature entry, and those are hashed. The `video.*` checks fail a stream on
+        // either half, and the hash binds whatever a check can fail on.
+        e.opt(&self.media, |e, m| {
+            e.str(&m.uri);
+            e.media_params(&m.declared);
+            match &m.status {
+                MediaStatus::Read => e.u8(0),
+                MediaStatus::Missing => e.u8(1),
+                MediaStatus::Unreadable { reason } => {
+                    e.u8(2);
+                    e.str(reason);
+                }
+            }
+            e.media_params(&m.observed);
+            e.opt(&m.frame_count, |e, n| e.u64(*n));
+        });
         // frames: order is data-defined and preserved (the recorded timeline)
         e.seq(&self.frames, |e, f| f.encode(e));
     }

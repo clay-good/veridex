@@ -295,6 +295,13 @@ pub struct Stream {
     /// schema, never the point payloads. Extension for `autonomy-sensor-data` A0.
     #[serde(default)]
     pub point_fields: Option<Vec<PointField>>,
+    /// The media file backing a video stream, when the source stores its pixels outside the data
+    /// table (LeRobot keeps video in `videos/**.mp4` and only the timeline in Parquet). Carries both
+    /// what the manifest *declares* about the encoding and what Veridex read out of the container
+    /// itself, so the `video.*` checks can compare them. `None` for every stream with no separate
+    /// media file — a scalar feature, or a dataset that stores its images inline.
+    #[serde(default)]
+    pub media: Option<Media>,
     /// The coordinate frame this sensor's data is expressed in (a ROS `header.frame_id`, e.g.
     /// `lidar_top` or `camera_front`), when the source records one. This is the name that has to
     /// appear in [`Calibration::transforms`] for the sensor to be relatable to any other — the
@@ -332,6 +339,77 @@ pub struct Saturation {
     /// stream, or the saturating joint of a vector — e.g. `6` for the gripper of a 7-DoF `action`).
     /// The adapter reports the worst-saturating dimension; the check names it in its finding.
     pub dim: u64,
+}
+
+/// The media file backing a video stream, and what Veridex learned about it.
+///
+/// A LeRobot video feature is split across two places: the manifest declares the encoding
+/// (`meta/info.json` → `features[key].info`) and the timeline lives as one Parquet row per frame,
+/// while the pixels live in a separate `.mp4`. Nothing in either half checks the other, which is how
+/// a re-encoded or half-uploaded video silently ends up with a different frame count, resolution, or
+/// codec than the data it is paired with. This type holds both halves so the `video.*` checks can.
+///
+/// Veridex reads the container's **headers** only — it never decodes a pixel.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Media {
+    /// The media file's path relative to the dataset root. For a file the manifest implies but that
+    /// is not on disk, this is the path that was looked for.
+    pub uri: String,
+    /// What the source manifest declares about the encoding.
+    pub declared: MediaParams,
+    /// Whether the container could be read, and why not when it could not.
+    pub status: MediaStatus,
+    /// What the container itself says. Every field is `None` unless `status` is
+    /// [`MediaStatus::Read`] — and even then a field the container omits stays `None`.
+    pub observed: MediaParams,
+    /// Frames the container holds (its sample count). Compared against the frames the paired data
+    /// stream carries — that disagreement is the video/data desync. `None` when unread.
+    pub frame_count: Option<u64>,
+}
+
+/// Whether a stream's media file could be read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", tag = "kind")]
+pub enum MediaStatus {
+    /// The container parsed; [`Media::observed`] holds what it declared.
+    Read,
+    /// The manifest implies a media file that is not on disk.
+    Missing,
+    /// The file exists but its container could not be parsed.
+    Unreadable {
+        /// What went wrong, in the container parser's words.
+        reason: String,
+    },
+}
+
+/// Video encoding parameters, either as declared by the manifest or as read from the container.
+/// Every field is optional: a source states what it states, and Veridex never infers the rest.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MediaParams {
+    /// The codec identifier (an ISO-BMFF sample-entry fourcc such as `avc1`/`hvc1`/`av01`, or the
+    /// manifest's own name for it). Compared case-insensitively, and across the known aliases for one
+    /// codec, so `h264` and `avc1` are not reported as a mismatch.
+    pub codec: Option<String>,
+    /// Frame width in pixels.
+    pub width: Option<u64>,
+    /// Frame height in pixels.
+    pub height: Option<u64>,
+    /// Frames per second.
+    pub fps: Option<f64>,
+}
+
+/// The canonical name for a codec, so the manifest's spelling and the container's fourcc compare
+/// equal when they mean the same encoder. An unrecognized name normalizes to itself, lowercased —
+/// two spellings Veridex does not know about are only ever equal when they are literally equal.
+pub fn canonical_codec(name: &str) -> String {
+    let n = name.trim().to_ascii_lowercase();
+    match n.as_str() {
+        "h264" | "avc" | "avc1" | "x264" | "libx264" => "avc1".into(),
+        "h265" | "hevc" | "hvc1" | "hev1" | "x265" | "libx265" => "hvc1".into(),
+        "av1" | "av01" | "libaom-av1" | "libsvtav1" => "av01".into(),
+        "vp9" | "vp09" | "libvpx-vp9" => "vp09".into(),
+        _ => n,
+    }
 }
 
 /// Stored summary statistics for a stream, as recorded by the source (not recomputed by Veridex).

@@ -355,6 +355,7 @@ impl Adapter for McapAdapter {
                 // Per-point field layout decoded from a PointCloud2 header, when this is a cloud stream.
                 point_fields: b.point_fields,
                 // The coordinate frame the sensor declares, from its message headers.
+                media: None,
                 frame_id: b.frame_id,
             })
             .collect();

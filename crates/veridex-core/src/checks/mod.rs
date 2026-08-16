@@ -1,8 +1,8 @@
 //! The checks catalog: concrete [`Check`](crate::check::Check) implementations grouped by family.
 //!
 //! MVP families: [`structural`], [`temporal`] (including the headline `TEMPORAL.CLOCK_SKEW`),
-//! [`statistical`] (range/sanity over stored stats), [`semantic`] (task-string quality, stream-key clarity), and
-//! [`provenance`] completeness.
+//! [`statistical`] (range/sanity over stored stats), [`semantic`] (task-string quality, stream-key clarity),
+//! [`video`] (media file vs. the data it is paired with), and [`provenance`] completeness.
 
 pub mod autonomy;
 pub mod provenance;
@@ -10,6 +10,7 @@ pub mod semantic;
 pub mod statistical;
 pub mod structural;
 pub mod temporal;
+pub mod video;
 
 use crate::check::Check;
 use crate::engine::{Engine, RegistryError, Tolerances};
@@ -81,6 +82,12 @@ pub fn standard_checks_with(t: &Tolerances) -> Vec<Box<dyn Check>> {
         Box::new(semantic::TaskQuality),
         Box::new(semantic::StreamKeyClarity),
         Box::new(semantic::AnnotationIntegrity),
+        Box::new(video::MediaReadable),
+        Box::new(video::MediaConformance {
+            // Shares the relative rate tolerance with `temporal.rate-conformance`: both ask "does
+            // the observed rate match the declared one", so one knob answers both.
+            fps_tolerance: t.rate_deviation,
+        }),
         Box::new(provenance::ProvenanceCompleteness),
     ]
 }

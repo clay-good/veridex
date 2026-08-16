@@ -17,8 +17,9 @@ the build plan.
 ## M2 — Ingestion adapters (the neutrality proof)
 - [x] LeRobot v3 adapter → CDM (features→streams, Parquet `timestamp`→frame ts, `episode_index`
       grouping, fps→rate, robot_type→provenance). Reads only timestamps/structure, not payloads.
-      Task strings are resolved (`task_index` + `meta/tasks.jsonl` → `episode.task`); video decoding
-      remains a follow-up.
+      Task strings are resolved (`task_index` + `meta/tasks.jsonl` → `episode.task`). Video *files*
+      are now resolved and their container headers read into `Stream.media`; per-frame pixel decoding
+      remains deliberately out of scope.
 - [x] MCAP adapter → CDM (channels→streams, message timestamps, schemas→modalities). Backed by the
       `mcap` crate; tests write real MCAP files and ingest them.
 - [~] Streaming/large-than-memory ingestion; remote (Hub) metadata-only ingestion. **Sampled
@@ -54,6 +55,15 @@ the build plan.
       (`STATISTICAL.STATS_STALE`), saturation (`STATISTICAL.SATURATED`), extreme outliers
       (`STATISTICAL.OUTLIER`), and non-finite values in the data (`STATISTICAL.NON_FINITE_OBSERVED`,
       scanned across every dimension). MCAP abstains from value-based checks (opaque payloads).
+- [x] Video/media: the container against the data it is paired with. The LeRobot adapter resolves
+      each video stream's `videos/**/<feature>/episode_<n>.mp4`, reads its ISO-BMFF headers (never a
+      pixel), and carries both the manifest's declared encoding and the container's own into the CDM
+      — so `video.media-readable` catches a missing or unparseable file (`VIDEO.MEDIA_MISSING` /
+      `VIDEO.MEDIA_UNREADABLE`) and `video.media-conformance` catches the video/data desync and the
+      re-export drift (`VIDEO.FRAME_COUNT_MISMATCH` / `RESOLUTION_MISMATCH` / `CODEC_MISMATCH` /
+      `FPS_MISMATCH`). Per-frame decode analysis stays out of scope by design. An aggregated video
+      layout, where no file can be attributed to an episode, is reported as unmapped rather than
+      guessed at.
 - [x] Provenance-completeness checks (presence + internal consistency).
 - [x] Each check ships ID + documented risk + remedy.
 

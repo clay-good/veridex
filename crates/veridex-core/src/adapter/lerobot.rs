@@ -31,8 +31,9 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::cdm::{
-    Dataset, DimStats, Episode, Frame, Label, Modality, Provenance, ProvenanceClass,
-    ProvenanceElement, ProvenanceScope, Saturation, Stream, StreamStats, ValueRef,
+    Dataset, DimStats, Episode, Frame, Label, Media, MediaParams, MediaStatus, Modality,
+    Provenance, ProvenanceClass, ProvenanceElement, ProvenanceScope, Saturation, Stream,
+    StreamStats, ValueRef,
 };
 
 use super::{
@@ -99,6 +100,10 @@ struct FeatureInfo {
     dtype: Option<String>,
     #[serde(default)]
     shape: Option<Vec<u64>>,
+    /// LeRobot records a video feature's encoding here, as flat `video.*` keys
+    /// (`video.codec`, `video.fps`, `video.height`, `video.width`, …).
+    #[serde(default)]
+    info: Option<BTreeMap<String, serde_json::Value>>,
 }
 
 /// The LeRobot v3 adapter.
@@ -242,6 +247,157 @@ fn find_parquet(dir: &Path, out: &mut Vec<PathBuf>) {
         } else if p.extension().and_then(|e| e.to_str()) == Some("parquet") {
             out.push(p);
         }
+    }
+}
+
+/// Container extensions Veridex knows how to read headers from (all ISO base media format).
+const MEDIA_EXTENSIONS: &[&str] = &["mp4", "m4v", "mov"];
+
+/// Where a video feature's media files live, resolved from the `videos/` tree.
+#[derive(Default)]
+struct VideoIndex {
+    /// feature key → episode index → media file path. Populated only for the one-file-per-episode
+    /// layout, which is the only one from which a file can be attributed to an episode.
+    per_episode: BTreeMap<String, BTreeMap<u64, PathBuf>>,
+    /// Feature keys whose media exists but is not laid out one file per episode (LeRobot v3 may
+    /// concatenate many episodes into one file). Reported as unmapped, never guessed at: attributing
+    /// a shared file's frames to one episode would invent the very number the checks compare.
+    unresolvable: BTreeSet<String>,
+}
+
+/// Index the `videos/` tree for the declared video features.
+///
+/// A file belongs to feature `k` when `k` is one of its path components under `videos/` — the
+/// layout LeRobot writes, where the dotted feature key is a directory name — and to episode `n` when
+/// its file stem is `episode_<n>`. Anything else is recorded as unresolvable rather than matched
+/// loosely.
+fn index_videos(dir: &Path, video_features: &BTreeSet<&str>) -> VideoIndex {
+    let mut index = VideoIndex::default();
+    if video_features.is_empty() {
+        return index;
+    }
+    let root = dir.join("videos");
+    let mut files = Vec::new();
+    find_media(&root, &mut files);
+    for path in files {
+        let Ok(relative) = path.strip_prefix(&root) else {
+            continue;
+        };
+        let Some(key) = relative
+            .components()
+            .filter_map(|c| c.as_os_str().to_str())
+            .find(|c| video_features.contains(c))
+        else {
+            continue;
+        };
+        match path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .and_then(|s| s.strip_prefix("episode_"))
+            .and_then(|n| n.parse::<u64>().ok())
+        {
+            Some(episode) => {
+                index
+                    .per_episode
+                    .entry(key.to_string())
+                    .or_default()
+                    .insert(episode, path);
+            }
+            None => {
+                index.unresolvable.insert(key.to_string());
+            }
+        }
+    }
+    index
+}
+
+/// Recursively collect media files under `dir`, in a deterministic sorted order. Mirrors
+/// [`find_parquet`], including its refusal to follow symlinks.
+fn find_media(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    paths.sort();
+    for p in paths {
+        let Ok(meta) = std::fs::symlink_metadata(&p) else {
+            continue;
+        };
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        if meta.is_dir() {
+            find_media(&p, out);
+        } else if p
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .is_some_and(|e| MEDIA_EXTENSIONS.contains(&e.as_str()))
+        {
+            out.push(p);
+        }
+    }
+}
+
+/// The encoding a feature's `info` block declares, falling back to the feature's `shape` for
+/// resolution — LeRobot writes a video feature's shape as `[height, width, channels]`, so a manifest
+/// that omits `video.width`/`video.height` still states the resolution, once.
+fn declared_media_params(
+    info: Option<&BTreeMap<String, serde_json::Value>>,
+    shape: Option<&[u64]>,
+) -> MediaParams {
+    let get = |k: &str| info.and_then(|m| m.get(k));
+    let num = |k: &str| get(k).and_then(|v| v.as_f64());
+    let from_shape = |i: usize| shape.and_then(|s| (s.len() >= 2).then(|| s[i]));
+    MediaParams {
+        codec: get("video.codec")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        width: num("video.width")
+            .map(|w| w as u64)
+            .or_else(|| from_shape(1)),
+        height: num("video.height")
+            .map(|h| h as u64)
+            .or_else(|| from_shape(0)),
+        fps: num("video.fps"),
+    }
+}
+
+/// Read the media file backing one episode of one video stream, and record what it holds.
+///
+/// A file the index resolved but that is gone from disk between indexing and reading is
+/// [`MediaStatus::Missing`], the same as one that was never there — either way the dataset claims
+/// imagery it cannot produce.
+fn probe_stream_media(dataset_root: &Path, expected: &Path, declared: MediaParams) -> Media {
+    let uri = expected
+        .strip_prefix(dataset_root)
+        .unwrap_or(expected)
+        .display()
+        .to_string();
+    if !expected.is_file() {
+        return Media {
+            uri,
+            declared,
+            status: MediaStatus::Missing,
+            observed: MediaParams::default(),
+            frame_count: None,
+        };
+    }
+    match crate::media::probe_mp4(expected) {
+        Ok(probe) => Media {
+            uri,
+            declared,
+            status: MediaStatus::Read,
+            observed: probe.params,
+            frame_count: probe.frame_count,
+        },
+        Err(reason) => Media {
+            uri,
+            declared,
+            status: MediaStatus::Unreadable { reason },
+            observed: MediaParams::default(),
+            frame_count: None,
+        },
     }
 }
 
@@ -818,6 +974,23 @@ impl Adapter for LeRobotAdapter {
             })
             .collect();
 
+        // What the manifest declares about each video feature's encoding, to compare against the
+        // media files themselves. Keyed by feature name; only video features have one.
+        let declared_media: BTreeMap<String, MediaParams> = info
+            .features
+            .iter()
+            .filter(|(name, f)| {
+                !BOOKKEEPING.contains(&name.as_str())
+                    && infer_modality(name, f.dtype.as_deref()) == Modality::Video
+            })
+            .map(|(name, f)| {
+                (
+                    name.clone(),
+                    declared_media_params(f.info.as_ref(), f.shape.as_deref()),
+                )
+            })
+            .collect();
+
         // Declared per-episode frame counts from meta/episodes.jsonl (empty if absent) — the manifest
         // assertion the boundary check tests against the frames actually ingested (lerobot#4143), and
         // the episode index set a sampled ingest draws from.
@@ -979,6 +1152,34 @@ impl Adapter for LeRobotAdapter {
         // Resolve `task_index` -> task string via meta/tasks.jsonl (empty map if the file is absent).
         let tasks = load_tasks(dir);
 
+        // Resolve and read the media file behind each video stream. A LeRobot video feature keeps its
+        // timeline in the Parquet and its pixels in `videos/`, and nothing reconciles the two — so
+        // Veridex reads each container's headers (never a pixel) and hands both halves to the
+        // `video.*` checks. Only the episodes actually ingested are probed, so a sample stays cheap.
+        let video_index = index_videos(dir, &declared_media.keys().map(|s| s.as_str()).collect());
+        let mut media: BTreeMap<(String, u64), Media> = BTreeMap::new();
+        for (feature, declared) in &declared_media {
+            let Some(by_episode) = video_index.per_episode.get(feature) else {
+                // No per-episode media for this feature: either the dataset stores no video for it,
+                // or it uses a layout Veridex cannot attribute to an episode. Either way, nothing is
+                // asserted about it — an unresolved layout is reported as unmapped, not as missing.
+                continue;
+            };
+            for episode in episode_rows.keys() {
+                // A feature in per-episode layout implies a file per episode. One that is absent is a
+                // real gap: the episode's rows claim imagery the dataset does not hold.
+                let expected = by_episode.get(episode).cloned().unwrap_or_else(|| {
+                    dir.join("videos")
+                        .join(feature)
+                        .join(format!("episode_{episode:06}.mp4"))
+                });
+                media.insert(
+                    (feature.clone(), *episode),
+                    probe_stream_media(dir, &expected, declared.clone()),
+                );
+            }
+        }
+
         // Build episodes: one stream per feature, frames at the episode's row timestamps, each frame
         // carrying that feature's per-row content hash (when the feature is a hashable Parquet column).
         let episodes: Vec<Episode> = episode_rows
@@ -1013,6 +1214,7 @@ impl Adapter for LeRobotAdapter {
                         observed_saturation: observed_saturation.get(name).copied(),
                         observed_non_finite: observed_non_finite.get(name).copied(),
                         observed_dim_stats: observed_dim_stats.get(name).cloned(),
+                        media: media.get(&(name.clone(), index)).cloned(),
                         // LeRobot is a manipulation format: no point-cloud streams.
                         point_fields: None,
                         // LeRobot declares no sensor coordinate frames (it is not a spatially-calibrated rig).
@@ -1140,6 +1342,19 @@ impl Adapter for LeRobotAdapter {
         ];
         let mut omitted_fields =
             vec!["video frame decoding (frames are timestamps, not pixels)".into()];
+        if !media.is_empty() {
+            mapped_fields.push(
+                "videos/**.mp4 container headers -> stream.media (frame count, resolution, codec, \
+                 rate)"
+                    .into(),
+            );
+        }
+        if declared_media
+            .values()
+            .any(|p| p != &MediaParams::default())
+        {
+            mapped_fields.push("feature.info video.* -> stream.media.declared".into());
+        }
         // Task-string resolution is reported honestly by whether meta/tasks.jsonl was present.
         if tasks.is_empty() {
             omitted_fields.push("task strings (no meta/tasks.jsonl to resolve task_index)".into());
@@ -1181,6 +1396,15 @@ impl Adapter for LeRobotAdapter {
                    or interpreted"
                 .into(),
         }];
+        for feature in &video_index.unresolvable {
+            unmapped_fields.push(UnmappedField {
+                source_path: format!("videos/**/{feature}/"),
+                note:
+                    "media files are not laid out one per episode (episode_<n>.<ext>), so no file \
+                       can be attributed to an episode; the video checks abstain for this stream"
+                        .into(),
+            });
+        }
         for col in observed.keys() {
             if !declared_names.contains(col.as_str()) {
                 unmapped_fields.push(UnmappedField {

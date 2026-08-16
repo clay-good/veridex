@@ -34,8 +34,8 @@ Veridex Trust Report
   Canonical Dataset Model, so you check them the same way — no per-format tooling. RLDS/TFDS and
   HDF5/Zarr are on the roadmap.
 - **Catches the failures that quietly ruin training.** Clock skew across sensors, broken episode
-  boundaries, timeline gaps, duplicate frames — each reported with the *training risk* it creates
-  and a *remedy*.
+  boundaries, timeline gaps, duplicate frames, a video whose frame count no longer matches the
+  actions it is paired with — each reported with the *training risk* it creates and a *remedy*.
 - **Proves where data came from.** Which sensor, clock, calibration, annotator, license, and
   upstream dataset produced each segment — surfaced, scored, and emitted as a signed certificate
   (Croissant + W3C PROV underneath).
@@ -180,7 +180,9 @@ The same command works on a LeRobot v3 dataset — proof of the cross-format cla
 one (its second episode carries an out-of-order timestamp) and check it the same way:
 
 ```sh
-# generate a demo LeRobot v3 dataset; append `clean`, `truncated`, `boundary`, `jitter`, `short-episode`, `duplicate`, `saturated`, `spike`, `nan`, or `multi-joint`
+# generate a demo LeRobot v3 dataset; append `clean`, `truncated`, `boundary`, `jitter`,
+# `short-episode`, `duplicate`, `saturated`, `spike`, `nan`, `multi-joint`, `video`,
+# `video-desync`, `video-missing`, or `video-reencoded`
 cargo run -p veridex-core --example make_demo_lerobot -- /tmp/demo-lerobot
 cargo run -p veridex-cli -- check /tmp/demo-lerobot   # fires TEMPORAL.NON_MONOTONIC, exits 20
 ```
@@ -209,6 +211,17 @@ sweep freely; `check` flags `STATISTICAL.SATURATED` and **names the dimension** 
 checks scan every joint, not just element 0, which is where real robot data hides its problems. Every
 variant also ships a Hugging Face-style dataset card (`README.md`), so `veridex inspect` surfaces the
 extracted `license` as covered provenance rather than a `PROVENANCE.MISSING_LICENSE` gap.
+
+Four more variants add a real camera feature backed by `.mp4` files, because a video dataset is two
+artifacts that nothing reconciles — a manifest and a data table on one side, a container on the
+other, paired by frame index and never checked against each other. `video` is the clean baseline;
+`video-desync` gives episode 1 a video three frames short of its rows (`VIDEO.FRAME_COUNT_MISMATCH`
+— every pair past the shorter one is an action against an image from a different moment);
+`video-missing` never uploads that file (`VIDEO.MEDIA_MISSING`); and `video-reencoded` ships 320x240
+video against a declared 640x480 (`VIDEO.RESOLUTION_MISMATCH`, charged once for the stream rather
+than once per episode). Veridex reads the container's **headers only** — it never decodes a pixel —
+and it compares the codec across the names for one encoder, so a manifest saying `h264` against a
+container stamped `avc1` is not reported as a mismatch.
 
 The certificate binds to the dataset's CDM content hash and is Ed25519-signed: `verify` succeeds
 offline, and rejects a tampered certificate (signature mismatch) or one presented against a
@@ -253,12 +266,14 @@ cargo clippy --all-targets
 
 **Early implementation, runs end-to-end.** Against a full [OpenSpec](openspec/) design, these are
 in and tested: the Canonical Dataset Model with deterministic content hashing; the validation
-engine; the structural / temporal / statistical / semantic / provenance / **autonomy** check catalog
+engine; the structural / temporal / statistical / semantic / **video** / provenance / **autonomy** check catalog
 (including the headline `TEMPORAL.CLOCK_SKEW`, cross-episode dtype/shape consistency, and the
 sensor-rig checks `AUTONOMY.RIG_SYNC` / `SEQUENCE_COMPLETE` / `EGO_POSE_CONTINUITY` /
 `CALIBRATION_INCOMPLETE` / `SENSOR_FRAME_UNKNOWN` / `SENSOR_FRAME_UNRELATED` — the last two catch the
 LiDAR-camera miscalibration a well-formed transform tree hides, where a sensor's own frame is absent
-from the tree or has no chain of transforms to the camera); the v1 trust-score rubric and the `world-model-ready` readiness profile;
+from the tree or has no chain of transforms to the camera); **video/media checks** that read an
+`.mp4`'s container headers (never a pixel) and catch the missing, unparseable, desynced, or
+re-encoded video behind a camera stream; the v1 trust-score rubric and the `world-model-ready` readiness profile;
 terminal, JSON, SARIF 2.1.0, and self-contained HTML reporting; **LeRobot v3, MCAP (with ROS-message
 decode into an autonomy rig), CAN+DBC, and ASAM MDF/MF4 adapters** with a passing cross-format
 neutrality gate (the same logical dataset yields equivalent CDMs as LeRobot v3 and as MCAP); descriptive scenario-dimension coverage and **scenario/map/sim

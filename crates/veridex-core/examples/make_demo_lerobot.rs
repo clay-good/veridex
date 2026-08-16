@@ -26,8 +26,16 @@
 //!   `meta/stats.json`, so only a recompute over the real cells sees it → `STATISTICAL.NON_FINITE_OBSERVED`.
 //! - `multi-joint` — a 3-DoF `action` (a `FixedSizeList`) whose gripper (dimension 2) saturates while
 //!   the arm joints sweep → `STATISTICAL.SATURATED` naming the dimension, which element 0 alone misses.
+//! - `video` — two 10-frame episodes with a real camera feature: `videos/**/episode_<n>.mp4` files
+//!   whose containers agree with the manifest and with the data rows. Clean; the baseline the three
+//!   video-defect variants below break in one way each.
+//! - `video-desync` — the same dataset, but episode 1's video holds 7 frames against the episode's
+//!   10 rows (an encode that stopped early) → `VIDEO.FRAME_COUNT_MISMATCH`.
+//! - `video-missing` — episode 1's video file was never uploaded → `VIDEO.MEDIA_MISSING`.
+//! - `video-reencoded` — the videos were re-encoded at 320x240 while the manifest still declares
+//!   640x480 → `VIDEO.RESOLUTION_MISMATCH`, charged once for the stream rather than once per episode.
 //!
-//! Usage: `cargo run -p veridex-core --example make_demo_lerobot -- <output-dir> [clean|truncated|boundary|jitter|short-episode|duplicate|saturated|spike|nan|multi-joint]`
+//! Usage: `cargo run -p veridex-core --example make_demo_lerobot -- <output-dir> [clean|truncated|boundary|jitter|short-episode|duplicate|saturated|spike|nan|multi-joint|video|video-desync|video-missing|video-reencoded]`
 //!
 //! Then: `veridex check <output-dir>`.
 
@@ -54,6 +62,20 @@ enum Mode {
     Spike,
     Nan,
     MultiJoint,
+    Video,
+    VideoDesync,
+    VideoMissing,
+    VideoReencoded,
+}
+
+impl Mode {
+    /// Whether this variant writes a camera feature backed by real `.mp4` files.
+    fn has_video(self) -> bool {
+        matches!(
+            self,
+            Mode::Video | Mode::VideoDesync | Mode::VideoMissing | Mode::VideoReencoded
+        )
+    }
 }
 
 fn main() {
@@ -71,6 +93,10 @@ fn main() {
         Some("spike") => Mode::Spike,
         Some("nan") => Mode::Nan,
         Some("multi-joint") => Mode::MultiJoint,
+        Some("video") => Mode::Video,
+        Some("video-desync") => Mode::VideoDesync,
+        Some("video-missing") => Mode::VideoMissing,
+        Some("video-reencoded") => Mode::VideoReencoded,
         _ => Mode::NonMonotonic,
     };
     let dir = Path::new(&dir);
@@ -107,6 +133,16 @@ fn main() {
         Mode::MultiJoint => {
             "multi-joint (a 3-DoF `action` whose gripper — dimension 2 — saturates → STATISTICAL.SATURATED naming the dimension)"
         }
+        Mode::Video => "video (a camera feature whose .mp4 files agree with the data — clean)",
+        Mode::VideoDesync => {
+            "video-desync (episode 1's video holds 7 frames against 10 data rows → VIDEO.FRAME_COUNT_MISMATCH)"
+        }
+        Mode::VideoMissing => {
+            "video-missing (episode 1's video file was never uploaded → VIDEO.MEDIA_MISSING)"
+        }
+        Mode::VideoReencoded => {
+            "video-reencoded (videos re-encoded at 320x240 against a declared 640x480 → VIDEO.RESOLUTION_MISMATCH)"
+        }
     };
     println!("Wrote {what} LeRobot v3 dataset to {}", dir.display());
     println!("Try:  veridex check {}", dir.display());
@@ -128,16 +164,35 @@ fn write_dataset(dir: &Path, mode: Mode) {
     // Two features, both frame-aligned scalars. Veridex fingerprints their cell bytes into per-frame
     // content hashes (a SHA-256, never a decode), so content-level checks and the CDM hash reflect
     // actual frame content.
+    let mut features = serde_json::json!({
+        "observation.state": { "dtype": "float32", "shape": [1] },
+        "action": { "dtype": "float32", "shape": [1] },
+    });
+    if mode.has_video() {
+        // A LeRobot video feature: the manifest declares the encoding, the Parquet carries one row
+        // per frame, and the pixels live in `videos/`. `video.codec` is spelled `h264` while the
+        // container's sample entry is `avc1` — the same encoder under two names, which the codec
+        // comparison normalizes rather than reporting as a mismatch.
+        features[VIDEO_FEATURE] = serde_json::json!({
+            "dtype": "video",
+            "shape": [DECLARED_HEIGHT, DECLARED_WIDTH, 3],
+            "names": ["height", "width", "channel"],
+            "info": {
+                "video.codec": "h264",
+                "video.fps": fps,
+                "video.height": DECLARED_HEIGHT,
+                "video.width": DECLARED_WIDTH,
+                "video.channels": 3,
+            },
+        });
+    }
     let info = serde_json::json!({
         "codebase_version": "v3.0",
         "fps": fps,
         "robot_type": "so100",
         "total_episodes": declared_episodes,
         "total_frames": declared_frames,
-        "features": {
-            "observation.state": { "dtype": "float32", "shape": [1] },
-            "action": { "dtype": "float32", "shape": [1] },
-        },
+        "features": features,
     });
     fs::write(
         dir.join("meta/info.json"),
@@ -147,6 +202,10 @@ fn write_dataset(dir: &Path, mode: Mode) {
 
     write_shared_meta(dir);
     write_parquet(&dir.join("data/chunk-000/file-000.parquet"), &rows);
+
+    if mode.has_video() {
+        write_videos(dir, mode, &rows, fps);
+    }
 
     if mode == Mode::Boundary {
         // Both episodes actually hold 10 frames, but the per-episode manifest declares episode 1 as
@@ -402,4 +461,189 @@ fn write_parquet(path: &Path, rows: &[DemoRow]) {
     let mut writer = ArrowWriter::try_new(file, schema, None).expect("parquet writer");
     writer.write(&batch).expect("write batch");
     writer.close().expect("close parquet");
+}
+
+// ---- video variants ----------------------------------------------------------------------------
+
+/// The camera feature the video variants declare.
+const VIDEO_FEATURE: &str = "observation.images.top";
+/// The resolution the manifest declares for it.
+const DECLARED_WIDTH: u16 = 640;
+const DECLARED_HEIGHT: u16 = 480;
+
+/// Write one `.mp4` per episode under `videos/<feature>/`, breaking exactly one thing per variant.
+///
+/// The files are real ISO base media containers: `veridex check` reads their headers (never a pixel)
+/// and compares what they hold against the rows and the manifest.
+fn write_videos(dir: &Path, mode: Mode, rows: &[DemoRow], fps: f64) {
+    let dest = dir.join("videos").join(VIDEO_FEATURE);
+    fs::create_dir_all(&dest).expect("create videos/");
+    // Frames per episode, in episode order — the number each episode's video should hold.
+    let mut per_episode: Vec<(i64, u32)> = Vec::new();
+    for (ep, _, _) in rows {
+        match per_episode.last_mut() {
+            Some((last, n)) if last == ep => *n += 1,
+            _ => per_episode.push((*ep, 1)),
+        }
+    }
+    let (width, height) = match mode {
+        // A re-encode at a smaller resolution while the manifest still declares the original.
+        Mode::VideoReencoded => (320, 240),
+        _ => (DECLARED_WIDTH, DECLARED_HEIGHT),
+    };
+    for (episode, frames) in per_episode {
+        // Episode 1 is the one each defect variant breaks; every other episode stays well-formed, so
+        // the report names the episode that is actually wrong.
+        if mode == Mode::VideoMissing && episode == 1 {
+            continue;
+        }
+        let frames = if mode == Mode::VideoDesync && episode == 1 {
+            frames.saturating_sub(3)
+        } else {
+            frames
+        };
+        let path = dest.join(format!("episode_{episode:06}.mp4"));
+        fs::write(&path, build_mp4(frames, width, height, fps as u32)).expect("write mp4");
+    }
+}
+
+/// One ISO base media box: a big-endian 32-bit size, a four-character type, then the payload.
+fn bx(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+    let mut out = ((payload.len() + 8) as u32).to_be_bytes().to_vec();
+    out.extend_from_slice(kind);
+    out.extend_from_slice(payload);
+    out
+}
+
+/// Build a minimal but well-formed MP4 holding `frames` H.264 samples at `width`x`height` and `fps`.
+///
+/// The sample data itself is empty — this is a container written to be *described* correctly, which
+/// is all Veridex reads. Every box a player needs to find the track's shape is present and
+/// self-consistent: `mdhd` gives the time base, `stsz` the sample count, `stsd` the codec and
+/// resolution.
+fn build_mp4(frames: u32, width: u16, height: u16, fps: u32) -> Vec<u8> {
+    let timescale: u32 = 30_000;
+    let delta = timescale / fps.max(1);
+    let duration = delta * frames;
+
+    let mut ftyp = b"isom".to_vec();
+    ftyp.extend_from_slice(&512u32.to_be_bytes());
+    ftyp.extend_from_slice(b"isomiso2avc1mp41");
+
+    let mut mvhd = Vec::new();
+    mvhd.extend_from_slice(&0u32.to_be_bytes()); // version + flags
+    mvhd.extend_from_slice(&[0u8; 8]); // creation + modification time
+    mvhd.extend_from_slice(&timescale.to_be_bytes());
+    mvhd.extend_from_slice(&duration.to_be_bytes());
+    mvhd.extend_from_slice(&0x0001_0000u32.to_be_bytes()); // rate 1.0
+    mvhd.extend_from_slice(&0x0100u16.to_be_bytes()); // volume 1.0
+    mvhd.extend_from_slice(&[0u8; 10]); // reserved
+    mvhd.extend_from_slice(&unity_matrix());
+    mvhd.extend_from_slice(&[0u8; 24]); // pre_defined
+    mvhd.extend_from_slice(&2u32.to_be_bytes()); // next_track_id
+
+    let mut tkhd = Vec::new();
+    tkhd.extend_from_slice(&7u32.to_be_bytes()); // version 0, flags: enabled | in movie | in preview
+    tkhd.extend_from_slice(&[0u8; 8]); // creation + modification time
+    tkhd.extend_from_slice(&1u32.to_be_bytes()); // track_id
+    tkhd.extend_from_slice(&[0u8; 4]); // reserved
+    tkhd.extend_from_slice(&duration.to_be_bytes());
+    tkhd.extend_from_slice(&[0u8; 8]); // reserved
+    tkhd.extend_from_slice(&[0u8; 4]); // layer + alternate_group
+    tkhd.extend_from_slice(&[0u8; 4]); // volume + reserved
+    tkhd.extend_from_slice(&unity_matrix());
+    tkhd.extend_from_slice(&((width as u32) << 16).to_be_bytes());
+    tkhd.extend_from_slice(&((height as u32) << 16).to_be_bytes());
+
+    let mut mdhd = Vec::new();
+    mdhd.extend_from_slice(&0u32.to_be_bytes()); // version + flags
+    mdhd.extend_from_slice(&[0u8; 8]); // creation + modification time
+    mdhd.extend_from_slice(&timescale.to_be_bytes());
+    mdhd.extend_from_slice(&duration.to_be_bytes());
+    mdhd.extend_from_slice(&0x55c4u16.to_be_bytes()); // language: und
+    mdhd.extend_from_slice(&[0u8; 2]); // pre_defined
+
+    let mut hdlr = Vec::new();
+    hdlr.extend_from_slice(&0u32.to_be_bytes()); // version + flags
+    hdlr.extend_from_slice(&[0u8; 4]); // pre_defined
+    hdlr.extend_from_slice(b"vide");
+    hdlr.extend_from_slice(&[0u8; 12]); // reserved
+    hdlr.extend_from_slice(b"VideoHandler\0");
+
+    let mut vmhd = Vec::new();
+    vmhd.extend_from_slice(&1u32.to_be_bytes()); // version 0, flags 1
+    vmhd.extend_from_slice(&[0u8; 8]); // graphicsmode + opcolor
+
+    let mut avc1 = Vec::new();
+    avc1.extend_from_slice(&[0u8; 6]); // reserved
+    avc1.extend_from_slice(&1u16.to_be_bytes()); // data_reference_index
+    avc1.extend_from_slice(&[0u8; 16]); // pre_defined + reserved
+    avc1.extend_from_slice(&width.to_be_bytes());
+    avc1.extend_from_slice(&height.to_be_bytes());
+    avc1.extend_from_slice(&0x0048_0000u32.to_be_bytes()); // horizontal resolution 72 dpi
+    avc1.extend_from_slice(&0x0048_0000u32.to_be_bytes()); // vertical resolution 72 dpi
+    avc1.extend_from_slice(&[0u8; 4]); // reserved
+    avc1.extend_from_slice(&1u16.to_be_bytes()); // frames per sample
+    avc1.extend_from_slice(&[0u8; 32]); // compressor name
+    avc1.extend_from_slice(&0x0018u16.to_be_bytes()); // depth
+    avc1.extend_from_slice(&0xffffu16.to_be_bytes()); // pre_defined
+    let avc1 = bx(b"avc1", &avc1);
+
+    let mut stsd = Vec::new();
+    stsd.extend_from_slice(&0u32.to_be_bytes()); // version + flags
+    stsd.extend_from_slice(&1u32.to_be_bytes()); // entry_count
+    stsd.extend_from_slice(&avc1);
+
+    let mut stts = Vec::new();
+    stts.extend_from_slice(&0u32.to_be_bytes()); // version + flags
+    stts.extend_from_slice(&1u32.to_be_bytes()); // entry_count
+    stts.extend_from_slice(&frames.to_be_bytes());
+    stts.extend_from_slice(&delta.to_be_bytes());
+
+    let mut stsc = Vec::new();
+    stsc.extend_from_slice(&0u32.to_be_bytes()); // version + flags
+    stsc.extend_from_slice(&1u32.to_be_bytes()); // entry_count
+    stsc.extend_from_slice(&1u32.to_be_bytes()); // first_chunk
+    stsc.extend_from_slice(&frames.max(1).to_be_bytes()); // samples_per_chunk
+    stsc.extend_from_slice(&1u32.to_be_bytes()); // sample_description_index
+
+    let mut stsz = Vec::new();
+    stsz.extend_from_slice(&0u32.to_be_bytes()); // version + flags
+    stsz.extend_from_slice(&1u32.to_be_bytes()); // uniform sample size
+    stsz.extend_from_slice(&frames.to_be_bytes()); // sample_count
+
+    let mut stco = Vec::new();
+    stco.extend_from_slice(&0u32.to_be_bytes()); // version + flags
+    stco.extend_from_slice(&1u32.to_be_bytes()); // entry_count
+    stco.extend_from_slice(&0u32.to_be_bytes()); // chunk offset
+
+    let stbl = concat(&[
+        bx(b"stsd", &stsd),
+        bx(b"stts", &stts),
+        bx(b"stsc", &stsc),
+        bx(b"stsz", &stsz),
+        bx(b"stco", &stco),
+    ]);
+    let minf = concat(&[bx(b"vmhd", &vmhd), bx(b"stbl", &stbl)]);
+    let mdia = concat(&[bx(b"mdhd", &mdhd), bx(b"hdlr", &hdlr), bx(b"minf", &minf)]);
+    let trak = concat(&[bx(b"tkhd", &tkhd), bx(b"mdia", &mdia)]);
+    let moov = concat(&[bx(b"mvhd", &mvhd), bx(b"trak", &trak)]);
+
+    concat(&[bx(b"ftyp", &ftyp), bx(b"moov", &moov), bx(b"mdat", &[])])
+}
+
+/// The 3x3 unity display matrix every well-formed MP4 header carries.
+fn unity_matrix() -> [u8; 36] {
+    let mut out = [0u8; 36];
+    for (i, v) in [0x0001_0000u32, 0, 0, 0, 0x0001_0000, 0, 0, 0, 0x4000_0000]
+        .into_iter()
+        .enumerate()
+    {
+        out[i * 4..i * 4 + 4].copy_from_slice(&v.to_be_bytes());
+    }
+    out
+}
+
+fn concat(parts: &[Vec<u8>]) -> Vec<u8> {
+    parts.concat()
 }

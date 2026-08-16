@@ -819,6 +819,7 @@ fn decode_channel_group(
             observed_dim_stats: None,
             point_fields: None,
             // MF4 channels declare no coordinate frame.
+            media: None,
             frame_id: None,
         });
     }

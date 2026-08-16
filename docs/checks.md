@@ -69,6 +69,28 @@ others are fixed defaults today (config-wiring them is a follow-up).
 | `semantic.annotation-integrity` | `SEMANTIC.ANNOTATION_CONFLICT` | warning | Two `language` annotations at the same timestamp carry different values — contradictory supervision for one instant. |
 | `semantic.annotation-integrity` | `SEMANTIC.EMPTY_ANNOTATION` | warning | A `language` annotation is present but its value is empty/whitespace. Veridex verifies annotations, never writes or edits them. LeRobot surfaces mid-episode `task_index` changes as timestamped `language` labels; single-task episodes carry none. |
 
+## Video — does the media match the data it is paired with?
+
+A video dataset is two artifacts nothing reconciles: a manifest and a data table on one side, an
+`.mp4` on the other. A loader pairs video frame *i* with data row *i* and asks no questions. These
+checks read the container's **headers only** — Veridex never decodes a pixel — so "decodable" is
+answered as "does this container parse and describe a video track", which is what catches the
+truncated, half-uploaded, and re-encoded files.
+
+They are silent unless the adapter resolved a media file for a stream: a dataset that stores images
+inline, or one whose videos are concatenated rather than written one file per episode, is reported
+as unmapped coverage rather than accused of anything. Today that resolution is LeRobot's
+`videos/**/<feature>/episode_<n>.mp4` layout.
+
+| Check id | Finding code | Severity | Fires when |
+|---|---|---|---|
+| `video.media-readable` | `VIDEO.MEDIA_MISSING` | error | An episode's media file is absent, though the dataset stores that stream's video one file per episode. The episode's rows claim imagery the dataset does not hold. |
+| `video.media-readable` | `VIDEO.MEDIA_UNREADABLE` | error | The file exists but is not a readable container — the finding names the structure that was wrong (no `moov` box, a truncated header, a box declaring more bytes than remain). A container that will not parse will not decode, and training fails at that episode hours into a run. |
+| `video.media-conformance` | `VIDEO.FRAME_COUNT_MISMATCH` | error | The container's sample count differs from the frames the paired data stream carries. Every video/data pair past the shorter of the two is wrong, so the policy learns actions against images from a different moment. Reported per episode: one bad video is one bad episode. |
+| `video.media-conformance` | `VIDEO.RESOLUTION_MISMATCH` | warning | The container's encoded resolution differs from the manifest's. Charged **once per stream**, naming the first episode and how many share it — a re-export is one defect however many episodes it touched. |
+| `video.media-conformance` | `VIDEO.CODEC_MISMATCH` | warning | The container's codec differs from the declared one. Compared across the known aliases for one encoder (`h264`/`avc1`, `hevc`/`hvc1`, `av1`/`av01`, `vp9`/`vp09`), so a manifest and a fourcc naming the same encoder differently are not a finding. Charged once per stream. |
+| `video.media-conformance` | `VIDEO.FPS_MISMATCH` | warning | The container's frame rate (its sample count over its media duration) differs from the declared rate beyond `rate_deviation` — the same relative tolerance `temporal.rate-conformance` uses. Video time drifts against the action timeline, worsening through the episode. Charged once per stream. |
+
 ## Provenance — do we know where the data came from?
 
 | Check id | Finding code | Severity | Fires when |

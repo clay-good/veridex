@@ -22,6 +22,7 @@ pub mod config;
 pub mod diff;
 pub mod emit;
 pub mod engine;
+pub mod media;
 pub mod pipeline;
 pub mod profile;
 pub mod report;
@@ -103,6 +104,7 @@ mod tests {
                         observed_non_finite: None,
                         observed_dim_stats: None,
                         point_fields: None,
+                        media: None,
                         frame_id: None,
                         frames: vec![
                             Frame {
@@ -139,6 +141,7 @@ mod tests {
                         observed_non_finite: None,
                         observed_dim_stats: None,
                         point_fields: None,
+                        media: None,
                         frame_id: None,
                         frames: vec![Frame {
                             ts: 1_000,
@@ -443,6 +446,7 @@ mod proptests {
                 observed_non_finite: None,
                 observed_dim_stats: None,
                 point_fields: None,
+                media: None,
                 frame_id: None,
             })
     }

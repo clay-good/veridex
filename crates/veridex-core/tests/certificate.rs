@@ -22,6 +22,7 @@ fn stream(name: &str, clock: &str, ts: &[i64]) -> Stream {
         observed_non_finite: None,
         observed_dim_stats: None,
         point_fields: None,
+        media: None,
         frame_id: None,
         frames: ts
             .iter()
@@ -88,12 +89,16 @@ fn certificate_binds_content_and_states_coverage() {
     assert_eq!(cert.dataset_id, "acme/demo");
     // Coverage is reported (known/asserted/unknown); this dataset has no provenance.
     assert_eq!(cert.provenance_coverage.unknown, 6);
-    // Checks were run and some categories skipped (semantic/video have no MVP checks).
+    // Checks were run, and the certificate discloses any category the run did not cover. Every
+    // category in the catalog now has at least one registered check — `video` was the last one
+    // without — so nothing is skipped. This assertion is the guard on that: a category that loses
+    // its checks starts appearing here again, which is exactly what a reader needs to know.
     assert!(!cert.checks_run.is_empty());
-    assert!(cert.categories_skipped.iter().any(|c| matches!(
-        c,
-        veridex_core::Category::Semantic | veridex_core::Category::Video
-    )));
+    assert!(
+        cert.categories_skipped.is_empty(),
+        "every check category is covered; skipped: {:?}",
+        cert.categories_skipped
+    );
 }
 
 #[test]

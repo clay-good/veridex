@@ -40,6 +40,7 @@ fn cloud_stream(fields: &[&str]) -> Stream {
         observed_saturation: None,
         observed_non_finite: None,
         observed_dim_stats: None,
+        media: None,
         frame_id: None,
         point_fields: Some(
             fields
@@ -262,6 +263,7 @@ fn permuting_every_canonicalized_collection_changes_neither_the_hash_nor_the_ver
         observed_non_finite: None,
         observed_dim_stats: None,
         point_fields: None,
+        media: None,
         frame_id: None,
     };
     // A trajectory that is continuous in ts order and full of teleports in any other order.

@@ -307,6 +307,36 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   `make_demo_mcap -- <out> av-miscalibrated` writes the five-sensor rig with the LiDAR parented to a
   `lidar_mount` frame nothing joins to `base_link`.
 
+- **Video and media checks** (`video.media-readable`, `video.media-conformance`) — the last check
+  category in the catalog with no implementation. A video dataset is two artifacts nothing
+  reconciles: a manifest and a data table on one side, an `.mp4` on the other, paired by frame index
+  and never compared. Veridex now reads each video file's ISO base media (MP4) **container headers**
+  — never a decoded pixel — and carries both the manifest's declared encoding and the container's
+  own into a new CDM field, `Stream.media`. That makes four failures visible:
+  `VIDEO.MEDIA_MISSING` (an episode's video was never uploaded), `VIDEO.MEDIA_UNREADABLE` (the file
+  is not a parseable container, with the reason naming the structure that was wrong),
+  `VIDEO.FRAME_COUNT_MISMATCH` (the container's sample count differs from the episode's rows, so
+  every pair past the shorter one teaches an action against an image from a different moment), and
+  the export-drift trio `VIDEO.RESOLUTION_MISMATCH` / `CODEC_MISMATCH` / `FPS_MISMATCH`.
+
+  Charged at the granularity of the defect: a frame-count mismatch is per episode, while a
+  resolution, codec, or rate that disagrees with the manifest is one export defect and is reported
+  once per stream, naming the first episode and how many share it. Codecs compare across the names
+  for one encoder (`h264`/`avc1`, `hevc`/`hvc1`, `av1`/`av01`, `vp9`/`vp09`), so the manifest and the
+  fourcc spelling the same thing differently is not a finding.
+
+  `Stream.media` binds into the content hash (**`CANONICAL_VERSION` 5 → 6**): a re-encode changes
+  nothing else in the CDM, so without it a certificate issued for a sound export would verify
+  against a broken one. The container walk is bounded like every other untrusted read — box sizes
+  are validated against the bytes that actually remain rather than believed, nesting is capped, and
+  only the `moov` box is read into memory, under a ceiling.
+
+  The LeRobot adapter resolves `videos/**/<feature>/episode_<n>.mp4`. A layout that concatenates
+  many episodes into one file is reported as an **unmapped field** and the checks abstain —
+  attributing a shared file's frames to one episode would invent the very number the checks compare.
+  Four demo variants prove the whole path end-to-end: `make_demo_lerobot -- <out> video` (clean),
+  `video-desync`, `video-missing`, and `video-reencoded`.
+
 ### Fixed
 
 - **A broken transform tree could be reported by neither calibration check.** `CalibrationCompleteness`
