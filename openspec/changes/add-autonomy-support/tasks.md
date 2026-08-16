@@ -150,8 +150,8 @@ call, not a defect fix:
   reader knows what the binding does and does not cover; folding it in would need a
   `CANONICAL_VERSION` bump to 4.
 
-Still open from the audit, unblocked but unbuilt: `statistical.range-sanity` claiming a stream name
-before evaluating it (exact today because stored stats are dataset-level; wrong the moment an adapter
-attaches per-episode stats). The MCAP decompressed-byte budget is now built — expansion is capped at
+Both audit follow-ups are now built. `statistical.range-sanity` claims a stream only once it has
+produced a finding, matching its sibling checks, so a later episode's corrupt stats can no longer be
+masked by an earlier clean one. The MCAP decompressed-byte budget is built — expansion is capped at
 100x the file's own size (`--max-decompression-ratio`), charged off the chunk headers before the
 reader sees the file and again against the bytes that arrive.

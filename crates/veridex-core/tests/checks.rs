@@ -2364,3 +2364,23 @@ fn one_shared_timeline_reports_once_and_an_event_driven_signal_is_not_called_inc
         "an event-driven signal has no cadence to fall short of: {seq:#?}"
     );
 }
+
+#[test]
+fn corrupt_stats_in_a_later_episode_are_not_masked_by_a_clean_earlier_one() {
+    // Stored stats are dataset-level today, so RangeSanity reports each stream once. It must claim
+    // the stream when it finds something, not when it first *sees* it: a clean episode 0 followed by
+    // a corrupt episode 1 (which per-episode stats would produce) must still be reported.
+    let d = dataset(vec![
+        episode(0, vec![stream_with_stats("s", stats(0.0, 1.0, 0.5, 0.2))]),
+        episode(1, vec![stream_with_stats("s", stats(5.0, 1.0, 3.0, 1.0))]),
+    ]);
+    let f = statistical::RangeSanity.run(&d);
+    assert_eq!(f.len(), 1, "the corrupt episode must be reported: {f:?}");
+    assert_eq!(f[0].code, "STATISTICAL.RANGE_INVERTED");
+    // And it is attributed to the episode it was actually found in.
+    assert!(
+        format!("{:?}", f[0].location).contains('1'),
+        "expected episode 1, got {:?}",
+        f[0].location
+    );
+}

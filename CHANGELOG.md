@@ -283,6 +283,12 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   above real datasets — a one-hour ten-sensor 100 Hz rig is 3.6M) *before* allocating, and refuses
   with a clear error naming the limit rather than being killed. `--max-frames <n>` raises it;
   `--max-frames 0` removes it.
+- **A clean episode could mask a later episode's corrupt statistics.** `statistical.range-sanity`
+  reports each stream once (stored stats are dataset-level), but it claimed the stream name *before*
+  evaluating it — so only the first episode carrying a stream was ever examined. Exact today, wrong
+  the moment an adapter attaches per-episode stats. It now claims the stream when it produces a
+  finding, like its sibling checks: a clean episode 0 followed by a corrupt episode 1 is reported,
+  and attributed to the episode it was found in. Findings still never scale with episode count.
 - **The frame budget bounded frames, not the bytes they arrive in.** An MCAP chunk header declares how
   much it unpacks into, and nothing checked that figure: a few hundred bytes claiming 8 GiB of chunk
   contents sent the reader into an unbounded read loop, and a chunk full of oversized messages costs

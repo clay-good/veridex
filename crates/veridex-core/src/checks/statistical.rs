@@ -4,7 +4,7 @@
 //! (design keeps Veridex from decoding frame payloads). Stored-vs-recomputed comparison arrives
 //! once adapters stream values.
 
-use crate::cdm::{Dataset, StreamStats};
+use crate::cdm::{Dataset, Stream, StreamStats};
 use crate::check::{Category, Check, Finding, Location, Scope, Severity};
 
 /// Actuator/state saturation. When the adapter recomputes values from the data
@@ -247,187 +247,197 @@ impl Check for RangeSanity {
     }
     fn run(&self, dataset: &Dataset) -> Vec<Finding> {
         let mut findings = Vec::new();
-        // Stored stats are dataset-level (attached identically to every episode's copy of a stream),
-        // so report each stream once — on the first episode carrying it — rather than per episode.
+        // Stored stats are dataset-level today (attached identically to every episode's copy of a
+        // stream), so report each stream once — on the first episode carrying it. The stream is
+        // claimed only once it has actually produced a finding, so if an adapter ever attaches
+        // per-episode stats, a later episode's corrupt stats are still examined rather than skipped
+        // on the strength of an earlier clean one.
         let mut reported: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
         for ep in &dataset.episodes {
             for stream in &ep.streams {
                 let Some(stats) = stream.stats else {
                     continue;
                 };
-                // NOTE: this claims the stream before evaluating it, unlike the sibling checks, so
-                // only the first episode carrying a stream name is examined. That is exact today —
-                // stored stats are dataset-level, attached identically to every episode — but it
-                // would silently skip later episodes if an adapter ever attaches per-episode stats.
+                let Some(finding) = self.evaluate(stream, ep.index, &stats) else {
+                    continue;
+                };
                 if !reported.insert(stream.name.as_str()) {
                     continue;
                 }
-                let at = || Location::Stream {
-                    episode: ep.index,
-                    stream: stream.name.clone(),
-                };
-
-                // Non-finite statistics are always a data-integrity error.
-                if [stats.min, stats.max, stats.mean, stats.std]
-                    .iter()
-                    .any(|v| !v.is_finite())
-                {
-                    findings.push(
-                        Finding::new(
-                            self.id(),
-                            Category::Statistical,
-                            Severity::Error,
-                            at(),
-                            "STATISTICAL.NON_FINITE",
-                            format!(
-                                "stream `{}` in episode {} has non-finite stored statistics",
-                                stream.name, ep.index
-                            ),
-                        )
-                        .with_risk("NaN/inf statistics poison normalization and any model that consumes them.")
-                        .with_remedy("Recompute the statistics from clean values, or drop the corrupt stream."),
-                    );
-                    continue;
-                }
-
-                // Inverted range: min must not exceed max; std must be non-negative.
-                if stats.min > stats.max {
-                    findings.push(
-                        Finding::new(
-                            self.id(),
-                            Category::Statistical,
-                            Severity::Error,
-                            at(),
-                            "STATISTICAL.RANGE_INVERTED",
-                            format!(
-                                "stream `{}` in episode {}: min {} exceeds max {}",
-                                stream.name, ep.index, stats.min, stats.max
-                            ),
-                        )
-                        .with_risk("An inverted range means the stored statistics are corrupt.")
-                        .with_remedy("Re-derive the statistics from the data."),
-                    );
-                    continue;
-                }
-                if stats.std < 0.0 {
-                    findings.push(
-                        Finding::new(
-                            self.id(),
-                            Category::Statistical,
-                            Severity::Error,
-                            at(),
-                            "STATISTICAL.NEGATIVE_STD",
-                            format!(
-                                "stream `{}` in episode {}: negative std {}",
-                                stream.name, ep.index, stats.std
-                            ),
-                        )
-                        .with_risk("A negative standard deviation is impossible; the statistics are corrupt.")
-                        .with_remedy("Re-derive the statistics from the data."),
-                    );
-                    continue;
-                }
-
-                // The mean must lie within the observed range; otherwise the statistics are
-                // internally inconsistent (min/max and mean cannot describe the same values). Allow a
-                // small float tolerance — a source's independently-rounded mean can land one ULP past
-                // a bound on a near-constant stream, which is honest data, not corruption (mirrors the
-                // Popoviciu std check below).
-                let mean_tol = 1e-9 + stats.min.abs().max(stats.max.abs()) * 1e-6;
-                if stats.mean < stats.min - mean_tol || stats.mean > stats.max + mean_tol {
-                    findings.push(
-                        Finding::new(
-                            self.id(),
-                            Category::Statistical,
-                            Severity::Error,
-                            at(),
-                            "STATISTICAL.MEAN_OUT_OF_RANGE",
-                            format!(
-                                "stream `{}` in episode {}: mean {} lies outside range [{}, {}]",
-                                stream.name, ep.index, stats.mean, stats.min, stats.max
-                            ),
-                        )
-                        .with_risk("A mean outside its own min/max means the stored statistics are corrupt; normalization built on them will be wrong.")
-                        .with_remedy("Re-derive the statistics from the data."),
-                    );
-                    continue;
-                }
-
-                // Popoviciu's inequality: for values bounded in [min, max], the standard
-                // deviation cannot exceed (max - min) / 2. A stored std above that bound is
-                // mathematically impossible — the min/max and std cannot describe the same values.
-                let bound = (stats.max - stats.min) / 2.0;
-                let tol = 1e-9 + bound.abs() * 1e-6;
-                if stats.std > bound + tol {
-                    findings.push(
-                        Finding::new(
-                            self.id(),
-                            Category::Statistical,
-                            Severity::Error,
-                            at(),
-                            "STATISTICAL.STD_IMPLAUSIBLE",
-                            format!(
-                                "stream `{}` in episode {}: std {} exceeds the maximum possible {} for range [{}, {}]",
-                                stream.name, ep.index, stats.std, bound, stats.min, stats.max
-                            ),
-                        )
-                        .with_risk("An impossibly large std means the stored statistics don't match the data (often computed on the wrong dtype or stream); normalization built on them will be wrong.")
-                        .with_remedy("Re-derive the statistics from the data."),
-                    );
-                    continue;
-                }
-
-                // Stored stats must fit the stream's declared integer dtype: a `uint8` stream can't
-                // hold a value of 300, so min/max outside the dtype's representable range means the
-                // stats don't match the data (wrong dtype, or stats computed on rescaled values).
-                if let Some((lo, hi)) = stream.dtype.as_deref().and_then(integer_dtype_range) {
-                    if stats.min < lo || stats.max > hi {
-                        let dtype = stream.dtype.as_deref().unwrap_or_default();
-                        findings.push(
-                            Finding::new(
-                                self.id(),
-                                Category::Statistical,
-                                Severity::Error,
-                                at(),
-                                "STATISTICAL.DTYPE_RANGE",
-                                format!(
-                                    "stream `{}` in episode {}: stored range [{}, {}] falls outside \
-                                     what `{dtype}` can represent [{lo}, {hi}]",
-                                    stream.name, ep.index, stats.min, stats.max
-                                ),
-                            )
-                            .with_risk("Stats outside the declared dtype's range mean the dtype or the stats are wrong; normalization and any dtype-based decoding will be incorrect.")
-                            .with_remedy("Reconcile the declared dtype with the data, or re-derive the statistics."),
-                        );
-                        continue;
-                    }
-                }
-
-                // Degenerate (constant) distribution: no signal to learn from.
-                if is_degenerate(&stats) {
-                    findings.push(
-                        Finding::new(
-                            self.id(),
-                            Category::Statistical,
-                            Severity::Warning,
-                            at(),
-                            "STATISTICAL.DEGENERATE",
-                            format!(
-                                "stream `{}` in episode {} is constant (min == max, std == 0)",
-                                stream.name, ep.index
-                            ),
-                        )
-                        .with_risk(
-                            "A constant stream carries no information and can bias training.",
-                        )
-                        .with_remedy(
-                            "Confirm the sensor was active; consider excluding the stream.",
-                        ),
-                    );
-                }
+                findings.push(finding);
             }
         }
         findings
+    }
+}
+
+impl RangeSanity {
+    /// The first way this stream's stored statistics are unusable, if any. Rules are ordered from
+    /// "the numbers are corrupt" to "the numbers are fine but the distribution is degenerate", and
+    /// the first that fires is the finding — later rules read the same fields and would only restate
+    /// the same defect.
+    fn evaluate(&self, stream: &Stream, episode: u64, stats: &StreamStats) -> Option<Finding> {
+        let at = || Location::Stream {
+            episode,
+            stream: stream.name.clone(),
+        };
+
+        // Non-finite statistics are always a data-integrity error.
+        if [stats.min, stats.max, stats.mean, stats.std]
+            .iter()
+            .any(|v| !v.is_finite())
+        {
+            return Some(
+                Finding::new(
+                    self.id(),
+                    Category::Statistical,
+                    Severity::Error,
+                    at(),
+                    "STATISTICAL.NON_FINITE",
+                    format!(
+                        "stream `{}` in episode {} has non-finite stored statistics",
+                        stream.name, episode
+                    ),
+                )
+                .with_risk(
+                    "NaN/inf statistics poison normalization and any model that consumes them.",
+                )
+                .with_remedy(
+                    "Recompute the statistics from clean values, or drop the corrupt stream.",
+                ),
+            );
+        }
+
+        // Inverted range: min must not exceed max; std must be non-negative.
+        if stats.min > stats.max {
+            return Some(
+                Finding::new(
+                    self.id(),
+                    Category::Statistical,
+                    Severity::Error,
+                    at(),
+                    "STATISTICAL.RANGE_INVERTED",
+                    format!(
+                        "stream `{}` in episode {}: min {} exceeds max {}",
+                        stream.name, episode, stats.min, stats.max
+                    ),
+                )
+                .with_risk("An inverted range means the stored statistics are corrupt.")
+                .with_remedy("Re-derive the statistics from the data."),
+            );
+        }
+        if stats.std < 0.0 {
+            return Some(
+                Finding::new(
+                    self.id(),
+                    Category::Statistical,
+                    Severity::Error,
+                    at(),
+                    "STATISTICAL.NEGATIVE_STD",
+                    format!(
+                        "stream `{}` in episode {}: negative std {}",
+                        stream.name, episode, stats.std
+                    ),
+                )
+                .with_risk(
+                    "A negative standard deviation is impossible; the statistics are corrupt.",
+                )
+                .with_remedy("Re-derive the statistics from the data."),
+            );
+        }
+
+        // The mean must lie within the observed range; otherwise the statistics are internally
+        // inconsistent (min/max and mean cannot describe the same values). Allow a small float
+        // tolerance — a source's independently-rounded mean can land one ULP past a bound on a
+        // near-constant stream, which is honest data, not corruption (mirrors the Popoviciu std
+        // check below).
+        let mean_tol = 1e-9 + stats.min.abs().max(stats.max.abs()) * 1e-6;
+        if stats.mean < stats.min - mean_tol || stats.mean > stats.max + mean_tol {
+            return Some(
+                Finding::new(
+                    self.id(),
+                    Category::Statistical,
+                    Severity::Error,
+                    at(),
+                    "STATISTICAL.MEAN_OUT_OF_RANGE",
+                    format!(
+                        "stream `{}` in episode {}: mean {} lies outside range [{}, {}]",
+                        stream.name, episode, stats.mean, stats.min, stats.max
+                    ),
+                )
+                .with_risk("A mean outside its own min/max means the stored statistics are corrupt; normalization built on them will be wrong.")
+                .with_remedy("Re-derive the statistics from the data."),
+            );
+        }
+
+        // Popoviciu's inequality: for values bounded in [min, max], the standard deviation cannot
+        // exceed (max - min) / 2. A stored std above that bound is mathematically impossible — the
+        // min/max and std cannot describe the same values.
+        let bound = (stats.max - stats.min) / 2.0;
+        let tol = 1e-9 + bound.abs() * 1e-6;
+        if stats.std > bound + tol {
+            return Some(
+                Finding::new(
+                    self.id(),
+                    Category::Statistical,
+                    Severity::Error,
+                    at(),
+                    "STATISTICAL.STD_IMPLAUSIBLE",
+                    format!(
+                        "stream `{}` in episode {}: std {} exceeds the maximum possible {} for range [{}, {}]",
+                        stream.name, episode, stats.std, bound, stats.min, stats.max
+                    ),
+                )
+                .with_risk("An impossibly large std means the stored statistics don't match the data (often computed on the wrong dtype or stream); normalization built on them will be wrong.")
+                .with_remedy("Re-derive the statistics from the data."),
+            );
+        }
+
+        // Stored stats must fit the stream's declared integer dtype: a `uint8` stream can't hold a
+        // value of 300, so min/max outside the dtype's representable range means the stats don't
+        // match the data (wrong dtype, or stats computed on rescaled values).
+        if let Some((lo, hi)) = stream.dtype.as_deref().and_then(integer_dtype_range) {
+            if stats.min < lo || stats.max > hi {
+                let dtype = stream.dtype.as_deref().unwrap_or_default();
+                return Some(
+                    Finding::new(
+                        self.id(),
+                        Category::Statistical,
+                        Severity::Error,
+                        at(),
+                        "STATISTICAL.DTYPE_RANGE",
+                        format!(
+                            "stream `{}` in episode {}: stored range [{}, {}] falls outside \
+                             what `{dtype}` can represent [{lo}, {hi}]",
+                            stream.name, episode, stats.min, stats.max
+                        ),
+                    )
+                    .with_risk("Stats outside the declared dtype's range mean the dtype or the stats are wrong; normalization and any dtype-based decoding will be incorrect.")
+                    .with_remedy("Reconcile the declared dtype with the data, or re-derive the statistics."),
+                );
+            }
+        }
+
+        // Degenerate (constant) distribution: no signal to learn from.
+        if is_degenerate(stats) {
+            return Some(
+                Finding::new(
+                    self.id(),
+                    Category::Statistical,
+                    Severity::Warning,
+                    at(),
+                    "STATISTICAL.DEGENERATE",
+                    format!(
+                        "stream `{}` in episode {} is constant (min == max, std == 0)",
+                        stream.name, episode
+                    ),
+                )
+                .with_risk("A constant stream carries no information and can bias training.")
+                .with_remedy("Confirm the sensor was active; consider excluding the stream."),
+            );
+        }
+
+        None
     }
 }
 
