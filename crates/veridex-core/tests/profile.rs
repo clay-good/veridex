@@ -127,7 +127,7 @@ fn a_healthy_rig_is_world_model_ready() {
     let r = ReadinessReport::evaluate(&p, &v, &d);
     assert!(r.applicable, "a rig is applicable");
     assert!(r.ready, "a healthy rig should be ready: {:?}", r.criteria);
-    assert_eq!(r.criteria.len(), 4);
+    assert_eq!(r.criteria.len(), 5);
     assert!(r.criteria.iter().all(|c| c.passed));
 }
 
@@ -225,7 +225,7 @@ fn a_readiness_certificate_verifies_offline_and_reports_every_criterion() {
     assert_eq!(doc["verified"], true);
     assert_eq!(doc["readiness"]["ready"], true);
     assert_eq!(doc["readiness"]["profile"], "world-model-ready");
-    assert_eq!(doc["readiness"]["criteria"].as_array().unwrap().len(), 4);
+    assert_eq!(doc["readiness"]["criteria"].as_array().unwrap().len(), 5);
     assert_eq!(doc["cdm_content_hash"], signed.certificate.cdm_content_hash);
 }
 
@@ -388,5 +388,105 @@ fn a_rig_without_a_decoded_ego_trajectory_is_not_a_readiness_candidate() {
     assert!(
         !(profile.applies_to)(&d),
         "without a decoded ego trajectory the profile must abstain, not vacuously pass"
+    );
+}
+
+#[test]
+fn a_rig_whose_sensors_cannot_reach_the_camera_is_not_ready() {
+    // Regression guard. `autonomy.calibration-completeness` defers its disconnected-tree report to
+    // `autonomy.sensor-frame-resolution` whenever the sensors name their frames. If the profile does
+    // not also watch that check, the defect moves out of every criterion the profile judges and a
+    // rig that cannot be spatially fused certifies as ready — while the same verdict says FAIL.
+    let p = profile::world_model_ready();
+
+    // The LiDAR is in the tree, under a mount frame nothing joins to the camera's subtree.
+    let mut d = healthy_rig();
+    d.calibration = Some(Calibration {
+        transforms: vec![
+            xf("lidar_mount", "lidar_top"),
+            xf("base_link", "camera_front"),
+        ],
+        intrinsics: d.calibration.as_ref().unwrap().intrinsics.clone(),
+    });
+    for s in &mut d.episodes[0].streams {
+        s.frame_id = match s.name.as_str() {
+            "lidar" => Some("lidar_top".into()),
+            "cam" => Some("camera_front".into()),
+            _ => None,
+        };
+    }
+
+    let v = verdict_for(&d, &p);
+    assert_eq!(
+        v.status,
+        veridex_core::Status::Fail,
+        "the stranded LiDAR is an error finding"
+    );
+    let r = ReadinessReport::evaluate(&p, &v, &d);
+    assert!(r.applicable);
+    assert!(
+        !r.ready,
+        "a rig whose LiDAR cannot be projected into the camera is not world-model ready: {:?}",
+        r.criteria
+    );
+    let frame = r
+        .criteria
+        .iter()
+        .find(|c| c.check_id == "autonomy.sensor-frame-resolution")
+        .expect("the profile must judge sensor-frame resolution");
+    assert!(!frame.passed);
+}
+
+#[test]
+fn a_sensor_naming_a_frame_the_tree_does_not_know_is_not_ready() {
+    // The other half: a fully connected tree, recorded for a frame name the LiDAR does not publish.
+    // Nothing about the tree's shape is wrong, so only the per-sensor check can see it.
+    let p = profile::world_model_ready();
+    let mut d = healthy_rig();
+    d.calibration = Some(Calibration {
+        transforms: vec![
+            xf("base_link", "lidar_top"),
+            xf("base_link", "camera_front"),
+        ],
+        intrinsics: d.calibration.as_ref().unwrap().intrinsics.clone(),
+    });
+    for s in &mut d.episodes[0].streams {
+        s.frame_id = match s.name.as_str() {
+            "lidar" => Some("lidar_top_v2".into()), // the driver publishes a different name
+            "cam" => Some("camera_front".into()),
+            _ => None,
+        };
+    }
+
+    let v = verdict_for(&d, &p);
+    let r = ReadinessReport::evaluate(&p, &v, &d);
+    assert!(!r.ready, "criteria: {:?}", r.criteria);
+}
+
+#[test]
+fn a_certificate_never_says_ready_over_a_failing_verdict() {
+    // The invariant behind both cases above, stated directly: `ready` is the field a consumer gates
+    // on, and a signed document asserting `ready: true` beside `status: fail` is self-contradictory.
+    let p = profile::world_model_ready();
+    let mut d = healthy_rig();
+    d.calibration = Some(Calibration {
+        transforms: vec![
+            xf("lidar_mount", "lidar_top"),
+            xf("base_link", "camera_front"),
+        ],
+        intrinsics: d.calibration.as_ref().unwrap().intrinsics.clone(),
+    });
+    for s in &mut d.episodes[0].streams {
+        s.frame_id = match s.name.as_str() {
+            "lidar" => Some("lidar_top".into()),
+            "cam" => Some("camera_front".into()),
+            _ => None,
+        };
+    }
+    let v = verdict_for(&d, &p);
+    let r = ReadinessReport::evaluate(&p, &v, &d);
+    assert!(
+        !(v.status == veridex_core::Status::Fail && r.ready),
+        "a failing verdict must never carry ready=true"
     );
 }

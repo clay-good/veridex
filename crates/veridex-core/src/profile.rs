@@ -24,7 +24,12 @@ pub struct Profile {
     pub applies_to: fn(&crate::cdm::Dataset) -> bool,
 }
 
-/// The `world-model-ready` criteria: the four autonomy checks and the guarantee each attests.
+/// The `world-model-ready` criteria: the autonomy checks and the guarantee each attests.
+///
+/// Every autonomy check that can fail a rig belongs here. A check missing from this list is a check
+/// the profile does not judge, so a defect that moves from a listed check to an unlisted one becomes
+/// invisible to `ready` while still failing the verdict — a certificate reading `status: fail` beside
+/// `ready: true`. Adding an autonomy check to the catalog means adding it here.
 const WORLD_MODEL_READY_CRITERIA: &[(&str, &str)] = &[
     (
         "autonomy.rig-sync",
@@ -42,11 +47,15 @@ const WORLD_MODEL_READY_CRITERIA: &[(&str, &str)] = &[
         "autonomy.calibration-completeness",
         "connected transform (TF) tree and camera intrinsics present",
     ),
+    (
+        "autonomy.sensor-frame-resolution",
+        "every sensor's own frame resolves through the tree to a camera",
+    ),
 ];
 
-/// The `world-model-ready` profile: tightens cross-sensor sync to 20 ms and bundles the four autonomy
+/// The `world-model-ready` profile: tightens cross-sensor sync to 20 ms and bundles the autonomy
 /// criteria a world-model training set needs (rig sync, sequence completeness, ego-pose continuity,
-/// calibration completeness).
+/// calibration completeness, and per-sensor frame resolution).
 pub fn world_model_ready() -> Profile {
     Profile {
         name: "world-model-ready",
@@ -61,8 +70,9 @@ pub fn world_model_ready() -> Profile {
 
 /// Whether `world-model-ready` has anything to say about a dataset.
 ///
-/// Being a sensor rig is not enough. Two of the four criteria — calibration completeness and
-/// ego-pose continuity — abstain when the dataset has no spatial sensor and no ego trajectory, so a
+/// Being a sensor rig is not enough. Several criteria — calibration completeness, per-sensor frame
+/// resolution, and ego-pose continuity — abstain when the dataset has no spatial sensor and no ego
+/// trajectory, so a
 /// bus-only measurement (a CAN or MF4 log, which is a "rig" by sensor count alone) would satisfy them
 /// with nothing examined. The profile therefore applies only to a rig that actually carries what a
 /// world model is built from: a perception sensor **and** an ego trajectory.

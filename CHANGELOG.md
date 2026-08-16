@@ -309,6 +309,23 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **A rig that could not be spatially fused certified as `world-model-ready`.** Adding
+  `autonomy.sensor-frame-resolution` moved the disconnected-transform-tree report off
+  `autonomy.calibration-completeness` — which the profile judges — and onto the new check, which was
+  not in `WORLD_MODEL_READY_CRITERIA`. The defect landed in a check the profile did not watch, so all
+  four criteria reported `passed: true` while the verdict said `fail`: a signed certificate carrying
+  `status: "fail"` beside `readiness.ready: true`, and `ready` is the field a consumer gates on. For a
+  disconnected tree this was a straight regression — before, the tree tripped a criterion and `ready`
+  was correctly false. The check is now the profile's fifth criterion, and three regression tests pin
+  the invariant behind it: **a failing verdict never carries `ready: true`**. Every autonomy check that
+  can fail a rig belongs in the criteria list, which is now stated where the list is defined.
+- **The findings sort key was not total.** It ordered on five of `Finding`'s eight fields, omitting
+  `category`, `risk`, and `remedy`, so two findings differing only in those fell through to `Vec`
+  order — which is execution order. `result_content_hash` is computed over that sequence, so the same
+  two findings emitted in either order would have had to hash alike. Not reachable from today's checks
+  (each emits deterministically), but it was the one ordering in the codebase that could tie on
+  non-identical content. All eight fields are now in the key.
+
 - **One shared timeline produced a finding per stream.** Several streams in an episode routinely share
   a timeline — an MF4 channel group samples every channel on one raster, a CAN message decodes into
   many signals off the same frames — so `TEMPORAL.GAP` and `TEMPORAL.JITTER` re-reported one root

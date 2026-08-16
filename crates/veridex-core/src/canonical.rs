@@ -28,6 +28,12 @@ use crate::cdm::{
 /// a fixed "absent" marker to its encoding — but every content-bearing field is still hashed, keeping
 /// the "no silently-dropped field" invariant intact.
 ///
+/// v4 binds `Episode.declared_frame_count` — the manifest's assertion about an episode's length,
+/// previously excluded as "an assertion about content, not content". But `structural.episode-boundary`
+/// fails an episode on it, so a passing and a failing dataset hashed identically and the passing one's
+/// certificate verified against the corrupt one. v4 also made every canonical ordering total, by
+/// tie-breaking episodes and streams on their own encodings.
+///
 /// v5 binds each stream's `frame_id` — the coordinate frame the sensor's data is expressed in.
 /// `autonomy.sensor-frame-resolution` fails a stream on it, and the rule is that the hash binds
 /// whatever a check can fail on: a rig whose LiDAR names a frame the TF tree relates and one whose

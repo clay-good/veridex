@@ -15,7 +15,7 @@ The certificate gains a signed `readiness` section, and the terminal prints each
 
 ## `world-model-ready`
 
-For multi-sensor autonomy rigs. It tightens cross-sensor sync and bundles the four autonomy criteria a
+For multi-sensor autonomy rigs. It tightens cross-sensor sync and bundles the autonomy criteria a
 world-model training set needs. A dataset is **ready** only when the profile applies *and* every
 criterion's check **ran cleanly and found nothing**.
 
@@ -36,6 +36,7 @@ Two rules keep that honest:
 | Sequence completeness | `autonomy.sequence-complete` | no rig sensor dropping more than 5% of its frames |
 | Ego-pose continuity | `autonomy.ego-pose-continuity` | ego trajectory continuous (no step above 100 m/s implied speed) |
 | Calibration completeness | `autonomy.calibration-completeness` | connected transform (TF) tree and camera intrinsics present |
+| Sensor frame resolution | `autonomy.sensor-frame-resolution` | every sensor's own frame resolves through the tree to a camera |
 
 The `readiness` block on the certificate records the profile name, whether it was `applicable`, the
 overall `ready` flag, and each criterion's `check_id`, `threshold`, `passed`, and finding count — plus
@@ -63,6 +64,7 @@ veridex verify my-rig.mcap --certificate my-rig.veridex.json --key issuer.pub
     ✗ autonomy.sequence-complete — no rig sensor dropping more than 5% of its frames
     ✓ autonomy.ego-pose-continuity — ego trajectory continuous (no step above 100 m/s implied speed)
     ✓ autonomy.calibration-completeness — connected transform (TF) tree and camera intrinsics present
+    ✓ autonomy.sensor-frame-resolution — every sensor's own frame resolves through the tree to a camera
 ```
 
 Add `--json` for the machine-readable summary (the same fields, plus the `readiness` block verbatim)
