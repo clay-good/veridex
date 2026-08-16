@@ -260,6 +260,17 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **One shared timeline produced a finding per stream.** Several streams in an episode routinely share
+  a timeline — an MF4 channel group samples every channel on one raster, a CAN message decodes into
+  many signals off the same frames — so `TEMPORAL.GAP` and `TEMPORAL.JITTER` re-reported one root
+  cause once per stream. A normal 8-channel event-driven log produced 32 warnings for 4 real facts,
+  deducting enough to floor the data score at 0. The timeline checks now report once and name how
+  many streams share it.
+- **`AUTONOMY.SEQUENCE_COMPLETE` called a complete event-driven log 88% dropped.** Its baseline is the
+  frame count a stream's own median cadence implies over its span — meaningless for a change-triggered
+  signal that arrives in bursts with long idles, which never aimed at a cadence. It now abstains when
+  the intervals are far from uniform (that shape is `TEMPORAL.JITTER`'s to report); a genuinely
+  dropping steady stream stays well inside the bound.
 - **A few hundred KB of crafted input could exhaust memory.** Every adapter materializes
   *streams × samples* frames and both factors come from the file — a CAN log's signals-per-id against
   its frame count, an MF4 group's channels against its records, a LeRobot `info.json`'s declared

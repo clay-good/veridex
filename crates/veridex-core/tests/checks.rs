@@ -2262,3 +2262,105 @@ fn a_bus_only_measurement_is_not_treated_as_a_sensor_rig() {
         Modality::EgoPose
     ])));
 }
+
+#[test]
+fn one_shared_timeline_reports_once_and_an_event_driven_signal_is_not_called_incomplete() {
+    // An MF4 channel group samples every channel on one raster, and a CAN message decodes into many
+    // signals off the same frames: their timing is one fact, not N. And a change-triggered signal has
+    // no cadence to fall short of, so a complete log must not read as 88% dropped.
+    use veridex_core::cdm::{Dataset, Episode, Frame, Modality, Stream, ValueRef};
+    use veridex_core::check::Check;
+
+    // Bursts of 20 samples 10 ms apart, separated by 2 s idles — a normal on-change log.
+    let mut ts = Vec::new();
+    let mut t = 0i64;
+    for _ in 0..4 {
+        for _ in 0..20 {
+            ts.push(t);
+            t += 10_000_000;
+        }
+        t += 2_000_000_000;
+    }
+    let stream = |name: &str| Stream {
+        name: name.into(),
+        modality: Modality::CanSignal,
+        declared_rate_hz: None,
+        clock_id: "bus".into(),
+        dtype: None,
+        shape: None,
+        frames: ts
+            .iter()
+            .map(|&ts| Frame {
+                ts,
+                value_ref: ValueRef {
+                    uri: "u".into(),
+                    byte_offset: None,
+                    byte_len: None,
+                    content_hash: None,
+                },
+            })
+            .collect(),
+        stats: None,
+        dim_stats: None,
+        observed_stats: None,
+        observed_saturation: None,
+        observed_non_finite: None,
+        observed_dim_stats: None,
+        point_fields: None,
+    };
+    let dataset = Dataset {
+        id: "bus".into(),
+        metadata: vec![],
+        provenance: vec![],
+        episodes: vec![Episode {
+            index: 0,
+            start_ts: Some(0),
+            end_ts: Some(t),
+            streams: (0..8).map(|i| stream(&format!("sig{i}"))).collect(),
+            task: None,
+            labels: vec![],
+            ego_poses: None,
+            declared_frame_count: None,
+        }],
+        calibration: None,
+    };
+
+    // Eight streams, one timeline: each timing finding is reported once, naming the others.
+    let gaps = veridex_core::checks::temporal::Gaps::default().run(&dataset);
+    assert!(
+        !gaps.is_empty(),
+        "the idles are still real gaps worth reporting"
+    );
+    let per_stream: std::collections::BTreeSet<&str> = gaps
+        .iter()
+        .filter_map(|f| match &f.location {
+            veridex_core::check::Location::TimeRange { stream, .. } => Some(stream.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        per_stream.len(),
+        1,
+        "one timeline must not produce one finding per stream: {gaps:#?}"
+    );
+    assert!(
+        gaps[0]
+            .message
+            .contains("other stream(s) on the same timeline"),
+        "{}",
+        gaps[0].message
+    );
+
+    let jitter = veridex_core::checks::temporal::Jitter::default().run(&dataset);
+    assert!(
+        jitter.len() <= 1,
+        "jitter is one fact per timeline too: {jitter:#?}"
+    );
+
+    // And the burst pattern is not a "dropped frames" claim.
+    let seq = veridex_core::checks::autonomy::SequenceComplete::default().run(&dataset);
+    assert!(
+        seq.is_empty(),
+        "an event-driven signal has no cadence to fall short of: {seq:#?}"
+    );
+}

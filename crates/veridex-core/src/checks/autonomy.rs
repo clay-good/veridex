@@ -173,6 +173,10 @@ impl Default for SequenceComplete {
 }
 
 impl SequenceComplete {
+    /// Above this coefficient of variation the stream has no steady cadence to fall short of, so the
+    /// drop estimate is meaningless and the check abstains (see the guard in `run`).
+    const MAX_INTERVAL_CV: f64 = 0.5;
+
     /// Minimum frames for a stable median inter-frame interval; below this the drop estimate is noise.
     const MIN_FRAMES: usize = 8;
 }
@@ -222,6 +226,25 @@ impl Check for SequenceComplete {
                 }
                 intervals.sort_unstable();
                 let median = intervals[intervals.len() / 2] as f64;
+                // A median cadence only means something for a stream that *has* a cadence. An
+                // event-driven signal — a change-triggered CAN channel, say — arrives in bursts with
+                // long idles, so "frames the median implies over the span" is not a target it ever
+                // aimed at, and comparing against it reports a complete log as 88% dropped. Abstain
+                // when the intervals are far from uniform; `TEMPORAL.JITTER` is the check for that
+                // shape, and a genuinely dropping steady stream stays well inside this bound (5%
+                // dropped frames put the CV near 0.2).
+                let mean =
+                    intervals.iter().map(|d| *d as f64).sum::<f64>() / intervals.len() as f64;
+                if mean > 0.0 {
+                    let variance = intervals
+                        .iter()
+                        .map(|d| (*d as f64 - mean).powi(2))
+                        .sum::<f64>()
+                        / intervals.len() as f64;
+                    if variance.sqrt() / mean > Self::MAX_INTERVAL_CV {
+                        continue;
+                    }
+                }
                 let Some((lo, hi)) = span_bounds(stream) else {
                     continue;
                 };

@@ -256,6 +256,47 @@ impl Check for RateValidity {
     }
 }
 
+/// A fingerprint of a stream's timeline — the exact timestamp sequence.
+///
+/// Several streams in one episode routinely share a timeline: an MF4 channel group samples every
+/// channel on one raster, and a CAN message decodes into many signals off the same frames. Their
+/// timing is one fact, not N, so the per-stream timeline checks report it once and name how many
+/// streams carry it, instead of emitting the same finding per stream (one 8-channel event-driven
+/// group otherwise produced 32 warnings for 4 root causes, flooring the trust score).
+fn timeline_fingerprint(stream: &Stream) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    stream.frames.len().hash(&mut h);
+    for f in &stream.frames {
+        f.ts.hash(&mut h);
+    }
+    h.finish()
+}
+
+/// How many streams in `ep` share `stream`'s timeline, and whether `stream` is the first of them by
+/// name (the representative that reports). Returns `(is_representative, shared_count)`.
+fn timeline_group(ep: &crate::cdm::Episode, stream: &Stream) -> (bool, usize) {
+    let fp = timeline_fingerprint(stream);
+    let mut sharing: Vec<&str> = ep
+        .streams
+        .iter()
+        .filter(|s| timeline_fingerprint(s) == fp)
+        .map(|s| s.name.as_str())
+        .collect();
+    sharing.sort_unstable();
+    let first = sharing.first().copied().unwrap_or(stream.name.as_str());
+    (first == stream.name.as_str(), sharing.len())
+}
+
+/// The suffix naming the other streams a finding also covers, empty when the timeline is unique.
+fn shared_suffix(shared: usize) -> String {
+    if shared > 1 {
+        format!(" (and {} other stream(s) on the same timeline)", shared - 1)
+    } else {
+        String::new()
+    }
+}
+
 /// Gaps: an inter-frame interval far larger than expected indicates dropped frames.
 pub struct Gaps {
     /// A gap is an interval greater than `gap_factor` times the expected interval.
@@ -342,6 +383,11 @@ impl Check for Gaps {
                 if stream.frames.len() < 2 {
                     continue;
                 }
+                // One timeline, one report — see `timeline_group`.
+                let (is_representative, shared) = timeline_group(ep, stream);
+                if !is_representative {
+                    continue;
+                }
                 let Some(expected) = Gaps::expected_interval_ns(stream, self.gap_factor) else {
                     continue;
                 };
@@ -362,11 +408,12 @@ impl Check for Gaps {
                                 },
                                 "TEMPORAL.GAP",
                                 format!(
-                                    "stream `{}` in episode {}: {:.1} ms gap (expected ~{:.1} ms)",
+                                    "stream `{}` in episode {}: {:.1} ms gap (expected ~{:.1} ms){}",
                                     stream.name,
                                     ep.index,
                                     interval / 1e6,
-                                    expected / 1e6
+                                    expected / 1e6,
+                                    shared_suffix(shared)
                                 ),
                             )
                             .with_risk("Dropped frames leave holes that bias temporal models.")
@@ -433,6 +480,11 @@ impl Check for Jitter {
         let mut findings = Vec::new();
         for ep in &dataset.episodes {
             for stream in &ep.streams {
+                // One timeline, one report — see `timeline_group`.
+                let (is_representative, shared) = timeline_group(ep, stream);
+                if !is_representative {
+                    continue;
+                }
                 // Consecutive intervals. A non-positive interval means the stream is non-monotonic
                 // (Monotonicity's concern) and would make the statistic meaningless — skip the stream.
                 let intervals: Vec<f64> = stream
@@ -463,11 +515,12 @@ impl Check for Jitter {
                             "TEMPORAL.JITTER",
                             format!(
                                 "stream `{}` in episode {}: irregular timeline (interval cv \
-                                 {cv:.2} vs allowed {:.2}; mean ~{:.1} ms)",
+                                 {cv:.2} vs allowed {:.2}; mean ~{:.1} ms){}",
                                 stream.name,
                                 ep.index,
                                 self.max_cv,
                                 mean / 1e6,
+                                shared_suffix(shared),
                             ),
                         )
                         .with_risk(
