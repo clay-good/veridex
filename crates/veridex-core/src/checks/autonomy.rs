@@ -91,7 +91,9 @@ impl Check for RigSync {
             let mut spans: Vec<(&str, i64)> = ep
                 .streams
                 .iter()
-                .filter_map(|s| span_bounds(s).map(|(lo, hi)| (s.name.as_str(), hi - lo)))
+                .filter_map(|s| {
+                    span_bounds(s).map(|(lo, hi)| (s.name.as_str(), hi.saturating_sub(lo)))
+                })
                 .filter(|(_, span)| *span > 0)
                 .collect();
             if spans.len() < 2 {
@@ -215,7 +217,7 @@ impl Check for SequenceComplete {
                 let Some((lo, hi)) = span_bounds(stream) else {
                     continue;
                 };
-                let span = (hi - lo) as f64;
+                let span = hi.saturating_sub(lo) as f64;
                 if median <= 0.0 || span <= 0.0 {
                     continue;
                 }
@@ -323,7 +325,7 @@ impl Check for EgoPoseContinuity {
             let mut worst_ts = 0i64;
             for pair in poses.windows(2) {
                 let (a, b) = (&pair[0], &pair[1]);
-                let dt = (b.ts - a.ts) as f64 / NS_PER_S;
+                let dt = b.ts.saturating_sub(a.ts) as f64 / NS_PER_S;
                 if dt <= 0.0 {
                     // Non-increasing pose timestamps are a monotonicity fault, not this check's.
                     continue;

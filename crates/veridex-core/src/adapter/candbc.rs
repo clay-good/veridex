@@ -162,7 +162,14 @@ fn parse_hex_bytes(s: &str) -> Option<Vec<u8>> {
 /// the frame is too short to hold the signal's bits.
 fn decode_le_signal(sig: &DbcSignal, data: &[u8]) -> Option<f64> {
     let end_bit = sig.start_bit.checked_add(sig.length)?;
-    if end_bit as usize > data.len() * 8 {
+    // Reject a zero-length, over-wide, or out-of-range signal. This also guards every shift below: a
+    // shift by >= 64 panics in debug and silently mis-computes in release, and a length-0 signal at
+    // bit 64 would otherwise reach `raw >> 64`.
+    if sig.length == 0
+        || sig.length > 64
+        || sig.start_bit >= 64
+        || end_bit as usize > data.len() * 8
+    {
         return None;
     }
     // Assemble up to 8 data bytes as a little-endian u64, then shift/mask.
@@ -170,18 +177,22 @@ fn decode_le_signal(sig: &DbcSignal, data: &[u8]) -> Option<f64> {
     for (i, &b) in data.iter().take(8).enumerate() {
         raw |= (b as u64) << (i * 8);
     }
-    let mask = if sig.length >= 64 {
+    let mask = if sig.length == 64 {
         u64::MAX
     } else {
         (1u64 << sig.length) - 1
     };
     let bits = (raw >> sig.start_bit) & mask;
-    let value = if sig.signed && sig.length >= 1 && (bits >> (sig.length - 1)) & 1 == 1 {
-        // Sign-extend.
-        (bits as i64) - (1i64 << sig.length)
+    let value: f64 = if !sig.signed {
+        // Unsigned: direct u64 -> f64 (correct across the full 64-bit range).
+        bits as f64
+    } else if sig.length < 64 && (bits >> (sig.length - 1)) & 1 == 1 {
+        // Signed with the top bit set: sign-extend into a negative value.
+        ((bits as i64) - (1i64 << sig.length)) as f64
     } else {
-        bits as i64
-    } as f64;
+        // Non-negative, or a full 64-bit signal already in two's-complement form.
+        bits as i64 as f64
+    };
     Some(value * sig.factor + sig.offset)
 }
 
@@ -448,6 +459,35 @@ BO_ 256 EngineData: 8 ECU
         let m = parse_dbc(DBC);
         // CoolantTemp needs bits 16..24 (byte 2); a 1-byte frame can't supply it.
         assert_eq!(decode_le_signal(&m[&256].signals[1], &[0x40]), None);
+    }
+
+    fn sig(start_bit: u32, length: u32, signed: bool) -> DbcSignal {
+        DbcSignal {
+            name: "s".into(),
+            start_bit,
+            length,
+            little_endian: true,
+            signed,
+            factor: 1.0,
+            offset: 0.0,
+        }
+    }
+
+    #[test]
+    fn extreme_signal_shapes_never_panic() {
+        let full = [0xFFu8; 8];
+        // Signed 64-bit with the top bit set: `1i64 << 64` must not be evaluated.
+        assert_eq!(decode_le_signal(&sig(0, 64, true), &full), Some(-1.0));
+        // Unsigned 64-bit of all-ones is 2^64 - 1, decoded via u64 -> f64 (not `as i64`).
+        assert_eq!(
+            decode_le_signal(&sig(0, 64, false), &full),
+            Some(u64::MAX as f64)
+        );
+        // A zero-length signal, an over-wide one, and a start bit at/over 64 are all declined, not
+        // panics (each would otherwise reach a shift by >= 64).
+        assert_eq!(decode_le_signal(&sig(64, 0, false), &full), None);
+        assert_eq!(decode_le_signal(&sig(0, 65, false), &full), None);
+        assert_eq!(decode_le_signal(&sig(64, 1, false), &full), None);
     }
 
     #[test]
