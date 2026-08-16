@@ -12,7 +12,7 @@
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-use veridex_core::adapter::{IngestOptions, Source};
+use veridex_core::adapter::{IngestOptions, Sample, Source};
 
 /// Map a core ingest error to a Python `ValueError`.
 fn to_py_err(e: impl std::fmt::Display) -> PyErr {
@@ -32,7 +32,44 @@ fn unix_timestamp() -> String {
         .unwrap_or_else(|_| "0".to_string())
 }
 
-/// `veridex.check(path, format=None, config=None) -> str`
+/// Build the ingest options for a sampling request, mirroring the CLI's `--sample-*` flags.
+///
+/// `sample_episodes` and `sample_fraction` are mutually exclusive, and a seed without a fraction
+/// selects nothing — both are errors here for the same reason they are on the CLI: an argument that
+/// is silently dropped leaves the caller believing it took effect.
+fn ingest_options_from(
+    sample_episodes: Option<u64>,
+    sample_fraction: Option<f64>,
+    sample_seed: u64,
+) -> PyResult<IngestOptions> {
+    let value_error = |m: String| pyo3::exceptions::PyValueError::new_err(m);
+    let sample = match (sample_episodes, sample_fraction) {
+        (Some(_), Some(_)) => {
+            return Err(value_error(
+                "sample_episodes and sample_fraction cannot both be given".into(),
+            ))
+        }
+        (Some(n), None) => Sample::FirstEpisodes(n),
+        (None, Some(fraction)) => Sample::Fraction {
+            fraction,
+            seed: sample_seed,
+        },
+        (None, None) => {
+            if sample_seed != 0 {
+                return Err(value_error("sample_seed requires sample_fraction".into()));
+            }
+            Sample::All
+        }
+    };
+    sample.validate().map_err(|e| value_error(e.to_string()))?;
+    Ok(IngestOptions {
+        sample,
+        ..IngestOptions::default()
+    })
+}
+
+/// `veridex.check(path, format=None, config=None, sample_episodes=None, sample_fraction=None,
+/// sample_seed=0) -> str`
 ///
 /// Validate a dataset and return the report as a JSON string, byte-identical to
 /// `veridex check --json`.
@@ -41,19 +78,26 @@ fn unix_timestamp() -> String {
 /// auto-discovers a config file — an import should not pick up behavior from the working directory —
 /// so pass it explicitly to get the same verdict the CLI gives under that config. Check ids are
 /// validated, so a typo in `disabled_checks` raises rather than silently no-opping.
+///
+/// The sampling arguments mirror `--sample-episodes` / `--sample-fraction` / `--sample-seed`. A
+/// sampled report carries `"coverage": {"kind": "sample", …}`; it is a verdict over those episodes
+/// alone, and cannot be certified.
 #[pyfunction]
-#[pyo3(signature = (path, format=None, config=None))]
-fn check(path: &str, format: Option<&str>, config: Option<&str>) -> PyResult<String> {
+#[pyo3(signature = (path, format=None, config=None, sample_episodes=None, sample_fraction=None, sample_seed=0))]
+fn check(
+    path: &str,
+    format: Option<&str>,
+    config: Option<&str>,
+    sample_episodes: Option<u64>,
+    sample_fraction: Option<f64>,
+    sample_seed: u64,
+) -> PyResult<String> {
     let registry = veridex_core::default_registry();
     let run_config = run_config_from(config)?;
-    let out = veridex_core::run_check_with(
-        &registry,
-        &source_for(path),
-        format,
-        &IngestOptions::default(),
-        &run_config,
-    )
-    .map_err(to_py_err)?;
+    let opts = ingest_options_from(sample_episodes, sample_fraction, sample_seed)?;
+    let out =
+        veridex_core::run_check_with(&registry, &source_for(path), format, &opts, &run_config)
+            .map_err(to_py_err)?;
     Ok(veridex_core::render_json(&out.verdict, Some(out.trust)))
 }
 
@@ -89,16 +133,24 @@ fn content_hash(path: &str, format: Option<&str>) -> PyResult<String> {
     Ok(veridex_core::content_hash(&out.ingested.dataset).to_hex())
 }
 
-/// `veridex.inspect(path, format=None) -> str`
+/// `veridex.inspect(path, format=None, sample_episodes=None, sample_fraction=None, sample_seed=0)
+/// -> str`
 ///
 /// Ingest a dataset and return its Canonical Dataset Model as a JSON string, identical to
-/// `veridex inspect --json`. Runs no checks.
+/// `veridex inspect --json`. Runs no checks. The sampling arguments behave as in
+/// [`check`](fn.check.html).
 #[pyfunction]
-#[pyo3(signature = (path, format=None))]
-fn inspect(path: &str, format: Option<&str>) -> PyResult<String> {
+#[pyo3(signature = (path, format=None, sample_episodes=None, sample_fraction=None, sample_seed=0))]
+fn inspect(
+    path: &str,
+    format: Option<&str>,
+    sample_episodes: Option<u64>,
+    sample_fraction: Option<f64>,
+    sample_seed: u64,
+) -> PyResult<String> {
     let registry = veridex_core::default_registry();
     let source = source_for(path);
-    let opts = IngestOptions::default();
+    let opts = ingest_options_from(sample_episodes, sample_fraction, sample_seed)?;
     let ingested = match format {
         Some(fmt) => registry.ingest_as(fmt, &source, &opts),
         None => registry.ingest(&source, &opts),

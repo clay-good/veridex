@@ -194,9 +194,39 @@ pub struct ErroredCheck {
     pub message: String,
 }
 
+/// How much of the source dataset the run actually saw.
+///
+/// Carried in the verdict, digested into `result_content_hash`, and therefore covered by a
+/// certificate's signature. A partial run is a different verdict from a full one and must not be
+/// readable as the same thing — this is the field that makes the difference visible to anyone
+/// holding only the report.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CoverageNote {
+    /// Every episode of the source was ingested.
+    #[default]
+    Full,
+    /// Only a sample was ingested; the verdict speaks for that sample alone.
+    Sample {
+        /// The sampling request that was honored, in human-readable form.
+        request: String,
+        /// Number of episodes actually ingested.
+        episodes_ingested: u64,
+    },
+}
+
+impl CoverageNote {
+    /// Whether the run saw less than the whole dataset.
+    pub fn is_partial(&self) -> bool {
+        !matches!(self, CoverageNote::Full)
+    }
+}
+
 /// The full result of a run. (Not `Eq`: the effective config's tolerances carry floats.)
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Verdict {
+    /// How much of the source dataset this verdict covers.
+    pub coverage: CoverageNote,
     /// The `veridex-core` version that produced this verdict.
     pub veridex_version: String,
     /// The CDM content hash the run was performed over (hex).
@@ -231,6 +261,7 @@ impl Verdict {
 /// except the hash itself, in a fixed order.
 #[derive(Serialize)]
 struct DigestView<'a> {
+    coverage: &'a CoverageNote,
     veridex_version: &'a str,
     cdm_content_hash: &'a str,
     status: Status,
@@ -320,8 +351,22 @@ impl Engine {
             .collect()
     }
 
-    /// Validate `dataset` (whose content hash is `cdm_hash`) under `config`.
+    /// Validate `dataset` (whose content hash is `cdm_hash`) under `config`, over the whole source.
+    ///
+    /// Use [`Engine::run_over`] when the dataset in hand is only a sample of its source, so the
+    /// verdict says so.
     pub fn run(&self, dataset: &Dataset, cdm_hash: ContentHash, config: &RunConfig) -> Verdict {
+        self.run_over(dataset, cdm_hash, config, CoverageNote::Full)
+    }
+
+    /// Like [`Engine::run`], but records that the dataset covers only part of its source.
+    pub fn run_over(
+        &self,
+        dataset: &Dataset,
+        cdm_hash: ContentHash,
+        config: &RunConfig,
+        coverage: CoverageNote,
+    ) -> Verdict {
         let mut findings: Vec<Finding> = Vec::new();
         let mut errored_checks: Vec<ErroredCheck> = Vec::new();
         let mut executed_checks: Vec<ExecutedCheck> = Vec::new();
@@ -375,6 +420,7 @@ impl Engine {
         let effective_config = EffectiveConfig::from(config);
 
         let digest = DigestView {
+            coverage: &coverage,
             veridex_version: crate::VERSION,
             cdm_content_hash: &cdm_hash.to_hex(),
             status,
@@ -387,6 +433,7 @@ impl Engine {
         let result_content_hash = digest_hex(&digest);
 
         Verdict {
+            coverage,
             veridex_version: crate::VERSION.to_string(),
             cdm_content_hash: cdm_hash.to_hex(),
             status,

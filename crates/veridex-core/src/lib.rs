@@ -44,7 +44,9 @@ pub use check::{Category, Check, Finding, Location, Scope, Severity};
 pub use config::{CheckConfig, ConfigError, FailOn};
 pub use diff::{diff_reports, is_report_shaped, render_diff, render_diff_json, ReportDiff};
 pub use emit::{render_provenance, to_croissant, to_prov};
-pub use engine::{CheckInfo, Engine, RegistryError, RunConfig, Status, Tolerances, Verdict};
+pub use engine::{
+    CheckInfo, CoverageNote, Engine, RegistryError, RunConfig, Status, Tolerances, Verdict,
+};
 pub use pipeline::{run_check, run_check_with, CheckOutput};
 pub use report::{
     render_catalog_json, render_html, render_json, render_sarif, render_terminal,

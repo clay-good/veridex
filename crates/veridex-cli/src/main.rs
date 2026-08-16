@@ -14,7 +14,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use veridex_core::adapter::{IngestOptions, Source};
+use veridex_core::adapter::{IngestOptions, Sample, Source};
 use veridex_core::certificate::{
     sign, verify, Certificate, Issuance, ProvenanceCoverage, ReadinessReport, SignedCertificate,
     SigningKeypair,
@@ -29,7 +29,7 @@ const EXIT_TOOL_ERROR: u8 = 2;
 const COMMANDS: &[(&str, &str)] = &[
     (
         "check",
-        "validate a dataset and report findings (--max-frames <n> / --max-decompression-ratio <n> raise the ingest ceilings)",
+        "validate a dataset and report findings (--max-frames <n> / --max-decompression-ratio <n> raise the ingest ceilings; --sample-episodes / --sample-fraction check a subset)",
     ),
     (
         "certify",
@@ -74,10 +74,22 @@ struct Args {
     allow_any_issuer: bool,
     max_frames: Option<String>,
     max_decompression_ratio: Option<String>,
+    sample_episodes: Option<String>,
+    sample_fraction: Option<String>,
+    sample_seed: Option<String>,
     profile: Option<String>,
     fail_on_regression: bool,
     /// Every positional argument, in order. `path` is the first; `diff` takes two.
     positionals: Vec<String>,
+}
+
+impl Args {
+    /// Whether any sampling flag was given, for the commands that refuse them.
+    fn any_sampling_flag(&self) -> bool {
+        self.sample_episodes.is_some()
+            || self.sample_fraction.is_some()
+            || self.sample_seed.is_some()
+    }
 }
 
 /// Parse the shared flag set. Rejects unknown `--`-flags and value-flags whose value is missing or
@@ -100,6 +112,9 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
     let mut allow_any_issuer = false;
     let mut max_frames = None;
     let mut max_decompression_ratio = None;
+    let mut sample_episodes = None;
+    let mut sample_fraction = None;
+    let mut sample_seed = None;
     let mut profile = None;
     let mut fail_on_regression = false;
     let mut positionals: Vec<String> = Vec::new();
@@ -134,6 +149,9 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
             "--max-decompression-ratio" => {
                 max_decompression_ratio = Some(value("--max-decompression-ratio")?)
             }
+            "--sample-episodes" => sample_episodes = Some(value("--sample-episodes")?),
+            "--sample-fraction" => sample_fraction = Some(value("--sample-fraction")?),
+            "--sample-seed" => sample_seed = Some(value("--sample-seed")?),
             other if other.starts_with('-') => return Err(format!("unknown option `{other}`")),
             other => positionals.push(other.to_string()),
         }
@@ -157,6 +175,9 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
         allow_any_issuer,
         max_frames,
         max_decompression_ratio,
+        sample_episodes,
+        sample_fraction,
+        sample_seed,
         profile,
         fail_on_regression,
         positionals,
@@ -214,6 +235,50 @@ fn main() -> ExitCode {
     }
 }
 
+/// The sampling request `args` asks for.
+///
+/// `--sample-episodes` and `--sample-fraction` are mutually exclusive — accepting both would mean
+/// silently picking one, and the user would not know which. `--sample-seed` on its own selects
+/// nothing, so it is refused rather than ignored.
+fn sample_from(args: &Args) -> Result<Sample, String> {
+    match (&args.sample_episodes, &args.sample_fraction) {
+        (Some(_), Some(_)) => {
+            Err("--sample-episodes and --sample-fraction cannot both be given".into())
+        }
+        (Some(n), None) => {
+            if args.sample_seed.is_some() {
+                return Err(
+                    "--sample-seed applies to --sample-fraction; --sample-episodes is not a random \
+                     draw"
+                        .into(),
+                );
+            }
+            let n: u64 = n.parse().map_err(|_| {
+                format!("invalid --sample-episodes `{n}` (expected a positive integer)")
+            })?;
+            Ok(Sample::FirstEpisodes(n))
+        }
+        (None, Some(f)) => {
+            let fraction: f64 = f.parse().map_err(|_| {
+                format!("invalid --sample-fraction `{f}` (expected a number in (0, 1])")
+            })?;
+            let seed: u64 = match &args.sample_seed {
+                None => 0,
+                Some(s) => s
+                    .parse()
+                    .map_err(|_| format!("invalid --sample-seed `{s}` (expected an integer)"))?,
+            };
+            Ok(Sample::Fraction { fraction, seed })
+        }
+        (None, None) => {
+            if args.sample_seed.is_some() {
+                return Err("--sample-seed requires --sample-fraction".into());
+            }
+            Ok(Sample::All)
+        }
+    }
+}
+
 /// The ingest options `args` asks for. `0` removes the ceiling on either budget; anything else must
 /// be a positive integer, so a typo can never silently disable a guard.
 fn ingest_options(args: &Args) -> Result<IngestOptions, String> {
@@ -233,6 +298,7 @@ fn ingest_options(args: &Args) -> Result<IngestOptions, String> {
     }
     let defaults = IngestOptions::default();
     Ok(IngestOptions {
+        sample: sample_from(args)?,
         max_frames: budget(
             "--max-frames",
             args.max_frames.as_deref(),
@@ -555,6 +621,14 @@ fn cmd_inspect(rest: &[String]) -> ExitCode {
     println!("Dataset: {}", d.id);
     println!("  format:   {}", ingested.report.format_id);
     println!("  CDM hash: {}", veridex_core::content_hash(d));
+    // A sampled inspect describes a subset. Said up front, next to the hash it produced, so the
+    // summary below is not read as the shape of the whole dataset.
+    if let veridex_core::Coverage::Sample { sample, .. } = &ingested.report.coverage {
+        println!(
+            "  coverage: SAMPLE — {} (this summary covers only the episodes listed below)",
+            sample.describe()
+        );
+    }
     println!("  episodes: {}", d.episodes.len());
     for ep in &d.episodes {
         let frames: usize = ep.streams.iter().map(|s| s.frames.len()).sum();
@@ -738,6 +812,13 @@ fn cmd_certify(rest: &[String]) -> ExitCode {
         }
     };
 
+    // A certificate speaks for a whole dataset. Refuse to mint one from a run that only looked at
+    // part of it, rather than issuing a portable claim wider than the evidence behind it.
+    if let Err(e) = Certificate::certifiable(&out.verdict) {
+        eprintln!("veridex: {e}");
+        return ExitCode::from(EXIT_TOOL_ERROR);
+    }
+
     // Timestamp is caller-supplied (the core never reads a clock). Default to unix seconds.
     let timestamp = args.timestamp.clone().unwrap_or_else(unix_timestamp);
     let mut cert = Certificate::build(
@@ -830,6 +911,9 @@ fn cmd_verify(rest: &[String]) -> ExitCode {
         &[
             ("--fail-on", args.fail_on.is_some()),
             ("--min-score", args.min_score.is_some()),
+            // A certificate binds to the whole dataset's hash; a sampled re-ingest would hash to
+            // something else and read as a transplant, which is not what the user asked about.
+            ("sampling flags", args.any_sampling_flag()),
         ],
     ) {
         return code;
@@ -996,6 +1080,9 @@ fn cmd_provenance(rest: &[String]) -> ExitCode {
         &[
             ("--fail-on", args.fail_on.is_some()),
             ("--min-score", args.min_score.is_some()),
+            // Emitted provenance describes a dataset; from a sample it would describe a subset while
+            // carrying the dataset's name.
+            ("sampling flags", args.any_sampling_flag()),
         ],
     ) {
         return code;
@@ -1162,6 +1249,13 @@ fn print_help() {
         "    --max-frames <n>     ceiling on frames an ingest may materialize (0 = no limit)
     --max-decompression-ratio <n>
                          ceiling on compressed expansion, as a multiple of the file's size (0 = no limit)"
+    );
+    println!(
+        "    --sample-episodes <n>
+                         check only the first n episodes (check, inspect; LeRobot only)
+    --sample-fraction <f>
+                         check a deterministic fraction of episodes, f in (0, 1]
+    --sample-seed <n>    fix the --sample-fraction draw (default 0)"
     );
     println!("    --allow-any-issuer   verify without pinning an issuer key — accepts ANY signer (verify)");
     println!("    --force              overwrite existing key files (keygen)");

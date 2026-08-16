@@ -207,6 +207,20 @@ pub fn render_terminal(
         verdict.counts.error, verdict.counts.warning, verdict.counts.info
     );
 
+    // A partial run is stated before anything else is read, so "no findings" is never mistaken for
+    // "no findings anywhere in the dataset".
+    if let crate::engine::CoverageNote::Sample {
+        request,
+        episodes_ingested,
+    } = &verdict.coverage
+    {
+        let _ = writeln!(
+            out,
+            "  Coverage: SAMPLE — {request}; {episodes_ingested} episode(s) ingested. This verdict \
+             covers only those episodes."
+        );
+    }
+
     // Surface any tolerance that was loosened/tightened from its default, so a reader knows a
     // "no findings" result reflects the thresholds actually applied. Silent when all are default.
     let overrides = non_default_tolerances(&verdict.effective_config.tolerances);
@@ -307,6 +321,22 @@ pub fn render_html(verdict: &Verdict, trust_score: Option<TrustScore>) -> String
         "<p>{} error · {} warning · {} info</p>",
         verdict.counts.error, verdict.counts.warning, verdict.counts.info
     );
+
+    // A shared HTML artifact travels further than the command that produced it, so it has to carry
+    // the fact that the run only looked at part of the dataset.
+    if let crate::engine::CoverageNote::Sample {
+        request,
+        episodes_ingested,
+    } = &verdict.coverage
+    {
+        let _ = write!(
+            body,
+            "<p class=\"status warn\">Coverage: SAMPLE — {}; {} episode(s) ingested. \
+             This report covers only those episodes.</p>",
+            esc(request),
+            episodes_ingested
+        );
+    }
 
     let rollups = worst_episodes(verdict);
     if !rollups.is_empty() {

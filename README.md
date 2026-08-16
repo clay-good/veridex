@@ -95,7 +95,7 @@ sequenceDiagram
 ## Commands
 
 ```sh
-veridex check      <dataset>                                      # validate + report
+veridex check      <dataset> [--sample-episodes <n> | --sample-fraction <f>]  # validate + report
 veridex certify    <dataset> --key issuer.key [--profile world-model-ready]  # issue a signed trust certificate
 veridex verify     <dataset> --certificate c.json --key pub.key   # verify offline (issuer required)
 veridex provenance <dataset> --emit croissant                     # extract + emit provenance
@@ -157,6 +157,25 @@ expansion at 100x the file's own size with a 64 MiB floor — so a small file ca
 gigabyte, while a genuinely large log keeps a proportionate allowance. Raise either with `--max-frames <n>` /
 `--max-decompression-ratio <n>`, or remove it with `0`.
 
+For a dataset too large to check in full on every commit, `check` and `inspect` can validate a subset
+of its episodes:
+
+```sh
+veridex check my-dataset/ --sample-episodes 20             # the first 20 episodes by index
+veridex check my-dataset/ --sample-fraction 0.1 --sample-seed 7   # a deterministic 10% draw
+```
+
+The draw is resolved from the dataset's declared episode set *before* any data is read, so the
+episodes you skipped cost nothing — a sample of a dataset over the frame budget succeeds where the
+full ingest is refused. The same seed always draws the same episodes. Sampling applies to LeRobot;
+MCAP, CAN+DBC, and MF4 ingest a recording as one episode and refuse the request rather than handing
+back everything labelled as a sample.
+
+A sampled run is never presented as a whole-dataset one. The verdict carries a `coverage` field
+(bound into its hash), every report states the sample and the episode count, and **`certify` refuses
+to issue a certificate from a partial run** — a certificate speaks for a dataset, and the episodes a
+sample never read are exactly where the problem would be.
+
 The same command works on a LeRobot v3 dataset — proof of the cross-format claim. Generate a demo
 one (its second episode carries an out-of-order timestamp) and check it the same way:
 
@@ -213,6 +232,10 @@ verdicts identical to the CLI:
 import veridex, json
 report = json.loads(veridex.check("my-dataset.mcap"))
 print(report["trust_score"]["grade"], report["verdict"]["status"])
+
+# the same sampling the CLI offers; the report carries coverage: {"kind": "sample", ...}
+sampled = json.loads(veridex.check("my-dataset/", sample_fraction=0.1, sample_seed=7))
+print(sampled["verdict"]["coverage"])
 ```
 
 Build the extension locally with [maturin](https://github.com/PyO3/maturin):
@@ -242,7 +265,10 @@ referenced sidecar's own ASAM header); Croissant + W3C PROV provenance emit; Ed2
 offline verification** (tamper + transplant rejection); a working CLI (`check`, `inspect`, `checks`,
 `certify`, `verify`, `provenance`, `keygen`, `diff`) — see the [Quickstart](#quickstart); and **Python
 bindings** (`import veridex`, exposing `check`/`check_sarif`/`check_html`/`inspect`/`content_hash`/`catalog`/`provenance`/`diff`/`keygen`/`certify`/`verify`/`version`) that call the same
-core pipeline, with a CLI⇄Python parity test run in CI. Next up: streaming/remote ingestion.
+core pipeline, with a CLI⇄Python parity test run in CI; and **sampled ingestion** (`--sample-episodes`
+/ `--sample-fraction`), resolved before any data is read and reported as partial coverage everywhere
+it could otherwise be mistaken for a full check. Next up: streaming/remote ingestion — until then
+`metadata_only` and a remote source are refused with a clear error, never silently ignored.
 
 Start with [openspec/project.md](openspec/project.md) for the design, or track progress in
 [openspec/changes/bootstrap-veridex-mvp/tasks.md](openspec/changes/bootstrap-veridex-mvp/tasks.md).

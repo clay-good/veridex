@@ -261,6 +261,29 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   integration, and CLI end-to-end tests — including a Motorola signal laid over a byte-swapped copy
   of its Intel twin, which must decode to identical samples. Recomputed signal stats (to feed the
   statistical checks) remain a follow-up.
+- **Sampled ingestion** — `check` / `inspect` can validate a subset of a dataset's episodes:
+  `--sample-episodes <n>` takes the first *n* by index, and `--sample-fraction <f> [--sample-seed
+  <s>]` draws a deterministic fraction (episodes ordered by `SHA-256(seed, index)`, so the same seed
+  always draws the same episodes and a positive fraction never draws none). The same requests are
+  available from Python as `sample_episodes=` / `sample_fraction=` / `sample_seed=` on
+  `veridex.check()` and `veridex.inspect()`.
+
+  Sampling is resolved from the declared episode set (`meta/episodes.jsonl`, else `info.json`'s
+  `total_episodes`) *before* any Parquet is read, so an unselected episode is never fingerprinted,
+  never accumulated into the recomputed statistics, and never charged to the frame budget — a
+  sample of a dataset that exceeds the budget succeeds where the full ingest is refused. Only
+  LeRobot has an episode axis; MCAP, CAN+DBC, and MF4 ingest a recording as a single episode and
+  **refuse** a sampling request rather than returning everything labelled as a sample.
+
+  A sampled run cannot be mistaken for a full one. The verdict carries a `coverage` field, digested
+  into `result_content_hash`; the terminal, JSON, and HTML reports all state the sample and the
+  episode count; `veridex inspect` says so next to the hash it produced; and `certify` **refuses**
+  to issue a certificate from a partial run, because a certificate is a claim about a dataset and
+  the episodes it never read are exactly where the problem would be. `verify` and `provenance`
+  reject the sampling flags outright. Under a sample the adapter also drops the dataset-level
+  declared totals from the CDM, so a deliberate subset is never reported as a truncated export —
+  while the per-episode declared lengths (the lerobot#4143 check) still apply to the episodes that
+  *were* read.
 
 ### Fixed
 
@@ -578,4 +601,6 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Not yet included
 
-Streaming / large-than-memory and remote Hub ingestion; and publishing to PyPI / crates.io.
+Streaming / large-than-memory and remote Hub ingestion (both are *refused* with a clear error rather
+than silently ignored — `metadata_only` and `Source::Remote` return `IngestError::NotImplemented`);
+and publishing to PyPI / crates.io.

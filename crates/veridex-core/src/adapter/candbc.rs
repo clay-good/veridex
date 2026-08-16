@@ -251,7 +251,9 @@ impl Adapter for CanDbcAdapter {
         }
     }
 
-    fn ingest(&self, source: &Source, _options: &IngestOptions) -> Result<Ingested, IngestError> {
+    fn ingest(&self, source: &Source, options: &IngestOptions) -> Result<Ingested, IngestError> {
+        // A CAN log becomes one episode, so there is nothing to sample along.
+        super::reject_sampling("candbc", options)?;
         let Source::Local(dir) = source else {
             return Err(IngestError::Parse {
                 format_id: "candbc",
@@ -274,7 +276,7 @@ impl Adapter for CanDbcAdapter {
 
         // One CAN frame becomes one CDM frame *per signal its message defines*, so the total is a
         // product of two file-controlled numbers. Charge the budget before decoding anything.
-        let mut budget = super::FrameBudget::new(_options);
+        let mut budget = super::FrameBudget::new(options);
         let declared: u64 = frames
             .iter()
             .map(|f| {

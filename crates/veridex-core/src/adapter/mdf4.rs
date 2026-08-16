@@ -339,6 +339,8 @@ impl Adapter for Mdf4Adapter {
     }
 
     fn ingest(&self, source: &Source, options: &IngestOptions) -> Result<Ingested, IngestError> {
+        // An MF4 measurement becomes one episode, so there is nothing to sample along.
+        super::reject_sampling(FORMAT_ID, options)?;
         let Source::Local(path) = source else {
             return Err(IngestError::Parse {
                 format_id: FORMAT_ID,

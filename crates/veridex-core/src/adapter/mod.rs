@@ -18,8 +18,10 @@ pub mod lerobot;
 pub mod mcap;
 pub mod mdf4;
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+use sha2::Digest;
 use thiserror::Error;
 
 use crate::cdm::Dataset;
@@ -44,7 +46,93 @@ pub enum Sample {
     FirstEpisodes(u64),
     /// A deterministic pseudo-random subset. `fraction` in `(0.0, 1.0]`; `seed` fixes the draw so
     /// the same request always selects the same episodes.
-    Fraction { fraction: f64, seed: u64 },
+    Fraction {
+        /// Portion of the dataset's episodes to draw, in `(0.0, 1.0]`.
+        fraction: f64,
+        /// Fixes the draw: the same seed over the same episode set always selects the same episodes.
+        seed: u64,
+    },
+}
+
+impl Sample {
+    /// Whether this request asks for less than the whole dataset.
+    pub fn is_partial(&self) -> bool {
+        !matches!(self, Sample::All)
+    }
+
+    /// Reject a request that cannot select a meaningful subset, before any file is read.
+    ///
+    /// A zero-episode or non-positive-fraction sample would ingest nothing and then report a clean
+    /// verdict over it — silence read as a pass, which is exactly what this codebase refuses to do.
+    pub fn validate(&self) -> Result<(), IngestError> {
+        match self {
+            Sample::All => Ok(()),
+            Sample::FirstEpisodes(0) => Err(IngestError::InvalidSample {
+                reason: "a sample of 0 episodes ingests nothing; ask for at least 1".into(),
+            }),
+            Sample::FirstEpisodes(_) => Ok(()),
+            Sample::Fraction { fraction, .. } if !(fraction.is_finite() && *fraction > 0.0) => {
+                Err(IngestError::InvalidSample {
+                    reason: format!("sample fraction {fraction} is not a positive finite number"),
+                })
+            }
+            Sample::Fraction { fraction, .. } if *fraction > 1.0 => {
+                Err(IngestError::InvalidSample {
+                    reason: format!("sample fraction {fraction} is above 1.0 (the whole dataset)"),
+                })
+            }
+            Sample::Fraction { .. } => Ok(()),
+        }
+    }
+
+    /// A short human-readable description of the request, for reports and certificates.
+    pub fn describe(&self) -> String {
+        match self {
+            Sample::All => "full dataset".into(),
+            Sample::FirstEpisodes(n) => format!("first {n} episode(s) by index"),
+            Sample::Fraction { fraction, seed } => {
+                format!("{}% of episodes (seed {seed})", fraction * 100.0)
+            }
+        }
+    }
+
+    /// Which of `available` episode indices this request selects.
+    ///
+    /// Deterministic in both arms and independent of the order `available` is discovered in:
+    /// `FirstEpisodes` takes the numerically lowest indices, and `Fraction` orders the indices by
+    /// `SHA-256(seed, index)` and takes the first `ceil(fraction × n)` — so the same seed over the
+    /// same episode set always draws the same episodes, and a positive fraction never draws none.
+    pub fn select(&self, available: &BTreeSet<u64>) -> BTreeSet<u64> {
+        match self {
+            Sample::All => available.clone(),
+            Sample::FirstEpisodes(n) => available.iter().copied().take(*n as usize).collect(),
+            Sample::Fraction { fraction, seed } => {
+                let n = available.len();
+                if n == 0 {
+                    return BTreeSet::new();
+                }
+                let want = (((n as f64) * fraction).ceil() as usize).clamp(1, n);
+                let mut ordered: Vec<(u64, u64)> = available
+                    .iter()
+                    .map(|&idx| (draw_key(*seed, idx), idx))
+                    .collect();
+                // Sort by the draw key, breaking ties on the index so the order is total.
+                ordered.sort_unstable();
+                ordered.into_iter().take(want).map(|(_, idx)| idx).collect()
+            }
+        }
+    }
+}
+
+/// The deterministic draw key for one episode index under one seed: the leading 8 bytes of
+/// `SHA-256(seed_le || index_le)`. A hash rather than a linear congruence so adjacent episode
+/// indices do not land adjacent in the draw order.
+fn draw_key(seed: u64, index: u64) -> u64 {
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(seed.to_le_bytes());
+    hasher.update(index.to_le_bytes());
+    let digest = hasher.finalize();
+    u64::from_le_bytes(digest[..8].try_into().expect("SHA-256 yields 32 bytes"))
 }
 
 /// The default ceiling on frames a single ingest will materialize.
@@ -294,9 +382,79 @@ pub enum IngestError {
         requested: u64,
     },
 
+    /// The sampling request itself is meaningless (zero episodes, a non-positive fraction).
+    #[error("invalid sample: {reason}")]
+    InvalidSample {
+        /// What is wrong with the request.
+        reason: String,
+    },
+
+    /// A sample was requested of a source that cannot honor it.
+    #[error("{format_id}: cannot sample this source: {reason}")]
+    SamplingUnsupported {
+        /// The recognizing adapter's format id.
+        format_id: &'static str,
+        /// Why the sample cannot be honored.
+        reason: String,
+    },
+
+    /// An [`IngestOptions`] / [`Source`] combination the implementation does not yet support.
+    ///
+    /// Refused rather than ignored: an option that silently does nothing is worse than one that is
+    /// absent, because the caller believes it took effect.
+    #[error("{what} is not implemented — {hint}")]
+    NotImplemented {
+        /// The option or source kind that was asked for.
+        what: &'static str,
+        /// What to do instead.
+        hint: &'static str,
+    },
+
     /// An I/O error occurred while reading the source.
     #[error("io error: {0}")]
     Io(String),
+}
+
+/// Reject an ingest whose options this implementation cannot honor, before any adapter runs.
+///
+/// `metadata_only` and [`Source::Remote`] are part of the ingestion spec but not yet built. Accepting
+/// them and quietly reading the whole local file instead would hand back a verdict the caller would
+/// read as something it is not.
+fn check_options_supported(source: &Source, options: &IngestOptions) -> Result<(), IngestError> {
+    if options.metadata_only {
+        return Err(IngestError::NotImplemented {
+            what: "metadata-only ingestion",
+            hint: "no adapter can populate the CDM without reading stream payloads yet; \
+                   drop --metadata-only, or sample the dataset instead",
+        });
+    }
+    if matches!(source, Source::Remote(_)) {
+        return Err(IngestError::NotImplemented {
+            what: "remote ingestion",
+            hint: "fetch the dataset locally and check the path",
+        });
+    }
+    options.sample.validate()
+}
+
+/// Refuse a sampling request an adapter cannot honor, naming the format.
+///
+/// Formats that ingest a recording as a single episode (MCAP, CAN+DBC, MF4) have no episode axis to
+/// sample along. Returning the whole recording labelled [`Coverage::Full`] would be correct output
+/// for a request that was never honored; saying so is not.
+pub fn reject_sampling(
+    format_id: &'static str,
+    options: &IngestOptions,
+) -> Result<(), IngestError> {
+    if options.sample.is_partial() {
+        return Err(IngestError::SamplingUnsupported {
+            format_id,
+            reason: "this format ingests a recording as a single episode, so there is no episode \
+                     axis to sample along"
+                .into(),
+        });
+    }
+    Ok(())
 }
 
 /// The contract every format adapter implements.
@@ -354,6 +512,7 @@ impl AdapterRegistry {
         options: &IngestOptions,
     ) -> Result<Ingested, IngestError> {
         check_source_exists(source)?;
+        check_options_supported(source, options)?;
         let matches: Vec<&dyn Adapter> = self
             .adapters
             .iter()
@@ -381,6 +540,7 @@ impl AdapterRegistry {
         options: &IngestOptions,
     ) -> Result<Ingested, IngestError> {
         check_source_exists(source)?;
+        check_options_supported(source, options)?;
         match self.adapters.iter().find(|a| a.format_id() == format) {
             Some(adapter) => adapter.ingest(source, options),
             None => Err(IngestError::UnsupportedFormat {

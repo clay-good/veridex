@@ -176,6 +176,25 @@ impl ReadinessReport {
 }
 
 impl Certificate {
+    /// Whether a verdict may be turned into a certificate, with the reason when it may not.
+    ///
+    /// A certificate is a portable claim about *a dataset*, read later by someone who never saw the
+    /// run. A verdict over a sample cannot support that claim: the episodes it never looked at are
+    /// exactly where the problem it is being waved through would be. Callers check this before
+    /// issuing; both front-ends do, so the CLI and Python refuse identically.
+    pub fn certifiable(verdict: &Verdict) -> Result<(), String> {
+        match &verdict.coverage {
+            crate::engine::CoverageNote::Full => Ok(()),
+            crate::engine::CoverageNote::Sample {
+                request,
+                episodes_ingested,
+            } => Err(format!(
+                "cannot certify a sampled run ({request}; {episodes_ingested} episode(s) ingested) \
+                 — a certificate speaks for the whole dataset, so issue it from a full check"
+            )),
+        }
+    }
+
     /// Build a certificate from a verdict, its trust score, provenance coverage, and issuance
     /// metadata. The verdict's `cdm_content_hash` becomes the binding.
     pub fn build(

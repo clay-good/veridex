@@ -4,11 +4,11 @@
 //! guarantee that is to have exactly one implementation of "ingest → validate → score"; both
 //! front-ends call [`run_check`] and render its output the same way.
 
-use crate::adapter::{AdapterRegistry, IngestError, IngestOptions, Ingested, Source};
+use crate::adapter::{AdapterRegistry, Coverage, IngestError, IngestOptions, Ingested, Source};
 use crate::canonical::content_hash;
 use crate::certificate::{score, ProvenanceCoverage, TrustScore};
 use crate::checks::default_engine_with;
-use crate::engine::{RunConfig, Verdict};
+use crate::engine::{CoverageNote, RunConfig, Verdict};
 
 /// The result of a full check: the ingested dataset, its verdict, and its trust score.
 pub struct CheckOutput {
@@ -59,7 +59,19 @@ pub fn run_check_with(
     // run's tolerances so a configured threshold takes effect.
     let engine =
         default_engine_with(&run_config.tolerances).expect("standard checks have unique ids");
-    let verdict = engine.run(&ingested.dataset, hash, &run_config);
+    // Carry what the ingest actually covered into the verdict, so a sampled run is never readable as
+    // a whole-dataset one — in the report, and under a certificate's signature.
+    let coverage = match &ingested.report.coverage {
+        Coverage::Full => CoverageNote::Full,
+        Coverage::Sample {
+            sample,
+            episodes_ingested,
+        } => CoverageNote::Sample {
+            request: sample.describe(),
+            episodes_ingested: *episodes_ingested,
+        },
+    };
+    let verdict = engine.run_over(&ingested.dataset, hash, &run_config, coverage);
     let trust = score(&verdict, &ProvenanceCoverage::of(&ingested.dataset));
 
     Ok(CheckOutput {

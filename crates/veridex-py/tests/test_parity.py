@@ -239,3 +239,55 @@ if __name__ == "__main__":
         test_cli_and_python_agree(Path(d))
     print("parity OK")
     sys.exit(0)
+
+
+def _demo_lerobot(tmp_path):
+    """Generate a demo LeRobot v3 dataset — the format with an episode axis to sample along."""
+    out = tmp_path / "lerobot"
+    subprocess.run(
+        [
+            "cargo", "run", "-q", "-p", "veridex-core",
+            "--example", "make_demo_lerobot", "--", str(out), "clean",
+        ],
+        check=True,
+    )
+    return out
+
+
+def test_cli_and_python_sampled_checks_agree(tmp_path):
+    """A sampled run must be identical across the front-ends, coverage note included."""
+    dataset = _demo_lerobot(tmp_path)
+    binary = os.environ.get("VERIDEX_BIN", "target/debug/veridex")
+
+    for py_kwargs, cli_flags in (
+        ({"sample_episodes": 1}, ["--sample-episodes", "1"]),
+        ({"sample_fraction": 0.5, "sample_seed": 7}, ["--sample-fraction", "0.5", "--sample-seed", "7"]),
+    ):
+        py = json.loads(veridex.check(str(dataset), **py_kwargs))
+        result = subprocess.run(
+            [binary, "check", "--json", str(dataset), *cli_flags],
+            capture_output=True,
+            text=True,
+        )
+        cli = json.loads(result.stdout)
+        assert py == cli, f"sampled reports must agree for {cli_flags}"
+        assert py["verdict"]["coverage"]["kind"] == "sample"
+
+    # And a full check says nothing about coverage beyond being full.
+    assert json.loads(veridex.check(str(dataset)))["verdict"]["coverage"]["kind"] == "full"
+
+
+def test_python_rejects_the_same_sampling_mistakes_the_cli_does(tmp_path):
+    dataset = _demo_lerobot(tmp_path)
+    for kwargs in (
+        {"sample_episodes": 1, "sample_fraction": 0.5},
+        {"sample_seed": 3},
+        {"sample_episodes": 0},
+        {"sample_fraction": 0.0},
+        {"sample_fraction": 1.5},
+    ):
+        try:
+            veridex.check(str(dataset), **kwargs)
+        except ValueError:
+            continue
+        raise AssertionError(f"{kwargs} must be refused, not silently ignored")

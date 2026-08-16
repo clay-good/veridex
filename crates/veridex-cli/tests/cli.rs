@@ -510,3 +510,142 @@ fn a_command_refuses_a_gate_flag_it_cannot_honor() {
         "unexpected exit {code}"
     );
 }
+
+/// Write a small LeRobot v3 dataset of `episodes` × 3 frames into `dir`, using the example
+/// generator the quickstart documents. Returns the dataset path.
+fn make_lerobot(tag: &str) -> std::path::PathBuf {
+    let dir = temp_dir(tag).join("lerobot");
+    let _ = std::fs::remove_dir_all(&dir);
+    let status = Command::new(env!("CARGO"))
+        .args([
+            "run",
+            "--quiet",
+            "-p",
+            "veridex-core",
+            "--example",
+            "make_demo_lerobot",
+            "--",
+        ])
+        .arg(&dir)
+        .arg("clean")
+        .status()
+        .expect("generate the demo LeRobot dataset");
+    assert!(status.success(), "demo generator failed");
+    dir
+}
+
+#[test]
+fn sampling_flags_are_validated_before_anything_is_read() {
+    // A path that does not exist would be a different error; these must fail on the flags alone, so
+    // a mistyped sampling request can never be resolved into some other request that runs anyway.
+    for (args, expect) in [
+        (
+            vec![
+                "check",
+                "x",
+                "--sample-episodes",
+                "2",
+                "--sample-fraction",
+                "0.5",
+            ],
+            "cannot both be given",
+        ),
+        (
+            vec!["check", "x", "--sample-seed", "3"],
+            "requires --sample-fraction",
+        ),
+        (
+            vec!["check", "x", "--sample-episodes", "2", "--sample-seed", "3"],
+            "--sample-seed applies to --sample-fraction",
+        ),
+        (
+            vec!["check", "x", "--sample-fraction", "banana"],
+            "invalid --sample-fraction",
+        ),
+        (
+            vec!["check", "x", "--sample-episodes", "-1"],
+            "requires a value",
+        ),
+    ] {
+        let (code, _, stderr) = run(&args);
+        assert_eq!(code, 2, "{args:?} must be a tool error");
+        assert!(
+            stderr.contains(expect),
+            "{args:?}: unexpected stderr {stderr}"
+        );
+    }
+}
+
+#[test]
+fn commands_that_cannot_honor_a_sample_refuse_the_flags() {
+    let dataset = fixture_dataset();
+    for cmd in ["verify", "provenance"] {
+        let (code, _, stderr) = run(&[cmd, &dataset, "--sample-episodes", "1"]);
+        assert_eq!(code, 2, "{cmd} must refuse sampling flags");
+        assert!(
+            stderr.contains("does not support sampling flags"),
+            "{cmd}: unexpected stderr {stderr}"
+        );
+    }
+}
+
+#[test]
+fn a_single_episode_recording_refuses_a_sample() {
+    let (code, _, stderr) = run(&["check", &fixture_dataset(), "--sample-episodes", "1"]);
+    assert_eq!(code, 2);
+    assert!(
+        stderr.contains("cannot sample"),
+        "unexpected stderr {stderr}"
+    );
+}
+
+#[test]
+fn a_sampled_check_reports_its_coverage_and_cannot_be_certified() {
+    let dir = make_lerobot("sample-coverage");
+    let path = dir.to_str().unwrap();
+
+    // The sampled run says so, in the terminal report and in the JSON.
+    let (code, stdout, _) = run(&["check", path, "--sample-episodes", "1"]);
+    assert!(
+        code == 0 || code == 10 || code == 20,
+        "unexpected exit {code}"
+    );
+    assert!(
+        stdout.contains("Coverage: SAMPLE") && stdout.contains("1 episode(s) ingested"),
+        "the terminal report must state the run was partial: {stdout}"
+    );
+
+    let (_, stdout, _) = run(&["check", path, "--sample-episodes", "1", "--json"]);
+    let report: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON report");
+    assert_eq!(report["verdict"]["coverage"]["kind"], "sample");
+    assert_eq!(report["verdict"]["coverage"]["episodes_ingested"], 1);
+
+    // A full check carries no coverage banner.
+    let (_, stdout, _) = run(&["check", path]);
+    assert!(!stdout.contains("Coverage:"), "unexpected banner: {stdout}");
+
+    // And a sample cannot be laundered into a portable certificate.
+    let keydir = temp_dir("sample-cert");
+    let key = keydir.join("issuer");
+    let (code, _, _) = run(&["keygen", key.to_str().unwrap(), "--force"]);
+    assert_eq!(code, 0);
+    let (code, _, stderr) = run(&[
+        "certify",
+        path,
+        "--key",
+        key.to_str().unwrap(),
+        "--out",
+        keydir.join("c.json").to_str().unwrap(),
+        "--sample-episodes",
+        "1",
+    ]);
+    assert_eq!(code, 2, "certifying a sample must be a tool error");
+    assert!(
+        stderr.contains("cannot certify a sampled run"),
+        "unexpected stderr {stderr}"
+    );
+    assert!(
+        !keydir.join("c.json").exists(),
+        "no certificate may be written for a sampled run"
+    );
+}

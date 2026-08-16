@@ -18,7 +18,7 @@
 //! content-level checks (duplicate episodes) work. Cells whose type isn't a supported numeric
 //! feature (e.g. an image feature stored outside the Parquet) are left unhashed, honestly.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
@@ -514,10 +514,15 @@ type Row = (u64, i64, Option<i64>, Vec<FeatureValue>);
 /// home. Parquet is compressed and its row count is a file-declared number: a 50 KB zstd file was
 /// measured expanding to 1.26 GB resident, and charging afterwards means the error arrives only once
 /// the memory is already spent.
+///
+/// `selected`, when present, restricts the rows read to those episodes: unselected rows are dropped
+/// before their feature cells are hashed and before they are charged to the frame budget, which is
+/// what makes a sampled ingest cheaper than a full one rather than merely narrower.
 fn read_rows(
     path: &Path,
     fps: f64,
     declared_per_row: u64,
+    selected: Option<&BTreeSet<u64>>,
     frames: &mut super::FrameBudget,
     expansion: &mut super::DecompressionBudget,
 ) -> Result<Vec<Row>, IngestError> {
@@ -556,19 +561,28 @@ fn read_rows(
             .map(|(i, f)| (f.name().clone(), batch.column(i).as_ref()))
             .collect();
 
-        // Charge before the batch's rows are turned into `Row`s. The per-row cost is the larger of
-        // what `info.json` declares and what the Parquet actually holds — a manifest declaring zero
-        // features still pays for a 50,000-column file.
-        let per_row = declared_per_row.max(feature_cols.len() as u64).max(1);
-        frames.take("lerobot", (batch.num_rows() as u64).saturating_mul(per_row))?;
-        expansion.take("lerobot", batch.get_array_memory_size() as u64)?;
-
+        // Resolve each row's episode first, so a sampled-out row is dropped before it is hashed and
+        // before it is charged. Reading one integer column is cheap next to fingerprinting every
+        // feature cell in the row, which is what the charge is protecting against.
+        let mut kept: Vec<(usize, u64)> = Vec::with_capacity(batch.num_rows());
         for row in 0..batch.num_rows() {
             let ep = column_i64(ep_col.as_ref(), row).ok_or_else(|| IngestError::Parse {
                 format_id: "lerobot",
                 message: format!("{}: episode_index is not an integer column", path.display()),
             })? as u64;
+            if selected.map_or(true, |s| s.contains(&ep)) {
+                kept.push((row, ep));
+            }
+        }
 
+        // Charge before the batch's rows are turned into `Row`s. The per-row cost is the larger of
+        // what `info.json` declares and what the Parquet actually holds — a manifest declaring zero
+        // features still pays for a 50,000-column file.
+        let per_row = declared_per_row.max(feature_cols.len() as u64).max(1);
+        frames.take("lerobot", (kept.len() as u64).saturating_mul(per_row))?;
+        expansion.take("lerobot", batch.get_array_memory_size() as u64)?;
+
+        for (row, ep) in kept {
             // Prefer the recorded timestamp; fall back to frame_index / fps.
             let ts_ns = if let Some(ts) = ts_col.as_ref().and_then(|c| column_f64(c.as_ref(), row))
             {
@@ -779,6 +793,39 @@ impl Adapter for LeRobotAdapter {
             })
             .collect();
 
+        // Declared per-episode frame counts from meta/episodes.jsonl (empty if absent) — the manifest
+        // assertion the boundary check tests against the frames actually ingested (lerobot#4143), and
+        // the episode index set a sampled ingest draws from.
+        let declared_lengths = load_episode_lengths(dir);
+
+        // Resolve a sampling request into the concrete episode indices to keep, *before* reading any
+        // Parquet, so the unselected episodes cost nothing. The draw is made over the manifest's
+        // episode set: the dataset-level statistics are accumulated as rows arrive, so which episodes
+        // count has to be known going in, not filtered out afterwards.
+        //
+        // The set comes from `meta/episodes.jsonl` when present, else from `info.json`'s
+        // `total_episodes` (LeRobot numbers episodes `0..total`). With neither, the episode set is
+        // only knowable by reading everything — the cost sampling exists to avoid — so that
+        // combination is refused rather than silently degraded into a full read.
+        let selected: Option<BTreeSet<u64>> = if options.sample.is_partial() {
+            let available: BTreeSet<u64> = if !declared_lengths.is_empty() {
+                declared_lengths.keys().copied().collect()
+            } else if let Some(total) = info.total_episodes.filter(|t| *t > 0) {
+                (0..total).collect()
+            } else {
+                return Err(IngestError::SamplingUnsupported {
+                    format_id: "lerobot",
+                    reason: "the dataset declares no episode set (no meta/episodes.jsonl and no \
+                             total_episodes in meta/info.json), so which episodes exist is not \
+                             known without reading the whole dataset"
+                        .into(),
+                });
+            };
+            Some(options.sample.select(&available))
+        } else {
+            None
+        };
+
         // Read every data Parquet, grouping row timestamps by episode.
         let mut parquet_files = Vec::new();
         find_parquet(&dir.join("data"), &mut parquet_files);
@@ -811,9 +858,14 @@ impl Adapter for LeRobotAdapter {
         // Dataset-level recomputed statistics per feature (LeRobot's stored stats are dataset-level).
         let mut observed: BTreeMap<String, FeatureAccum> = BTreeMap::new();
         for path in &parquet_files {
-            for (ep, ts, task_index, feature_values) in
-                read_rows(path, fps, per_row, &mut budget, &mut expansion)?
-            {
+            for (ep, ts, task_index, feature_values) in read_rows(
+                path,
+                fps,
+                per_row,
+                selected.as_ref(),
+                &mut budget,
+                &mut expansion,
+            )? {
                 let mut hashes = BTreeMap::new();
                 for (name, hash, scalars) in feature_values {
                     // Feed every dimension of the cell: finite values grow their dimension's stats,
@@ -877,9 +929,6 @@ impl Adapter for LeRobotAdapter {
         let stats = load_stats(dir);
         // Resolve `task_index` -> task string via meta/tasks.jsonl (empty map if the file is absent).
         let tasks = load_tasks(dir);
-        // Declared per-episode frame counts from meta/episodes.jsonl (empty if absent) — the manifest
-        // assertion the boundary check tests against the frames actually ingested (lerobot#4143).
-        let declared_lengths = load_episode_lengths(dir);
 
         // Build episodes: one stream per feature, frames at the episode's row timestamps, each frame
         // carrying that feature's per-row content hash (when the feature is a hashable Parquet column).
@@ -990,18 +1039,22 @@ impl Adapter for LeRobotAdapter {
                         info.codebase_version.clone().unwrap_or_default(),
                     ),
                 ];
-                // Record the declared counts so checks can catch a truncated export.
-                if let Some(total) = info.total_episodes {
-                    m.push((
-                        crate::cdm::META_DECLARED_EPISODES.to_string(),
-                        total.to_string(),
-                    ));
-                }
-                if let Some(total) = info.total_frames {
-                    m.push((
-                        crate::cdm::META_DECLARED_FRAMES.to_string(),
-                        total.to_string(),
-                    ));
+                // Record the declared counts so checks can catch a truncated export. A sampled ingest
+                // records neither: the manifest totals describe the whole dataset, so comparing them
+                // against a deliberately partial ingest would report every sample as a truncation.
+                if selected.is_none() {
+                    if let Some(total) = info.total_episodes {
+                        m.push((
+                            crate::cdm::META_DECLARED_EPISODES.to_string(),
+                            total.to_string(),
+                        ));
+                    }
+                    if let Some(total) = info.total_frames {
+                        m.push((
+                            crate::cdm::META_DECLARED_FRAMES.to_string(),
+                            total.to_string(),
+                        ));
+                    }
                 }
                 m
             },
@@ -1036,11 +1089,21 @@ impl Adapter for LeRobotAdapter {
         if card_license.is_some() {
             mapped_fields.push("README.md license -> provenance.license".into());
         }
-        if info.total_episodes.is_some() {
-            mapped_fields.push("total_episodes -> declared episode-count check".into());
-        }
-        if info.total_frames.is_some() {
-            mapped_fields.push("total_frames -> declared frame-count check".into());
+        // The dataset-level declared totals are only comparable against a full ingest; under a sample
+        // they are reported as omitted rather than as mapped-but-unused.
+        if selected.is_some() {
+            omitted_fields.push(
+                "total_episodes / total_frames (dataset-level totals are not comparable against a \
+                 sampled ingest)"
+                    .into(),
+            );
+        } else {
+            if info.total_episodes.is_some() {
+                mapped_fields.push("total_episodes -> declared episode-count check".into());
+            }
+            if info.total_frames.is_some() {
+                mapped_fields.push("total_frames -> declared frame-count check".into());
+            }
         }
         if !declared_lengths.is_empty() {
             mapped_fields.push("meta/episodes.jsonl length -> episode.declared_frame_count".into());
@@ -1080,7 +1143,15 @@ impl Adapter for LeRobotAdapter {
         let report = IngestReport {
             format_id: "lerobot",
             source_version: info.codebase_version.clone(),
-            coverage: Coverage::Full,
+            // Coverage is what was actually ingested, not what was asked for: an episode the manifest
+            // lists but the data does not hold never becomes an episode, so it is not counted here.
+            coverage: match &selected {
+                None => Coverage::Full,
+                Some(_) => Coverage::Sample {
+                    sample: options.sample.clone(),
+                    episodes_ingested: dataset.episodes.len() as u64,
+                },
+            },
             mapped_fields,
             unmapped_fields,
             omitted_fields,
