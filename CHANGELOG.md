@@ -285,6 +285,28 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   while the per-episode declared lengths (the lerobot#4143 check) still apply to the episodes that
   *were* read.
 
+- **`AUTONOMY.SENSOR_FRAME_UNKNOWN` / `AUTONOMY.SENSOR_FRAME_UNRELATED`** (`autonomy.sensor-frame-resolution`)
+  — the LiDAR-camera miscalibration class a well-formed calibration hides. `CALIBRATION_INCOMPLETE`
+  asks whether a rig has a transform tree; this asks the question that decides whether a fusion
+  pipeline works: for *this* sensor, does a chain of transforms exist from the frame it stamps its
+  data with to the camera it is fused against? Two ways that fails, neither visible from the tree's
+  own shape — the sensor's frame is not in the tree at all (a perfectly connected tree recorded for
+  `lidar_top` while the driver publishes `lidar_top_v2`, so every geometric operation silently has no
+  transform), or the frame is in the tree but in a subtree nothing joins to the camera's. Veridex
+  never decodes point coordinates or pixels, so it does not compute a reprojection *error*; it
+  verifies the reprojection is defined at all. Abstains when the sensor declares no frame, and leaves
+  "no tree at all" to `CALIBRATION_INCOMPLETE` — which in turn now leaves the disconnected-tree report
+  to this check whenever the sensors name their frames, so one defect is charged once, at the finest
+  granularity available.
+
+  Fed by a new CDM field, `Stream.frame_id`, which the MCAP adapter decodes from the `header.frame_id`
+  of any header-first ROS message (first one wins). It is bound into the content hash
+  (**`CANONICAL_VERSION` 4 → 5**), because a check fails a stream on it: a correctly wired rig and a
+  stranded one must not hash alike, or the certificate for one would verify against the other.
+  Proven end-to-end through the real adapter, and by a new demo variant —
+  `make_demo_mcap -- <out> av-miscalibrated` writes the five-sensor rig with the LiDAR parented to a
+  `lidar_mount` frame nothing joins to `base_link`.
+
 ### Fixed
 
 - **One shared timeline produced a finding per stream.** Several streams in an episode routinely share

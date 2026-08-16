@@ -36,6 +36,7 @@ fn sensor(name: &str, modality: Modality, ts: &[i64]) -> Stream {
         observed_non_finite: None,
         observed_dim_stats: None,
         point_fields: None,
+        frame_id: None,
     }
 }
 

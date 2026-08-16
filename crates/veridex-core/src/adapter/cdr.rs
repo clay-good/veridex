@@ -108,6 +108,19 @@ fn point_datatype(tag: u8) -> &'static str {
     }
 }
 
+/// Recover the `header.frame_id` of any message that begins with a `std_msgs/Header` — the
+/// coordinate frame the sensor's data is expressed in, and the name that has to appear in the TF
+/// tree for the sensor to be relatable to any other.
+///
+/// Returns `None` for a message that is not header-first, is truncated, or names an empty frame:
+/// an empty `frame_id` is what an unconfigured driver publishes, and recording it as a frame would
+/// turn "this sensor declares no frame" into "this sensor declares the frame `""`".
+pub fn decode_header_frame_id(data: &[u8]) -> Option<String> {
+    let mut r = Reader::new(data)?;
+    let frame_id = r.header()?;
+    (!frame_id.is_empty()).then_some(frame_id)
+}
+
 /// Decode a `sensor_msgs/msg/PointCloud2` body far enough to recover its per-point field layout
 /// (`fields`): `Header`, `uint32 height`, `uint32 width`, then a sequence of `PointField`
 /// `{ string name, uint32 offset, uint8 datatype, uint32 count }`. The bulk `data` blob is never read.

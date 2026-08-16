@@ -1,6 +1,7 @@
 //! Behavior tests for the MCAP adapter, driven by real MCAP files written with the `mcap` crate.
 
 use std::collections::BTreeMap;
+use std::fs;
 use std::io::Cursor;
 
 use veridex_core::adapter::mcap::McapAdapter;
@@ -1043,4 +1044,204 @@ fn an_ordinary_recording_is_well_inside_the_decompression_budget() {
             &IngestOptions::default(),
         )
         .expect("a real recording must ingest under the default budget");
+}
+
+/// A `tf2_msgs/msg/TFMessage` CDR body: one identity `TransformStamped` per `(parent, child)` edge.
+fn tf_body(edges: &[(&str, &str)]) -> Vec<u8> {
+    let mut buf: Vec<u8> = vec![0x00, 0x01, 0x00, 0x00];
+    let align = |buf: &mut Vec<u8>, n: usize| {
+        while (buf.len() - 4) % n != 0 {
+            buf.push(0)
+        }
+    };
+    let u32v = |buf: &mut Vec<u8>, v: u32| {
+        align(buf, 4);
+        buf.extend_from_slice(&v.to_le_bytes());
+    };
+    let strv = |buf: &mut Vec<u8>, s: &str| {
+        u32v(buf, (s.len() + 1) as u32);
+        buf.extend_from_slice(s.as_bytes());
+        buf.push(0);
+    };
+    let f64v = |buf: &mut Vec<u8>, v: f64| {
+        align(buf, 8);
+        buf.extend_from_slice(&v.to_le_bytes());
+    };
+    u32v(&mut buf, edges.len() as u32);
+    for (parent, child) in edges {
+        u32v(&mut buf, 0);
+        u32v(&mut buf, 0);
+        strv(&mut buf, parent);
+        strv(&mut buf, child);
+        for v in [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0] {
+            f64v(&mut buf, v);
+        }
+    }
+    buf
+}
+
+/// A minimal header-first CDR body naming `frame_id`, with a varying payload tail.
+fn header_body(frame_id: &str, payload: u64) -> Vec<u8> {
+    let mut buf: Vec<u8> = vec![0x00, 0x01, 0x00, 0x00];
+    buf.extend_from_slice(&0u32.to_le_bytes()); // stamp.sec
+    buf.extend_from_slice(&0u32.to_le_bytes()); // stamp.nanosec
+    buf.extend_from_slice(&((frame_id.len() + 1) as u32).to_le_bytes());
+    buf.extend_from_slice(frame_id.as_bytes());
+    buf.push(0);
+    buf.extend_from_slice(&payload.to_le_bytes());
+    buf
+}
+
+/// Write a four-sensor rig MCAP whose sensors stamp the given frames, with `tf_edges` as the static
+/// transform tree.
+fn write_framed_rig(
+    path: &std::path::Path,
+    sensor_frames: &[(&str, &str, &str)],
+    tf_edges: &[(&str, &str)],
+) {
+    let mut out = Vec::new();
+    {
+        let mut w = mcap::Writer::new(Cursor::new(&mut out)).unwrap();
+        let tf_schema = w
+            .add_schema("tf2_msgs/msg/TFMessage", "ros2msg", b"")
+            .unwrap();
+        let tf_channel = w
+            .add_channel(tf_schema, "/tf_static", "cdr", &BTreeMap::new())
+            .unwrap();
+        w.write_to_known_channel(
+            &mcap::records::MessageHeader {
+                channel_id: tf_channel,
+                sequence: 0,
+                log_time: 0,
+                publish_time: 0,
+            },
+            &tf_body(tf_edges),
+        )
+        .unwrap();
+
+        for (i, (schema, topic, frame)) in sensor_frames.iter().enumerate() {
+            let sid = w.add_schema(schema, "ros2msg", b"").unwrap();
+            let cid = w.add_channel(sid, topic, "cdr", &BTreeMap::new()).unwrap();
+            for seq in 0..11u32 {
+                let t = seq as u64 * 100_000_000;
+                w.write_to_known_channel(
+                    &mcap::records::MessageHeader {
+                        channel_id: cid,
+                        sequence: seq,
+                        log_time: t,
+                        publish_time: t,
+                    },
+                    &header_body(frame, ((i as u64) << 32) | seq as u64),
+                )
+                .unwrap();
+            }
+        }
+        w.finish().unwrap();
+    }
+    fs::write(path, &out).unwrap();
+}
+
+/// Ingest an MCAP file into the CDM, canonicalized as the pipeline does.
+fn ingest_rig(path: &std::path::Path) -> veridex_core::cdm::Dataset {
+    let mut d = McapAdapter
+        .ingest(
+            &Source::Local(path.to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .unwrap()
+        .dataset;
+    d.canonicalize_order();
+    d
+}
+
+/// The rig's sensors, as (schema, topic, declared frame).
+const RIG_SENSORS: &[(&str, &str, &str)] = &[
+    ("sensor_msgs/msg/Image", "/camera/image", "camera_front"),
+    ("sensor_msgs/msg/PointCloud2", "/lidar/points", "lidar_top"),
+    ("sensor_msgs/msg/NavSatFix", "/gps/fix", "gnss"),
+    ("sensor_msgs/msg/Imu", "/imu/data", "imu_link"),
+];
+
+#[test]
+fn sensor_frames_are_decoded_from_message_headers() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("rig.mcap");
+    write_framed_rig(
+        &path,
+        RIG_SENSORS,
+        &[("base_link", "camera_front"), ("base_link", "lidar_top")],
+    );
+
+    let d = ingest_rig(&path);
+    let frames: Vec<(&str, Option<&str>)> = d.episodes[0]
+        .streams
+        .iter()
+        .map(|s| (s.name.as_str(), s.frame_id.as_deref()))
+        .collect();
+    assert!(
+        frames.contains(&("/lidar/points", Some("lidar_top")))
+            && frames.contains(&("/camera/image", Some("camera_front"))),
+        "each sensor's header.frame_id reaches the CDM: {frames:?}"
+    );
+}
+
+#[test]
+fn a_lidar_stranded_from_the_camera_is_caught_end_to_end() {
+    // The miscalibration class the reprojection check exists for, through the real adapter: the TF
+    // tree is well-formed and the LiDAR is in it, but nothing joins `lidar_mount` to `base_link`, so
+    // no chain of transforms reaches the camera.
+    let dir = tempfile::tempdir().unwrap();
+
+    let good = dir.path().join("good.mcap");
+    write_framed_rig(
+        &good,
+        RIG_SENSORS,
+        &[
+            ("base_link", "camera_front"),
+            ("base_link", "lidar_top"),
+            ("base_link", "gnss"),
+            ("base_link", "imu_link"),
+        ],
+    );
+    let codes = |p: &std::path::Path| -> Vec<String> {
+        let d = ingest_rig(p);
+        let engine = veridex_core::checks::default_engine().unwrap();
+        let hash = veridex_core::content_hash(&d);
+        engine
+            .run(&d, hash, &veridex_core::RunConfig::default())
+            .findings
+            .iter()
+            .map(|f| f.code.clone())
+            .collect()
+    };
+    assert!(
+        !codes(&good)
+            .iter()
+            .any(|c| c.starts_with("AUTONOMY.SENSOR_FRAME")),
+        "a correctly wired rig raises nothing"
+    );
+
+    let bad = dir.path().join("bad.mcap");
+    write_framed_rig(
+        &bad,
+        RIG_SENSORS,
+        &[
+            ("base_link", "camera_front"),
+            ("lidar_mount", "lidar_top"),
+            ("base_link", "gnss"),
+            ("base_link", "imu_link"),
+        ],
+    );
+    assert!(
+        codes(&bad).contains(&"AUTONOMY.SENSOR_FRAME_UNRELATED".to_string()),
+        "the stranded LiDAR is flagged: {:?}",
+        codes(&bad)
+    );
+
+    // And the two rigs do not hash alike — the frame the sensor claims is bound into the CDM hash,
+    // so a certificate for the wired rig cannot verify against the stranded one.
+    assert_ne!(
+        veridex_core::content_hash(&ingest_rig(&good)),
+        veridex_core::content_hash(&ingest_rig(&bad))
+    );
 }

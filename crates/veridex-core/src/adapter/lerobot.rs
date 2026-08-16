@@ -966,6 +966,8 @@ impl Adapter for LeRobotAdapter {
                         observed_dim_stats: observed_dim_stats.get(name).cloned(),
                         // LeRobot is a manipulation format: no point-cloud streams.
                         point_fields: None,
+                        // LeRobot declares no sensor coordinate frames (it is not a spatially-calibrated rig).
+                        frame_id: None,
                     })
                     .collect();
                 // Resolve this episode's task string, if its task_index maps to one.

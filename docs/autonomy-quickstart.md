@@ -50,9 +50,35 @@ cargo run -p veridex-cli -- check /tmp/av.mcap
               trigger/latency offsets before fusing.
 ```
 
-The four rig checks are `AUTONOMY.RIG_SYNC`, `SEQUENCE_COMPLETE`, `EGO_POSE_CONTINUITY`, and
-`CALIBRATION_INCOMPLETE` — see [checks.md](checks.md) for what each one catches and why it matters.
-On a rig, `RIG_SYNC` supersedes the pairwise `TEMPORAL.CLOCK_SKEW`.
+The rig checks are `AUTONOMY.RIG_SYNC`, `SEQUENCE_COMPLETE`, `EGO_POSE_CONTINUITY`,
+`CALIBRATION_INCOMPLETE`, and `SENSOR_FRAME_UNKNOWN` / `SENSOR_FRAME_UNRELATED` — see
+[checks.md](checks.md) for what each one catches and why it matters. On a rig, `RIG_SYNC` supersedes
+the pairwise `TEMPORAL.CLOCK_SKEW`.
+
+### The miscalibration a well-formed calibration hides
+
+A rig can carry a complete, connected transform tree and still be unusable, because the chain from a
+sensor to the camera does not exist. Nothing about the tree's own shape reveals it. The
+`av-miscalibrated` variant is that rig — the LiDAR hangs off a `lidar_mount` frame nothing joins to
+`base_link`:
+
+```sh
+cargo run -p veridex-core --example make_demo_mcap -- /tmp/av-bad.mcap av-miscalibrated
+cargo run -p veridex-cli -- check /tmp/av-bad.mcap
+```
+
+```
+  [error] AUTONOMY.SENSOR_FRAME_UNRELATED  episode 0 · stream `/lidar/points`
+      episode 0: stream `/lidar/points` is in frame `lidar_top`, but no chain of transforms
+      connects it to any camera frame (camera_front) — this sensor cannot be projected into the image
+      remedy: Publish the missing link joining this sensor's subtree to the camera's
+              (typically sensor → base_link → camera), and re-record the calibration.
+```
+
+The sibling code `AUTONOMY.SENSOR_FRAME_UNKNOWN` catches the other half: a sensor stamping a frame
+name the tree never mentions at all — the calibration was recorded for `lidar_top` while the driver
+publishes `lidar_top_v2`. Veridex never decodes point coordinates or pixels, so it does not compute a
+reprojection *error*; it verifies the reprojection is defined at all.
 
 ## 4. Certify readiness
 

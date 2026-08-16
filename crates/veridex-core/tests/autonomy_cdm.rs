@@ -40,6 +40,7 @@ fn cloud_stream(fields: &[&str]) -> Stream {
         observed_saturation: None,
         observed_non_finite: None,
         observed_dim_stats: None,
+        frame_id: None,
         point_fields: Some(
             fields
                 .iter()
@@ -261,6 +262,7 @@ fn permuting_every_canonicalized_collection_changes_neither_the_hash_nor_the_ver
         observed_non_finite: None,
         observed_dim_stats: None,
         point_fields: None,
+        frame_id: None,
     };
     // A trajectory that is continuous in ts order and full of teleports in any other order.
     let poses: Vec<EgoPose> = (0..6)

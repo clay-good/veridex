@@ -72,7 +72,14 @@ No code until this change is approved; this is the build plan.
       is present + coherent instead — flags a spatial rig with no TF tree, a disconnected TF tree
       (connected-components over the frame graph), or cameras without intrinsics. End-to-end + unit
       tests. True per-point reprojection error would require decoding point coordinates (deliberately
-      out of scope); per-sensor frame→camera path checks are a refinement (needs per-stream frame_id).
+      out of scope). **The per-sensor frame→camera path check is now in**
+      (`autonomy.sensor-frame-resolution`, `AUTONOMY.SENSOR_FRAME_UNKNOWN` /
+      `AUTONOMY.SENSOR_FRAME_UNRELATED`): the CDM's new `Stream.frame_id` — decoded by the MCAP
+      adapter from `header.frame_id`, bound into the content hash at `CANONICAL_VERSION` 5 — lets the
+      check ask whether a chain of transforms exists from each sensor's own frame to a camera's. This
+      catches what counting the tree's components cannot: a connected tree recorded for a frame name
+      the sensor does not publish, and a sensor in a subtree nothing joins to the camera. Proven
+      end-to-end through the adapter and by the `av-miscalibrated` demo variant.
 - [~] `AUTONOMY.EGO_POSE_CONTINUITY` — implemented: flags an ego trajectory step whose implied speed
       (distance/elapsed) exceeds a plausible max (default 100 m/s), reading the CDR-decoded
       `Episode.ego_poses`. Runs end-to-end on a teleporting Odometry MCAP + unit tests. GNSS/IMU/odometry
@@ -121,8 +128,13 @@ No code until this change is approved; this is the build plan.
       writes a five-sensor MCAP rig (camera/LiDAR/IMU/GNSS/odometry) with the IMU span cut ~0.30 s,
       which `veridex check` flags as `AUTONOMY.RIG_SYNC` naming the IMU as the tightest-spanning
       sensor (on a rig, `RIG_SYNC` supersedes the pairwise `TEMPORAL.CLOCK_SKEW`)
-      (`an_injected_single_sensor_sync_drift_is_flagged_on_an_av_rig`). The LiDAR-camera
-      miscalibration half needs the reprojection check (A2) and decoded calibration (A1).
+      (`an_injected_single_sensor_sync_drift_is_flagged_on_an_av_rig`). **The miscalibration half is
+      now reproduced too**: `make_demo_mcap -- <out> av-miscalibrated` writes the same rig with the
+      LiDAR parented to a `lidar_mount` frame nothing joins to `base_link`, and `veridex check` flags
+      `AUTONOMY.SENSOR_FRAME_UNRELATED` naming `/lidar/points` — the transform tree is well-formed and
+      the LiDAR is in it, yet no chain reaches the camera, so the reprojection is undefined
+      (`a_lidar_stranded_from_the_camera_is_caught_end_to_end`). What remains out of scope by design is
+      a reprojection *error* in pixels, which would require decoding point coordinates.
 - [x] Issue and offline-verify a world-model-readiness certificate. `certify --profile` issues it and
       `verify` now reads it back: the bound hash, trust score, profile verdict, and each criterion,
       with `--json` for the machine-readable form. Everything reported comes from the signed

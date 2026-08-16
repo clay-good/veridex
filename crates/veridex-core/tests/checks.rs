@@ -40,6 +40,7 @@ fn stream(name: &str, clock: &str, rate: Option<f64>, ts: &[i64]) -> Stream {
         observed_non_finite: None,
         observed_dim_stats: None,
         point_fields: None,
+        frame_id: None,
         frames: frames_at(ts),
     }
 }
@@ -304,6 +305,7 @@ fn stream_hashed(name: &str, clock: &str, ts: &[i64], contents: &[u8]) -> Stream
         observed_non_finite: None,
         observed_dim_stats: None,
         point_fields: None,
+        frame_id: None,
         frames,
     }
 }
@@ -387,6 +389,7 @@ fn stream_with_content(name: &str, modality: Modality, contents: &[u8]) -> Strea
         observed_non_finite: None,
         observed_dim_stats: None,
         point_fields: None,
+        frame_id: None,
         frames,
     }
 }
@@ -459,6 +462,7 @@ fn shaped(name: &str, dtype: Option<&str>, shape: Option<Vec<u64>>, ts: &[i64]) 
         observed_non_finite: None,
         observed_dim_stats: None,
         point_fields: None,
+        frame_id: None,
         frames: frames_at(ts),
     }
 }
@@ -1094,7 +1098,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 32);
+    assert_eq!(verdict.executed_checks.len(), 33);
 }
 
 #[test]
@@ -2249,6 +2253,7 @@ fn a_bus_only_measurement_is_not_treated_as_a_sensor_rig() {
                 observed_non_finite: None,
                 observed_dim_stats: None,
                 point_fields: None,
+                frame_id: None,
             })
             .collect(),
         task: None,
@@ -2324,6 +2329,7 @@ fn one_shared_timeline_reports_once_and_an_event_driven_signal_is_not_called_inc
         observed_non_finite: None,
         observed_dim_stats: None,
         point_fields: None,
+        frame_id: None,
     };
     let dataset = Dataset {
         id: "bus".into(),
@@ -2690,5 +2696,149 @@ fn a_saturated_later_episode_is_not_masked_by_a_clean_earlier_one() {
         count(&clean_first),
         count(&saturated_first),
         "the finding must not depend on episode order"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// autonomy.sensor-frame-resolution — per-sensor calibration resolution (A2)
+// ---------------------------------------------------------------------------------------------
+
+/// The `rig_with_calibration` rig, with a coordinate frame attached to each named stream.
+fn rig_with_frames(
+    cal: Option<veridex_core::cdm::Calibration>,
+    frames: &[(&str, &str)],
+) -> Dataset {
+    let mut d = rig_with_calibration(cal);
+    for s in &mut d.episodes[0].streams {
+        if let Some((_, frame)) = frames.iter().find(|(name, _)| *name == s.name) {
+            s.frame_id = Some((*frame).to_string());
+        }
+    }
+    d
+}
+
+fn wired_rig() -> veridex_core::cdm::Calibration {
+    veridex_core::cdm::Calibration {
+        transforms: vec![
+            xf("base_link", "lidar_top"),
+            xf("base_link", "camera_front"),
+            xf("base_link", "imu_link"),
+        ],
+        intrinsics: vec![intr("cam")],
+    }
+}
+
+#[test]
+fn a_sensor_whose_frame_is_absent_from_the_tree_is_named() {
+    // The tree is well-formed and fully connected — it was simply recorded for a different LiDAR
+    // frame name. Nothing about the tree's shape reveals this.
+    let d = rig_with_frames(
+        Some(wired_rig()),
+        &[("lidar", "lidar_top_v2"), ("cam", "camera_front")],
+    );
+    let f = autonomy::SensorFrameResolution.run(&d);
+    assert_eq!(f.len(), 1, "one finding, naming the one stranded sensor");
+    assert_eq!(f[0].code, "AUTONOMY.SENSOR_FRAME_UNKNOWN");
+    assert_eq!(f[0].severity, Severity::Error);
+    assert!(f[0].message.contains("lidar_top_v2"), "{}", f[0].message);
+    assert!(matches!(
+        &f[0].location,
+        veridex_core::check::Location::Stream { episode: 0, stream } if stream == "lidar"
+    ));
+}
+
+#[test]
+fn a_sensor_with_no_transform_path_to_the_camera_is_named() {
+    // The LiDAR is in the tree, under a mount frame nothing joins to the camera's subtree.
+    let cal = veridex_core::cdm::Calibration {
+        transforms: vec![
+            xf("lidar_mount", "lidar_top"),
+            xf("base_link", "camera_front"),
+        ],
+        intrinsics: vec![intr("cam")],
+    };
+    let d = rig_with_frames(
+        Some(cal),
+        &[("lidar", "lidar_top"), ("cam", "camera_front")],
+    );
+    let f = autonomy::SensorFrameResolution.run(&d);
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].code, "AUTONOMY.SENSOR_FRAME_UNRELATED");
+    assert!(f[0].message.contains("camera_front"), "{}", f[0].message);
+}
+
+#[test]
+fn a_correctly_wired_rig_is_clean() {
+    let d = rig_with_frames(
+        Some(wired_rig()),
+        &[
+            ("lidar", "lidar_top"),
+            ("cam", "camera_front"),
+            ("imu", "imu_link"),
+        ],
+    );
+    assert!(autonomy::SensorFrameResolution.run(&d).is_empty());
+}
+
+#[test]
+fn a_sensor_that_declares_no_frame_abstains() {
+    // Nothing was claimed, so there is nothing to contradict. Inventing a finding here would flag
+    // every MF4 and CAN rig, which declare no coordinate frames at all.
+    let d = rig_with_frames(Some(wired_rig()), &[("cam", "camera_front")]);
+    assert!(autonomy::SensorFrameResolution.run(&d).is_empty());
+}
+
+#[test]
+fn connectivity_abstains_when_no_camera_names_a_known_frame() {
+    // Without a camera frame in the tree there is no reference to measure a path against; only the
+    // "frame is not in the tree at all" half can still speak.
+    let d = rig_with_frames(Some(wired_rig()), &[("lidar", "lidar_top")]);
+    assert!(autonomy::SensorFrameResolution.run(&d).is_empty());
+}
+
+#[test]
+fn a_rig_with_no_transform_tree_is_left_to_the_calibration_check() {
+    // "No tree at all" is one defect. `autonomy.calibration-completeness` reports it; charging it
+    // again, once per sensor, would bury the single actionable line under five copies.
+    let d = rig_with_frames(None, &[("lidar", "lidar_top"), ("cam", "camera_front")]);
+    assert!(autonomy::SensorFrameResolution.run(&d).is_empty());
+    assert!(autonomy::CalibrationCompleteness
+        .run(&d)
+        .iter()
+        .any(|x| x.code == "AUTONOMY.CALIBRATION_INCOMPLETE"));
+}
+
+#[test]
+fn the_disconnected_tree_is_reported_once_at_the_finest_granularity_available() {
+    // When the sensors name their frames, the per-sensor check names the stranded one and the
+    // episode-level component count stays quiet; when they do not, the episode-level report is the
+    // only thing that can speak, so it does.
+    let cal = veridex_core::cdm::Calibration {
+        transforms: vec![
+            xf("lidar_mount", "lidar_top"),
+            xf("base_link", "camera_front"),
+        ],
+        intrinsics: vec![intr("cam")],
+    };
+
+    let named = rig_with_frames(
+        Some(cal.clone()),
+        &[("lidar", "lidar_top"), ("cam", "camera_front")],
+    );
+    assert!(
+        !autonomy::CalibrationCompleteness
+            .run(&named)
+            .iter()
+            .any(|x| x.message.contains("disconnected")),
+        "the per-sensor check has this one"
+    );
+
+    let unnamed = rig_with_calibration(Some(cal));
+    assert!(
+        autonomy::CalibrationCompleteness
+            .run(&unnamed)
+            .iter()
+            .any(|x| x.message.contains("disconnected")),
+        "with no sensor frames, the episode-level report is all there is"
     );
 }

@@ -295,6 +295,12 @@ pub struct Stream {
     /// schema, never the point payloads. Extension for `autonomy-sensor-data` A0.
     #[serde(default)]
     pub point_fields: Option<Vec<PointField>>,
+    /// The coordinate frame this sensor's data is expressed in (a ROS `header.frame_id`, e.g.
+    /// `lidar_top` or `camera_front`), when the source records one. This is the name that has to
+    /// appear in [`Calibration::transforms`] for the sensor to be relatable to any other — the
+    /// `autonomy.sensor-frame-resolution` check reads it. `None` for a source that declares no frame.
+    #[serde(default)]
+    pub frame_id: Option<FrameId>,
 }
 
 /// Recomputed summary statistics for one dimension of a multi-DoF feature, tagged with its index.

@@ -27,7 +27,12 @@ use crate::cdm::{
 /// stream's declared `point_fields`. A manipulation dataset leaves all three empty, so they add only
 /// a fixed "absent" marker to its encoding — but every content-bearing field is still hashed, keeping
 /// the "no silently-dropped field" invariant intact.
-pub const CANONICAL_VERSION: u32 = 4;
+///
+/// v5 binds each stream's `frame_id` — the coordinate frame the sensor's data is expressed in.
+/// `autonomy.sensor-frame-resolution` fails a stream on it, and the rule is that the hash binds
+/// whatever a check can fail on: a rig whose LiDAR names a frame the TF tree relates and one whose
+/// LiDAR names a frame it does not are a passing and a failing dataset, and must not collide.
+pub const CANONICAL_VERSION: u32 = 5;
 
 const DOMAIN: &[u8] = b"veridex.cdm.v1\0";
 
@@ -298,6 +303,10 @@ impl Stream {
                 e.opt(&pf.dtype, |e, d| e.str(d));
             })
         });
+        // The sensor's coordinate frame. Bound because `autonomy.sensor-frame-resolution` fails a
+        // stream on it: two rigs differing only in which frame a sensor claims are a passing dataset
+        // and a failing one, and they must not hash alike.
+        e.opt(&self.frame_id, |e, f| e.str(f));
         // frames: order is data-defined and preserved (the recorded timeline)
         e.seq(&self.frames, |e, f| f.encode(e));
     }

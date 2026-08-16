@@ -562,7 +562,10 @@ impl Check for CalibrationCompleteness {
                         ep.index
                     ),
                 ));
-            } else {
+            } else if !declares_sensor_frames(ep) {
+                // When the sensors name their frames, `autonomy.sensor-frame-resolution` reports the
+                // break against the specific sensors it strands, which is what a reader can act on.
+                // Reporting it here too would charge one defect twice.
                 let components = tf_component_count(transforms);
                 if components > 1 {
                     findings.push(flag(
@@ -585,6 +588,202 @@ impl Check for CalibrationCompleteness {
                         ep.index
                     ),
                 ));
+            }
+        }
+        findings
+    }
+}
+
+/// The set of frame names reachable from `start` in the transform tree, `start` included. Returns an
+/// empty set when `start` is not a node of the tree at all.
+fn tf_reachable_from<'a>(transforms: &'a [Transform], start: &str) -> HashSet<&'a str> {
+    let mut adj: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut known: HashSet<&str> = HashSet::new();
+    for t in transforms {
+        adj.entry(&t.parent_frame).or_default().push(&t.child_frame);
+        adj.entry(&t.child_frame).or_default().push(&t.parent_frame);
+        known.insert(&t.parent_frame);
+        known.insert(&t.child_frame);
+    }
+    let Some(&start) = known.get(start) else {
+        return HashSet::new();
+    };
+    let mut seen: HashSet<&str> = HashSet::new();
+    seen.insert(start);
+    let mut stack = vec![start];
+    while let Some(f) = stack.pop() {
+        if let Some(neighbors) = adj.get(f) {
+            for &n in neighbors {
+                if seen.insert(n) {
+                    stack.push(n);
+                }
+            }
+        }
+    }
+    seen
+}
+
+/// Whether any rig sensor in `ep` declares a coordinate frame. When none do,
+/// [`SensorFrameResolution`] can say nothing and [`CalibrationCompleteness`] reports a disconnected
+/// tree at episode level instead — so one defect is charged once, at the finest granularity available.
+fn declares_sensor_frames(ep: &Episode) -> bool {
+    ep.streams
+        .iter()
+        .any(|s| s.modality.is_rig_sensor() && s.frame_id.is_some())
+}
+
+/// **Per-sensor calibration resolution (design A2, the LiDAR-camera miscalibration class).**
+///
+/// [`CalibrationCompleteness`] asks whether a rig has a transform tree at all. This asks the question
+/// that actually decides whether a fusion pipeline works: for *this* sensor, does a transform chain
+/// exist from the frame it stamps its data with to the camera it is meant to be fused against?
+///
+/// Two ways that fails, and neither is visible from counting the tree's components:
+///
+/// - **The sensor's frame is not in the tree.** A rig can carry a perfectly connected TF tree that was
+///   recorded for `lidar_top` while the LiDAR stamps `lidar_top_v2`. Every geometric operation
+///   involving that sensor silently has no transform, and nothing about the tree itself looks wrong.
+/// - **The sensor's frame is in the tree but not connected to the camera.** The extrinsics exist for
+///   part of the rig and the chain to the image frame is missing, so points cannot be projected.
+///
+/// Veridex never decodes point coordinates or pixels, so it does not compute a reprojection *error* —
+/// it verifies that the reprojection is defined at all. A sensor that declares no frame abstains
+/// (nothing was claimed), and a rig with no transform tree abstains too: that is
+/// `AUTONOMY.CALIBRATION_INCOMPLETE`, already reported once.
+pub struct SensorFrameResolution;
+
+impl Check for SensorFrameResolution {
+    fn id(&self) -> &'static str {
+        "autonomy.sensor-frame-resolution"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &[
+            "AUTONOMY.SENSOR_FRAME_UNKNOWN",
+            "AUTONOMY.SENSOR_FRAME_UNRELATED",
+        ]
+    }
+    fn title(&self) -> &'static str {
+        "Sensor frame resolves through the rig calibration"
+    }
+    fn category(&self) -> Category {
+        Category::Autonomy
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Error
+    }
+    fn scope(&self) -> Scope {
+        Scope::Stream
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        let transforms = dataset
+            .calibration
+            .as_ref()
+            .map(|c| c.transforms.as_slice())
+            .unwrap_or(&[]);
+        if transforms.is_empty() {
+            // No tree at all is one defect, reported once by `autonomy.calibration-completeness`.
+            return Vec::new();
+        }
+
+        let mut findings = Vec::new();
+        for ep in &dataset.episodes {
+            if !is_rig_episode(ep) {
+                continue;
+            }
+
+            // The camera frames the other sensors have to reach. Only cameras that name a frame the
+            // tree knows can serve as a reference; without one there is nothing to measure against and
+            // the connectivity half abstains.
+            let camera_frames: Vec<&str> = ep
+                .streams
+                .iter()
+                .filter(|s| s.modality == Modality::Video)
+                .filter_map(|s| s.frame_id.as_deref())
+                .collect();
+            let reachable_from_a_camera: HashSet<&str> = camera_frames
+                .iter()
+                .flat_map(|c| tf_reachable_from(transforms, c))
+                .collect();
+
+            for stream in &ep.streams {
+                if !stream.modality.is_rig_sensor() && stream.modality != Modality::Video {
+                    continue;
+                }
+                let Some(frame) = stream.frame_id.as_deref() else {
+                    continue; // the source declares no frame; nothing was claimed, nothing to check
+                };
+                let located = tf_reachable_from(transforms, frame);
+                if located.is_empty() {
+                    findings.push(
+                        Finding::new(
+                            "autonomy.sensor-frame-resolution",
+                            Category::Autonomy,
+                            Severity::Error,
+                            Location::Stream {
+                                episode: ep.index,
+                                stream: stream.name.clone(),
+                            },
+                            "AUTONOMY.SENSOR_FRAME_UNKNOWN",
+                            format!(
+                                "episode {}: stream `{}` stamps its data with frame `{frame}`, which \
+                                 the rig's transform tree never mentions — this sensor has no \
+                                 extrinsics",
+                                ep.index, stream.name
+                            ),
+                        )
+                        .with_risk(
+                            "Every geometric use of this sensor — fusion, projection, occupancy, any \
+                             world model built on the rig — silently has no transform for it. The \
+                             calibration looks complete because the tree itself is well-formed; the \
+                             sensor simply is not in it.",
+                        )
+                        .with_remedy(
+                            "Reconcile the names: either publish the transform for the frame the \
+                             sensor actually stamps, or fix the driver to stamp the frame the \
+                             calibration was recorded for.",
+                        ),
+                    );
+                    continue;
+                }
+                // The sensor is in the tree. Is it connected to a camera?
+                if reachable_from_a_camera.is_empty() || camera_frames.contains(&frame) {
+                    continue; // no usable camera reference, or this stream is the camera
+                }
+                if !reachable_from_a_camera.contains(frame) {
+                    findings.push(
+                        Finding::new(
+                            "autonomy.sensor-frame-resolution",
+                            Category::Autonomy,
+                            Severity::Error,
+                            Location::Stream {
+                                episode: ep.index,
+                                stream: stream.name.clone(),
+                            },
+                            "AUTONOMY.SENSOR_FRAME_UNRELATED",
+                            format!(
+                                "episode {}: stream `{}` is in frame `{frame}`, but no chain of \
+                                 transforms connects it to any camera frame ({}) — this sensor \
+                                 cannot be projected into the image",
+                                ep.index,
+                                stream.name,
+                                camera_frames.join(", ")
+                            ),
+                        )
+                        .with_risk(
+                            "LiDAR-camera fusion for this sensor is geometrically undefined: the \
+                             extrinsics exist for part of the rig and the chain to the image frame \
+                             is missing, so anything that projects its observations is wrong rather \
+                             than absent.",
+                        )
+                        .with_remedy(
+                            "Publish the missing link joining this sensor's subtree to the camera's \
+                             (typically sensor → base_link → camera), and re-record the calibration.",
+                        ),
+                    );
+                }
             }
         }
         findings

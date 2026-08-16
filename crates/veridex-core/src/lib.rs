@@ -103,6 +103,7 @@ mod tests {
                         observed_non_finite: None,
                         observed_dim_stats: None,
                         point_fields: None,
+                        frame_id: None,
                         frames: vec![
                             Frame {
                                 ts: 1_000,
@@ -138,6 +139,7 @@ mod tests {
                         observed_non_finite: None,
                         observed_dim_stats: None,
                         point_fields: None,
+                        frame_id: None,
                         frames: vec![Frame {
                             ts: 1_000,
                             value_ref: ValueRef {
@@ -293,7 +295,11 @@ mod tests {
         };
         let base = content_hash(&sample_dataset());
         type Mutator = fn(&mut Stream);
-        let mutate: [(&str, Mutator); 5] = [
+        let mutate: [(&str, Mutator); 6] = [
+            // The sensor's coordinate frame: `autonomy.sensor-frame-resolution` fails a stream on it,
+            // so a rig whose LiDAR names a frame the TF tree relates and one whose LiDAR does not
+            // must not hash alike.
+            ("frame_id", |s| s.frame_id = Some("lidar_top_v2".into())),
             ("dim_stats", |s| {
                 s.dim_stats = Some(vec![DimStats {
                     dim: 0,
@@ -344,6 +350,7 @@ mod tests {
             d.episodes[0].streams[1].observed_saturation = Some(sat);
             d.episodes[0].streams[1].observed_non_finite = Some(0);
             d.episodes[0].streams[1].observed_dim_stats = Some(dims.clone());
+            d.episodes[0].streams[1].frame_id = Some("lidar_top".into());
             let seeded = content_hash(&d);
             assert_ne!(seeded, base, "seeding stats fields must change the hash");
             apply(&mut d.episodes[0].streams[1]);
@@ -436,6 +443,7 @@ mod proptests {
                 observed_non_finite: None,
                 observed_dim_stats: None,
                 point_fields: None,
+                frame_id: None,
             })
     }
 

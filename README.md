@@ -256,7 +256,9 @@ in and tested: the Canonical Dataset Model with deterministic content hashing; t
 engine; the structural / temporal / statistical / semantic / provenance / **autonomy** check catalog
 (including the headline `TEMPORAL.CLOCK_SKEW`, cross-episode dtype/shape consistency, and the
 sensor-rig checks `AUTONOMY.RIG_SYNC` / `SEQUENCE_COMPLETE` / `EGO_POSE_CONTINUITY` /
-`CALIBRATION_INCOMPLETE`); the v1 trust-score rubric and the `world-model-ready` readiness profile;
+`CALIBRATION_INCOMPLETE` / `SENSOR_FRAME_UNKNOWN` / `SENSOR_FRAME_UNRELATED` — the last two catch the
+LiDAR-camera miscalibration a well-formed transform tree hides, where a sensor's own frame is absent
+from the tree or has no chain of transforms to the camera); the v1 trust-score rubric and the `world-model-ready` readiness profile;
 terminal, JSON, SARIF 2.1.0, and self-contained HTML reporting; **LeRobot v3, MCAP (with ROS-message
 decode into an autonomy rig), CAN+DBC, and ASAM MDF/MF4 adapters** with a passing cross-format
 neutrality gate (the same logical dataset yields equivalent CDMs as LeRobot v3 and as MCAP); descriptive scenario-dimension coverage and **scenario/map/sim

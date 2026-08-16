@@ -19,7 +19,12 @@
 //! Each message's payload bytes vary per frame (so frames are content-distinct, as real recordings
 //! are) except in `stuck`, where the camera deliberately repeats one frame.
 //!
-//! Usage: `cargo run -p veridex-core --example make_demo_mcap -- <output.mcap> [clean|late-start|stuck|av]`
+//! - `av-miscalibrated` — the same rig, but the LiDAR is parented to a `lidar_mount` frame that
+//!   nothing joins to `base_link`. The transform tree is well-formed and the LiDAR is in it, yet no
+//!   chain of transforms reaches the camera → `AUTONOMY.SENSOR_FRAME_UNRELATED`: the LiDAR-camera
+//!   reprojection is undefined, which no check on the tree's own shape can see.
+//!
+//! Usage: `cargo run -p veridex-core --example make_demo_mcap -- <output.mcap> [clean|late-start|stuck|av|av-miscalibrated]`
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
@@ -33,14 +38,17 @@ fn main() {
     // `stuck` is a single-camera dataset like `clean`, but with a frozen (byte-identical) feed.
     let clean = mode.as_deref() == Some("clean") || stuck;
     let late_start = mode.as_deref() == Some("late-start");
-    let av = mode.as_deref() == Some("av");
+    // `av-miscalibrated` is the same rig with the LiDAR stranded outside the camera's transform
+    // subtree, so the LiDAR-camera reprojection is undefined.
+    let miscalibrated = mode.as_deref() == Some("av-miscalibrated");
+    let av = mode.as_deref() == Some("av") || miscalibrated;
 
     let mut buf = Vec::new();
     {
         let mut w = mcap::Writer::new(Cursor::new(&mut buf)).expect("writer");
 
         if av {
-            write_av_rig(&mut w);
+            write_av_rig(&mut w, miscalibrated);
         } else {
             write_manipulation(&mut w, stuck, clean, late_start);
         }
@@ -141,22 +149,67 @@ fn write_manipulation<W: std::io::Write + std::io::Seek>(
 /// Write a five-sensor autonomy rig (camera, LiDAR, IMU, GNSS, ego-odometry) over ~1.0 s. Every
 /// sensor spans ~1.0 s from a shared start except the IMU, whose span is deliberately cut to ~0.70 s
 /// — a single-sensor sync drift of ~0.30 s that the duration-based `TEMPORAL.CLOCK_SKEW` flags.
-fn write_av_rig<W: std::io::Write + std::io::Seek>(w: &mut mcap::Writer<W>) {
-    // (schema, topic, message count, inter-message interval ns). The IMU runs the same 100 msg count
-    // as a healthy 100 Hz sensor but at a compressed 7 ms interval, so it finishes ~0.30 s early.
-    let sensors: &[(&str, &str, u64, u64)] = &[
-        ("sensor_msgs/msg/Image", "/camera/image", 31, 33_000_000), // ~30 Hz, ~0.99 s
+fn write_av_rig<W: std::io::Write + std::io::Seek>(w: &mut mcap::Writer<W>, miscalibrated: bool) {
+    // (schema, topic, message count, inter-message interval ns, coordinate frame). The IMU runs the
+    // same 100 msg count as a healthy 100 Hz sensor but at a compressed 7 ms interval, so it finishes
+    // ~0.30 s early.
+    let sensors: &[(&str, &str, u64, u64, &str)] = &[
+        (
+            "sensor_msgs/msg/Image",
+            "/camera/image",
+            31,
+            33_000_000,
+            "camera_front",
+        ), // ~30 Hz, ~0.99 s
         (
             "sensor_msgs/msg/PointCloud2",
             "/lidar/points",
             11,
             100_000_000,
+            "lidar_top",
         ), // 10 Hz, 1.00 s
-        ("sensor_msgs/msg/NavSatFix", "/gps/fix", 11, 100_000_000), // 10 Hz, 1.00 s
-        ("nav_msgs/msg/Odometry", "/odom", 51, 20_000_000),         // ~50 Hz, 1.00 s
-        ("sensor_msgs/msg/Imu", "/imu/data", 101, 7_000_000),       // drifted: ~0.70 s span
+        (
+            "sensor_msgs/msg/NavSatFix",
+            "/gps/fix",
+            11,
+            100_000_000,
+            "gnss",
+        ), // 10 Hz, 1.00 s
+        ("nav_msgs/msg/Odometry", "/odom", 51, 20_000_000, "odom"), // ~50 Hz, 1.00 s
+        (
+            "sensor_msgs/msg/Imu",
+            "/imu/data",
+            101,
+            7_000_000,
+            "imu_link",
+        ), // drifted: ~0.70 s span
     ];
-    for (seq_base, (schema, topic, count, interval)) in sensors.iter().enumerate() {
+
+    // The static transform tree. In the healthy rig every sensor hangs off `base_link`, so a chain
+    // exists from the LiDAR to the camera. In the miscalibrated rig the LiDAR is parented to a
+    // `lidar_mount` frame that nothing joins to `base_link` — the tree is well-formed and the LiDAR is
+    // in it, but no chain reaches the camera, so points cannot be projected into the image.
+    let lidar_parent = if miscalibrated {
+        "lidar_mount"
+    } else {
+        "base_link"
+    };
+    let tf_edges: &[(&str, &str)] = &[
+        ("base_link", "camera_front"),
+        (lidar_parent, "lidar_top"),
+        ("base_link", "gnss"),
+        ("base_link", "imu_link"),
+        ("odom", "base_link"),
+    ];
+    let tf_schema = w
+        .add_schema("tf2_msgs/msg/TFMessage", "ros2msg", b"")
+        .unwrap();
+    let tf_channel = w
+        .add_channel(tf_schema, "/tf_static", "cdr", &BTreeMap::new())
+        .unwrap();
+    write_msg(w, tf_channel, 0, 0, &tf_message_body(tf_edges));
+
+    for (seq_base, (schema, topic, count, interval, frame_id)) in sensors.iter().enumerate() {
         let schema_id = w.add_schema(schema, "ros2msg", b"").unwrap();
         let channel = w
             .add_channel(schema_id, topic, "cdr", &BTreeMap::new())
@@ -172,12 +225,73 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(w: &mut mcap::Writer<W>) {
                 let x = i as f64 * 10.0 * (*interval as f64 / 1e9);
                 write_msg(w, channel, i as u32, t, &odometry_body(x));
             } else {
-                // Vary payload per (sensor, frame) so frames are content-distinct.
+                // A real header-first CDR body, so the sensor's coordinate frame is genuinely
+                // decoded into the CDM (that is what the frame-resolution check reads). The trailing
+                // payload varies per (sensor, frame) so frames stay content-distinct.
                 let payload = ((seq_base as u64) << 32) | i;
-                write_msg(w, channel, i as u32, t, &payload.to_le_bytes());
+                write_msg(w, channel, i as u32, t, &header_body(frame_id, payload));
             }
         }
     }
+}
+
+/// A minimal header-first CDR body: `Header { stamp, frame_id }` followed by a varying `u64` so each
+/// frame's bytes differ. Enough for the adapter to recover the sensor's coordinate frame without
+/// pretending to encode a full `Image` / `PointCloud2` / `Imu` message.
+fn header_body(frame_id: &str, payload: u64) -> Vec<u8> {
+    let mut buf: Vec<u8> = vec![0x00, 0x01, 0x00, 0x00]; // encapsulation: CDR_LE
+    let align = |buf: &mut Vec<u8>, n: usize| {
+        while (buf.len() - 4) % n != 0 {
+            buf.push(0)
+        }
+    };
+    let u32v = |buf: &mut Vec<u8>, v: u32| {
+        align(buf, 4);
+        buf.extend_from_slice(&v.to_le_bytes());
+    };
+    u32v(&mut buf, 0); // stamp.sec
+    u32v(&mut buf, 0); // stamp.nanosec
+    u32v(&mut buf, (frame_id.len() + 1) as u32);
+    buf.extend_from_slice(frame_id.as_bytes());
+    buf.push(0);
+    buf.extend_from_slice(&payload.to_le_bytes());
+    buf
+}
+
+/// A `tf2_msgs/msg/TFMessage` CDR body holding one `TransformStamped` per `(parent, child)` edge,
+/// each an identity transform — the demo cares about the tree's *shape*, not its geometry.
+fn tf_message_body(edges: &[(&str, &str)]) -> Vec<u8> {
+    let mut buf: Vec<u8> = vec![0x00, 0x01, 0x00, 0x00]; // encapsulation: CDR_LE
+    let align = |buf: &mut Vec<u8>, n: usize| {
+        while (buf.len() - 4) % n != 0 {
+            buf.push(0)
+        }
+    };
+    let u32v = |buf: &mut Vec<u8>, v: u32| {
+        align(buf, 4);
+        buf.extend_from_slice(&v.to_le_bytes());
+    };
+    let strv = |buf: &mut Vec<u8>, s: &str| {
+        u32v(buf, (s.len() + 1) as u32);
+        buf.extend_from_slice(s.as_bytes());
+        buf.push(0);
+    };
+    let f64v = |buf: &mut Vec<u8>, v: f64| {
+        align(buf, 8);
+        buf.extend_from_slice(&v.to_le_bytes());
+    };
+    u32v(&mut buf, edges.len() as u32);
+    for (parent, child) in edges {
+        u32v(&mut buf, 0); // header.stamp.sec
+        u32v(&mut buf, 0); // header.stamp.nanosec
+        strv(&mut buf, parent); // header.frame_id = parent
+        strv(&mut buf, child); // child_frame_id
+                               // translation {x,y,z} + rotation {x,y,z,w} (identity)
+        for v in [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0] {
+            f64v(&mut buf, v);
+        }
+    }
+    buf
 }
 
 /// A `nav_msgs/msg/Odometry` CDR body (little-endian, ROS 2 default) whose pose sits at `x` metres

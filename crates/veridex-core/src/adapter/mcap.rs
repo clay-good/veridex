@@ -99,6 +99,10 @@ struct StreamBuilder {
     frames: Vec<Frame>,
     /// Per-point field layout, decoded from the first `PointCloud2` message on this topic (if any).
     point_fields: Option<Vec<PointField>>,
+    /// The coordinate frame this topic's messages declare, from the first message whose body starts
+    /// with a `std_msgs/Header`. First one wins: a topic that changes frame mid-recording is a rig
+    /// fault, but recording the last one seen would hide it behind whichever message came last.
+    frame_id: Option<String>,
 }
 
 /// Match a ROS message schema name (e.g. `sensor_msgs/msg/PointCloud2`) by its final type segment,
@@ -279,6 +283,7 @@ impl Adapter for McapAdapter {
                     modality: infer_modality(schema_name, &topic),
                     frames: Vec::new(),
                     point_fields: None,
+                    frame_id: None,
                 });
             budget.take("mcap", 1)?;
             arrived.take("mcap", message.data.len() as u64)?;
@@ -294,6 +299,13 @@ impl Adapter for McapAdapter {
                     content_hash: Some(Sha256::digest(&message.data).into()),
                 },
             });
+
+            // Every header-first ROS message names the frame its data is expressed in. Recording it
+            // is what lets a check ask whether this sensor is actually related to the others by the
+            // TF tree, rather than only whether a TF tree exists at all.
+            if builder.frame_id.is_none() {
+                builder.frame_id = super::cdr::decode_header_frame_id(&message.data);
+            }
 
             // Decode the AV message header (never the bulk payload) to populate the autonomy CDM.
             if schema_is(schema_name, "PointCloud2") {
@@ -342,6 +354,8 @@ impl Adapter for McapAdapter {
                 observed_dim_stats: None,
                 // Per-point field layout decoded from a PointCloud2 header, when this is a cloud stream.
                 point_fields: b.point_fields,
+                // The coordinate frame the sensor declares, from its message headers.
+                frame_id: b.frame_id,
             })
             .collect();
 
