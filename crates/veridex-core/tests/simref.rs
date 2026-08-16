@@ -187,3 +187,27 @@ fn the_same_bytes_ingest_to_the_same_references_regardless_of_metadata_order() {
     assert_eq!(element(&da, "scenario_ref"), Some("cut_in.xosc"));
     assert_eq!(element(&da, "scenario_version"), None);
 }
+
+#[test]
+fn a_symlink_out_of_the_dataset_is_not_followed() {
+    // The path components are clean (`link/secret.xosc` has no `..`), but the link leads outside the
+    // dataset — following it would read a file the caller never pointed Veridex at.
+    #[cfg(unix)]
+    {
+        let outside = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            outside.path().join("secret.xosc"),
+            "<OpenSCENARIO><FileHeader revMajor=\"9\" revMinor=\"9\"/></OpenSCENARIO>",
+        )
+        .expect("write");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("link")).expect("symlink");
+
+        assert_eq!(
+            simref::sidecar_version(dir.path(), SimRefKind::Scenario, "link/secret.xosc"),
+            None,
+            "a symlink out of the dataset must not be read"
+        );
+    }
+}

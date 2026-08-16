@@ -92,7 +92,11 @@ impl SigningKeypair {
 
 /// A signed certificate: content plus its detached Ed25519 signature and the issuer public key.
 /// (Not `Eq`: the certificate's effective config carries float tolerances.)
+/// Unknown fields are rejected on every certificate type: the signature covers the *struct*, so a
+/// field Veridex does not know about would ride along inside a document it just called authentic,
+/// and any consumer reading the JSON directly would see attacker-authored data as verified.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SignedCertificate {
     /// The certificate content.
     pub certificate: Certificate,

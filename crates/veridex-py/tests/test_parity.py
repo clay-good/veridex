@@ -152,9 +152,20 @@ def test_cli_and_python_certify_and_verify_agree(tmp_path):
     )
     assert json.loads(py_cert) == json.loads(out.read_text()), "Python and CLI must issue the identical certificate"
 
-    # Python verify accepts the certificate against the same dataset.
-    result = json.loads(veridex.verify(py_cert, str(dataset)))
+    # Python verify accepts the certificate against the same dataset and a trusted issuer key.
+    public = veridex.keygen()[1]  # a different key, to prove the trust check bites
+    result = json.loads(veridex.verify(py_cert, str(dataset), allow_any_issuer=True))
     assert result["verified"] is True
+    assert result["issuer_verified"] is False
+    assert public  # (the untrusted-key rejection is asserted below)
+
+    # Without a trusted issuer and without opting out, verify refuses rather than implying trust.
+    try:
+        veridex.verify(py_cert, str(dataset))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("verify must demand a trust decision about the issuer")
 
     # A certificate signed by a different issuer key is rejected.
     try:
@@ -185,10 +196,10 @@ def test_cli_and_python_readiness_certificates_agree(tmp_path):
     assert json.loads(py_cert) == json.loads(out.read_text()), "profiled certificates must match"
 
     # Verification summaries must match too, readiness block included.
-    py_verified = json.loads(veridex.verify(py_cert, str(dataset)))
+    py_verified = json.loads(veridex.verify(py_cert, str(dataset), allow_any_issuer=True))
     cli_verified = json.loads(
         subprocess.run(
-            [binary, "verify", str(dataset), "--certificate", str(out), "--json"],
+            [binary, "verify", str(dataset), "--certificate", str(out), "--allow-any-issuer", "--json"],
             capture_output=True,
             text=True,
             check=True,
@@ -215,6 +226,7 @@ def test_python_keygen_certify_verify_roundtrip(tmp_path):
     # The certificate verifies against the dataset and the generated public key.
     result = json.loads(veridex.verify(cert, str(dataset), public))
     assert result["verified"] is True
+    assert result["issuer_verified"] is True
     assert result["key_id"] == public
 
 

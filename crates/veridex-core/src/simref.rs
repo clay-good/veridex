@@ -174,8 +174,9 @@ fn xml_attr<'a>(text: &'a str, name: &str) -> Option<&'a str> {
 /// file of the expected kind that really exists under `root`.
 ///
 /// Refuses anything that isn't a plain relative path inside the dataset: an absolute path, a Windows
-/// prefix, or any `..` component is ignored rather than followed, so a hostile metadata value can
-/// never make Veridex read outside the dataset directory.
+/// prefix, or any `..` component is ignored rather than followed — and the resolved file must still
+/// live under the dataset root after symlinks are followed, so a hostile metadata value paired with a
+/// symlink can never make Veridex read outside the dataset directory.
 pub fn sidecar_version(root: &Path, kind: SimRefKind, reference: &str) -> Option<String> {
     let ext = kind.sidecar_ext()?;
     let reference = reference.trim();
@@ -199,8 +200,11 @@ pub fn sidecar_version(root: &Path, kind: SimRefKind, reference: &str) -> Option
     {
         return None;
     }
-    let path = root.join(rel);
-    if !path.is_file() {
+    // Resolve both sides and re-check containment: the component filter above rejects `..` in the
+    // *reference*, but a symlink inside the dataset would still lead out of it.
+    let root = root.canonicalize().ok()?;
+    let path = root.join(rel).canonicalize().ok()?;
+    if !path.starts_with(&root) || !path.is_file() {
         return None;
     }
     let head = read_prefix(&path, SIDECAR_HEADER_BYTES)?;

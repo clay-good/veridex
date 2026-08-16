@@ -34,7 +34,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ),
     (
         "verify",
-        "verify a certificate offline (--certificate <c.json>; --json for machine output)",
+        "verify a certificate offline (--certificate <c.json> --key <pub>; --json for machine output)",
     ),
     ("keygen", "generate an Ed25519 issuer keypair"),
     (
@@ -68,6 +68,7 @@ struct Args {
     html: bool,
     config: Option<String>,
     force: bool,
+    allow_any_issuer: bool,
     profile: Option<String>,
 }
 
@@ -89,6 +90,7 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
     let mut html = false;
     let mut config = None;
     let mut force = false;
+    let mut allow_any_issuer = false;
     let mut profile = None;
     let mut it = rest.iter();
     while let Some(arg) = it.next() {
@@ -105,6 +107,7 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
             "--sarif" => sarif = true,
             "--html" => html = true,
             "--force" => force = true,
+            "--allow-any-issuer" => allow_any_issuer = true,
             "--config" => config = Some(value("--config")?),
             "--format" => format = Some(value("--format")?),
             "--key" => key = Some(value("--key")?),
@@ -134,6 +137,7 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
         html,
         config,
         force,
+        allow_any_issuer,
         profile,
     })
 }
@@ -706,6 +710,18 @@ fn cmd_verify(rest: &[String]) -> ExitCode {
         None
     };
 
+    // A signature only proves the certificate came from *some* key. Without a trusted issuer key,
+    // anyone can mint a certificate that says whatever they like about a dataset they hold — and it
+    // will verify, because it really is self-consistent and really is bound to that data. So a trust
+    // decision is mandatory: name the issuer with `--key`, or say explicitly that you accept any.
+    if args.key.is_none() && !args.allow_any_issuer {
+        eprintln!(
+            "veridex: verify needs a trusted issuer: pass --key <public-key|file>, or \
+             --allow-any-issuer to check only that the certificate is internally consistent"
+        );
+        return ExitCode::from(EXIT_TOOL_ERROR);
+    }
+
     // Optional trusted issuer key: a 64-char hex public key, or a path to a file containing one.
     let expected_issuer = match &args.key {
         Some(k) => match resolve_public_key(k) {
@@ -726,10 +742,17 @@ fn cmd_verify(rest: &[String]) -> ExitCode {
         Ok(v) => {
             // Everything printed here is covered by the signature that just verified, including the
             // readiness block — a tampered certificate never reaches this branch.
+            let issuer_verified = expected_issuer.is_some();
             if args.json {
-                println!("{}", veridex_core::verified_json(&signed, &v));
+                println!(
+                    "{}",
+                    veridex_core::verified_json(&signed, &v, issuer_verified)
+                );
             } else {
-                print!("{}", veridex_core::render_verified(&signed, &v));
+                print!(
+                    "{}",
+                    veridex_core::render_verified(&signed, &v, issuer_verified)
+                );
             }
             ExitCode::SUCCESS
         }
@@ -745,13 +768,16 @@ fn cmd_verify(rest: &[String]) -> ExitCode {
 #[cfg(unix)]
 fn write_secret_key(path: &str, contents: &str) -> std::io::Result<()> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let mut f = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .mode(0o600)
         .open(path)?;
+    // `mode` only applies at creation, so a `--force` overwrite of a pre-existing world-readable
+    // file would otherwise write a fresh secret seed into it and leave it readable.
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     f.write_all(contents.as_bytes())
 }
 

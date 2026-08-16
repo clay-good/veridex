@@ -260,6 +260,27 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **`veridex verify` implied trust it had not checked.** With no `--key`, verification confirmed only
+  that a certificate was internally consistent and bound to the presented dataset — so a certificate
+  forged about *real* data and signed with an attacker's own key verified cleanly, exit 0, reporting
+  whatever score it claimed. `verify` now requires a trust decision: name the issuer with `--key`, or
+  pass `--allow-any-issuer` for the self-consistency check alone, which prints a warning and reports
+  `issuer_verified: false` in `--json`. Python's `veridex.verify` mirrors this (`allow_any_issuer=`).
+- **Certificates tolerated fields the signature never covered.** The signature is computed over the
+  parsed structure, so an injected `trust_score_override` (or anything else) survived verification
+  and would be read as authentic by any consumer parsing the JSON directly. Every certificate type
+  now rejects unknown fields.
+- **A symlink could lead the reader outside the dataset.** `simref`'s sidecar lookup rejected `..`
+  and absolute paths but still followed symlinks, and the CAN+DBC adapter's input discovery did not
+  check at all. Both now refuse: the sidecar path is canonicalized and re-checked for containment
+  under the dataset root, and a symlinked CAN log is skipped.
+- **A corrupt element count could reserve gigabytes.** The ROS CDR decoder bounded a declared element
+  count against the message's *byte* length, but each element is far larger than a byte — a 100 MB
+  TFMessage claiming 100M transforms reserved ~13 GB before the first read failed. Counts are now
+  bounded by the smallest each element can encode.
+- **`keygen --force` left a pre-existing key file world-readable.** The `0600` mode applies only at
+  creation, so overwriting an existing path wrote a fresh secret seed into it without tightening
+  permissions. It now sets the mode explicitly after the write.
 - **A readiness criterion could pass without its check ever running.** `ReadinessReport::evaluate`
   derived `passed` from "this check produced no findings" — but a check disabled in `veridex.toml`,
   filtered out by `categories`/`only_checks`, or one that failed internally also produces none. A

@@ -372,6 +372,11 @@ fn find_inputs(dir: &Path) -> Result<(std::path::PathBuf, Vec<std::path::PathBuf
     let entries = std::fs::read_dir(dir).map_err(|e| IngestError::Io(e.to_string()))?;
     for entry in entries.flatten() {
         let path = entry.path();
+        // Never follow a symlink out of the dataset directory: the file it names is not part of the
+        // data the caller pointed us at, and reading it would put its contents into the CDM.
+        if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
+            continue;
+        }
         match path.extension().and_then(|x| x.to_str()) {
             Some(e) if e.eq_ignore_ascii_case("dbc") => {
                 if dbc.is_some() {

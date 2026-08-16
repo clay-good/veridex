@@ -30,6 +30,7 @@ const ALL_CATEGORIES: &[Category] = &[
 /// Caller-supplied issuance metadata. Timestamps are caller-supplied so signing stays reproducible
 /// and testable — the core never reads a wall clock (design D6).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Issuance {
     /// Issuer key identifier (e.g. the public key hex).
     pub key_id: String,
@@ -39,6 +40,7 @@ pub struct Issuance {
 
 /// Findings rolled up by severity and by category.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FindingsSummary {
     /// Counts by severity.
     pub by_severity: SeverityCounts,
@@ -48,6 +50,7 @@ pub struct FindingsSummary {
 
 /// The unsigned certificate content. (Not `Eq`: the effective config's tolerances carry floats.)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Certificate {
     /// Schema id.
     pub schema: String,
@@ -81,6 +84,7 @@ pub struct Certificate {
 
 /// One readiness criterion's result: a check that must pass for the profile, and whether it did.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CriterionResult {
     /// The check id evaluated (e.g. `autonomy.rig-sync`).
     pub check_id: String,
@@ -113,6 +117,7 @@ fn is_true(b: &bool) -> bool {
 /// **and** every criterion's check produced no findings, and it claims nothing beyond the criteria
 /// listed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReadinessReport {
     /// The profile evaluated (e.g. `world-model-ready`).
     pub profile: String,

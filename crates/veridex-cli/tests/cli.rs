@@ -282,7 +282,9 @@ fn a_readiness_certificate_is_issued_and_read_back_by_verify() {
     assert!(stdout.contains("world-model-ready profile"), "{stdout}");
 
     // Terminal verification reports the profile verdict and every criterion.
-    let (code, stdout, _) = run(&["verify", &dataset, "--certificate", cert_s]);
+    let pubkey = dir.join("issuer.pub");
+    let pub_s = pubkey.to_str().unwrap().to_string();
+    let (code, stdout, _) = run(&["verify", &dataset, "--certificate", cert_s, "--key", &pub_s]);
     assert_eq!(code, 0, "verify must accept the certificate");
     assert!(stdout.contains("trust:"), "{stdout}");
     assert!(stdout.contains("bound to:"), "{stdout}");
@@ -290,10 +292,19 @@ fn a_readiness_certificate_is_issued_and_read_back_by_verify() {
     assert!(stdout.contains("N/A (not a sensor rig)"), "{stdout}");
 
     // `--json` carries the same signed facts for a machine.
-    let (code, stdout, _) = run(&["verify", &dataset, "--certificate", cert_s, "--json"]);
+    let (code, stdout, _) = run(&[
+        "verify",
+        &dataset,
+        "--certificate",
+        cert_s,
+        "--key",
+        &pub_s,
+        "--json",
+    ]);
     assert_eq!(code, 0);
     let doc: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
     assert_eq!(doc["verified"], true);
+    assert_eq!(doc["issuer_verified"], true);
     assert_eq!(doc["readiness"]["profile"], "world-model-ready");
     assert_eq!(doc["readiness"]["ready"], false);
     assert!(doc["trust_score"]["score"].is_number());
@@ -311,6 +322,102 @@ fn a_readiness_certificate_is_issued_and_read_back_by_verify() {
     ]);
     assert_eq!(code, 2, "unknown profile must be a tool error");
     assert!(stderr.contains("unknown profile"), "{stderr}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn verify_demands_a_trust_decision_about_the_issuer() {
+    // A valid signature only proves a certificate is self-consistent. Anyone can mint one about a
+    // dataset they hold, and it will verify — so `verify` must not imply endorsement by default.
+    let dataset = fixture_dataset();
+    let dir = temp_dir("issuer");
+    let key = dir.join("issuer");
+    let cert = dir.join("cert.json");
+    let cert_s = cert.to_str().unwrap();
+    run(&["keygen", key.to_str().unwrap()]);
+    run(&[
+        "certify",
+        &dataset,
+        "--key",
+        key.to_str().unwrap(),
+        "--out",
+        cert_s,
+    ]);
+
+    // No trust decision at all is a usage error, not a silent pass.
+    let (code, _, stderr) = run(&["verify", &dataset, "--certificate", cert_s]);
+    assert_eq!(code, 2, "verify without a trust decision must be an error");
+    assert!(stderr.contains("trusted issuer"), "{stderr}");
+
+    // Opting out explicitly works, but says plainly that the issuer was not checked.
+    let (code, stdout, _) = run(&[
+        "verify",
+        &dataset,
+        "--certificate",
+        cert_s,
+        "--allow-any-issuer",
+    ]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("issuer NOT verified"), "{stdout}");
+
+    let (code, stdout, _) = run(&[
+        "verify",
+        &dataset,
+        "--certificate",
+        cert_s,
+        "--allow-any-issuer",
+        "--json",
+    ]);
+    assert_eq!(code, 0);
+    let doc: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(doc["verified"], true);
+    assert_eq!(
+        doc["issuer_verified"], false,
+        "a machine consumer must see that the issuer was not checked"
+    );
+}
+
+#[test]
+fn a_certificate_carrying_unknown_fields_is_rejected() {
+    // The signature covers the struct, so a field Veridex does not know about would ride along
+    // inside a document it just called authentic.
+    let dataset = fixture_dataset();
+    let dir = temp_dir("unknownfields");
+    let key = dir.join("issuer");
+    let cert = dir.join("cert.json");
+    run(&["keygen", key.to_str().unwrap()]);
+    run(&[
+        "certify",
+        &dataset,
+        "--key",
+        key.to_str().unwrap(),
+        "--out",
+        cert.to_str().unwrap(),
+    ]);
+
+    let text = std::fs::read_to_string(&cert).expect("read cert");
+    let injected = text.replacen(
+        "\"schema\":",
+        "\"trust_score_override\": {\"score\": 100}, \"schema\":",
+        1,
+    );
+    let tampered = dir.join("tampered.json");
+    std::fs::write(&tampered, injected).expect("write");
+
+    let (code, _, stderr) = run(&[
+        "verify",
+        &dataset,
+        "--certificate",
+        tampered.to_str().unwrap(),
+        "--key",
+        dir.join("issuer.pub").to_str().unwrap(),
+    ]);
+    assert_ne!(code, 0, "an unknown field must not verify");
+    assert!(
+        stderr.contains("not a valid certificate") || stderr.contains("unknown field"),
+        "{stderr}"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }

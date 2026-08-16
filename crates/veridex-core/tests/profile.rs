@@ -210,7 +210,7 @@ fn a_readiness_certificate_verifies_offline_and_reports_every_criterion() {
     // Offline verification: no network, no original dataset needed for the signature itself.
     let v = veridex_core::verify(&signed, None, Some(&signed.public_key)).expect("verifies");
 
-    let text = veridex_core::render_verified(&signed, &v);
+    let text = veridex_core::render_verified(&signed, &v, true);
     assert!(text.contains("certificate verified"), "{text}");
     assert!(text.contains("world-model-ready profile: READY"), "{text}");
     for (id, threshold) in p.criteria {
@@ -220,7 +220,7 @@ fn a_readiness_certificate_verifies_offline_and_reports_every_criterion() {
 
     // The machine-readable form carries the same signed readiness block.
     let doc: serde_json::Value =
-        serde_json::from_str(&veridex_core::verified_json(&signed, &v)).expect("json");
+        serde_json::from_str(&veridex_core::verified_json(&signed, &v, true)).expect("json");
     assert_eq!(doc["verified"], true);
     assert_eq!(doc["readiness"]["ready"], true);
     assert_eq!(doc["readiness"]["profile"], "world-model-ready");
@@ -237,7 +237,7 @@ fn a_not_ready_certificate_says_so_and_cannot_be_upgraded_by_editing_it() {
     let signed = certify_with(&d, &p);
 
     let v = veridex_core::verify(&signed, None, None).expect("verifies");
-    let text = veridex_core::render_verified(&signed, &v);
+    let text = veridex_core::render_verified(&signed, &v, true);
     assert!(
         text.contains("world-model-ready profile: NOT READY"),
         "{text}"
@@ -283,7 +283,7 @@ fn a_non_rig_readiness_certificate_verifies_and_reports_n_a_not_a_pass() {
     };
     let signed = certify_with(&d, &p);
     let v = veridex_core::verify(&signed, None, None).expect("verifies");
-    let text = veridex_core::render_verified(&signed, &v);
+    let text = veridex_core::render_verified(&signed, &v, true);
     assert!(text.contains("N/A (not a sensor rig)"), "{text}");
     assert!(
         !text.contains("READY"),

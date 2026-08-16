@@ -65,11 +65,26 @@ fn status_label(status: Status) -> &'static str {
 
 /// Render a successful verification for the terminal: who signed it, when, what data it is bound to,
 /// what it scored, and — when present — the per-criterion readiness verdict.
-pub fn render_verified(signed: &SignedCertificate, verified: &Verified) -> String {
+///
+/// `issuer_verified` says whether the signature was checked against a **trusted** issuer key. A valid
+/// signature alone only proves the document is self-consistent: anyone can sign a certificate that
+/// says whatever they like about data they hold, so an unverified issuer is called out, not implied.
+pub fn render_verified(
+    signed: &SignedCertificate,
+    verified: &Verified,
+    issuer_verified: bool,
+) -> String {
     use std::fmt::Write;
     let cert = &signed.certificate;
     let mut out = String::new();
     let _ = writeln!(out, "✓ certificate verified");
+    if !issuer_verified {
+        let _ = writeln!(
+            out,
+            "⚠ issuer NOT verified: this certificate is internally consistent, but anyone could \
+             have issued it — re-run with --key <trusted-public-key> to check who did"
+        );
+    }
     let _ = writeln!(out, "  issuer key: {}", verified.key_id);
     let _ = writeln!(out, "  issued at:  {}", verified.timestamp);
     let _ = writeln!(out, "  dataset:    {}", cert.dataset_id);
@@ -95,11 +110,17 @@ pub fn render_verified(signed: &SignedCertificate, verified: &Verified) -> Strin
 }
 
 /// The machine-readable summary of a successful verification, as pretty JSON. Carries the same facts
-/// as [`render_verified`], including the signed readiness block verbatim when present.
-pub fn verified_json(signed: &SignedCertificate, verified: &Verified) -> String {
+/// as [`render_verified`], including the signed readiness block verbatim when present, and whether
+/// the issuer was checked against a trusted key.
+pub fn verified_json(
+    signed: &SignedCertificate,
+    verified: &Verified,
+    issuer_verified: bool,
+) -> String {
     let cert = &signed.certificate;
     let mut doc = json!({
         "verified": true,
+        "issuer_verified": issuer_verified,
         "key_id": verified.key_id,
         "timestamp": verified.timestamp,
         "dataset_id": cert.dataset_id,

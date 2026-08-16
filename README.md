@@ -97,7 +97,7 @@ sequenceDiagram
 ```sh
 veridex check      <dataset>                                      # validate + report
 veridex certify    <dataset> --key issuer.key [--profile world-model-ready]  # issue a signed trust certificate
-veridex verify     <dataset> --certificate c.json --key pub.key   # verify offline
+veridex verify     <dataset> --certificate c.json --key pub.key   # verify offline (issuer required)
 veridex provenance <dataset> --emit croissant                     # extract + emit provenance
 veridex inspect    <dataset>                                      # summarize the dataset
 veridex checks                                                    # list the built-in check catalog
@@ -182,7 +182,11 @@ extracted `license` as covered provenance rather than a `PROVENANCE.MISSING_LICE
 
 The certificate binds to the dataset's CDM content hash and is Ed25519-signed: `verify` succeeds
 offline, and rejects a tampered certificate (signature mismatch) or one presented against a
-different dataset (content-hash mismatch). On success `verify` reports what the certificate actually
+different dataset (content-hash mismatch). **`verify` requires a trusted issuer key**: a valid
+signature only proves a certificate is self-consistent, and anyone can mint one about data they
+hold — so you either name the issuer with `--key`, or say `--allow-any-issuer` and get a printed
+warning (and `issuer_verified: false` in `--json`) instead of an implied endorsement.
+On success `verify` reports what the certificate actually
 attests — the hash it is bound to, the trust score, and, for a certificate issued with
 `--profile world-model-ready`, each readiness criterion's verdict (`--json` for the machine-readable
 form). Every line printed is covered by the signature that just verified, so a doctored readiness

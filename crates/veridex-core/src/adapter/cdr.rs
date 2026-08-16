@@ -117,8 +117,10 @@ pub fn decode_point_cloud2_fields(data: &[u8]) -> Option<Vec<PointField>> {
     let _height = r.u32()?;
     let _width = r.u32()?;
     let count = r.u32()? as usize;
-    // Guard against a corrupt length claiming more fields than the buffer could hold.
-    if count > data.len() {
+    // Guard against a corrupt length claiming more fields than the buffer could hold — bounded by the
+    // smallest a `PointField` can encode (name length + offset + datatype + count), not by bytes.
+    const MIN_POINT_FIELD_BYTES: usize = 13;
+    if count > data.len() / MIN_POINT_FIELD_BYTES {
         return None;
     }
     let mut fields = Vec::with_capacity(count);
@@ -146,7 +148,8 @@ pub fn decode_camera_info(data: &[u8], stream: &str) -> Option<CameraIntrinsics>
     let _width = r.u32()?;
     let _distortion_model = r.string()?;
     let d_len = r.u32()? as usize;
-    if d_len > data.len() {
+    // Each distortion coefficient is an 8-byte f64; a count beyond that can't be honored.
+    if d_len > data.len() / 8 {
         return None;
     }
     let mut distortion = Vec::with_capacity(d_len);
@@ -201,7 +204,11 @@ pub fn decode_odometry_pose(data: &[u8]) -> Option<Pose> {
 pub fn decode_tf_message(data: &[u8]) -> Option<Vec<Transform>> {
     let mut r = Reader::new(data)?;
     let count = r.u32()? as usize;
-    if count > data.len() {
+    // A declared element count is attacker-controlled. Bound it by the smallest a `TransformStamped`
+    // can encode (its header plus 7 f64s), so a tiny message can never reserve gigabytes; comparing
+    // against the byte length alone would allow ~13 GB from a 100 MB body.
+    const MIN_TRANSFORM_BYTES: usize = 60;
+    if count > data.len() / MIN_TRANSFORM_BYTES {
         return None;
     }
     let mut transforms = Vec::with_capacity(count);

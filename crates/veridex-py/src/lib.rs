@@ -192,17 +192,28 @@ fn certify(
 ///
 /// Verify a certificate offline. When `path` is given the certificate must be bound to that dataset
 /// (content-hash / transplant check); when `public_key_hex` is given it must be signed by that
-/// issuer. Returns a JSON summary on success — identical to `veridex verify --json`, carrying the
+/// issuer — which is required unless `allow_any_issuer=True`, because a signature alone only proves
+/// the document is self-consistent. Returns a JSON summary on success — identical to
+/// `veridex verify --json`, carrying the
 /// trust score and the signed `readiness` block when the certificate has one; raises `ValueError`
 /// if verification fails.
 #[pyfunction]
-#[pyo3(signature = (certificate_json, path=None, public_key_hex=None, format=None))]
+#[pyo3(signature = (certificate_json, path=None, public_key_hex=None, format=None, allow_any_issuer=false))]
 fn verify(
     certificate_json: &str,
     path: Option<&str>,
     public_key_hex: Option<&str>,
     format: Option<&str>,
+    allow_any_issuer: bool,
 ) -> PyResult<String> {
+    // A signature only proves the certificate came from *some* key. Requiring a trusted issuer (or an
+    // explicit opt-out) keeps a self-issued certificate from reading as an endorsement.
+    if public_key_hex.is_none() && !allow_any_issuer {
+        return Err(PyValueError::new_err(
+            "verify needs a trusted issuer: pass public_key_hex, or allow_any_issuer=True to check \
+             only that the certificate is internally consistent",
+        ));
+    }
     let signed: veridex_core::SignedCertificate =
         serde_json::from_str(certificate_json).map_err(to_py_err)?;
     let presented = match path {
@@ -221,7 +232,11 @@ fn verify(
     };
     let v = veridex_core::verify(&signed, presented.as_deref(), public_key_hex)
         .map_err(|e| PyValueError::new_err(e.to_string()))?;
-    Ok(veridex_core::verified_json(&signed, &v))
+    Ok(veridex_core::verified_json(
+        &signed,
+        &v,
+        public_key_hex.is_some(),
+    ))
 }
 
 /// `veridex.diff(old_report_json, new_report_json) -> str`
