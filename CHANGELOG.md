@@ -283,6 +283,21 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   above real datasets — a one-hour ten-sensor 100 Hz rig is 3.6M) *before* allocating, and refuses
   with a clear error naming the limit rather than being killed. `--max-frames <n>` raises it;
   `--max-frames 0` removes it.
+- **The LeRobot/Parquet path had no expansion bound at all.** Every row of a Parquet file was decoded
+  into memory before the frame budget was charged, and the decompression budget was never consulted:
+  a 50 KB zstd file measured **1.26 GB** resident and a 149 KB file **3.76 GB**, in both cases raising
+  the budget error only after the memory was spent. Both budgets are now charged per record batch as
+  it decodes, and the per-row cost is the larger of what `info.json` declares and what the Parquet
+  actually holds — a manifest declaring zero features no longer rides a 50,000-column file for free.
+- **A crafted MF4 block length could panic or be silently accepted.** The `at + length` containment
+  check in the block-header reader used unchecked arithmetic on a file-declared `u64`: a header
+  claiming `u64::MAX - 8` bytes panicked in debug (the mode the test suite runs in) and, in release,
+  wrapped into a header that passed validation — so a corrupt file was accepted as a clean, signable,
+  zero-episode dataset instead of being refused.
+- **Duplicate MF4 channel names were disambiguated quadratically.** Each collision restarted its
+  suffix counter at zero and re-probed from scratch, so *N* identically-named channels cost O(N²):
+  16,000 of them in a 1.3 MB file measured 18 seconds, and a 100 MB file extrapolated to hours of CPU
+  inside a CI gate. Each collision is now one probe.
 - **A certificate could verify against a dataset it was not issued for.** `declared_frame_count` was
   deliberately left out of the content hash as an assertion *about* content rather than content — but
   `structural.episode-boundary` reads it and fails on it, so two datasets differing only there (one

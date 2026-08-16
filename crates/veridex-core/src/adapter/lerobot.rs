@@ -509,7 +509,18 @@ type FeatureValue = (String, Option<[u8; 32]>, Vec<Option<f64>>);
 type Row = (u64, i64, Option<i64>, Vec<FeatureValue>);
 
 /// Read (episode_index, timestamp_ns, task_index) for every row of a Parquet file, in row order.
-fn read_rows(path: &Path, fps: f64) -> Result<Vec<Row>, IngestError> {
+///
+/// Both budgets are charged **per batch, as it is decoded**, not by the caller once the rows are
+/// home. Parquet is compressed and its row count is a file-declared number: a 50 KB zstd file was
+/// measured expanding to 1.26 GB resident, and charging afterwards means the error arrives only once
+/// the memory is already spent.
+fn read_rows(
+    path: &Path,
+    fps: f64,
+    declared_per_row: u64,
+    frames: &mut super::FrameBudget,
+    expansion: &mut super::DecompressionBudget,
+) -> Result<Vec<Row>, IngestError> {
     let file = File::open(path).map_err(|e| IngestError::Io(e.to_string()))?;
     let reader = ParquetRecordBatchReaderBuilder::try_new(file)
         .and_then(|b| b.build())
@@ -544,6 +555,13 @@ fn read_rows(path: &Path, fps: f64) -> Result<Vec<Row>, IngestError> {
             .filter(|(_, f)| !BOOKKEEPING.contains(&f.name().as_str()))
             .map(|(i, f)| (f.name().clone(), batch.column(i).as_ref()))
             .collect();
+
+        // Charge before the batch's rows are turned into `Row`s. The per-row cost is the larger of
+        // what `info.json` declares and what the Parquet actually holds — a manifest declaring zero
+        // features still pays for a 50,000-column file.
+        let per_row = declared_per_row.max(feature_cols.len() as u64).max(1);
+        frames.take("lerobot", (batch.num_rows() as u64).saturating_mul(per_row))?;
+        expansion.take("lerobot", batch.get_array_memory_size() as u64)?;
 
         for row in 0..batch.num_rows() {
             let ep = column_i64(ep_col.as_ref(), row).ok_or_else(|| IngestError::Parse {
@@ -782,11 +800,20 @@ impl Adapter for LeRobotAdapter {
         // multiplies against every row. Charge the budget as rows arrive, before the frames are built.
         let mut budget = super::FrameBudget::new(options);
         let per_row = features.len().max(1) as u64;
+        // Compressed expansion is bounded across the whole dataset, sized on the Parquet bytes it
+        // actually holds, since every file's rows accumulate into the same in-memory CDM.
+        let parquet_bytes: u64 = parquet_files
+            .iter()
+            .filter_map(|p| std::fs::metadata(p).ok())
+            .map(|m| m.len())
+            .sum();
+        let mut expansion = super::DecompressionBudget::new(options, parquet_bytes);
         // Dataset-level recomputed statistics per feature (LeRobot's stored stats are dataset-level).
         let mut observed: BTreeMap<String, FeatureAccum> = BTreeMap::new();
         for path in &parquet_files {
-            for (ep, ts, task_index, feature_values) in read_rows(path, fps)? {
-                budget.take("lerobot", per_row)?;
+            for (ep, ts, task_index, feature_values) in
+                read_rows(path, fps, per_row, &mut budget, &mut expansion)?
+            {
                 let mut hashes = BTreeMap::new();
                 for (name, hash, scalars) in feature_values {
                     // Feed every dimension of the cell: finite values grow their dimension's stats,

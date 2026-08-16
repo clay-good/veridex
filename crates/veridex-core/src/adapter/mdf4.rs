@@ -63,8 +63,12 @@ fn block_header(bytes: &[u8], at: u64) -> Option<BlockHeader> {
     if length < 24u64.checked_add(links_len)? {
         return None;
     }
-    if at as u64 + length > bytes.len() as u64 {
-        return None;
+    // Checked: `length` comes straight from the file, so a value near u64::MAX would wrap this
+    // addition — a panic in debug, and in release a bogus header that passes validation and yields an
+    // empty "valid" dataset instead of a parse error.
+    match (at as u64).checked_add(length) {
+        Some(end) if end <= bytes.len() as u64 => {}
+        _ => return None,
     }
     Some(BlockHeader {
         id,
@@ -374,6 +378,9 @@ impl Adapter for Mdf4Adapter {
         let mut streams: Vec<Stream> = Vec::new();
         let mut unmapped: Vec<UnmappedField> = Vec::new();
         let mut names_used: BTreeSet<String> = BTreeSet::new();
+        // Next disambiguation suffix to try per colliding base name, so each collision is one probe.
+        let mut next_suffix: std::collections::BTreeMap<String, u64> =
+            std::collections::BTreeMap::new();
         let mut group_index = 0u64;
         let mut dg_at = opt_link(&bytes, hd_at, &hd, 0);
         // A malformed file must not spin *or* explode. One visited set spans every chain — data
@@ -414,15 +421,19 @@ impl Adapter for Mdf4Adapter {
                 // disambiguate until the name is genuinely free so no stream is dropped — or worse,
                 // silently duplicated — by a collision.
                 if !names_used.insert(stream.name.clone()) {
+                    // Resume from the last suffix tried for this base rather than restarting at 0.
+                    // Restarting made the k-th collision do k probes, so a file whose channels all
+                    // share one name cost O(n²): 16,000 such channels in 1.3 MB measured 18 seconds,
+                    // and 100 MB extrapolated to hours of CPU inside a CI gate.
                     let base = stream.name.clone();
-                    let mut n = 0u64;
+                    let n = next_suffix.entry(base.clone()).or_insert(0u64);
                     loop {
                         let candidate = format!("{base}#{group_index}.{n}");
+                        *n += 1;
                         if names_used.insert(candidate.clone()) {
                             stream.name = candidate;
                             break;
                         }
-                        n += 1;
                     }
                 }
                 streams.push(stream);

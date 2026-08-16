@@ -668,3 +668,27 @@ fn a_channel_declaring_invalidation_bits_is_not_decoded() {
         ingested.report.unmapped_fields
     );
 }
+
+#[test]
+fn an_absurd_block_length_is_refused_rather_than_overflowing() {
+    // The `##HD` header's declared length comes straight from the file. A value near u64::MAX used to
+    // wrap the `at + length` containment check: a panic in debug (the mode the suite runs in), and in
+    // release a bogus header that passed validation, so a corrupt file was accepted as a clean,
+    // signable, zero-episode dataset.
+    let mut bytes = well_formed_file(2);
+    // The header block sits at offset 64; its length field is bytes 8..16 of the block.
+    bytes[64 + 8..64 + 16].copy_from_slice(&(u64::MAX - 8).to_le_bytes());
+    let path = write_temp(&bytes, ".mf4");
+    let result = Mdf4Adapter.ingest(
+        &Source::Local(path.to_path_buf()),
+        &IngestOptions::default(),
+    );
+    match result {
+        Err(_) => {}
+        Ok(ingested) => panic!(
+            "a header claiming {} bytes must be refused, not accepted as a {}-episode dataset",
+            u64::MAX - 8,
+            ingested.dataset.episodes.len()
+        ),
+    }
+}

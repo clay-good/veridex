@@ -1394,3 +1394,30 @@ fn parquet_columns_and_declared_features_are_reconciled_in_the_report() {
         ingested.report.omitted_fields
     );
 }
+
+#[test]
+fn a_parquet_that_expands_far_past_its_size_is_refused_while_decoding() {
+    // Parquet is compressed and its row count is a file-declared number, so a small file can decode
+    // into gigabytes. The refusal has to arrive *during* decoding: charging the budget once the rows
+    // are already home means the memory is already spent.
+    let dir = tempfile::tempdir().unwrap();
+    let rows: Vec<(i64, f64)> = (0..200_000).map(|i| (0, i as f64 / 30.0)).collect();
+    write_lerobot(&dir.path().join("d"), &[("state", "float32")], 30.0, &rows);
+
+    let err = LeRobotAdapter
+        .ingest(
+            &Source::Local(dir.path().join("d")),
+            &IngestOptions {
+                max_frames: Some(1_000),
+                ..IngestOptions::default()
+            },
+        )
+        .expect_err("200k rows past a 1k-frame budget must be refused");
+    assert!(
+        matches!(
+            err,
+            veridex_core::adapter::IngestError::FrameBudgetExceeded { .. }
+        ),
+        "expected a frame-budget refusal, got {err:?}"
+    );
+}
