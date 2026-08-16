@@ -275,6 +275,54 @@ mod tests {
         assert_ne!(content_hash(&d2), base);
     }
 
+    /// A populated [`Media`] to mutate one field of at a time in the hash-drift guard.
+    fn base_media() -> Media {
+        Media {
+            uri: "videos/cam/episode_000000.mp4".into(),
+            declared: MediaParams {
+                codec: Some("h264".into()),
+                width: Some(640),
+                height: Some(480),
+                fps: Some(30.0),
+            },
+            status: MediaStatus::Read,
+            observed: MediaParams {
+                codec: Some("avc1".into()),
+                width: Some(640),
+                height: Some(480),
+                fps: Some(30.0),
+            },
+            frame_count: Some(100),
+        }
+    }
+
+    #[test]
+    fn the_reason_a_container_would_not_parse_is_deliberately_out_of_the_hash() {
+        // The status *variant* binds (a readable stream and an unreadable one are different data);
+        // the prose explaining why does not. It is built partly from the operating system's own
+        // error text, which differs by platform, and it is reworded whenever a message is improved —
+        // so hashing it would break "same bytes, same hash on any platform" and would turn every
+        // wording fix into a silent hash change. This test is the record of that decision.
+        let mut a = sample_dataset();
+        let mut b = sample_dataset();
+        let unreadable = |reason: &str| Media {
+            status: MediaStatus::Unreadable {
+                reason: reason.into(),
+            },
+            observed: MediaParams::default(),
+            frame_count: None,
+            ..base_media()
+        };
+        a.episodes[0].streams[0].media = Some(unreadable("no moov box"));
+        b.episodes[0].streams[0].media = Some(unreadable("cannot open: PermissionDenied"));
+        assert_eq!(content_hash(&a), content_hash(&b));
+
+        // But the variant itself still separates them.
+        let mut readable = sample_dataset();
+        readable.episodes[0].streams[0].media = Some(base_media());
+        assert_ne!(content_hash(&a), content_hash(&readable));
+    }
+
     #[test]
     fn every_stream_stats_field_binds_into_the_hash() {
         // Guards against the hand-written canonical encoder drifting from the `Stream` struct: each
@@ -298,7 +346,7 @@ mod tests {
         };
         let base = content_hash(&sample_dataset());
         type Mutator = fn(&mut Stream);
-        let mutate: [(&str, Mutator); 6] = [
+        let mutate: [(&str, Mutator); 18] = [
             // The sensor's coordinate frame: `autonomy.sensor-frame-resolution` fails a stream on it,
             // so a rig whose LiDAR names a frame the TF tree relates and one whose LiDAR does not
             // must not hash alike.
@@ -343,6 +391,68 @@ mod tests {
                         std: 1.3,
                     },
                 }])
+            }),
+            // The media file behind a video stream. Every field of it binds: the `video.*` checks
+            // fail a stream on the disagreement between the declared and the observed halves, and a
+            // re-encode changes nothing else in the CDM — so a sound export and a broken one must
+            // not collide. The one deliberate exclusion is the `Unreadable` *reason* prose (see
+            // `canonical.rs`); the status variant itself binds, and is covered below.
+            ("media", |s| s.media = Some(base_media())),
+            ("media.uri", |s| {
+                s.media = Some(Media {
+                    uri: "videos/cam/episode_000009.mp4".into(),
+                    ..base_media()
+                })
+            }),
+            ("media.declared.codec", |s| {
+                let mut m = base_media();
+                m.declared.codec = Some("hevc".into());
+                s.media = Some(m);
+            }),
+            ("media.declared.width", |s| {
+                let mut m = base_media();
+                m.declared.width = Some(1280);
+                s.media = Some(m);
+            }),
+            ("media.declared.height", |s| {
+                let mut m = base_media();
+                m.declared.height = Some(720);
+                s.media = Some(m);
+            }),
+            ("media.declared.fps", |s| {
+                let mut m = base_media();
+                m.declared.fps = Some(60.0);
+                s.media = Some(m);
+            }),
+            ("media.status", |s| {
+                let mut m = base_media();
+                m.status = MediaStatus::Missing;
+                s.media = Some(m);
+            }),
+            ("media.observed.codec", |s| {
+                let mut m = base_media();
+                m.observed.codec = Some("vp09".into());
+                s.media = Some(m);
+            }),
+            ("media.observed.width", |s| {
+                let mut m = base_media();
+                m.observed.width = Some(320);
+                s.media = Some(m);
+            }),
+            ("media.observed.height", |s| {
+                let mut m = base_media();
+                m.observed.height = Some(240);
+                s.media = Some(m);
+            }),
+            ("media.observed.fps", |s| {
+                let mut m = base_media();
+                m.observed.fps = Some(29.97);
+                s.media = Some(m);
+            }),
+            ("media.frame_count", |s| {
+                let mut m = base_media();
+                m.frame_count = Some(97);
+                s.media = Some(m);
             }),
         ];
         for (field, apply) in mutate {

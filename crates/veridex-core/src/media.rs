@@ -6,7 +6,8 @@
 //! base media file format (ISO/IEC 14496-12) box tree and stops there. No decoder, no `mdat`.
 //!
 //! The file is untrusted, so the walk is bounded the same way ingestion is: box sizes are validated
-//! against what is actually left in the file rather than believed, nesting depth is capped, and only
+//! against what is actually left in the file rather than believed (so every box advances the cursor
+//! and no declared size reaches past the end), the walk is iterative rather than recursive, and only
 //! the `moov` box is read into memory — under a ceiling, because its declared size is a number the
 //! file chose.
 
@@ -23,10 +24,6 @@ use crate::cdm::MediaParams;
 /// than allocated for.
 const MAX_MOOV_BYTES: u64 = 64 * 1024 * 1024;
 
-/// Ceiling on box nesting. Real containers nest about six deep (`moov/trak/mdia/minf/stbl/stsd`);
-/// a file that nests further is malformed or hostile, and either way the walk stops.
-const MAX_DEPTH: u32 = 16;
-
 /// What an MP4's headers say about its video track.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Mp4Probe {
@@ -41,11 +38,16 @@ pub struct Mp4Probe {
 /// Returns `Err` with a human-readable reason when the file is not a readable MP4: that reason is
 /// what `VIDEO.MEDIA_UNREADABLE` reports, so it names the specific structure that was wrong rather
 /// than "parse error".
+///
+/// Every reason is built from the container's own structure and, for I/O failures, from
+/// [`std::io::ErrorKind`] rather than the operating system's error text — which is
+/// platform- and locale-dependent, and would otherwise make the same dataset report differently on
+/// two machines.
 pub fn probe_mp4(path: &Path) -> Result<Mp4Probe, String> {
-    let mut file = File::open(path).map_err(|e| format!("cannot open: {e}"))?;
+    let mut file = File::open(path).map_err(|e| format!("cannot open: {:?}", e.kind()))?;
     let file_len = file
         .metadata()
-        .map_err(|e| format!("cannot stat: {e}"))?
+        .map_err(|e| format!("cannot stat: {:?}", e.kind()))?
         .len();
 
     let moov = read_moov(&mut file, file_len)?;
@@ -62,9 +64,19 @@ pub fn probe_mp4(path: &Path) -> Result<Mp4Probe, String> {
 fn read_moov(file: &mut File, file_len: u64) -> Result<Vec<u8>, String> {
     let mut offset = 0u64;
     let mut saw_any_box = false;
+    // A box may declare size 0, meaning "I extend to the end of the file". Anything written after it
+    // is unreachable by definition, so if the walk ends without a `moov`, the reason is that box —
+    // not an absent one. Naming it is the difference between a user re-encoding and a user checking
+    // whether their writer truncated the header.
+    let mut open_ended: Option<String> = None;
     while offset < file_len {
-        let (payload_offset, payload_len, kind) = read_box_header(file, offset, file_len)?;
+        let header = read_box_header(file, offset, file_len)?;
+        let (payload_offset, payload_len, kind) =
+            (header.payload_offset, header.payload_len, header.kind);
         saw_any_box = true;
+        if header.open_ended && &kind != b"moov" {
+            open_ended = Some(fourcc(&kind));
+        }
         if &kind == b"moov" {
             if payload_len > MAX_MOOV_BYTES {
                 return Err(format!(
@@ -73,29 +85,40 @@ fn read_moov(file: &mut File, file_len: u64) -> Result<Vec<u8>, String> {
             }
             let mut buf = vec![0u8; payload_len as usize];
             file.seek(SeekFrom::Start(payload_offset))
-                .map_err(|e| format!("cannot seek to moov: {e}"))?;
+                .map_err(|e| format!("cannot seek to moov: {:?}", e.kind()))?;
             file.read_exact(&mut buf)
-                .map_err(|e| format!("moov box is truncated: {e}"))?;
+                .map_err(|e| format!("moov box is truncated: {:?}", e.kind()))?;
             return Ok(buf);
         }
         offset = payload_offset + payload_len;
     }
-    Err(if saw_any_box {
-        "no moov box: the file's top-level boxes carry no movie metadata".into()
-    } else {
-        "not an MP4 container: the file has no ISO base media boxes".into()
+    Err(match (saw_any_box, open_ended) {
+        (_, Some(kind)) => format!(
+            "no moov box: the '{kind}' box declares that it runs to the end of the file, so any \
+             movie metadata written after it is unreachable"
+        ),
+        (true, None) => "no moov box: the file's top-level boxes carry no movie metadata".into(),
+        (false, None) => "not an MP4 container: the file has no ISO base media boxes".into(),
     })
 }
 
-/// Read one box header at `offset`, returning `(payload_offset, payload_len, kind)`.
+/// One box header, as read from the file.
+struct BoxHeader {
+    /// Offset of the box's payload within the file.
+    payload_offset: u64,
+    /// Length of that payload.
+    payload_len: u64,
+    /// The box's four-character type.
+    kind: [u8; 4],
+    /// The box declared size 0 — "I run to the end of the file" — so nothing after it is reachable.
+    open_ended: bool,
+}
+
+/// Read one box header at `offset`.
 ///
 /// Every size is validated against the bytes actually remaining, so a declared size never sends the
 /// walk past the end of the file or backwards into a loop.
-fn read_box_header(
-    file: &mut File,
-    offset: u64,
-    file_len: u64,
-) -> Result<(u64, u64, [u8; 4]), String> {
+fn read_box_header(file: &mut File, offset: u64, file_len: u64) -> Result<BoxHeader, String> {
     if file_len - offset < 8 {
         return Err(format!(
             "truncated box header at offset {offset}: {} bytes left, 8 needed",
@@ -103,10 +126,10 @@ fn read_box_header(
         ));
     }
     file.seek(SeekFrom::Start(offset))
-        .map_err(|e| format!("cannot seek to offset {offset}: {e}"))?;
+        .map_err(|e| format!("cannot seek to offset {offset}: {:?}", e.kind()))?;
     let mut header = [0u8; 8];
     file.read_exact(&mut header)
-        .map_err(|e| format!("cannot read box header at offset {offset}: {e}"))?;
+        .map_err(|e| format!("cannot read box header at offset {offset}: {:?}", e.kind()))?;
     let size32 = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as u64;
     let kind: [u8; 4] = [header[4], header[5], header[6], header[7]];
 
@@ -122,8 +145,12 @@ fn read_box_header(
                 ));
             }
             let mut ext = [0u8; 8];
-            file.read_exact(&mut ext)
-                .map_err(|e| format!("cannot read 64-bit box size at offset {offset}: {e}"))?;
+            file.read_exact(&mut ext).map_err(|e| {
+                format!(
+                    "cannot read 64-bit box size at offset {offset}: {:?}",
+                    e.kind()
+                )
+            })?;
             (16u64, u64::from_be_bytes(ext))
         }
         n => (8u64, n),
@@ -142,7 +169,12 @@ fn read_box_header(
             file_len - offset
         ));
     }
-    Ok((offset + header_len, total_len - header_len, kind))
+    Ok(BoxHeader {
+        payload_offset: offset + header_len,
+        payload_len: total_len - header_len,
+        kind,
+        open_ended: size32 == 0,
+    })
 }
 
 /// A box within an in-memory buffer: its type and its payload slice.
@@ -196,11 +228,8 @@ fn find<'a>(buf: &'a [u8], kind: &[u8; 4]) -> Option<&'a [u8]> {
         .map(|b| b.payload)
 }
 
-/// Follow a path of box types down from `buf` (e.g. `mdia/minf/stbl`), capped at [`MAX_DEPTH`].
+/// Follow a path of box types down from `buf` (e.g. `mdia/minf/stbl`).
 fn descend<'a>(buf: &'a [u8], path: &[&[u8; 4]]) -> Option<&'a [u8]> {
-    if path.len() as u32 > MAX_DEPTH {
-        return None;
-    }
     let mut cur = buf;
     for kind in path {
         cur = find(cur, kind)?;
@@ -214,18 +243,37 @@ fn descend<'a>(buf: &'a [u8], path: &[&[u8; 4]]) -> Option<&'a [u8]> {
 /// position rather than by "the largest" or "the longest" keeps the probe a pure function of the
 /// bytes, so the same file always probes identically.
 fn video_track(moov: &[u8]) -> Option<Mp4Probe> {
+    // A **fragmented** file (`ffmpeg -movflags frag_keyframe+empty_moov`, DASH/CMAF, most hardware
+    // recorders) declares `mvex` in its `moov` and carries every sample in `moof` fragments, leaving
+    // the sample table in `moov` empty. Its `stsz` therefore says zero — which is "the table is not
+    // here", not "this file holds no frames". Reading it as a count would report a hard
+    // frame-count mismatch against every episode of a perfectly valid dataset.
+    let fragmented = find(moov, b"mvex").is_some();
     for b in boxes(moov) {
         if &b.kind != b"trak" {
             continue;
         }
-        let mdia = find(b.payload, b"mdia")?;
+        // A `trak` this parser cannot walk is skipped, not fatal: a file can carry a track with no
+        // `mdia` (or one whose children this parser stops short of) *and* a perfectly good video
+        // track after it. Abandoning the scan here would report "no video track" about a file that
+        // has one.
+        let Some(mdia) = find(b.payload, b"mdia") else {
+            continue;
+        };
         let handler = find(mdia, b"hdlr").and_then(handler_type);
         if handler.as_deref() != Some("vide") {
             continue;
         }
         let media_time = find(mdia, b"mdhd").and_then(media_header);
         let stbl = descend(mdia, &[b"minf", b"stbl"]);
-        let frame_count = stbl.and_then(|s| find(s, b"stsz")).and_then(sample_count);
+        // `stz2` is the compact sample-size table: a different encoding of the same field, at the
+        // same offset. An encoder's choice between the two must not decide whether the check runs.
+        let frame_count = if fragmented {
+            None
+        } else {
+            stbl.and_then(|s| find(s, b"stsz").or_else(|| find(s, b"stz2")))
+                .and_then(sample_count)
+        };
         let (codec, width, height) =
             match stbl.and_then(|s| find(s, b"stsd")).and_then(sample_entry) {
                 Some((c, w, h)) => (Some(c), Some(w), Some(h)),
@@ -258,28 +306,40 @@ fn handler_type(hdlr: &[u8]) -> Option<String> {
 }
 
 /// The `mdhd` box's `(timescale, duration)` — the track's time base and its length in that base.
+///
+/// ISO/IEC 14496-12 reserves an all-ones `duration` to mean **unknown**, which a still-being-written
+/// or fragmented file legitimately carries. Taken at face value it is a duration of 49 days, and the
+/// rate derived from it is a fabrication that reports every such file as playing at the wrong speed —
+/// so it is returned as absent, and no rate is derived at all.
 fn media_header(mdhd: &[u8]) -> Option<(u32, u64)> {
     let version = *mdhd.first()?;
     match version {
         0 => {
             // version+flags (4), creation (4), modification (4), timescale (4), duration (4).
             let timescale = u32::from_be_bytes(mdhd.get(12..16)?.try_into().ok()?);
-            let duration = u32::from_be_bytes(mdhd.get(16..20)?.try_into().ok()?) as u64;
-            Some((timescale, duration))
+            let duration = u32::from_be_bytes(mdhd.get(16..20)?.try_into().ok()?);
+            if duration == u32::MAX {
+                return None;
+            }
+            Some((timescale, duration as u64))
         }
         1 => {
             // version+flags (4), creation (8), modification (8), timescale (4), duration (8).
             let timescale = u32::from_be_bytes(mdhd.get(20..24)?.try_into().ok()?);
             let duration = u64::from_be_bytes(mdhd.get(24..32)?.try_into().ok()?);
+            if duration == u64::MAX {
+                return None;
+            }
             Some((timescale, duration))
         }
         _ => None,
     }
 }
 
-/// The `stsz` box's sample count — the frames the track holds.
+/// A sample-size box's sample count — the frames the track holds. `stsz` (§8.7.3.2) and `stz2`
+/// (§8.7.3.3) carry it at the same offset.
 fn sample_count(stsz: &[u8]) -> Option<u64> {
-    // version+flags (4), sample_size (4), sample_count (4).
+    // version+flags (4), sample_size / field_size (4), sample_count (4).
     let count = u32::from_be_bytes(stsz.get(8..12)?.try_into().ok()?);
     Some(count as u64)
 }

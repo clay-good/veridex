@@ -399,16 +399,30 @@ pub struct MediaParams {
 }
 
 /// The canonical name for a codec, so the manifest's spelling and the container's fourcc compare
-/// equal when they mean the same encoder. An unrecognized name normalizes to itself, lowercased —
-/// two spellings Veridex does not know about are only ever equal when they are literally equal.
-pub fn canonical_codec(name: &str) -> String {
-    let n = name.trim().to_ascii_lowercase();
-    match n.as_str() {
-        "h264" | "avc" | "avc1" | "x264" | "libx264" => "avc1".into(),
-        "h265" | "hevc" | "hvc1" | "hev1" | "x265" | "libx265" => "hvc1".into(),
-        "av1" | "av01" | "libaom-av1" | "libsvtav1" => "av01".into(),
-        "vp9" | "vp09" | "libvpx-vp9" => "vp09".into(),
-        _ => n,
+/// equal when they mean the same encoder — or `None` when the name is one Veridex does not know.
+///
+/// A manifest's codec field and a container's sample-entry fourcc are drawn from two different, open
+/// namespaces: the manifest usually records the *encoder* (`libx264`, `h264_videotoolbox`,
+/// `libopenh264`, whatever was passed to ffmpeg), the container records the *format*. New encoders
+/// appear constantly. So an unrecognized spelling yields `None` and the comparison abstains, rather
+/// than treating "I have not heard of this" as "these differ" — an open namespace cannot be judged
+/// by a closed table without flagging honest data.
+pub fn canonical_codec(name: &str) -> Option<&'static str> {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "h264" | "avc" | "avc1" | "x264" | "libx264" | "libopenh264" | "openh264"
+        | "h264_videotoolbox" | "h264_nvenc" | "h264_qsv" | "h264_vaapi" | "h264_amf" => {
+            Some("avc1")
+        }
+        "h265" | "hevc" | "hvc1" | "hev1" | "x265" | "libx265" | "hevc_videotoolbox"
+        | "hevc_nvenc" | "hevc_qsv" | "hevc_vaapi" | "hevc_amf" => Some("hvc1"),
+        "av1" | "av01" | "libaom-av1" | "libsvtav1" | "librav1e" | "av1_nvenc" | "av1_qsv"
+        | "av1_vaapi" => Some("av01"),
+        "vp9" | "vp09" | "libvpx-vp9" | "vp9_vaapi" | "vp9_qsv" => Some("vp09"),
+        "vp8" | "vp08" | "libvpx" => Some("vp08"),
+        "mpeg4" | "mp4v" | "libxvid" | "xvid" => Some("mp4v"),
+        "mjpeg" | "jpeg" | "mjpg" => Some("mjpg"),
+        "prores" | "apcn" | "prores_ks" | "prores_videotoolbox" => Some("apcn"),
+        _ => None,
     }
 }
 

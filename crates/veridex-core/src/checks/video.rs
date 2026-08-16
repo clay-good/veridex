@@ -38,7 +38,11 @@ impl Check for MediaReadable {
         "video.media-readable"
     }
     fn finding_codes(&self) -> &'static [&'static str] {
-        &["VIDEO.MEDIA_MISSING", "VIDEO.MEDIA_UNREADABLE"]
+        &[
+            "VIDEO.MEDIA_ABSENT",
+            "VIDEO.MEDIA_MISSING",
+            "VIDEO.MEDIA_UNREADABLE",
+        ]
     }
     fn title(&self) -> &'static str {
         "Media file present and readable"
@@ -56,14 +60,65 @@ impl Check for MediaReadable {
         "1"
     }
     fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        // A stream whose media is missing for *every* episode is one gap, not one per episode: the
+        // usual cause is a whole tree that never arrived — an un-pulled LFS pointer, an interrupted
+        // download — and a thousand identical findings describe that no better than one does. A
+        // stream missing media for only some episodes is the opposite: each of those episodes is
+        // separately wrong, and naming them is the point.
+        let mut per_stream: BTreeMap<&str, (u64, u64, u64)> = BTreeMap::new(); // name -> (episodes, missing, first_episode)
+        for (episode, stream, media) in media_streams(dataset) {
+            let entry = per_stream.entry(stream).or_insert((0, 0, episode));
+            entry.0 += 1;
+            if media.status == MediaStatus::Missing {
+                entry.1 += 1;
+            }
+        }
+
         let mut findings = Vec::new();
+        let mut absent_reported: BTreeMap<&str, ()> = BTreeMap::new();
         for (episode, stream, media) in media_streams(dataset) {
             let location = Location::Stream {
                 episode,
                 stream: stream.to_string(),
             };
+            let wholly_absent = per_stream
+                .get(stream)
+                .is_some_and(|(episodes, missing, _)| episodes == missing && *episodes > 0);
             match &media.status {
                 MediaStatus::Read => {}
+                MediaStatus::Missing if wholly_absent => {
+                    if absent_reported.insert(stream, ()).is_some() {
+                        continue;
+                    }
+                    let (episodes, ..) = per_stream[stream];
+                    findings.push(
+                        Finding::new(
+                            self.id(),
+                            Category::Video,
+                            Severity::Error,
+                            location,
+                            "VIDEO.MEDIA_ABSENT",
+                            format!(
+                                "stream `{stream}`: the manifest declares this stream's pixels \
+                                 live in video files, but none were found under `{}` — no episode \
+                                 of {episodes} has any imagery",
+                                media.uri
+                            ),
+                        )
+                        .with_risk(
+                            "Every episode's frames have timestamps and actions but no imagery at \
+                             all. Nothing in the manifest or the data table records this, so the \
+                             dataset reads as complete right up until a loader tries to open a \
+                             video — the signature of an un-pulled LFS pointer or an interrupted \
+                             download.",
+                        )
+                        .with_remedy(
+                            "Fetch the video files (for a Hugging Face repo, `git lfs pull` or a \
+                             full `snapshot_download`), or drop the video feature from \
+                             `meta/info.json` if this copy is deliberately data-only.",
+                        ),
+                    );
+                }
                 MediaStatus::Missing => findings.push(
                     Finding::new(
                         self.id(),
@@ -127,7 +182,6 @@ pub struct MediaConformance {
 struct Occurrence {
     first_episode: u64,
     episodes: u64,
-    detail: String,
 }
 
 impl Check for MediaConformance {
@@ -164,7 +218,8 @@ impl Check for MediaConformance {
         // buries the one defect they describe. Those are charged once per stream, naming the first
         // episode and how many share it.
         let mut findings = Vec::new();
-        let mut export_defects: BTreeMap<(&str, &'static str), Occurrence> = BTreeMap::new();
+        let mut export_defects: BTreeMap<(&str, &'static str, String), Occurrence> =
+            BTreeMap::new();
 
         for ep in &dataset.episodes {
             for s in &ep.streams {
@@ -207,14 +262,17 @@ impl Check for MediaConformance {
                     }
                 }
 
+                // Keyed by the *value* as well as the code: two episodes encoded at different wrong
+                // resolutions are two defects, and collapsing them under whichever came first would
+                // report the second episode as holding a resolution it does not hold — and hide the
+                // more serious condition, that the episodes disagree with each other.
                 let mut record = |code: &'static str, detail: String| {
                     export_defects
-                        .entry((s.name.as_str(), code))
+                        .entry((s.name.as_str(), code, detail))
                         .and_modify(|o| o.episodes += 1)
                         .or_insert(Occurrence {
                             first_episode: ep.index,
                             episodes: 1,
-                            detail,
                         });
                 };
 
@@ -233,11 +291,17 @@ impl Check for MediaConformance {
                 }
 
                 if let (Some(dc), Some(oc)) = (&media.declared.codec, &media.observed.codec) {
-                    if canonical_codec(dc) != canonical_codec(oc) {
-                        record(
-                            "VIDEO.CODEC_MISMATCH",
-                            format!("declared `{dc}`, container holds `{oc}`"),
-                        );
+                    // Both names must resolve to a codec Veridex recognizes. Encoder names are an
+                    // open namespace — a manifest may record `libopenh264` or `h264_videotoolbox`
+                    // for the same encoding a container stamps `avc1` — so an unrecognized spelling
+                    // means "cannot tell", which is not the same as "differ".
+                    if let (Some(d), Some(o)) = (canonical_codec(dc), canonical_codec(oc)) {
+                        if d != o {
+                            record(
+                                "VIDEO.CODEC_MISMATCH",
+                                format!("declared `{dc}`, container holds `{oc}`"),
+                            );
+                        }
                     }
                 }
 
@@ -262,7 +326,7 @@ impl Check for MediaConformance {
             }
         }
 
-        for ((stream, code), occ) in export_defects {
+        for ((stream, code, detail), occ) in export_defects {
             let (message_head, risk, remedy) = match code {
                 "VIDEO.RESOLUTION_MISMATCH" => (
                     "video resolution",
@@ -308,8 +372,7 @@ impl Check for MediaConformance {
                     },
                     code,
                     format!(
-                        "stream `{stream}`: {message_head} disagrees with the manifest — {} ({scope})",
-                        occ.detail
+                        "stream `{stream}`: {message_head} disagrees with the manifest — {detail} ({scope})"
                     ),
                 )
                 .with_risk(risk)

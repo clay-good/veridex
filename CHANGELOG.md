@@ -339,6 +339,69 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **A `videos/` tree that never arrived passed clean and silent.** A LeRobot manifest declaring
+  `dtype: "video"` says the stream's pixels live in video files. When none were found, the checks
+  abstained — so an un-pulled LFS pointer or an interrupted `snapshot_download`, the single most
+  common real video breakage, scored identically to the intact dataset and remained certifiable.
+  Worse, it was a discontinuity: *one* absent episode was an error, *all* absent was silence. Now
+  reported as `VIDEO.MEDIA_ABSENT`, charged once for the stream — one tree that never arrived is one
+  gap, not one per episode. Only `dtype: "video"` carries the expectation, so a feature stored
+  inline or as individual images is not asked for a video it never had.
+
+- **The codec table was a closed allowlist over an open namespace.** A manifest records the
+  *encoder* (`libopenh264`, `h264_videotoolbox`, `vp8`, `mpeg4`) while the container records the
+  *format* (`avc1`, `vp08`, `mp4v`); an unrecognized spelling was compared literally and could never
+  match, so `VIDEO.CODEC_MISMATCH` fired on sound datasets. The comparison now requires **both**
+  names to resolve through the alias table and abstains otherwise — "I have not heard of this" is
+  not "these differ" — and the table covers the common hardware and library encoders.
+
+- **The resolution fallback assumed channel-last and ignored the manifest's own axis names.** With
+  `video.width`/`video.height` absent, the declared resolution was read from `shape[0]`/`shape[1]`,
+  so a channel-first `[3, 480, 640]` feature declared a height of **3** and reported a resolution
+  mismatch against a perfectly good video. It now reads the axis order from the feature's `names`,
+  and without those falls back only when the shape is unambiguously channel-last — stating nothing
+  rather than fabricating a resolution.
+
+- **A part-converted video layout was called incomplete while the same run said it should abstain.**
+  A feature with both per-episode files and a v3 aggregate was recorded as unresolvable *and* still
+  charged `VIDEO.MEDIA_MISSING` for the episodes inside the aggregate — a finding its own coverage
+  note contradicted. An unresolvable feature now suppresses the missing-file report entirely.
+
+- **A missing video was reported at a path the dataset does not use.** The expected path was
+  fabricated as flat `videos/<feature>/episode_<n:06>.mp4`, wrong for the real chunk layout and
+  hardcoding both the padding and the extension. It is now copied from the sibling episode's own
+  file, so the finding names a path the user can act on.
+
+- **Two episodes at two different wrong resolutions were reported as one.** The per-stream dedup
+  froze the first occurrence's detail, so the second episode was reported as holding a resolution it
+  does not hold — hiding the more serious condition, that the episodes disagree with each other. The
+  dedup key now includes the observed value.
+
+- **The MP4 probe misread four container shapes that real encoders write.** A **fragmented** file
+  (`ffmpeg -movflags frag_keyframe+empty_moov`, DASH/CMAF, most hardware recorders) keeps an empty
+  sample table in `moov` and its samples in `moof` fragments; its `stsz` count of zero was read as a
+  real frame count, failing every episode of a valid dataset with a hard error. An all-ones `mdhd`
+  duration — which ISO/IEC 14496-12 reserves for *unknown* — was taken at face value and fabricated
+  a rate of ~0.002 fps. The compact sample table (`stz2`) was not read at all, silently disabling
+  the frame-count check. And a `trak` without an `mdia` abandoned the whole track scan, reporting
+  "no video track" about files that have one. All four are fixed and covered by fixtures.
+
+- **A box declaring "to the end of the file" was reported as an absent `moov`.** Such a box makes
+  anything written after it unreachable; the error now names it instead of blaming the header.
+
+- **The content hash bound a free-form error string.** `MediaStatus::Unreadable`'s reason was
+  hashed, and it is derived in part from the operating system's own error text — platform- and
+  locale-dependent — and reworded whenever a message is improved. That broke "same bytes, same hash
+  on any platform" and would have turned every wording fix into a silent hash change. The status
+  *variant* still binds (that is what a check fails on); the prose does not, and the probe's reasons
+  are now built from [`std::io::ErrorKind`] rather than OS strings so reports are stable too.
+
+- **A certificate that stopped verifying after a canonical-encoding change read as tampering.**
+  `CANONICAL_VERSION` has now been bumped three times; each bump rehashes byte-identical data, so
+  `verify` reported a content-hash mismatch on an untouched dataset with no hint as to why. The
+  error now names the version difference between the issuing and the verifying Veridex and says to
+  re-issue before reading it as tampering.
+
 - **A broken transform tree could be reported by neither calibration check.** `CalibrationCompleteness`
   deferred its disconnected-tree finding whenever *any* rig sensor declared a `frame_id`, but
   `SensorFrameResolution` speaks about a stream only if *that stream* declares one, and its

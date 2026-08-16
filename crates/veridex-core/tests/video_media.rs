@@ -35,9 +35,39 @@ fn bx(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
 
 /// A minimal MP4 describing `frames` samples of `width`x`height` in `codec` at `fps`.
 fn build_mp4(frames: u32, width: u16, height: u16, codec: &[u8; 4], fps: u32) -> Vec<u8> {
+    build_mp4_shaped(frames, width, height, codec, fps, Shape::default())
+}
+
+/// Container shapes a real encoder produces that are not the plain progressive one.
+#[derive(Clone, Copy, Default)]
+struct Shape {
+    /// Declare `mvex` and put the samples in a `moof` fragment, leaving `stsz` at zero — what
+    /// `ffmpeg -movflags frag_keyframe+empty_moov`, DASH/CMAF, and most hardware recorders write.
+    fragmented: bool,
+    /// Use the compact sample-size table (`stz2`) instead of `stsz`.
+    compact_sample_table: bool,
+    /// Write the all-ones `mdhd` duration the spec reserves for "unknown".
+    unknown_duration: bool,
+    /// Put a `trak` with no `mdia` ahead of the real video track.
+    leading_bare_trak: bool,
+}
+
+fn build_mp4_shaped(
+    frames: u32,
+    width: u16,
+    height: u16,
+    codec: &[u8; 4],
+    fps: u32,
+    shape: Shape,
+) -> Vec<u8> {
     let timescale: u32 = 30_000;
     let delta = timescale / fps.max(1);
-    let duration = delta * frames;
+    let duration = if shape.unknown_duration {
+        u32::MAX
+    } else {
+        delta * frames
+    };
+    let table_frames = if shape.fragmented { 0 } else { frames };
 
     let mut mdhd = vec![0u8; 12]; // version + flags, creation, modification
     mdhd.extend_from_slice(&timescale.to_be_bytes());
@@ -60,15 +90,37 @@ fn build_mp4(frames: u32, width: u16, height: u16, codec: &[u8; 4], fps: u32) ->
     stsd.extend_from_slice(&1u32.to_be_bytes()); // entry_count
     stsd.extend_from_slice(&entry);
 
-    let mut stsz = vec![0u8; 4]; // version + flags
-    stsz.extend_from_slice(&1u32.to_be_bytes()); // uniform sample size
-    stsz.extend_from_slice(&frames.to_be_bytes()); // sample_count
+    let mut sizes = vec![0u8; 4]; // version + flags
+    sizes.extend_from_slice(&1u32.to_be_bytes()); // uniform sample size / field size
+    sizes.extend_from_slice(&table_frames.to_be_bytes()); // sample_count
 
-    let stbl = [bx(b"stsd", &stsd), bx(b"stsz", &stsz)].concat();
+    let size_box = if shape.compact_sample_table {
+        bx(b"stz2", &sizes)
+    } else {
+        bx(b"stsz", &sizes)
+    };
+    let stbl = [bx(b"stsd", &stsd), size_box].concat();
     let minf = bx(b"stbl", &stbl);
     let mdia = [bx(b"mdhd", &mdhd), bx(b"hdlr", &hdlr), bx(b"minf", &minf)].concat();
-    let moov = bx(b"trak", &bx(b"mdia", &mdia));
-    [bx(b"ftyp", b"isom\0\0\0\0isom"), bx(b"moov", &moov)].concat()
+    let mut moov = Vec::new();
+    if shape.leading_bare_trak {
+        // A track with no `mdia` at all — a file can carry one and still hold a good video track.
+        moov.extend_from_slice(&bx(b"trak", &bx(b"tkhd", &[0u8; 84])));
+    }
+    moov.extend_from_slice(&bx(b"trak", &mdia_trak(&mdia)));
+    if shape.fragmented {
+        // `mvex` is what marks the sample tables as living in fragments rather than in `moov`.
+        moov.extend_from_slice(&bx(b"mvex", &bx(b"trex", &[0u8; 24])));
+    }
+    let mut out = [bx(b"ftyp", b"isom\0\0\0\0isom"), bx(b"moov", &moov)].concat();
+    if shape.fragmented {
+        out.extend_from_slice(&bx(b"moof", &bx(b"mfhd", &[0u8; 8])));
+    }
+    out
+}
+
+fn mdia_trak(mdia: &[u8]) -> Vec<u8> {
+    bx(b"mdia", mdia)
 }
 
 // ---- dataset construction -----------------------------------------------------------------------
@@ -389,20 +441,65 @@ fn a_layout_that_names_no_episode_is_reported_as_unmapped_rather_than_guessed_at
 }
 
 #[test]
-fn a_dataset_with_no_video_tree_is_not_accused_of_losing_one() {
-    let (dataset, findings) = run(
+fn a_video_tree_that_never_arrived_is_reported_once_not_passed_over() {
+    // The single most common real breakage: the manifest declares `dtype: "video"`, the rows are all
+    // there, and `videos/` holds nothing — an un-pulled LFS pointer or an interrupted download.
+    // Reading that as "nothing to check" would score a dataset with no imagery at all as sound.
+    let (_, findings) = run(
         VideoPlan {
             no_videos: true,
             ..VideoPlan::default()
         },
         10,
     );
-    assert!(findings.is_empty(), "{findings:#?}");
-    assert!(dataset
-        .episodes
-        .iter()
-        .flat_map(|e| &e.streams)
-        .all(|s| s.media.is_none()));
+    assert_eq!(
+        findings.len(),
+        1,
+        "one gap, not one per episode: {findings:#?}"
+    );
+    assert_eq!(findings[0].code, "VIDEO.MEDIA_ABSENT");
+    assert_eq!(findings[0].severity, Severity::Error);
+    assert!(
+        findings[0].message.contains("no episode of 2"),
+        "{}",
+        findings[0].message
+    );
+}
+
+#[test]
+fn a_feature_whose_pixels_are_not_in_video_files_is_not_asked_for_any() {
+    // Only `dtype: "video"` means "the pixels live in video files". A feature merely *named*
+    // `...images...`, or one with `dtype: "image"` (individual files) or a numeric array (inline in
+    // the Parquet), has no video to find — demanding one would accuse a sound dataset.
+    for dtype in ["image", "uint8"] {
+        let dir = tempfile::tempdir().unwrap();
+        write_dataset(
+            dir.path(),
+            10,
+            VideoPlan {
+                no_videos: true,
+                ..VideoPlan::default()
+            },
+        );
+        // Rewrite the manifest so the camera feature is no longer declared as video.
+        let info = fs::read_to_string(dir.path().join("meta/info.json")).unwrap();
+        let mut info: serde_json::Value = serde_json::from_str(&info).unwrap();
+        info["features"][FEATURE]["dtype"] = serde_json::json!(dtype);
+        fs::write(
+            dir.path().join("meta/info.json"),
+            serde_json::to_string(&info).unwrap(),
+        )
+        .unwrap();
+
+        let dataset = ingest(dir.path());
+        let findings = video_findings(&dataset);
+        assert!(findings.is_empty(), "dtype {dtype}: {findings:#?}");
+        assert!(dataset
+            .episodes
+            .iter()
+            .flat_map(|e| &e.streams)
+            .all(|s| s.media.is_none()));
+    }
 }
 
 #[test]
@@ -432,4 +529,307 @@ fn the_media_a_stream_carries_binds_into_the_content_hash() {
         veridex_core::content_hash(&b),
         "a dataset whose video is three frames short must not hash like one whose video is whole"
     );
+}
+
+// ---- container shapes a real encoder writes ------------------------------------------------------
+//
+// Each of these was a false finding before it was a test: the probe read a container it did not
+// model as a container that held nothing, and the checks faithfully reported the fabrication.
+
+/// Write the two-episode dataset with every video built to `shape`, and return the video findings.
+fn run_shaped(shape: Shape) -> Vec<Finding> {
+    let dir = tempfile::tempdir().unwrap();
+    write_dataset(dir.path(), 10, VideoPlan::default());
+    let dest = dir.path().join("videos").join(FEATURE);
+    for episode in 0..2u64 {
+        fs::write(
+            dest.join(format!("episode_{episode:06}.mp4")),
+            build_mp4_shaped(10, 640, 480, b"avc1", FPS as u32, shape),
+        )
+        .unwrap();
+    }
+    video_findings(&ingest(dir.path()))
+}
+
+#[test]
+fn a_fragmented_container_is_not_read_as_holding_zero_frames() {
+    // A fragmented MP4 keeps a complete `moov` whose sample table is empty and every sample in
+    // `moof` fragments. Its `stsz` says zero, meaning "the table is not here" — not "no frames".
+    // Reading it as a count fails every episode of a valid dataset with a hard error.
+    let findings = run_shaped(Shape {
+        fragmented: true,
+        ..Shape::default()
+    });
+    assert!(findings.is_empty(), "{findings:#?}");
+}
+
+#[test]
+fn the_compact_sample_table_counts_frames_the_same_as_the_plain_one() {
+    // `stz2` is a different encoding of the same field. Which one the encoder chose must not decide
+    // whether the check runs at all.
+    let dir = tempfile::tempdir().unwrap();
+    write_dataset(dir.path(), 10, VideoPlan::default());
+    let dest = dir.path().join("videos").join(FEATURE);
+    let compact = Shape {
+        compact_sample_table: true,
+        ..Shape::default()
+    };
+    // Episode 0 is whole; episode 1 is three frames short. Both use `stz2`.
+    fs::write(
+        dest.join("episode_000000.mp4"),
+        build_mp4_shaped(10, 640, 480, b"avc1", FPS as u32, compact),
+    )
+    .unwrap();
+    fs::write(
+        dest.join("episode_000001.mp4"),
+        build_mp4_shaped(7, 640, 480, b"avc1", FPS as u32, compact),
+    )
+    .unwrap();
+    let findings = video_findings(&ingest(dir.path()));
+    assert_eq!(findings.len(), 1, "{findings:#?}");
+    assert_eq!(findings[0].code, "VIDEO.FRAME_COUNT_MISMATCH");
+    assert!(findings[0].message.contains("episode 1"));
+}
+
+#[test]
+fn an_unknown_duration_yields_no_rate_rather_than_a_fabricated_one() {
+    // ISO/IEC 14496-12 reserves an all-ones `mdhd` duration for "unknown". Taken literally it is 49
+    // days, and the rate derived from it is ~0.002 fps — a mismatch against every declared rate.
+    let findings = run_shaped(Shape {
+        unknown_duration: true,
+        ..Shape::default()
+    });
+    assert!(findings.is_empty(), "{findings:#?}");
+}
+
+#[test]
+fn a_track_this_parser_cannot_walk_does_not_hide_the_video_track_behind_it() {
+    // A `trak` with no `mdia` ahead of the real one must not abort the scan: the file does have a
+    // video track, and reporting "no video track" about it is a wrong answer, not a cautious one.
+    let findings = run_shaped(Shape {
+        leading_bare_trak: true,
+        ..Shape::default()
+    });
+    assert!(findings.is_empty(), "{findings:#?}");
+}
+
+#[test]
+fn a_box_that_runs_to_the_end_of_the_file_is_named_as_the_reason_moov_is_unreachable() {
+    // A writer that emits `mdat` with a declared size of 0 makes anything after it unreachable by
+    // definition. "No moov box" is true but useless; naming the box that swallowed it is not.
+    let dir = tempfile::tempdir().unwrap();
+    write_dataset(dir.path(), 10, VideoPlan::default());
+    let path = dir
+        .path()
+        .join("videos")
+        .join(FEATURE)
+        .join("episode_000000.mp4");
+    let mut bytes = bx(b"ftyp", b"isom\0\0\0\0isom");
+    bytes.extend_from_slice(&[0, 0, 0, 0]); // size 0: "to the end of the file"
+    bytes.extend_from_slice(b"mdat");
+    bytes.extend_from_slice(&build_mp4(10, 640, 480, b"avc1", FPS as u32));
+    fs::write(&path, &bytes).unwrap();
+
+    let findings = video_findings(&ingest(dir.path()));
+    assert_eq!(findings.len(), 1, "{findings:#?}");
+    assert_eq!(findings[0].code, "VIDEO.MEDIA_UNREADABLE");
+    assert!(
+        findings[0].message.contains("mdat") && findings[0].message.contains("end of the file"),
+        "{}",
+        findings[0].message
+    );
+}
+
+// ---- what the manifest says, and what may be inferred from it -----------------------------------
+
+/// Rewrite the camera feature's manifest entry, then ingest and return the video findings.
+fn with_feature_entry(entry: serde_json::Value, videos: bool) -> Vec<Finding> {
+    let dir = tempfile::tempdir().unwrap();
+    write_dataset(
+        dir.path(),
+        10,
+        VideoPlan {
+            no_videos: !videos,
+            ..VideoPlan::default()
+        },
+    );
+    let info = fs::read_to_string(dir.path().join("meta/info.json")).unwrap();
+    let mut info: serde_json::Value = serde_json::from_str(&info).unwrap();
+    info["features"][FEATURE] = entry;
+    fs::write(
+        dir.path().join("meta/info.json"),
+        serde_json::to_string(&info).unwrap(),
+    )
+    .unwrap();
+    video_findings(&ingest(dir.path()))
+}
+
+#[test]
+fn a_codec_name_veridex_does_not_recognize_produces_no_finding_either_way() {
+    // Encoder names are an open namespace: `libopenh264` and `h264_videotoolbox` both write `avc1`,
+    // and new encoders appear constantly. A closed table that treats "unrecognized" as "different"
+    // flags honest data, which is the one thing a check must never do.
+    for codec in ["libopenh264", "h264_videotoolbox", "some_future_encoder_v9"] {
+        let findings = with_feature_entry(
+            serde_json::json!({
+                "dtype": "video",
+                "shape": [480, 640, 3],
+                "info": { "video.codec": codec, "video.fps": FPS, "video.height": 480, "video.width": 640 },
+            }),
+            true,
+        );
+        assert!(
+            !findings.iter().any(|f| f.code == "VIDEO.CODEC_MISMATCH"),
+            "{codec}: {findings:#?}"
+        );
+    }
+}
+
+#[test]
+fn a_channel_first_shape_is_read_by_the_manifests_own_axis_names() {
+    // With `video.width`/`video.height` absent, the resolution can only come from `shape` — and the
+    // axis order is stated in `names`. Assuming height-first would declare this feature's height to
+    // be 3 and report a resolution mismatch against a perfectly good video.
+    let findings = with_feature_entry(
+        serde_json::json!({
+            "dtype": "video",
+            "shape": [3, 480, 640],
+            "names": ["channels", "height", "width"],
+            "info": { "video.codec": "h264", "video.fps": FPS },
+        }),
+        true,
+    );
+    assert!(findings.is_empty(), "{findings:#?}");
+}
+
+#[test]
+fn a_shape_whose_axis_order_is_unstated_and_unguessable_yields_no_resolution() {
+    // No `names`, and a leading dimension of 3 that could be channels or could be a height. Veridex
+    // states nothing rather than guessing: an invented "declared 480x3" is worse than no comparison.
+    let findings = with_feature_entry(
+        serde_json::json!({
+            "dtype": "video",
+            "shape": [3, 480, 640],
+            "info": { "video.codec": "h264", "video.fps": FPS },
+        }),
+        true,
+    );
+    assert!(findings.is_empty(), "{findings:#?}");
+}
+
+#[test]
+fn a_declared_rate_the_container_does_not_play_at_is_caught() {
+    // The container is written at 30 fps; the manifest claims 60.
+    let findings = with_feature_entry(
+        serde_json::json!({
+            "dtype": "video",
+            "shape": [480, 640, 3],
+            "info": { "video.codec": "h264", "video.fps": 60.0, "video.height": 480, "video.width": 640 },
+        }),
+        true,
+    );
+    assert_eq!(findings.len(), 1, "{findings:#?}");
+    assert_eq!(findings[0].code, "VIDEO.FPS_MISMATCH");
+    assert_eq!(findings[0].severity, Severity::Warning);
+    assert!(
+        findings[0].message.contains("60.000") && findings[0].message.contains("30.000"),
+        "{}",
+        findings[0].message
+    );
+}
+
+// ---- layouts a real repository actually has ------------------------------------------------------
+
+/// Move the camera feature's videos into the LeRobot chunk layout, optionally deleting one episode's.
+fn chunked_layout(delete_episode: Option<u64>) -> (Vec<Finding>, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    write_dataset(dir.path(), 10, VideoPlan::default());
+    let flat = dir.path().join("videos").join(FEATURE);
+    let chunked = dir.path().join("videos").join("chunk-000").join(FEATURE);
+    fs::create_dir_all(&chunked).unwrap();
+    for episode in 0..2u64 {
+        let name = format!("episode_{episode:06}.mp4");
+        if Some(episode) == delete_episode {
+            fs::remove_file(flat.join(&name)).unwrap();
+            continue;
+        }
+        fs::rename(flat.join(&name), chunked.join(&name)).unwrap();
+    }
+    fs::remove_dir_all(&flat).unwrap();
+    let findings = video_findings(&ingest(dir.path()));
+    (findings, dir)
+}
+
+#[test]
+fn the_chunk_directory_layout_a_real_repository_uses_resolves() {
+    let (findings, _dir) = chunked_layout(None);
+    assert!(findings.is_empty(), "{findings:#?}");
+}
+
+#[test]
+fn a_missing_file_names_the_path_its_siblings_actually_use() {
+    // The finding is only actionable if it names the path the dataset really uses. Under the chunk
+    // layout that path is not guessable, so it is copied from the sibling episode next to it.
+    let (findings, _dir) = chunked_layout(Some(1));
+    assert_eq!(findings.len(), 1, "{findings:#?}");
+    assert_eq!(findings[0].code, "VIDEO.MEDIA_MISSING");
+    assert!(
+        findings[0].message.contains("chunk-000"),
+        "the path names the chunk directory its sibling lives in: {}",
+        findings[0].message
+    );
+}
+
+#[test]
+fn a_feature_with_both_a_per_episode_and_an_aggregated_file_is_not_called_incomplete() {
+    // A part-converted repository: episode 0 still per-episode, episode 1's frames inside a v3
+    // aggregate. The pixels are all there; calling episode 1 missing would contradict the coverage
+    // note the same run prints.
+    let dir = tempfile::tempdir().unwrap();
+    write_dataset(dir.path(), 10, VideoPlan::default());
+    let dest = dir.path().join("videos").join(FEATURE);
+    fs::rename(dest.join("episode_000001.mp4"), dest.join("file-000.mp4")).unwrap();
+
+    let ingested = LeRobotAdapter
+        .ingest(
+            &Source::Local(dir.path().to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest");
+    assert!(
+        video_findings(&ingested.dataset).is_empty(),
+        "{:#?}",
+        video_findings(&ingested.dataset)
+    );
+    assert!(ingested
+        .report
+        .unmapped_fields
+        .iter()
+        .any(|u| u.source_path.contains(FEATURE)));
+}
+
+#[test]
+fn episodes_encoded_at_different_wrong_resolutions_are_two_findings_not_one() {
+    // Collapsing them under whichever came first would report episode 1 as holding a resolution it
+    // does not hold, and hide the more serious condition: the episodes disagree with each other.
+    let dir = tempfile::tempdir().unwrap();
+    write_dataset(dir.path(), 10, VideoPlan::default());
+    let dest = dir.path().join("videos").join(FEATURE);
+    fs::write(
+        dest.join("episode_000000.mp4"),
+        build_mp4(10, 320, 240, b"avc1", FPS as u32),
+    )
+    .unwrap();
+    fs::write(
+        dest.join("episode_000001.mp4"),
+        build_mp4(10, 160, 120, b"avc1", FPS as u32),
+    )
+    .unwrap();
+    let findings = video_findings(&ingest(dir.path()));
+    assert_eq!(findings.len(), 2, "{findings:#?}");
+    assert!(findings
+        .iter()
+        .all(|f| f.code == "VIDEO.RESOLUTION_MISMATCH"));
+    assert!(findings.iter().any(|f| f.message.contains("320x240")));
+    assert!(findings.iter().any(|f| f.message.contains("160x120")));
 }

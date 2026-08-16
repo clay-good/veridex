@@ -104,6 +104,10 @@ struct FeatureInfo {
     /// (`video.codec`, `video.fps`, `video.height`, `video.width`, …).
     #[serde(default)]
     info: Option<BTreeMap<String, serde_json::Value>>,
+    /// The name of each axis of `shape` (e.g. `["height", "width", "channel"]`). The manifest states
+    /// its own dimension order here, so a channel-first feature is not read as channel-last.
+    #[serde(default)]
+    names: Option<Vec<String>>,
 }
 
 /// The LeRobot v3 adapter.
@@ -345,21 +349,87 @@ fn find_media(dir: &Path, out: &mut Vec<PathBuf>) {
 fn declared_media_params(
     info: Option<&BTreeMap<String, serde_json::Value>>,
     shape: Option<&[u64]>,
+    names: Option<&[String]>,
 ) -> MediaParams {
     let get = |k: &str| info.and_then(|m| m.get(k));
-    let num = |k: &str| get(k).and_then(|v| v.as_f64());
-    let from_shape = |i: usize| shape.and_then(|s| (s.len() >= 2).then(|| s[i]));
+    // A pixel count is a positive whole number. `as u64` saturates, so a corrupt `-1` would become
+    // `0` and be compared as a real resolution; a non-positive or non-integral value is no
+    // declaration at all.
+    let pixels = |k: &str| {
+        get(k)
+            .and_then(|v| v.as_f64())
+            .filter(|n| n.is_finite() && *n >= 1.0 && n.fract() == 0.0)
+            .map(|n| n as u64)
+    };
+    let from_shape = |axis: &str| axis_from_shape(shape, names, axis);
     MediaParams {
         codec: get("video.codec")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
-        width: num("video.width")
-            .map(|w| w as u64)
-            .or_else(|| from_shape(1)),
-        height: num("video.height")
-            .map(|h| h as u64)
-            .or_else(|| from_shape(0)),
-        fps: num("video.fps"),
+        width: pixels("video.width").or_else(|| from_shape("width")),
+        height: pixels("video.height").or_else(|| from_shape("height")),
+        fps: get("video.fps").and_then(|v| v.as_f64()),
+    }
+}
+
+/// The `height` or `width` dimension of a feature's declared `shape`, or `None` when the manifest
+/// does not make the axis order plain.
+///
+/// The manifest's own `names` decide it when present — LeRobot writes `["height", "width",
+/// "channel"]`, and channel-first datasets exist. Without `names`, the order is only assumed when
+/// the shape is unambiguously channel-last (a trailing dimension of 1, 3, or 4 is a channel count,
+/// never a frame dimension). Anything else yields nothing rather than a guess: a fabricated
+/// "declared 480x3" is worse than no comparison at all.
+fn axis_from_shape(shape: Option<&[u64]>, names: Option<&[String]>, axis: &str) -> Option<u64> {
+    let shape = shape?;
+    if let Some(names) = names {
+        if names.len() == shape.len() {
+            let idx = names
+                .iter()
+                .position(|n| n.trim().to_ascii_lowercase().starts_with(axis))?;
+            return shape.get(idx).copied();
+        }
+    }
+    let channels_last = match shape.len() {
+        2 => true,
+        3 => matches!(shape[2], 1 | 3 | 4),
+        _ => false,
+    };
+    if !channels_last {
+        return None;
+    }
+    match axis {
+        "height" => shape.first().copied(),
+        "width" => shape.get(1).copied(),
+        _ => None,
+    }
+}
+
+/// Where an absent episode's media file would have been, modelled on the files that *are* there.
+///
+/// A missing-file finding is only actionable if it names the path the dataset would really use, and
+/// that path is not guessable: LeRobot nests videos under chunk directories, the zero-padding varies,
+/// and the extension may be any of [`MEDIA_EXTENSIONS`]. So it is copied from a sibling episode of
+/// the same feature — the file next to the one that is missing — rather than invented. `by_episode`
+/// is non-empty by construction (the feature is in per-episode layout because a file resolved), but
+/// the fallback stays total rather than relying on that.
+fn expected_sibling_path(by_episode: &BTreeMap<u64, PathBuf>, episode: u64) -> PathBuf {
+    let Some((_, sibling)) = by_episode.iter().next() else {
+        return PathBuf::from(format!("episode_{episode:06}.mp4"));
+    };
+    let padding = sibling
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .and_then(|s| s.strip_prefix("episode_"))
+        .map_or(6, |digits| digits.len());
+    let extension = sibling
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("mp4");
+    let name = format!("episode_{episode:0padding$}.{extension}");
+    match sibling.parent() {
+        Some(dir) => dir.join(name),
+        None => PathBuf::from(name),
     }
 }
 
@@ -979,14 +1049,18 @@ impl Adapter for LeRobotAdapter {
         let declared_media: BTreeMap<String, MediaParams> = info
             .features
             .iter()
+            // `dtype: "video"` — and only that — means "this feature's pixels live in video files".
+            // A feature whose *name* merely contains `image`, or whose dtype is `image` (individual
+            // files) or a numeric array (stored inline in the Parquet), has no video file to find,
+            // and expecting one would accuse a sound dataset of losing something it never had.
             .filter(|(name, f)| {
                 !BOOKKEEPING.contains(&name.as_str())
-                    && infer_modality(name, f.dtype.as_deref()) == Modality::Video
+                    && f.dtype.as_deref().map(str::trim) == Some("video")
             })
             .map(|(name, f)| {
                 (
                     name.clone(),
-                    declared_media_params(f.info.as_ref(), f.shape.as_deref()),
+                    declared_media_params(f.info.as_ref(), f.shape.as_deref(), f.names.as_deref()),
                 )
             })
             .collect();
@@ -1159,20 +1233,27 @@ impl Adapter for LeRobotAdapter {
         let video_index = index_videos(dir, &declared_media.keys().map(|s| s.as_str()).collect());
         let mut media: BTreeMap<(String, u64), Media> = BTreeMap::new();
         for (feature, declared) in &declared_media {
-            let Some(by_episode) = video_index.per_episode.get(feature) else {
-                // No per-episode media for this feature: either the dataset stores no video for it,
-                // or it uses a layout Veridex cannot attribute to an episode. Either way, nothing is
-                // asserted about it — an unresolved layout is reported as unmapped, not as missing.
+            if video_index.unresolvable.contains(feature) {
+                // This feature has media Veridex cannot attribute to an episode (a v3 layout that
+                // concatenates episodes into one file). Nothing is asserted about it — including
+                // about the episodes that *did* resolve, since the rest of its frames plainly live
+                // in the file that could not be split. Reported as an unmapped field instead.
                 continue;
-            };
+            }
+            let by_episode = video_index.per_episode.get(feature);
             for episode in episode_rows.keys() {
-                // A feature in per-episode layout implies a file per episode. One that is absent is a
-                // real gap: the episode's rows claim imagery the dataset does not hold.
-                let expected = by_episode.get(episode).cloned().unwrap_or_else(|| {
-                    dir.join("videos")
-                        .join(feature)
-                        .join(format!("episode_{episode:06}.mp4"))
-                });
+                // A feature declared `dtype: "video"` says its pixels live in video files. One that
+                // is absent is a real gap — the episode's rows claim imagery the dataset does not
+                // hold — and that is just as true when *no* file resolved as when one did: an
+                // un-pulled LFS pointer or an interrupted download leaves the whole tree empty, and
+                // reading that as "nothing to check" is reading silence as a pass.
+                let expected = match by_episode {
+                    Some(by_episode) => by_episode
+                        .get(episode)
+                        .cloned()
+                        .unwrap_or_else(|| expected_sibling_path(by_episode, *episode)),
+                    None => dir.join("videos").join(feature),
+                };
                 media.insert(
                     (feature.clone(), *episode),
                     probe_stream_media(dir, &expected, declared.clone()),

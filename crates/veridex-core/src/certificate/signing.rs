@@ -28,12 +28,18 @@ pub enum CertError {
     #[error("signature mismatch: the certificate was altered or signed by a different key")]
     SignatureMismatch,
     /// The certificate is bound to a different dataset than the one presented (transplant).
-    #[error("content-hash mismatch: certificate is bound to {bound}, but the dataset hashes to {presented}")]
+    #[error("content-hash mismatch: certificate is bound to {bound}, but the dataset hashes to {presented}{version_note}")]
     ContentHashMismatch {
         /// The hash the certificate is bound to.
         bound: String,
         /// The presented dataset's hash.
         presented: String,
+        /// A trailing clause naming a version difference between the issuing and the verifying
+        /// Veridex, when there is one. Empty otherwise. A content hash is only comparable within one
+        /// canonical encoding, and that encoding changes between releases — so an unchanged dataset
+        /// checked by a newer Veridex hashes differently, and without this the failure reads exactly
+        /// like tampering.
+        version_note: String,
     },
     /// The certificate was signed by a key other than the trusted issuer key provided.
     #[error("untrusted issuer: certificate key {found} does not match the expected issuer key")]
@@ -206,9 +212,21 @@ pub fn verify(
     // Binding to the presented dataset (transplant check).
     if let Some(presented) = presented_cdm_hash {
         if presented != signed.certificate.cdm_content_hash {
+            let issued_by = &signed.certificate.veridex_version;
             return Err(CertError::ContentHashMismatch {
                 bound: signed.certificate.cdm_content_hash.clone(),
                 presented: presented.to_string(),
+                version_note: if issued_by == crate::VERSION {
+                    String::new()
+                } else {
+                    format!(
+                        " — note this certificate was issued by veridex {issued_by} and you are \
+                         verifying with {}; the canonical encoding can change between releases, \
+                         which rehashes byte-identical data, so re-issue the certificate before \
+                         reading this as tampering",
+                        crate::VERSION
+                    )
+                },
             });
         }
     }

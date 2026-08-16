@@ -337,13 +337,17 @@ impl Stream {
         e.opt(&self.media, |e, m| {
             e.str(&m.uri);
             e.media_params(&m.declared);
+            // The *variant* binds; the `Unreadable` reason deliberately does not. What a check fails
+            // a stream on is "the container did not parse", and the prose explaining why is
+            // diagnostic text: it is derived in part from the operating system's own error strings,
+            // which differ by platform and locale, and it is reworded whenever a message is
+            // improved. Hashing it would make the same bytes hash differently on two machines —
+            // breaking this module's central guarantee — and would turn every wording fix into a
+            // silent hash break.
             match &m.status {
                 MediaStatus::Read => e.u8(0),
                 MediaStatus::Missing => e.u8(1),
-                MediaStatus::Unreadable { reason } => {
-                    e.u8(2);
-                    e.str(reason);
-                }
+                MediaStatus::Unreadable { .. } => e.u8(2),
             }
             e.media_params(&m.observed);
             e.opt(&m.frame_count, |e, n| e.u64(*n));
