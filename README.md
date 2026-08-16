@@ -30,8 +30,9 @@ Veridex Trust Report
 
 ## Why it's useful
 
-- **One command, any format.** LeRobot, MCAP, RLDS, HDF5/Zarr all map into one Canonical Dataset
-  Model, so you check them the same way — no per-format tooling.
+- **One command, any format.** LeRobot v3, MCAP, CAN+DBC, and ASAM MDF/MF4 all map into one
+  Canonical Dataset Model, so you check them the same way — no per-format tooling. RLDS/TFDS and
+  HDF5/Zarr are on the roadmap.
 - **Catches the failures that quietly ruin training.** Clock skew across sensors, broken episode
   boundaries, timeline gaps, duplicate frames — each reported with the *training risk* it creates
   and a *remedy*.
@@ -39,7 +40,8 @@ Veridex Trust Report
   upstream dataset produced each segment — surfaced, scored, and emitted as a signed certificate
   (Croissant + W3C PROV underneath).
 - **A number you can trust and share.** A deterministic 0–100 trust score and A–F grade. Same
-  dataset always yields the same result, and the signed certificate verifies **offline**.
+  dataset and the same Veridex version always yield the same result, and the signed certificate
+  verifies **offline**.
 - **Never touches your data.** Veridex only reads and reports. It never mutates your dataset.
 
 ## Why it's different
@@ -53,7 +55,7 @@ also captures **provenance**.
 
 ```mermaid
 flowchart LR
-    A[Your dataset<br/>LeRobot · MCAP · RLDS · HDF5] --> B[Adapter]
+    A[Your dataset<br/>LeRobot · MCAP · CAN+DBC · MF4] --> B[Adapter]
     B --> C[Canonical Dataset Model<br/>one neutral shape]
     C --> D[Validation engine<br/>structural · temporal · provenance checks]
     D --> E[Trust score<br/>0–100 · A–F grade]
@@ -103,8 +105,8 @@ veridex diff       <old.json> <new.json>                         # diff two repo
 veridex keygen     issuer                                        # write issuer (secret) + issuer.pub
 ```
 
-Built on a Rust core (`veridex-core`) with a `veridex` CLI and a Python package
-(`pip install veridex-data`, then `import veridex`) that produce identical verdicts.
+Built on a Rust core (`veridex-core`) with a `veridex` CLI and a Python package (`import veridex`,
+built locally with maturin — not yet published to PyPI) that produce identical verdicts.
 
 ## Quickstart
 
@@ -188,7 +190,8 @@ block fails verification rather than being read back.
 
 ## Python
 
-The same core is available from Python (`pip install veridex-data`, then `import veridex`), with
+The same core is available from Python (build it locally with maturin — see below; `veridex-data`
+is not yet published to PyPI), with
 verdicts identical to the CLI:
 
 ```python
@@ -216,14 +219,14 @@ engine; the structural / temporal / statistical / semantic / provenance / **auto
 (including the headline `TEMPORAL.CLOCK_SKEW`, cross-episode dtype/shape consistency, and the
 sensor-rig checks `AUTONOMY.RIG_SYNC` / `SEQUENCE_COMPLETE` / `EGO_POSE_CONTINUITY` /
 `CALIBRATION_INCOMPLETE`); the v1 trust-score rubric and the `world-model-ready` readiness profile;
-terminal + JSON reporting; **LeRobot v3, MCAP (with ROS-message decode into an autonomy rig),
-CAN+DBC, and ASAM MDF/MF4 adapters** with a passing cross-format neutrality gate (the same logical dataset yields
-equivalent CDMs in both formats); descriptive scenario-dimension coverage and **scenario/map/sim
+terminal, JSON, SARIF 2.1.0, and self-contained HTML reporting; **LeRobot v3, MCAP (with ROS-message
+decode into an autonomy rig), CAN+DBC, and ASAM MDF/MF4 adapters** with a passing cross-format
+neutrality gate (the same logical dataset yields equivalent CDMs as LeRobot v3 and as MCAP); descriptive scenario-dimension coverage and **scenario/map/sim
 reference extraction** (OpenSCENARIO / OpenDRIVE / OSI / simulator, with the version read from the
 referenced sidecar's own ASAM header); Croissant + W3C PROV provenance emit; Ed25519 **certificate signing with
 offline verification** (tamper + transplant rejection); a working CLI (`check`, `inspect`, `checks`,
 `certify`, `verify`, `provenance`, `keygen`, `diff`) — see the [Quickstart](#quickstart); and **Python
-bindings** (`import veridex`, exposing `check`/`inspect`/`content_hash`/`catalog`/`provenance`/`diff`/`keygen`/`certify`/`verify`) that call the same
+bindings** (`import veridex`, exposing `check`/`inspect`/`content_hash`/`catalog`/`provenance`/`diff`/`keygen`/`certify`/`verify`/`version`) that call the same
 core pipeline, with a CLI⇄Python parity test run in CI. Next up: streaming/remote ingestion.
 
 Start with [openspec/project.md](openspec/project.md) for the design, or track progress in

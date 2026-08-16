@@ -4,10 +4,11 @@ Python bindings for [Veridex](https://github.com/clay-good/veridex) — the open
 **trust layer for physical-AI data**. Point it at a robot/AV dataset and it tells you, across any
 format, whether the data is clean, correctly time-synchronized, and traceable to its origin.
 
-The distribution is `veridex-data`; the import module is `veridex`:
+The distribution is `veridex-data`; the import module is `veridex`. It is **not yet published to
+PyPI** — build it from the repo with [maturin](https://github.com/PyO3/maturin):
 
 ```sh
-pip install veridex-data
+maturin develop -m crates/veridex-py/Cargo.toml
 ```
 
 ```python
@@ -46,6 +47,9 @@ print(result["verified"], result["key_id"], result["trust_score"]["score"])
 cert = veridex.certify("my-rig.mcap", secret_key_hex, profile="world-model-ready")
 readiness = json.loads(veridex.verify(cert, "my-rig.mcap"))["readiness"]
 print(readiness["ready"], [c["check_id"] for c in readiness["criteria"]])
+
+# The veridex-core version behind these bindings.
+print(veridex.version())
 ```
 
 These bindings add **no logic**: they call the exact same `veridex_core` pipeline the `veridex`

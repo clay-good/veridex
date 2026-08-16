@@ -14,7 +14,7 @@ fail_on = "error"
 # min_score = 80
 
 # Run only these categories. Omit to run all. Valid: structural, temporal, statistical, semantic,
-# provenance.
+# provenance, autonomy.
 # categories = ["structural", "temporal"]
 
 # Run only these specific checks (by id). Omit to run all selected categories.

@@ -18,17 +18,19 @@ cargo run -p veridex-cli -- inspect /tmp/av.mcap
 ```
 
 `inspect` shows the streams and their modalities, provenance coverage, the scenario/map references
-the log was recorded against, and the descriptive scenario coverage:
+the log was recorded against, and the descriptive scenario coverage (abbreviated here):
 
 ```
       /camera/image [video] — 31 frame(s), clock `mcap-log`
       /lidar/points [point-cloud] — 11 frame(s), clock `mcap-log`
       /imu/data [imu] — 101 frame(s), clock `mcap-log`
+      …
   scenario & map references:
       scenario: OpenSCENARIO 1.2 (version 1.2)
       map: maps/demo_town.xodr (version demo-hdmap-1.9)
   scenario coverage (descriptive):
       weather: rain (1)
+      …
 ```
 
 Scenario coverage is descriptive only — never a finding, never a score change.

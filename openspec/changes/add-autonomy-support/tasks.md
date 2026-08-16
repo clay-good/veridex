@@ -113,7 +113,8 @@ No code until this change is approved; this is the build plan.
 - [~] Reproduce detection of an injected single-sensor sync drift and a LiDAR-camera miscalibration.
       The sync-drift half is reproduced end-to-end on a synthetic rig: `make_demo_mcap -- <out> av`
       writes a five-sensor MCAP rig (camera/LiDAR/IMU/GNSS/odometry) with the IMU span cut ~0.30 s,
-      which `veridex check` flags as `TEMPORAL.CLOCK_SKEW` naming the IMU
+      which `veridex check` flags as `AUTONOMY.RIG_SYNC` naming the IMU as the tightest-spanning
+      sensor (on a rig, `RIG_SYNC` supersedes the pairwise `TEMPORAL.CLOCK_SKEW`)
       (`an_injected_single_sensor_sync_drift_is_flagged_on_an_av_rig`). The LiDAR-camera
       miscalibration half needs the reprojection check (A2) and decoded calibration (A1).
 - [x] Issue and offline-verify a world-model-readiness certificate. `certify --profile` issues it and
@@ -127,6 +128,6 @@ No code until this change is approved; this is the build plan.
 - [x] Docs: an autonomy quickstart and the readiness-profile reference.
       [docs/autonomy-quickstart.md](../../../docs/autonomy-quickstart.md) walks the rig demo end to
       end (generate → inspect → check → certify readiness → verify offline) with real output, a table
-      of what Veridex reads from a rig log, and the honest limits (no MF4 yet, no trigger/latency
-      offsets, coverage never prescriptive). The readiness-profile reference is
+      of what Veridex reads from a rig log, and the honest limits (MF4 coverage is the uncompressed
+      core, no trigger/latency offsets, coverage never prescriptive). The readiness-profile reference is
       [docs/profiles.md](../../../docs/profiles.md), now including how to read a certificate back.

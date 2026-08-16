@@ -128,8 +128,9 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   `truncated` variant whose manifest over-declares its frame count → `STRUCTURAL.FRAME_COUNT_MISMATCH`,
   a `boundary` variant whose `meta/episodes.jsonl` declares the wrong length for one episode → the
   lerobot#4143 `STRUCTURAL.EPISODE_BOUNDARY`, and a `jitter` variant whose one episode has an
-  irregular inter-frame spacing → `TEMPORAL.JITTER`),
-  each with a `clean` variant, so `veridex check` has something to find end-to-end in **both** formats.
+  irregular inter-frame spacing → `TEMPORAL.JITTER`; plus `short-episode`, `duplicate`, `saturated`,
+  `spike`, `nan`, and `multi-joint` variants — the full list is in the README), each with a `clean`
+  variant, so `veridex check` has something to find end-to-end in **both** formats.
 - **CI** — GitHub Actions running fmt, clippy (`-D warnings`), and the full test suite, plus a
   Python job that builds the extension with maturin and runs the CLI ⇄ Python parity test on every
   push. The `veridex` binary has its own integration tests (`crates/veridex-cli/tests/cli.rs`)
