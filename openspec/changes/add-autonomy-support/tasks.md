@@ -146,10 +146,10 @@ call, not a defect fix:
   the rubric (scores are comparable only within a `rubric_version`) and would penalize legitimate
   configuration. Recorded instead: the effective config and executed checks are signed into every
   certificate, and readiness criteria now require their check to have run. See `docs/rubric-v1.md`.
-- **`declared_frame_count` drives the verdict but is not in the content hash** — by design, since it
-  is an assertion *about* content rather than content. Documented in `SECURITY.md` so a certificate
-  reader knows what the binding does and does not cover; folding it in would need a
-  `CANONICAL_VERSION` bump to 4.
+- **`declared_frame_count` drives the verdict but is not in the content hash** — *reversed*. The audit
+  proved the consequence: two datasets differing only in that field, one passing and one failing,
+  shared a hash, so the passing one's certificate verified against the failing one. A field a check
+  reads has to be bound. It is now encoded and `CANONICAL_VERSION` is 4.
 
 Both audit follow-ups are now built. `statistical.range-sanity` claims a stream only once it has
 produced a finding, matching its sibling checks, so a later episode's corrupt stats can no longer be

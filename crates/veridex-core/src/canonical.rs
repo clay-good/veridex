@@ -27,7 +27,7 @@ use crate::cdm::{
 /// stream's declared `point_fields`. A manipulation dataset leaves all three empty, so they add only
 /// a fixed "absent" marker to its encoding — but every content-bearing field is still hashed, keeping
 /// the "no silently-dropped field" invariant intact.
-pub const CANONICAL_VERSION: u32 = 3;
+pub const CANONICAL_VERSION: u32 = 4;
 
 const DOMAIN: &[u8] = b"veridex.cdm.v1\0";
 
@@ -170,7 +170,11 @@ impl Dataset {
 
         // episodes: order-insensitive, canonicalized by index
         let mut episodes: Vec<&Episode> = self.episodes.iter().collect();
-        episodes.sort_by_key(|ep| ep.index);
+        episodes.sort_by(|a, b| {
+            a.index
+                .cmp(&b.index)
+                .then_with(|| episode_digest(a).cmp(&episode_digest(b)))
+        });
         e.seq(&episodes, |e, ep| ep.encode(e));
 
         // calibration (autonomy rig): absent for manipulation datasets, so this is a single `0` byte
@@ -214,26 +218,33 @@ impl Episode {
         e.opt(&self.start_ts, |e, ts| e.i64(*ts));
         e.opt(&self.end_ts, |e, ts| e.i64(*ts));
 
-        // streams: order-insensitive, canonicalized by name
+        // streams: order-insensitive, canonicalized by name then full content (a name is not
+        // guaranteed unique, so it is not a total order on its own)
         let mut streams: Vec<&Stream> = self.streams.iter().collect();
-        streams.sort_by(|a, b| a.name.cmp(&b.name));
+        streams.sort_by(|a, b| {
+            a.name
+                .cmp(&b.name)
+                .then_with(|| stream_digest(a).cmp(&stream_digest(b)))
+        });
         e.seq(&streams, |e, s| s.encode(e));
 
         e.opt(&self.task, |e, t| e.str(t));
 
         // labels: order-insensitive, canonicalized by (key, value, ts)
         let mut labels: Vec<&Label> = self.labels.iter().collect();
-        labels.sort_by(|a, b| {
-            a.key
-                .cmp(&b.key)
-                .then_with(|| a.value.cmp(&b.value))
-                .then_with(|| a.ts.cmp(&b.ts))
-        });
+        labels.sort_by(|a, b| label_sort_key(a).cmp(&label_sort_key(b)));
         e.seq(&labels, |e, l| {
             e.str(&l.key);
             e.str(&l.value);
             e.opt(&l.ts, |e, t| e.i64(*t));
         });
+
+        // declared_frame_count: an assertion *about* the content rather than content itself, but
+        // `structural.episode-boundary` reads it and fails an episode whose frames disagree with it.
+        // A field a check reads has to be in the hash: leaving it out let two datasets — one passing,
+        // one failing — share a content hash, so the clean one's certificate verified against the
+        // corrupt one.
+        e.opt(&self.declared_frame_count, |e, n| e.u64(*n));
 
         // ego_poses (autonomy trajectory): absent for manipulation episodes. Order-insensitive —
         // canonicalized by (ts, pose) — so the same set of poses hashes identically regardless of the
@@ -365,6 +376,33 @@ pub(crate) fn prov_sort_key(p: &Provenance) -> ProvKey<'_> {
     (scope_key(&p.scope), elements)
 }
 
+/// The digest of an episode's own canonical encoding, used only to break a tie between two episodes
+/// carrying the same `index`.
+///
+/// `index` alone is not a total order, and duplicate indices are not hypothetical — flagging them is
+/// `structural.episode-boundary`'s job — so without a tie-break the hash depended on the `Vec` order
+/// of exactly the datasets Veridex exists to catch. `Ordering::then_with` is lazy, so this is
+/// computed only for episodes that actually tie.
+pub(crate) fn episode_digest(ep: &Episode) -> [u8; 32] {
+    let mut e = Encoder::new();
+    ep.encode(&mut e);
+    e.finish()
+}
+
+/// The digest of a stream's own canonical encoding, breaking a tie between two streams with the same
+/// `name`. Uniqueness of stream names within an episode is a CDM invariant nothing enforces, and
+/// `semantic.stream-key-clarity` exists to report violations of it — so the ordering must not assume it.
+pub(crate) fn stream_digest(s: &Stream) -> [u8; 32] {
+    let mut e = Encoder::new();
+    s.encode(&mut e);
+    e.finish()
+}
+
+/// A total ordering key for a label: its content, all of it.
+pub(crate) fn label_sort_key(l: &Label) -> (&str, &str, Option<i64>) {
+    (l.key.as_str(), l.value.as_str(), l.ts)
+}
+
 /// Canonical f64 bit pattern: normalize signed zero and all NaN payloads so `-0.0`/`+0.0` and any NaN
 /// map to one value. Shared by the encoder (so the hash is stable) and the content sort keys below (so
 /// the order canonicalization stays in lockstep with what is hashed).
@@ -380,7 +418,7 @@ pub(crate) fn canon_f64_bits(v: f64) -> u64 {
 
 /// A total ordering key for a [`Transform`]: its full content, so two transforms sharing frames and a
 /// validity range never tie and the tree encoding is permutation-independent.
-type TransformKey<'a> = (
+pub(crate) type TransformKey<'a> = (
     &'a str,
     &'a str,
     Option<i64>,
@@ -389,7 +427,7 @@ type TransformKey<'a> = (
     [u64; 4],
 );
 
-fn transform_sort_key(t: &Transform) -> TransformKey<'_> {
+pub(crate) fn transform_sort_key(t: &Transform) -> TransformKey<'_> {
     (
         t.parent_frame.as_str(),
         t.child_frame.as_str(),
@@ -401,9 +439,9 @@ fn transform_sort_key(t: &Transform) -> TransformKey<'_> {
 }
 
 /// A total ordering key for [`CameraIntrinsics`]: its full content.
-type IntrinsicsKey<'a> = (&'a str, Option<i64>, Option<i64>, [u64; 4], Vec<u64>);
+pub(crate) type IntrinsicsKey<'a> = (&'a str, Option<i64>, Option<i64>, [u64; 4], Vec<u64>);
 
-fn intrinsics_sort_key(c: &CameraIntrinsics) -> IntrinsicsKey<'_> {
+pub(crate) fn intrinsics_sort_key(c: &CameraIntrinsics) -> IntrinsicsKey<'_> {
     (
         c.stream.as_str(),
         c.valid_from,

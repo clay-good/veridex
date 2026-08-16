@@ -183,3 +183,58 @@ fn certification_is_reproducible() {
     assert_eq!(c1, c2);
     assert_eq!(sign(c1, &keypair()), sign(c2, &keypair()));
 }
+
+#[test]
+fn a_certificate_does_not_verify_against_a_dataset_with_a_different_manifest_count() {
+    // The transplant that used to succeed: two datasets identical but for `declared_frame_count` —
+    // which `structural.episode-boundary` reads, so one passes and one fails. They must not share a
+    // content hash, or the clean one's certificate attests the failing one.
+    let with_count = |declared: Option<u64>| {
+        let mut d = dataset(vec![stream("s", "c", &[0, 1_000_000, 2_000_000])]);
+        d.episodes[0].declared_frame_count = declared;
+        d.canonicalize_order();
+        d
+    };
+    let clean = with_count(Some(3));
+    let corrupt = with_count(Some(9999));
+    let corrupt_hash = content_hash(&corrupt);
+
+    let (cert, clean_hash) = issue_cert(&clean);
+    let signed = sign(cert, &keypair());
+    assert_ne!(
+        clean_hash, corrupt_hash,
+        "the two datasets must not share a hash"
+    );
+    verify(&signed, Some(&clean_hash.to_hex()), None).expect("its own dataset verifies");
+    let err = verify(&signed, Some(&corrupt_hash.to_hex()), None).unwrap_err();
+    assert!(
+        matches!(err, CertError::ContentHashMismatch { .. }),
+        "expected a transplant rejection, got {err:?}"
+    );
+}
+
+#[test]
+fn a_signed_certificate_has_exactly_one_byte_form() {
+    // Uppercasing the hex fields or the algorithm leaves the same semantic document but a different
+    // file. Both must not verify, or two distinct files verify identically and a consumer pinning
+    // certificates by file digest can be handed either.
+    let d = dataset(vec![stream("s", "c", &[0, 1_000_000])]);
+    let (cert, hash) = issue_cert(&d);
+    let signed = sign(cert, &keypair());
+    verify(&signed, Some(&hash.to_hex()), None).expect("the canonical form verifies");
+
+    let mut upper_sig = signed.clone();
+    upper_sig.signature = upper_sig.signature.to_uppercase();
+    assert!(verify(&upper_sig, Some(&hash.to_hex()), None).is_err());
+
+    let mut upper_key = signed.clone();
+    upper_key.public_key = upper_key.public_key.to_uppercase();
+    assert!(verify(&upper_key, Some(&hash.to_hex()), None).is_err());
+
+    let mut upper_alg = signed.clone();
+    upper_alg.algorithm = upper_alg.algorithm.to_uppercase();
+    assert!(matches!(
+        verify(&upper_alg, Some(&hash.to_hex()), None),
+        Err(CertError::UnsupportedAlgorithm { .. })
+    ));
+}

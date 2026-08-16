@@ -103,9 +103,23 @@ impl Dataset {
         self.provenance.sort_by(|a, b| {
             crate::canonical::prov_sort_key(a).cmp(&crate::canonical::prov_sort_key(b))
         });
-        self.episodes.sort_by_key(|ep| ep.index);
+        // Episodes and streams tie-break on full content, because neither `index` nor `name` is
+        // guaranteed unique — duplicates of both are faults Veridex reports, so the ordering cannot
+        // assume they are absent.
+        self.episodes.sort_by(|a, b| {
+            a.index.cmp(&b.index).then_with(|| {
+                crate::canonical::episode_digest(a).cmp(&crate::canonical::episode_digest(b))
+            })
+        });
         for ep in &mut self.episodes {
-            ep.streams.sort_by(|a, b| a.name.cmp(&b.name));
+            ep.streams.sort_by(|a, b| {
+                a.name.cmp(&b.name).then_with(|| {
+                    crate::canonical::stream_digest(a).cmp(&crate::canonical::stream_digest(b))
+                })
+            });
+            ep.labels.sort_by(|a, b| {
+                crate::canonical::label_sort_key(a).cmp(&crate::canonical::label_sort_key(b))
+            });
             if let Some(poses) = &mut ep.ego_poses {
                 poses.sort_by(|a, b| {
                     a.ts.cmp(&b.ts).then_with(|| {
@@ -113,6 +127,19 @@ impl Dataset {
                     })
                 });
             }
+        }
+        // Calibration is a set to the encoder, so it must be a sorted sequence here too: a reader
+        // that resolves "the transform valid at time t" by first match would otherwise depend on the
+        // order the rig happened to record them in.
+        if let Some(cal) = &mut self.calibration {
+            cal.transforms.sort_by(|a, b| {
+                crate::canonical::transform_sort_key(a)
+                    .cmp(&crate::canonical::transform_sort_key(b))
+            });
+            cal.intrinsics.sort_by(|a, b| {
+                crate::canonical::intrinsics_sort_key(a)
+                    .cmp(&crate::canonical::intrinsics_sort_key(b))
+            });
         }
     }
 }

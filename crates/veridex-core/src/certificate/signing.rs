@@ -152,10 +152,25 @@ pub fn verify(
     presented_cdm_hash: Option<&str>,
     expected_issuer: Option<&str>,
 ) -> Result<Verified, CertError> {
-    // Reject an algorithm this build cannot verify, rather than silently assuming ed25519.
-    if !signed.algorithm.eq_ignore_ascii_case(ALGORITHM) {
+    // A signed certificate has exactly one byte form. Uppercasing the algorithm or the hex fields
+    // leaves the same semantic document but a *different file*, and accepting both would mean two
+    // distinct files verify identically — so a consumer that pins or de-duplicates certificates by
+    // file digest could be handed either. Require the canonical spelling this crate writes.
+    if signed.algorithm != ALGORITHM {
         return Err(CertError::UnsupportedAlgorithm {
             found: signed.algorithm.clone(),
+        });
+    }
+    if !is_canonical_hex(&signed.signature) {
+        return Err(CertError::Malformed {
+            what: "signature",
+            expected: 64,
+        });
+    }
+    if !is_canonical_hex(&signed.public_key) {
+        return Err(CertError::Malformed {
+            what: "public key",
+            expected: 32,
         });
     }
 
@@ -211,6 +226,15 @@ fn to_hex(bytes: &[u8]) -> String {
         s.push(char::from_digit((b & 0xf) as u32, 16).unwrap());
     }
     s
+}
+
+/// Whether a string is hex in the one spelling this crate writes: lowercase digits only. Used on the
+/// fields of a *signed document*, where more than one accepted spelling means more than one file that
+/// verifies. A user-supplied key file stays tolerant — that is input, not a signed artifact.
+fn is_canonical_hex(s: &str) -> bool {
+    !s.is_empty()
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// Decode lowercase/uppercase hex into a fixed-size array, or `None` on any malformed input.

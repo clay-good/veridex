@@ -283,6 +283,23 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   above real datasets — a one-hour ten-sensor 100 Hz rig is 3.6M) *before* allocating, and refuses
   with a clear error naming the limit rather than being killed. `--max-frames <n>` raises it;
   `--max-frames 0` removes it.
+- **A certificate could verify against a dataset it was not issued for.** `declared_frame_count` was
+  deliberately left out of the content hash as an assertion *about* content rather than content — but
+  `structural.episode-boundary` reads it and fails on it, so two datasets differing only there (one
+  passing, one failing) hashed identically and the clean one's certificate verified against the
+  corrupt one. It is now encoded; `CANONICAL_VERSION` is **4**.
+- **The hash depended on input order for exactly the datasets Veridex exists to catch.** Episodes were
+  ordered by `index` alone and streams by `name` alone — neither a total order, and duplicates of both
+  are faults the catalog reports. A stable sort left ties in `Vec` order, so two datasets holding the
+  same duplicate-index episodes in different orders produced different content hashes and different
+  `result_content_hash`es. Both now break ties on the item's own canonical encoding (computed only for
+  items that actually tie, so an ordinary dataset pays nothing). `canonicalize_order` also now sorts
+  episode labels and the calibration transform/intrinsics sets, which the encoder already treated as
+  sets — closing the gap before a reader resolves "the transform valid at time t" by first match.
+- **A signed certificate had no canonical byte form.** Hex decoding and the algorithm check were
+  case-insensitive, so uppercasing `signature`, `public_key`, or `algorithm` produced a different file
+  that still verified. Verification now requires the canonical spelling, so a consumer that pins or
+  de-duplicates certificates by file digest cannot be handed two files that both verify.
 - **Every honest multi-rate rig was reported as clock-skewed.** `TEMPORAL.CLOCK_SKEW` and
   `AUTONOMY.RIG_SYNC` compare stream *spans*, but a stream observing a window at period `T` spans a
   whole number of `T`s — so two perfectly synchronized sensors at different rates differ by up to one

@@ -10,13 +10,18 @@ document states what Veridex guarantees, what it does **not**, and how signing k
 - **Content binding.** A certificate is bound to the exact CDM content hash of the dataset it was
   issued for. Presenting it against a different dataset fails verification (transplant rejection).
   The content hash covers the dataset's actual content (episodes, streams, frames, stored/observed
-  stats, provenance) and is independent of the order those collections happen to be listed in. It
-  deliberately excludes *manifest assertions about* the content — e.g. a source-declared frame count
-  — which the checks still validate against what was ingested. So a certificate attests the content
-  and the verdict computed over it, not the correctness of a source's own manifest bookkeeping.
+  stats, provenance) **and every source-declared value a check reads** — including the per-episode
+  declared frame count, whose disagreement with the frames ingested is itself a finding. Anything a
+  check can fail on has to be bound, or two datasets that disagree on the verdict could share a hash
+  and one's certificate would attest the other. The hash is independent of the order those
+  collections happen to be listed in, and that ordering is total: episodes with a duplicate index and
+  streams with a duplicate name — both faults Veridex reports — are ordered by their full content, so
+  the hash never depends on the order they arrived in.
 - **Offline verification.** Certificates are Ed25519-signed and verify against the issuer public key
   with no network dependency. Any change to a signed certificate fails signature verification
-  (tamper rejection). Verification also rejects a certificate signed by an untrusted issuer key, and
+  (tamper rejection), and a signed certificate has exactly one byte form — the hex and algorithm
+  fields must be in the canonical spelling this crate writes, so the same certificate cannot be
+  presented as two different files that both verify. Verification also rejects a certificate signed by an untrusted issuer key, and
   one that declares a signature algorithm this build cannot verify (rather than assuming Ed25519).
 - **Non-mutation.** Veridex only reads datasets and writes its own outputs to caller-specified
   paths. It never modifies, repairs, or deletes a user's dataset.

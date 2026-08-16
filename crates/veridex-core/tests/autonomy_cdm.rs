@@ -52,6 +52,16 @@ fn cloud_stream(fields: &[&str]) -> Stream {
     }
 }
 
+/// A plain scalar stream with the given name and timestamps.
+fn stream(name: &str, modality: Modality, ts: &[i64]) -> Stream {
+    let mut s = cloud_stream(&["x"]);
+    s.name = name.into();
+    s.modality = modality;
+    s.point_fields = None;
+    s.frames = ts.iter().map(|t| frame(*t)).collect();
+    s
+}
+
 fn transform(parent: &str, child: &str, tx: f64) -> Transform {
     Transform {
         parent_frame: parent.into(),
@@ -332,4 +342,102 @@ fn permuting_every_canonicalized_collection_changes_neither_the_hash_nor_the_ver
         "the verdict must be permutation-independent too — a hash-identical twin cannot disagree"
     );
     assert_eq!(status_a, status_b);
+}
+
+// ---- regression: the content hash must separate datasets that produce different verdicts ----
+
+#[test]
+fn a_manifest_frame_count_changes_the_content_hash() {
+    // `declared_frame_count` decides `structural.episode-boundary`, so two datasets differing only
+    // there disagree on the verdict — one passes, one fails. If they shared a hash, the passing
+    // dataset's certificate would verify against the failing one.
+    let mk = |declared: u64| {
+        let mut d = veridex_core::cdm::Dataset {
+            id: "t".into(),
+            metadata: vec![],
+            provenance: vec![],
+            calibration: None,
+            episodes: vec![veridex_core::cdm::Episode {
+                index: 0,
+                start_ts: None,
+                end_ts: None,
+                streams: vec![],
+                task: None,
+                labels: vec![],
+                ego_poses: None,
+                declared_frame_count: Some(declared),
+            }],
+        };
+        d.canonicalize_order();
+        veridex_core::content_hash(&d)
+    };
+    assert_ne!(
+        mk(4),
+        mk(9999),
+        "a manifest frame count a check reads must be bound into the hash"
+    );
+}
+
+/// A dataset of `episodes`, canonicalized, and its content hash.
+fn hash_of(mut d: veridex_core::cdm::Dataset) -> veridex_core::ContentHash {
+    d.canonicalize_order();
+    veridex_core::content_hash(&d)
+}
+
+#[test]
+fn duplicate_episode_indices_still_hash_order_independently() {
+    // Two episodes sharing an index is a fault Veridex reports — so the ordering must not assume it
+    // away. Sorting by index alone is stable, meaning the input `Vec` order survived into the hash.
+    let ep = |stream_name: &str| veridex_core::cdm::Episode {
+        index: 0,
+        start_ts: None,
+        end_ts: None,
+        streams: vec![stream(stream_name, Modality::ScalarState, &[0, 1])],
+        task: None,
+        labels: vec![],
+        ego_poses: None,
+        declared_frame_count: None,
+    };
+    let ds = |a: &str, b: &str| veridex_core::cdm::Dataset {
+        id: "t".into(),
+        metadata: vec![],
+        provenance: vec![],
+        calibration: None,
+        episodes: vec![ep(a), ep(b)],
+    };
+    assert_eq!(
+        hash_of(ds("a", "b")),
+        hash_of(ds("b", "a")),
+        "duplicate-index episodes must hash independently of Vec order"
+    );
+}
+
+#[test]
+fn duplicate_stream_names_still_hash_order_independently() {
+    // Stream-name uniqueness within an episode is a CDM invariant nothing enforces — `semantic.
+    // stream-key-clarity` exists to report violations — so name alone is not a total order either.
+    let ds = |first_ts: &[i64], second_ts: &[i64]| veridex_core::cdm::Dataset {
+        id: "t".into(),
+        metadata: vec![],
+        provenance: vec![],
+        calibration: None,
+        episodes: vec![veridex_core::cdm::Episode {
+            index: 0,
+            start_ts: None,
+            end_ts: None,
+            streams: vec![
+                stream("dup", Modality::ScalarState, first_ts),
+                stream("dup", Modality::ScalarState, second_ts),
+            ],
+            task: None,
+            labels: vec![],
+            ego_poses: None,
+            declared_frame_count: None,
+        }],
+    };
+    assert_eq!(
+        hash_of(ds(&[0, 1], &[5, 6])),
+        hash_of(ds(&[5, 6], &[0, 1])),
+        "same-named streams must hash independently of Vec order"
+    );
 }
