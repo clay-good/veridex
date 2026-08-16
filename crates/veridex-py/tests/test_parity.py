@@ -165,6 +165,47 @@ def test_cli_and_python_certify_and_verify_agree(tmp_path):
         raise AssertionError("verify must reject an untrusted issuer key")
 
 
+def test_cli_and_python_readiness_certificates_agree(tmp_path):
+    """A profiled certificate must be byte-identical across surfaces, and verify the same way."""
+    dataset = _demo_dataset(tmp_path)
+    secret = "01" * 32
+    ts = "1700000000"
+
+    py_cert = veridex.certify(str(dataset), secret, ts, None, "world-model-ready")
+
+    binary = os.environ.get("VERIDEX_BIN", "target/debug/veridex")
+    keyfile = tmp_path / "issuer"
+    keyfile.write_text(secret + "\n")
+    out = tmp_path / "cert.json"
+    subprocess.run(
+        [binary, "certify", str(dataset), "--key", str(keyfile), "--timestamp", ts,
+         "--out", str(out), "--profile", "world-model-ready"],
+        check=True,
+    )
+    assert json.loads(py_cert) == json.loads(out.read_text()), "profiled certificates must match"
+
+    # Verification summaries must match too, readiness block included.
+    py_verified = json.loads(veridex.verify(py_cert, str(dataset)))
+    cli_verified = json.loads(
+        subprocess.run(
+            [binary, "verify", str(dataset), "--certificate", str(out), "--json"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    )
+    assert py_verified == cli_verified, "Python and CLI verification summaries must agree"
+    assert py_verified["readiness"]["profile"] == "world-model-ready"
+
+    # An unknown profile is an error on both sides, never a silently unprofiled certificate.
+    try:
+        veridex.certify(str(dataset), secret, ts, None, "nope")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("certify must reject an unknown profile")
+
+
 def test_python_keygen_certify_verify_roundtrip(tmp_path):
     dataset = _demo_dataset(tmp_path)
     secret, public = veridex.keygen()

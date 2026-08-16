@@ -193,6 +193,17 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   construction: a non-rig is `N/A`, never a vacuous pass, and the report claims nothing beyond the
   criteria listed. The block is signed like every other certificate field (verifies offline). See
   [docs/profiles.md](../docs/profiles.md).
+- **Readiness certificates are readable offline, from both surfaces (A5)** — `veridex verify` now
+  reports what a certificate *attests*, not merely that its signature checks out: the CDM hash it is
+  bound to, the trust score and provenance coverage, and — for a certificate issued with
+  `--profile` — the profile verdict and every readiness criterion. `--json` emits the same facts as a
+  machine-readable summary, with the signed `readiness` block verbatim. Everything printed comes out
+  of the signed document, so a doctored readiness block fails verification instead of being read back
+  (covered by a test that flips `ready` to true and asserts the certificate no longer verifies).
+  Python reaches parity: `veridex.certify(..., profile="world-model-ready")` issues the identical
+  profiled certificate (byte-for-byte with the CLI, checked in the parity suite) and
+  `veridex.verify(...)` returns the identical summary. Certify and verify share one core renderer, so
+  the two surfaces can't drift.
 - **Autonomy provenance lineage (A3)** — the MCAP adapter now extracts the sensor-rig lineage a
   producer records in Metadata: firmware, calibration session, platform/vehicle and drive/run IDs,
   capture region, HD-map version, and — acute for public-road capture — redaction and consent status.

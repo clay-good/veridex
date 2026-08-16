@@ -108,5 +108,14 @@ No code until this change is approved; this is the build plan.
       which `veridex check` flags as `TEMPORAL.CLOCK_SKEW` naming the IMU
       (`an_injected_single_sensor_sync_drift_is_flagged_on_an_av_rig`). The LiDAR-camera
       miscalibration half needs the reprojection check (A2) and decoded calibration (A1).
-- [ ] Issue and offline-verify a world-model-readiness certificate.
-- [ ] Docs: an autonomy quickstart and the readiness-profile reference.
+- [x] Issue and offline-verify a world-model-readiness certificate. `certify --profile` issues it and
+      `verify` now reads it back: the bound hash, trust score, profile verdict, and each criterion,
+      with `--json` for the machine-readable form. Everything reported comes from the signed
+      document — a test flips `ready` to true and asserts the certificate no longer verifies, and a
+      non-rig verifies as `N/A`, never a vacuous pass. Python reaches parity
+      (`veridex.certify(..., profile=…)` is byte-identical to the CLI; `veridex.verify` returns the
+      identical summary), enforced by the CI parity suite. Proven on a rig (`tests/profile.rs`) and
+      end-to-end through the binary (`tests/cli.rs`).
+- [~] Docs: an autonomy quickstart and the readiness-profile reference. The readiness-profile
+      reference is [docs/profiles.md](../../../docs/profiles.md), now including how to read a
+      readiness certificate back. A standalone autonomy quickstart is still to write.

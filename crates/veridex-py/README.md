@@ -39,7 +39,13 @@ print(delta["introduced"], delta["score_delta"])
 # Issue and verify a signed, content-bound trust certificate (same as `veridex certify`/`verify`).
 cert = veridex.certify("my-dataset.mcap", secret_key_hex)   # from `veridex keygen`
 result = json.loads(veridex.verify(cert, "my-dataset.mcap"))  # raises ValueError if tampered
-print(result["verified"], result["key_id"])
+print(result["verified"], result["key_id"], result["trust_score"]["score"])
+
+# Certify against a readiness profile: the certificate gains a signed per-criterion `readiness`
+# block, which `verify` reports back (same as `veridex certify --profile`).
+cert = veridex.certify("my-rig.mcap", secret_key_hex, profile="world-model-ready")
+readiness = json.loads(veridex.verify(cert, "my-rig.mcap"))["readiness"]
+print(readiness["ready"], [c["check_id"] for c in readiness["criteria"]])
 ```
 
 These bindings add **no logic**: they call the exact same `veridex_core` pipeline the `veridex`

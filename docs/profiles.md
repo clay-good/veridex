@@ -31,3 +31,39 @@ The `readiness` block on the certificate records the profile name, whether it wa
 overall `ready` flag, and each criterion's `check_id`, `threshold`, `passed`, and finding count — and
 it is signed like every other field, so a reader can trust it offline. The certificate claims nothing
 beyond the criteria listed.
+
+## Reading a readiness certificate back
+
+`verify` reports what the certificate attests, not just that the signature checks out:
+
+```sh
+veridex verify my-rig.mcap --certificate my-rig.veridex.json --key issuer.pub
+```
+
+```
+✓ certificate verified
+  issuer key: 8f3c…
+  issued at:  1700000000
+  dataset:    my-rig
+  bound to:   4a1b9c2d7e5f0813…
+  trust:      B (82)  [data pass (warnings) · provenance 66%]
+  world-model-ready profile: NOT READY
+    ✓ autonomy.rig-sync — rig sensors within a 20 ms cross-sensor span drift
+    ✗ autonomy.sequence-complete — no rig sensor dropping more than 5% of its frames
+    ✓ autonomy.ego-pose-continuity — ego trajectory continuous (no step above 100 m/s implied speed)
+    ✓ autonomy.calibration-completeness — connected transform (TF) tree and camera intrinsics present
+```
+
+Add `--json` for the machine-readable summary (the same fields, plus the `readiness` block verbatim)
+— byte-identical to what `veridex.verify(...)` returns from Python.
+
+Nothing here is re-derived from the dataset: every line comes out of the signed document, so editing
+a criterion to read `passed` makes the certificate fail verification instead of printing a nicer
+verdict. Verification is fully offline.
+
+From Python:
+
+```python
+cert = veridex.certify("my-rig.mcap", secret_key_hex, profile="world-model-ready")
+readiness = json.loads(veridex.verify(cert, "my-rig.mcap"))["readiness"]
+```

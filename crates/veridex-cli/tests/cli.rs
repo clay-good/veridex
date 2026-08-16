@@ -255,3 +255,62 @@ fn full_keygen_certify_verify_flow() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_readiness_certificate_is_issued_and_read_back_by_verify() {
+    // A readiness certificate must be *usable* offline: `verify` has to report what it attests —
+    // the trust score and each readiness criterion — not just that the signature checks out.
+    let dataset = fixture_dataset();
+    let dir = temp_dir("readiness");
+    let key = dir.join("issuer");
+    let key_s = key.to_str().unwrap();
+    let cert = dir.join("cert.json");
+    let cert_s = cert.to_str().unwrap();
+    run(&["keygen", key_s]);
+
+    let (code, stdout, _) = run(&[
+        "certify",
+        &dataset,
+        "--key",
+        key_s,
+        "--out",
+        cert_s,
+        "--profile",
+        "world-model-ready",
+    ]);
+    assert_eq!(code, 0, "certify --profile must succeed");
+    assert!(stdout.contains("world-model-ready profile"), "{stdout}");
+
+    // Terminal verification reports the profile verdict and every criterion.
+    let (code, stdout, _) = run(&["verify", &dataset, "--certificate", cert_s]);
+    assert_eq!(code, 0, "verify must accept the certificate");
+    assert!(stdout.contains("trust:"), "{stdout}");
+    assert!(stdout.contains("bound to:"), "{stdout}");
+    // The demo is a manipulation dataset, so the autonomy profile is honestly N/A, never a pass.
+    assert!(stdout.contains("N/A (not a sensor rig)"), "{stdout}");
+
+    // `--json` carries the same signed facts for a machine.
+    let (code, stdout, _) = run(&["verify", &dataset, "--certificate", cert_s, "--json"]);
+    assert_eq!(code, 0);
+    let doc: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(doc["verified"], true);
+    assert_eq!(doc["readiness"]["profile"], "world-model-ready");
+    assert_eq!(doc["readiness"]["ready"], false);
+    assert!(doc["trust_score"]["score"].is_number());
+
+    // An unknown profile is a tool error, never a silently unprofiled certificate.
+    let (code, _, stderr) = run(&[
+        "certify",
+        &dataset,
+        "--key",
+        key_s,
+        "--out",
+        cert_s,
+        "--profile",
+        "nope",
+    ]);
+    assert_eq!(code, 2, "unknown profile must be a tool error");
+    assert!(stderr.contains("unknown profile"), "{stderr}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

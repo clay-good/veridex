@@ -124,31 +124,50 @@ fn keygen() -> (String, String) {
     (kp.secret_hex(), kp.public_hex())
 }
 
-/// `veridex.certify(path, secret_key_hex, timestamp=None, format=None) -> str`
+/// `veridex.certify(path, secret_key_hex, timestamp=None, format=None, profile=None) -> str`
 ///
 /// Validate a dataset and issue a signed, content-bound trust certificate as a JSON string,
 /// byte-identical to `veridex certify` for the same key and timestamp (Ed25519 signing is
 /// deterministic). `secret_key_hex` is a 64-character hex secret key (see `veridex keygen`);
-/// `timestamp` defaults to the current Unix time if omitted.
+/// `timestamp` defaults to the current Unix time if omitted. `profile` names a readiness profile
+/// (e.g. `world-model-ready`), which applies the profile's tolerances and attaches the signed
+/// per-criterion `readiness` block — exactly as `veridex certify --profile` does.
 #[pyfunction]
-#[pyo3(signature = (path, secret_key_hex, timestamp=None, format=None))]
+#[pyo3(signature = (path, secret_key_hex, timestamp=None, format=None, profile=None))]
 fn certify(
     path: &str,
     secret_key_hex: &str,
     timestamp: Option<&str>,
     format: Option<&str>,
+    profile: Option<&str>,
 ) -> PyResult<String> {
     let keypair = veridex_core::SigningKeypair::from_secret_hex(secret_key_hex)
         .ok_or_else(|| PyValueError::new_err("secret_key_hex is not a valid 32-byte hex key"))?;
+    // An unknown profile name is an error, never a silently ignored argument that would produce a
+    // certificate claiming less than the caller asked for.
+    let profile = match profile {
+        None => None,
+        Some(name) => Some(veridex_core::profile::by_name(name).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "unknown profile `{name}` (known: world-model-ready)"
+            ))
+        })?),
+    };
     let registry = veridex_core::default_registry();
-    let out = veridex_core::run_check(
+    // A profile applies its own tolerances to the run (e.g. tighter cross-sensor sync).
+    let run_config = veridex_core::RunConfig {
+        tolerances: profile.as_ref().map(|p| p.tolerances).unwrap_or_default(),
+        ..veridex_core::RunConfig::default()
+    };
+    let out = veridex_core::run_check_with(
         &registry,
         &source_for(path),
         format,
         &IngestOptions::default(),
+        &run_config,
     )
     .map_err(to_py_err)?;
-    let cert = veridex_core::Certificate::build(
+    let mut cert = veridex_core::Certificate::build(
         out.ingested.dataset.id.clone(),
         &out.verdict,
         out.trust.clone(),
@@ -158,6 +177,13 @@ fn certify(
             timestamp: timestamp.map(String::from).unwrap_or_else(unix_timestamp),
         },
     );
+    if let Some(p) = &profile {
+        cert.readiness = Some(veridex_core::certificate::ReadinessReport::evaluate(
+            p,
+            &out.verdict,
+            &out.ingested.dataset,
+        ));
+    }
     let signed = veridex_core::sign(cert, &keypair);
     serde_json::to_string_pretty(&signed).map_err(to_py_err)
 }
@@ -166,7 +192,9 @@ fn certify(
 ///
 /// Verify a certificate offline. When `path` is given the certificate must be bound to that dataset
 /// (content-hash / transplant check); when `public_key_hex` is given it must be signed by that
-/// issuer. Returns a JSON summary on success; raises `ValueError` if verification fails.
+/// issuer. Returns a JSON summary on success — identical to `veridex verify --json`, carrying the
+/// trust score and the signed `readiness` block when the certificate has one; raises `ValueError`
+/// if verification fails.
 #[pyfunction]
 #[pyo3(signature = (certificate_json, path=None, public_key_hex=None, format=None))]
 fn verify(
@@ -193,13 +221,7 @@ fn verify(
     };
     let v = veridex_core::verify(&signed, presented.as_deref(), public_key_hex)
         .map_err(|e| PyValueError::new_err(e.to_string()))?;
-    let doc = serde_json::json!({
-        "verified": true,
-        "key_id": v.key_id,
-        "timestamp": v.timestamp,
-        "dataset_id": signed.certificate.dataset_id,
-    });
-    serde_json::to_string_pretty(&doc).map_err(to_py_err)
+    Ok(veridex_core::verified_json(&signed, &v))
 }
 
 /// `veridex.diff(old_report_json, new_report_json) -> str`

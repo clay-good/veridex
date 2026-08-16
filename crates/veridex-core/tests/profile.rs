@@ -166,3 +166,114 @@ fn a_manipulation_dataset_is_not_applicable() {
     assert!(!r.applicable, "a manipulation dataset is not a rig");
     assert!(!r.ready, "not applicable is never ready (no vacuous pass)");
 }
+
+/// Certify a dataset against a profile, exactly as the CLI and Python bindings do.
+fn certify_with(d: &Dataset, p: &profile::Profile) -> veridex_core::SignedCertificate {
+    let mut d = d.clone();
+    d.canonicalize_order();
+    let v = verdict_for(&d, p);
+    let trust = veridex_core::score(&v, &veridex_core::ProvenanceCoverage::of(&d));
+    let keypair = veridex_core::SigningKeypair::from_secret_hex(&"01".repeat(32)).expect("key");
+    let mut cert = veridex_core::Certificate::build(
+        d.id.clone(),
+        &v,
+        trust,
+        veridex_core::ProvenanceCoverage::of(&d),
+        veridex_core::Issuance {
+            key_id: keypair.public_hex(),
+            timestamp: "1700000000".into(),
+        },
+    );
+    cert.readiness = Some(ReadinessReport::evaluate(p, &v, &d));
+    veridex_core::sign(cert, &keypair)
+}
+
+#[test]
+fn a_readiness_certificate_verifies_offline_and_reports_every_criterion() {
+    let p = profile::world_model_ready();
+    let d = healthy_rig();
+    let signed = certify_with(&d, &p);
+
+    // Offline verification: no network, no original dataset needed for the signature itself.
+    let v = veridex_core::verify(&signed, None, Some(&signed.public_key)).expect("verifies");
+
+    let text = veridex_core::render_verified(&signed, &v);
+    assert!(text.contains("certificate verified"), "{text}");
+    assert!(text.contains("world-model-ready profile: READY"), "{text}");
+    for (id, threshold) in p.criteria {
+        assert!(text.contains(id), "criterion {id} must be reported: {text}");
+        assert!(text.contains(threshold), "{text}");
+    }
+
+    // The machine-readable form carries the same signed readiness block.
+    let doc: serde_json::Value =
+        serde_json::from_str(&veridex_core::verified_json(&signed, &v)).expect("json");
+    assert_eq!(doc["verified"], true);
+    assert_eq!(doc["readiness"]["ready"], true);
+    assert_eq!(doc["readiness"]["profile"], "world-model-ready");
+    assert_eq!(doc["readiness"]["criteria"].as_array().unwrap().len(), 4);
+    assert_eq!(doc["cdm_content_hash"], signed.certificate.cdm_content_hash);
+}
+
+#[test]
+fn a_not_ready_certificate_says_so_and_cannot_be_upgraded_by_editing_it() {
+    let p = profile::world_model_ready();
+    let mut d = healthy_rig();
+    let short: Vec<i64> = (0..10).map(|i| i * 100_000_000).collect();
+    d.episodes[0].streams[2] = sensor("imu", Modality::Imu, &short);
+    let signed = certify_with(&d, &p);
+
+    let v = veridex_core::verify(&signed, None, None).expect("verifies");
+    let text = veridex_core::render_verified(&signed, &v);
+    assert!(
+        text.contains("world-model-ready profile: NOT READY"),
+        "{text}"
+    );
+
+    // Flipping the readiness verdict is exactly the attack the signature must stop: the readiness
+    // block is signed like every other field, so a forged "READY" no longer verifies at all.
+    let mut forged = signed.clone();
+    let r = forged.certificate.readiness.as_mut().expect("readiness");
+    r.ready = true;
+    for c in &mut r.criteria {
+        c.passed = true;
+        c.findings = 0;
+    }
+    assert!(
+        veridex_core::verify(&forged, None, None).is_err(),
+        "an edited readiness block must fail verification"
+    );
+}
+
+#[test]
+fn a_non_rig_readiness_certificate_verifies_and_reports_n_a_not_a_pass() {
+    let p = profile::world_model_ready();
+    let ticks: Vec<i64> = (0..20).map(|i| i * 100_000_000).collect();
+    let d = Dataset {
+        id: "manip".into(),
+        metadata: vec![],
+        provenance: vec![],
+        episodes: vec![Episode {
+            index: 0,
+            start_ts: Some(0),
+            end_ts: Some(1_900_000_000),
+            streams: vec![
+                sensor("cam", Modality::Video, &ticks),
+                sensor("state", Modality::ScalarState, &ticks),
+            ],
+            task: None,
+            labels: vec![],
+            ego_poses: None,
+            declared_frame_count: None,
+        }],
+        calibration: None,
+    };
+    let signed = certify_with(&d, &p);
+    let v = veridex_core::verify(&signed, None, None).expect("verifies");
+    let text = veridex_core::render_verified(&signed, &v);
+    assert!(text.contains("N/A (not a sensor rig)"), "{text}");
+    assert!(
+        !text.contains("READY"),
+        "N/A must never read as ready: {text}"
+    );
+}

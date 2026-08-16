@@ -34,7 +34,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ),
     (
         "verify",
-        "verify a certificate offline (--certificate <c.json>)",
+        "verify a certificate offline (--certificate <c.json>; --json for machine output)",
     ),
     ("keygen", "generate an Ed25519 issuer keypair"),
     (
@@ -634,20 +634,10 @@ fn cmd_certify(rest: &[String]) -> ExitCode {
         signed.certificate.trust_score.score,
         &signed.certificate.cdm_content_hash[..16]
     );
-    // Per-criterion readiness, when a profile was evaluated.
+    // Per-criterion readiness, when a profile was evaluated — rendered by the shared helper the
+    // `verify` side uses, so issuing and verifying report the criteria identically.
     if let Some(r) = &signed.certificate.readiness {
-        let verdict = if !r.applicable {
-            "N/A (not a sensor rig)"
-        } else if r.ready {
-            "READY"
-        } else {
-            "NOT READY"
-        };
-        println!("  {} profile: {verdict}", r.profile);
-        for c in &r.criteria {
-            let mark = if c.passed { "✓" } else { "✗" };
-            println!("    {mark} {} — {}", c.check_id, c.threshold);
-        }
+        print!("{}", veridex_core::render_readiness(r, "  "));
     }
     println!("wrote {out_path}");
     ExitCode::SUCCESS
@@ -734,10 +724,13 @@ fn cmd_verify(rest: &[String]) -> ExitCode {
         expected_issuer.as_deref(),
     ) {
         Ok(v) => {
-            println!("✓ certificate verified");
-            println!("  issuer key: {}", v.key_id);
-            println!("  issued at:  {}", v.timestamp);
-            println!("  dataset:    {}", signed.certificate.dataset_id);
+            // Everything printed here is covered by the signature that just verified, including the
+            // readiness block — a tampered certificate never reaches this branch.
+            if args.json {
+                println!("{}", veridex_core::verified_json(&signed, &v));
+            } else {
+                print!("{}", veridex_core::render_verified(&signed, &v));
+            }
             ExitCode::SUCCESS
         }
         Err(e) => {

@@ -179,7 +179,11 @@ extracted `license` as covered provenance rather than a `PROVENANCE.MISSING_LICE
 
 The certificate binds to the dataset's CDM content hash and is Ed25519-signed: `verify` succeeds
 offline, and rejects a tampered certificate (signature mismatch) or one presented against a
-different dataset (content-hash mismatch).
+different dataset (content-hash mismatch). On success `verify` reports what the certificate actually
+attests — the hash it is bound to, the trust score, and, for a certificate issued with
+`--profile world-model-ready`, each readiness criterion's verdict (`--json` for the machine-readable
+form). Every line printed is covered by the signature that just verified, so a doctored readiness
+block fails verification rather than being read back.
 
 ## Python
 
