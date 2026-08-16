@@ -255,6 +255,10 @@ impl Check for RangeSanity {
                 let Some(stats) = stream.stats else {
                     continue;
                 };
+                // NOTE: this claims the stream before evaluating it, unlike the sibling checks, so
+                // only the first episode carrying a stream name is examined. That is exact today —
+                // stored stats are dataset-level, attached identically to every episode — but it
+                // would silently skip later episodes if an adapter ever attaches per-episode stats.
                 if !reported.insert(stream.name.as_str()) {
                     continue;
                 }

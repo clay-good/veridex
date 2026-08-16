@@ -260,6 +260,23 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **A 33 KB MF4 file could allocate 1.35 GB.** The block-graph walk kept a visited set per parent
+  chain, but MF4 links may legally point at shared blocks — so *n* data groups each re-walking the
+  same *n* channel groups each re-walking the same *n* channels was O(n³) streams. One visited set
+  now spans the whole walk, making it linear in file size.
+- **MF4 could produce plausible-but-wrong data instead of reporting it.** An unapplied `##CC`
+  conversion was reported for a signal but ignored on the **time master**, silently shifting every
+  timestamp in the group (it now stops the group); channels declaring per-sample invalidation bits
+  were decoded as if every sample were valid (they are now skipped and reported); a second channel
+  group inside a sorted data group was decoded against the same records from offset 0; and a
+  three-way name collision emitted two streams with the same name.
+- **MF4 rasters were compared as if they shared a clock.** Every stream got one `mf4-master` clock id,
+  so a 1 Hz group and a 100 Hz group over the same measurement tripped start/end-offset checks. Each
+  channel group is now its own timeline.
+- **A bus-only measurement was treated as a sensor rig.** Rig detection counted AV-native streams, and
+  a CAN or MF4 log is dozens of `CanSignal` streams off one bus — so ordinary raster differences read
+  as rig-wide clock drift (an *error*), and the pairwise `TEMPORAL.CLOCK_SKEW` was suppressed on those
+  datasets. A rig now also requires two distinct AV-native modalities, which every real rig has.
 - **`veridex verify` implied trust it had not checked.** With no `--key`, verification confirmed only
   that a certificate was internally consistent and bound to the presented dataset — so a certificate
   forged about *real* data and signed with an attacker's own key verified cleanly, exit 0, reporting

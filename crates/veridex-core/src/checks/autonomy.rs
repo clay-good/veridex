@@ -17,11 +17,19 @@ pub const RIG_SENSOR_THRESHOLD: usize = 3;
 /// with an AV-native rig modality. Shared with [`ClockSkew`](crate::checks::temporal::ClockSkew),
 /// which skips rig episodes so the two checks never double-report cross-sensor sync.
 pub fn is_rig_episode(ep: &Episode) -> bool {
-    ep.streams
-        .iter()
-        .filter(|s| s.modality.is_rig_sensor())
-        .count()
-        >= RIG_SENSOR_THRESHOLD
+    let sensors = ep.streams.iter().filter(|s| s.modality.is_rig_sensor());
+    let mut modalities = std::collections::BTreeSet::new();
+    let mut count = 0usize;
+    for s in sensors {
+        modalities.insert(s.modality.tag());
+        count += 1;
+    }
+    // Sensor count alone is not a rig. A CAN or MF4 measurement is dozens of `CanSignal` streams off
+    // one bus — not several sensors observing the world from different places, which is what the rig
+    // checks reason about. Requiring two distinct AV-native modalities keeps a bus-only log out of
+    // rig mode (where it would trip rig-wide sync on ordinary raster differences) without excluding
+    // any real rig, which always mixes LiDAR/IMU/GNSS/ego-pose.
+    count >= RIG_SENSOR_THRESHOLD && modalities.len() >= 2
 }
 
 /// `min_ts`, `max_ts` over a stream's frames (frames are not assumed sorted). Duplicated from the

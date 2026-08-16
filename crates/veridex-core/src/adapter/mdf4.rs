@@ -176,6 +176,8 @@ struct Channel {
     bit_offset: u8,
     byte_offset: u32,
     bit_count: u32,
+    /// `cn_flags`, read so invalidation-bit declarations can be honored rather than ignored.
+    flags: u32,
     conversion: Conversion,
     /// A conversion type present in the file but not applied.
     unapplied_conversion: Option<u8>,
@@ -186,6 +188,12 @@ impl Channel {
     /// group is sampled against.
     fn is_time_master(&self) -> bool {
         (self.channel_type == 2 || self.channel_type == 3) && self.sync_type == 1
+    }
+
+    /// Whether the channel declares that some or all of its samples may be invalid — `cn_flags` bit 0
+    /// ("all values invalid") or bit 1 ("invalidation bit valid").
+    fn declares_invalidation(&self) -> bool {
+        self.flags & 0b11 != 0
     }
 
     /// Whether this adapter can decode the channel's raw value: a byte-aligned, whole-byte integer or
@@ -269,6 +277,7 @@ fn channel_at(bytes: &[u8], at: u64) -> Option<Channel> {
         bit_offset: *data.get(3)?,
         byte_offset: le_u32(data, 4)?,
         bit_count: le_u32(data, 8)?,
+        flags: le_u32(data, 12).unwrap_or(0),
         conversion,
         unapplied_conversion,
     })
@@ -367,8 +376,11 @@ impl Adapter for Mdf4Adapter {
         let mut names_used: BTreeSet<String> = BTreeSet::new();
         let mut group_index = 0u64;
         let mut dg_at = opt_link(&bytes, hd_at, &hd, 0);
-        // A malformed file must not spin: every hop must move forward through a real block, and the
-        // walk is bounded by the number of blocks that could physically fit in the file.
+        // A malformed file must not spin *or* explode. One visited set spans every chain — data
+        // groups, channel groups, and channels alike — because links may legally point at shared
+        // blocks: with a set per parent chain, n data groups each re-walking the same n channel
+        // groups each re-walking the same n channels is O(n³) streams, and a 33 KB file measured
+        // 1.35 GB of allocation. Visiting each block once makes the whole walk linear in file size.
         let mut seen: BTreeSet<u64> = BTreeSet::new();
         while let Some(at) = dg_at {
             if !seen.insert(at) {
@@ -395,13 +407,22 @@ impl Adapter for Mdf4Adapter {
                 });
                 break;
             }
-            let result = ingest_data_group(&bytes, at, &dg, group_index);
+            let result = ingest_data_group(&bytes, at, &dg, group_index, &mut seen);
             for mut stream in result.streams {
-                // Channel names are only unique within a group; disambiguate across groups so no
-                // stream is silently dropped by a name collision.
+                // Channel names are only unique within a group, and not always even there;
+                // disambiguate until the name is genuinely free so no stream is dropped — or worse,
+                // silently duplicated — by a collision.
                 if !names_used.insert(stream.name.clone()) {
-                    stream.name = format!("{}#{}", stream.name, group_index);
-                    names_used.insert(stream.name.clone());
+                    let base = stream.name.clone();
+                    let mut n = 0u64;
+                    loop {
+                        let candidate = format!("{base}#{group_index}.{n}");
+                        if names_used.insert(candidate.clone()) {
+                            stream.name = candidate;
+                            break;
+                        }
+                        n += 1;
+                    }
                 }
                 streams.push(stream);
             }
@@ -489,7 +510,13 @@ impl Adapter for Mdf4Adapter {
 }
 
 /// Ingest one `##DG`: resolve its channel groups, decode records, and emit a stream per channel.
-fn ingest_data_group(bytes: &[u8], dg_at: u64, dg: &BlockHeader, group_index: u64) -> GroupResult {
+fn ingest_data_group(
+    bytes: &[u8],
+    dg_at: u64,
+    dg: &BlockHeader,
+    group_index: u64,
+    seen: &mut BTreeSet<u64>,
+) -> GroupResult {
     let mut out = GroupResult {
         streams: Vec::new(),
         unmapped: Vec::new(),
@@ -535,9 +562,19 @@ fn ingest_data_group(bytes: &[u8], dg_at: u64, dg: &BlockHeader, group_index: u6
 
     let mut cg_at = opt_link(bytes, dg_at, dg, 1);
     let mut cg_index = 0u64;
-    let mut seen: BTreeSet<u64> = BTreeSet::new();
     while let Some(at) = cg_at {
         if !seen.insert(at) {
+            break;
+        }
+        // A sorted data group holds exactly one channel group. Decoding a second against the same
+        // records from offset 0 would produce plausible-but-wrong values, so report and stop.
+        if cg_index > 0 {
+            out.unmapped.push(UnmappedField {
+                source_path: locator("channel-groups"),
+                note:
+                    "sorted data group holds more than one channel group; only the first is decoded"
+                        .into(),
+            });
             break;
         }
         let Some(cg) = block_header(bytes, at) else {
@@ -555,9 +592,8 @@ fn ingest_data_group(bytes: &[u8], dg_at: u64, dg: &BlockHeader, group_index: u6
         // Collect the group's channels.
         let mut channels: Vec<Channel> = Vec::new();
         let mut cn_at = opt_link(bytes, at, &cg, 1);
-        let mut seen_cn: BTreeSet<u64> = BTreeSet::new();
         while let Some(cn) = cn_at {
-            if !seen_cn.insert(cn) {
+            if !seen.insert(cn) {
                 break;
             }
             let Some(header) = block_header(bytes, cn) else {
@@ -575,7 +611,9 @@ fn ingest_data_group(bytes: &[u8], dg_at: u64, dg: &BlockHeader, group_index: u6
             records,
             record_len,
             cycle_count,
+            inval_bytes,
             &channels,
+            group_index,
             &locate,
             &mut out,
         );
@@ -588,11 +626,14 @@ fn ingest_data_group(bytes: &[u8], dg_at: u64, dg: &BlockHeader, group_index: u6
 
 /// Decode one channel group's records into streams, appending to `out`. Returns whether any stream
 /// was produced.
+#[allow(clippy::too_many_arguments)]
 fn decode_channel_group(
     records: &[u8],
     record_len: usize,
     cycle_count: u64,
+    inval_bytes: usize,
     channels: &[Channel],
+    group_index: u64,
     locate: &dyn Fn(&str) -> String,
     out: &mut GroupResult,
 ) -> bool {
@@ -630,6 +671,17 @@ fn decode_channel_group(
         });
         return false;
     }
+    // An unapplied conversion on a signal costs that signal's values; on the master it silently
+    // corrupts *every* stream's timestamps in the group, so it must stop the group, not be noted.
+    if let Some(cc) = master.unapplied_conversion {
+        out.unmapped.push(UnmappedField {
+            source_path: locate(&master.name),
+            note: format!(
+                "time master carries ##CC conversion type {cc}, which is not applied, so its timestamps would be wrong; nothing decoded"
+            ),
+        });
+        return false;
+    }
 
     // Records actually present, never more than the file holds even if the group over-declares.
     let available = records.len() / record_len;
@@ -658,6 +710,18 @@ fn decode_channel_group(
     let mut reported_conversions: BTreeSet<u8> = BTreeSet::new();
     for channel in channels {
         if channel.is_time_master() {
+            continue;
+        }
+        // MDF marks a sample invalid with a per-record invalidation bit. Veridex does not evaluate
+        // those bits, so a channel that declares them would present invalid samples as real values.
+        if inval_bytes != 0 && channel.declares_invalidation() {
+            out.unmapped.push(UnmappedField {
+                source_path: locate(&channel.name),
+                note: format!(
+                    "channel declares per-sample invalidation (cn_flags 0x{:x}), which is not evaluated; its samples are not decoded",
+                    channel.flags
+                ),
+            });
             continue;
         }
         if !channel.is_decodable() {
@@ -710,7 +774,9 @@ fn decode_channel_group(
             // physical thing the CAN+DBC adapter emits, so they share a modality.
             modality: Modality::CanSignal,
             declared_rate_hz: None,
-            clock_id: CLOCK_ID.to_string(),
+            // Each channel group is its own raster with its own master; they are not a shared clock,
+            // so cross-stream timing checks must not compare one raster's span against another's.
+            clock_id: format!("{CLOCK_ID}#{group_index}"),
             dtype: Some("float64".into()),
             shape: None,
             frames,
@@ -829,6 +895,7 @@ mod tests {
             bit_offset,
             byte_offset: 0,
             bit_count,
+            flags: 0,
             conversion: Conversion::Identity,
             unapplied_conversion: None,
         };

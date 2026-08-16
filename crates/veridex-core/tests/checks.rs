@@ -2203,3 +2203,62 @@ fn a_rig_camera_without_intrinsics_is_flagged() {
     let f = autonomy::CalibrationCompleteness.run(&d);
     assert!(f.iter().any(|x| x.message.contains("no camera intrinsics")));
 }
+
+#[test]
+fn a_bus_only_measurement_is_not_treated_as_a_sensor_rig() {
+    // A CAN or MF4 log is dozens of `CanSignal` streams off one bus, not several sensors observing
+    // the world from different places. Treating it as a rig made ordinary raster differences (a 1 Hz
+    // group vs a 100 Hz group over one measurement) read as cross-sensor clock drift.
+    use veridex_core::cdm::Modality;
+    let ep = |modalities: &[Modality]| veridex_core::cdm::Episode {
+        index: 0,
+        start_ts: Some(0),
+        end_ts: Some(1_000_000_000),
+        streams: modalities
+            .iter()
+            .enumerate()
+            .map(|(i, &m)| veridex_core::cdm::Stream {
+                name: format!("s{i}"),
+                modality: m,
+                declared_rate_hz: None,
+                clock_id: "c".into(),
+                dtype: None,
+                shape: None,
+                frames: vec![],
+                stats: None,
+                dim_stats: None,
+                observed_stats: None,
+                observed_saturation: None,
+                observed_non_finite: None,
+                observed_dim_stats: None,
+                point_fields: None,
+            })
+            .collect(),
+        task: None,
+        labels: vec![],
+        ego_poses: None,
+        declared_frame_count: None,
+    };
+    let is_rig = veridex_core::checks::autonomy::is_rig_episode;
+
+    assert!(
+        !is_rig(&ep(&[
+            Modality::CanSignal,
+            Modality::CanSignal,
+            Modality::CanSignal,
+            Modality::CanSignal
+        ])),
+        "one bus is not a rig, however many signals it carries"
+    );
+    // A real rig always mixes modalities, and is unaffected.
+    assert!(is_rig(&ep(&[
+        Modality::PointCloud,
+        Modality::Imu,
+        Modality::Gnss
+    ])));
+    assert!(is_rig(&ep(&[
+        Modality::CanSignal,
+        Modality::CanSignal,
+        Modality::EgoPose
+    ])));
+}

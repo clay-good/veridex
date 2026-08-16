@@ -120,7 +120,46 @@ impl Mf4Builder {
         )
     }
 
+    /// A channel with explicit `cn_flags` (e.g. an invalidation-bit declaration).
+    #[allow(clippy::too_many_arguments)]
+    fn channel_with_flags(
+        &mut self,
+        name: &str,
+        channel_type: u8,
+        sync_type: u8,
+        data_type: u8,
+        bit_offset: u8,
+        byte_offset: u32,
+        bit_count: u32,
+        conversion: Option<u64>,
+        flags: u32,
+    ) -> u64 {
+        let at = self.channel(
+            name,
+            channel_type,
+            sync_type,
+            data_type,
+            bit_offset,
+            byte_offset,
+            bit_count,
+            conversion,
+        );
+        // cn_flags sits at data offset 12, i.e. after the header, 8 links, and 12 data bytes.
+        let off = at as usize + 24 + 8 * 8 + 12;
+        self.bytes[off..off + 4].copy_from_slice(&flags.to_le_bytes());
+        at
+    }
+
     fn channel_group(&mut self, cycle_count: u64, data_bytes: u32) -> u64 {
+        self.channel_group_with_inval(cycle_count, data_bytes, 0)
+    }
+
+    fn channel_group_with_inval(
+        &mut self,
+        cycle_count: u64,
+        data_bytes: u32,
+        inval_bytes: u32,
+    ) -> u64 {
         let mut data = Vec::new();
         data.extend_from_slice(&0u64.to_le_bytes()); // record_id
         data.extend_from_slice(&cycle_count.to_le_bytes());
@@ -128,7 +167,7 @@ impl Mf4Builder {
         data.extend_from_slice(&0u16.to_le_bytes()); // path separator
         data.extend_from_slice(&0u32.to_le_bytes()); // reserved
         data.extend_from_slice(&data_bytes.to_le_bytes());
-        data.extend_from_slice(&0u32.to_le_bytes()); // inval_bytes
+        data.extend_from_slice(&inval_bytes.to_le_bytes());
         self.block(b"##CG", &[0, 0, 0, 0, 0, 0], &data)
     }
 
@@ -242,7 +281,10 @@ fn channels_become_streams_with_the_time_master_as_the_timeline() {
     assert_eq!(names, vec!["speed", "temperature"]);
     for s in &ep.streams {
         assert_eq!(s.modality, Modality::CanSignal);
-        assert_eq!(s.clock_id, "mf4-master");
+        assert_eq!(
+            s.clock_id, "mf4-master#0",
+            "each raster is its own timeline"
+        );
         assert_eq!(s.frames.len(), 5, "one frame per record");
     }
     // 0.1 s spacing, in nanoseconds.
@@ -518,4 +560,111 @@ fn the_registry_autodetects_an_mf4_file() {
         )
         .expect("registry ingests MF4");
     assert_eq!(ingested.report.format_id, "mf4");
+}
+
+#[test]
+fn shared_blocks_are_visited_once_rather_than_re_walked_per_parent() {
+    // Links may legally point at shared blocks. With a visited set per chain, n data groups each
+    // re-walking the same n channel groups each re-walking the same n channels is O(n³) streams —
+    // measured at 1.35 GB from a 33 KB file before this was fixed.
+    let mut b = Mf4Builder::new(b"veridex ");
+    let mut data = Vec::new();
+    for i in 0..4u32 {
+        data.extend_from_slice(&(i as f64 * 0.1).to_le_bytes());
+        data.extend_from_slice(&i.to_le_bytes());
+    }
+    let dt = b.block(b"##DT", &[], &data);
+
+    // One channel chain, one channel group, then N data groups all pointing at that same group.
+    let value = b.channel("value", 0, 0, UINT_LE, 0, 8, 32, None);
+    let time = b.channel("t", 2, 1, FLOAT_LE, 0, 0, 64, None);
+    b.patch_link(time, 0, value);
+    let cg = b.channel_group(4, 12);
+    b.patch_link(cg, 1, time);
+
+    let n = 30;
+    let mut groups = Vec::new();
+    for _ in 0..n {
+        let dg = b.data_group(0);
+        b.patch_link(dg, 1, cg);
+        b.patch_link(dg, 2, dt);
+        groups.push(dg);
+    }
+    for w in groups.windows(2) {
+        b.patch_link(w[0], 0, w[1]);
+    }
+    let ingested = ingest(&b.finish(groups[0], 0));
+
+    // The shared channel group is decoded once, not once per data group.
+    assert_eq!(
+        ingested.dataset.episodes[0].streams.len(),
+        1,
+        "a shared block must not be re-walked per parent"
+    );
+}
+
+#[test]
+fn a_conversion_on_the_time_master_that_cannot_be_applied_stops_the_group() {
+    // An unapplied conversion on a signal costs that signal; on the master it would silently shift
+    // every timestamp in the group, so nothing may be decoded from it.
+    let mut b = Mf4Builder::new(b"veridex ");
+    let mut data = Vec::new();
+    for i in 0..3u32 {
+        data.extend_from_slice(&(i as f64 * 0.1).to_le_bytes());
+        data.extend_from_slice(&i.to_le_bytes());
+    }
+    let dt = b.block(b"##DT", &[], &data);
+    let cc = b.rational_conversion();
+    let value = b.channel("value", 0, 0, UINT_LE, 0, 8, 32, None);
+    let time = b.channel("t", 2, 1, FLOAT_LE, 0, 0, 64, Some(cc));
+    b.patch_link(time, 0, value);
+    let cg = b.channel_group(3, 12);
+    b.patch_link(cg, 1, time);
+    let dg = b.data_group(0);
+    b.patch_link(dg, 1, cg);
+    b.patch_link(dg, 2, dt);
+    let ingested = ingest(&b.finish(dg, 0));
+
+    assert!(ingested.dataset.episodes[0].streams.is_empty());
+    assert!(
+        ingested.report.unmapped_fields.iter().any(|u| u
+            .note
+            .contains("time master carries ##CC conversion type 2")),
+        "{:?}",
+        ingested.report.unmapped_fields
+    );
+}
+
+#[test]
+fn a_channel_declaring_invalidation_bits_is_not_decoded() {
+    // Veridex does not evaluate per-sample invalidation bits, so decoding such a channel would
+    // present samples the file marked invalid as real measurements.
+    let mut b = Mf4Builder::new(b"veridex ");
+    let mut data = Vec::new();
+    for i in 0..3u32 {
+        data.extend_from_slice(&(i as f64 * 0.1).to_le_bytes());
+        data.extend_from_slice(&i.to_le_bytes());
+        data.extend_from_slice(&[0xFF, 0xFF]); // invalidation bytes: every sample invalid
+    }
+    let dt = b.block(b"##DT", &[], &data);
+    let value = b.channel_with_flags("value", 0, 0, UINT_LE, 0, 8, 32, None, 0x02);
+    let time = b.channel("t", 2, 1, FLOAT_LE, 0, 0, 64, None);
+    b.patch_link(time, 0, value);
+    let cg = b.channel_group_with_inval(3, 12, 2);
+    b.patch_link(cg, 1, time);
+    let dg = b.data_group(0);
+    b.patch_link(dg, 1, cg);
+    b.patch_link(dg, 2, dt);
+    let ingested = ingest(&b.finish(dg, 0));
+
+    assert!(ingested.dataset.episodes[0].streams.is_empty());
+    assert!(
+        ingested
+            .report
+            .unmapped_fields
+            .iter()
+            .any(|u| u.note.contains("per-sample invalidation")),
+        "{:?}",
+        ingested.report.unmapped_fields
+    );
 }
