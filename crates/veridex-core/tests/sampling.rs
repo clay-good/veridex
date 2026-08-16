@@ -517,3 +517,81 @@ fn the_draw_does_not_depend_on_how_the_episode_set_was_discovered() {
     };
     assert_eq!(request.select(&forward), request.select(&backward));
 }
+
+#[test]
+fn a_lying_episode_total_cannot_exhaust_memory_before_a_byte_is_read() {
+    // `total_episodes` is a few bytes in an untrusted manifest, and the index set it implies used to
+    // be materialized before either ingest budget existed. `u64::MAX` panicked on capacity overflow;
+    // merely enormous values were a straight OOM that still returned Ok.
+    let dir = tempfile::tempdir().unwrap();
+    write_dataset(dir.path(), 2, 2);
+    fs::remove_file(dir.path().join("meta/episodes.jsonl")).unwrap();
+    let info = fs::read_to_string(dir.path().join("meta/info.json")).unwrap();
+    let mut info: serde_json::Value = serde_json::from_str(&info).unwrap();
+    info["total_episodes"] = serde_json::json!(u64::MAX);
+    fs::write(
+        dir.path().join("meta/info.json"),
+        serde_json::to_string_pretty(&info).unwrap(),
+    )
+    .unwrap();
+
+    // A `Fraction` draw needs the whole set, so it is the expensive arm.
+    match check(
+        dir.path(),
+        Sample::Fraction {
+            fraction: 0.5,
+            seed: 0,
+        },
+    ) {
+        Err(IngestError::SamplingUnsupported { reason, .. }) => {
+            assert!(reason.contains("ceiling"), "{reason}");
+        }
+        other => panic!("expected a refusal, got ok={}", other.is_ok()),
+    }
+    // `FirstEpisodes` never needs more than the first n indices, so it stays cheap and succeeds.
+    let out = check(dir.path(), Sample::FirstEpisodes(2)).unwrap();
+    assert_eq!(episode_indices(&out), vec![0, 1]);
+}
+
+#[test]
+fn a_sample_still_catches_episodes_the_manifest_declares_but_the_data_lacks() {
+    // Dropping the dataset-level totals under a sample must not drop the assertion that *is* in the
+    // sample's scope: the sample selected N episodes, and only 2 materialized. That is the check that
+    // catches "the episode set the manifest declares does not exist in the data".
+    let dir = tempfile::tempdir().unwrap();
+    write_dataset(dir.path(), 2, 3);
+    fs::remove_file(dir.path().join("meta/episodes.jsonl")).unwrap();
+    let info = fs::read_to_string(dir.path().join("meta/info.json")).unwrap();
+    let mut info: serde_json::Value = serde_json::from_str(&info).unwrap();
+    info["total_episodes"] = serde_json::json!(10); // data holds 2
+    fs::write(
+        dir.path().join("meta/info.json"),
+        serde_json::to_string_pretty(&info).unwrap(),
+    )
+    .unwrap();
+
+    let out = check(dir.path(), Sample::FirstEpisodes(10)).unwrap();
+    assert_eq!(episode_indices(&out), vec![0, 1]);
+    assert!(
+        out.verdict
+            .findings
+            .iter()
+            .any(|f| f.code.starts_with("STRUCTURAL.EPISODE_COUNT")),
+        "8 selected episodes never materialized: {:?}",
+        out.verdict
+            .findings
+            .iter()
+            .map(|f| f.code.clone())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn the_coverage_banner_carries_no_floating_point_noise() {
+    // The banner is printed in every report and bound into the verdict hash, so `0.29 * 100.0`
+    // rendering as 28.999999999999996 is user-facing.
+    for (fraction, want) in [(0.29, "29%"), (0.5, "50%"), (0.125, "12.5%"), (1.0, "100%")] {
+        let d = Sample::Fraction { fraction, seed: 3 }.describe();
+        assert!(d.starts_with(want), "fraction {fraction} rendered as {d}");
+    }
+}

@@ -91,7 +91,19 @@ impl Sample {
             Sample::All => "full dataset".into(),
             Sample::FirstEpisodes(n) => format!("first {n} episode(s) by index"),
             Sample::Fraction { fraction, seed } => {
-                format!("{}% of episodes (seed {seed})", fraction * 100.0)
+                // Trimmed rather than raw: `0.29 * 100.0` is 28.999999999999996 in binary floating
+                // point, and this string is the partial-coverage banner every report prints — and is
+                // bound into the verdict hash.
+                let pct = fraction * 100.0;
+                let pct = if (pct - pct.round()).abs() < 1e-9 {
+                    format!("{}", pct.round())
+                } else {
+                    format!("{pct:.4}")
+                        .trim_end_matches('0')
+                        .trim_end_matches('.')
+                        .to_string()
+                };
+                format!("{pct}% of episodes (seed {seed})")
             }
         }
     }

@@ -84,13 +84,53 @@ struct Args {
 }
 
 impl Args {
-    /// Whether any sampling flag was given, for the commands that refuse them.
+    /// Whether any sampling flag was given. `certify` refuses these with its own explanation.
     fn any_sampling_flag(&self) -> bool {
         self.sample_episodes.is_some()
             || self.sample_fraction.is_some()
             || self.sample_seed.is_some()
     }
+
+    /// Every flag the parser knows, paired with whether this invocation gave it.
+    ///
+    /// The single source of truth for [`reject_flags_except`]. Adding a flag to the parser without
+    /// adding it here means it is never checked, so the two lists are kept adjacent, and a test
+    /// asserts this covers the parser's whole flag set.
+    fn given_flags(&self) -> [(&'static str, bool); 21] {
+        [
+            ("--json", self.json),
+            ("--sarif", self.sarif),
+            ("--html", self.html),
+            ("--force", self.force),
+            ("--allow-any-issuer", self.allow_any_issuer),
+            ("--fail-on-regression", self.fail_on_regression),
+            ("--config", self.config.is_some()),
+            ("--format", self.format.is_some()),
+            ("--key", self.key.is_some()),
+            ("--certificate", self.certificate.is_some()),
+            ("--out", self.out.is_some()),
+            ("--timestamp", self.timestamp.is_some()),
+            ("--emit", self.emit.is_some()),
+            ("--fail-on", self.fail_on.is_some()),
+            ("--min-score", self.min_score.is_some()),
+            ("--profile", self.profile.is_some()),
+            ("--max-frames", self.max_frames.is_some()),
+            (
+                "--max-decompression-ratio",
+                self.max_decompression_ratio.is_some(),
+            ),
+            ("--sample-episodes", self.sample_episodes.is_some()),
+            ("--sample-fraction", self.sample_fraction.is_some()),
+            ("--sample-seed", self.sample_seed.is_some()),
+        ]
+    }
 }
+
+/// The flags every command that ingests a dataset honors, on top of its own.
+const INGEST_FLAGS: &[&str] = &["--format", "--max-frames", "--max-decompression-ratio"];
+
+/// The sampling flags, honored only where a partial verdict is meaningful (`check`, `inspect`).
+const SAMPLING_FLAGS: &[&str] = &["--sample-episodes", "--sample-fraction", "--sample-seed"];
 
 /// Parse the shared flag set. Rejects unknown `--`-flags and value-flags whose value is missing or
 /// looks like another flag, so a typo can never silently disable a gate (e.g. `--min-scor 90` would
@@ -184,14 +224,20 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
     })
 }
 
-/// Reject a flag a command parses but does not act on.
+/// Reject every flag the user gave that `command` does not act on.
 ///
-/// The shared parser accepts one flag set for every command, so a command silently tolerated flags it
-/// had no use for — `inspect --min-score 90` looked like a gate and was not one. Naming the flag is
-/// better than ignoring it: the user asked for something that was not going to happen.
-fn reject_unsupported(command: &str, unsupported: &[(&str, bool)]) -> Result<(), ExitCode> {
-    for (flag, given) in unsupported {
-        if *given {
+/// The shared parser accepts one flag set for every command, so without this a command silently
+/// tolerates flags it has no use for — `inspect --min-score 90` looks like a gate and is not one, and
+/// `check --out report.json` looks like it writes a file and does not. Naming the flag is better than
+/// ignoring it: the user asked for something that was not going to happen.
+///
+/// `supported` is an **allow-list**, deliberately. The earlier deny-list form had to be extended by
+/// hand every time a flag was added to the parser, and every miss was silent by construction — the
+/// failure mode was a flag that did nothing, which is the exact thing this function exists to prevent.
+/// Inverted, a flag missing from a command's list is rejected, which is loud and trivially fixed.
+fn reject_flags_except(command: &str, args: &Args, supported: &[&[&str]]) -> Result<(), ExitCode> {
+    for (flag, given) in args.given_flags() {
+        if given && !supported.iter().any(|group| group.contains(&flag)) {
             eprintln!("veridex: {command} does not support {flag}");
             return Err(ExitCode::from(EXIT_TOOL_ERROR));
         }
@@ -354,6 +400,26 @@ fn cmd_check(rest: &[String]) -> ExitCode {
         Ok(a) => a,
         Err(code) => return code,
     };
+    // `check` neither signs nor emits: the certificate and provenance flags have no effect here.
+    if let Err(code) = reject_flags_except(
+        "check",
+        &args,
+        &[
+            &[
+                "--json",
+                "--sarif",
+                "--html",
+                "--config",
+                "--fail-on",
+                "--min-score",
+                "--profile",
+            ],
+            INGEST_FLAGS,
+            SAMPLING_FLAGS,
+        ],
+    ) {
+        return code;
+    }
     let Some(path) = &args.path else {
         eprintln!("veridex: missing dataset path");
         return ExitCode::from(EXIT_TOOL_ERROR);
@@ -533,6 +599,10 @@ fn cmd_checks(rest: &[String]) -> ExitCode {
         Ok(a) => a,
         Err(code) => return code,
     };
+    // `checks` reads no dataset and runs nothing; only the output format applies.
+    if let Err(code) = reject_flags_except("checks", &args, &[&["--json"]]) {
+        return code;
+    }
     let engine = match veridex_core::checks::default_engine() {
         Ok(e) => e,
         Err(e) => {
@@ -588,12 +658,11 @@ fn cmd_inspect(rest: &[String]) -> ExitCode {
         Ok(a) => a,
         Err(code) => return code,
     };
-    if let Err(code) = reject_unsupported(
+    // `inspect` runs no checks, so nothing about gating, scoring, or signing applies to it.
+    if let Err(code) = reject_flags_except(
         "inspect",
-        &[
-            ("--fail-on", args.fail_on.is_some()),
-            ("--min-score", args.min_score.is_some()),
-        ],
+        &args,
+        &[&["--json"], INGEST_FLAGS, SAMPLING_FLAGS],
     ) {
         return code;
     }
@@ -729,6 +798,27 @@ fn cmd_certify(rest: &[String]) -> ExitCode {
         Ok(a) => a,
         Err(code) => return code,
     };
+    // Sampling gets its own message: "certify does not support --sample-episodes" is true but does
+    // not say why, and the why is the whole point — a certificate is a claim about a dataset, and the
+    // episodes a sample never read are where the problem it would wave through is.
+    if args.any_sampling_flag() {
+        eprintln!(
+            "veridex: certify does not support sampling — a certificate speaks for the whole \
+             dataset, so issue it from a full check"
+        );
+        return ExitCode::from(EXIT_TOOL_ERROR);
+    }
+    // Otherwise: no report-format flags — `certify` writes a signed document, not a report.
+    if let Err(code) = reject_flags_except(
+        "certify",
+        &args,
+        &[
+            &["--key", "--out", "--timestamp", "--profile", "--config"],
+            INGEST_FLAGS,
+        ],
+    ) {
+        return code;
+    }
     let Some(key_path) = &args.key else {
         eprintln!("veridex: certify requires --key <secret-key-file>");
         return ExitCode::from(EXIT_TOOL_ERROR);
@@ -906,14 +996,14 @@ fn cmd_verify(rest: &[String]) -> ExitCode {
         Ok(a) => a,
         Err(code) => return code,
     };
-    if let Err(code) = reject_unsupported(
+    // No sampling: a certificate binds to the whole dataset's hash, so a sampled re-ingest would
+    // hash to something else and read as a transplant, which is not what the user asked about.
+    if let Err(code) = reject_flags_except(
         "verify",
+        &args,
         &[
-            ("--fail-on", args.fail_on.is_some()),
-            ("--min-score", args.min_score.is_some()),
-            // A certificate binds to the whole dataset's hash; a sampled re-ingest would hash to
-            // something else and read as a transplant, which is not what the user asked about.
-            ("sampling flags", args.any_sampling_flag()),
+            &["--json", "--certificate", "--key", "--allow-any-issuer"],
+            INGEST_FLAGS,
         ],
     ) {
         return code;
@@ -1037,6 +1127,10 @@ fn cmd_keygen(rest: &[String]) -> ExitCode {
         Ok(a) => a,
         Err(code) => return code,
     };
+    // `keygen` touches no dataset; only the overwrite guard applies.
+    if let Err(code) = reject_flags_except("keygen", &args, &[&["--force"]]) {
+        return code;
+    }
     let Some(path) = &args.path else {
         eprintln!("veridex: keygen requires an output path, e.g. `veridex keygen issuer`");
         return ExitCode::from(EXIT_TOOL_ERROR);
@@ -1075,16 +1169,11 @@ fn cmd_provenance(rest: &[String]) -> ExitCode {
         Ok(a) => a,
         Err(code) => return code,
     };
-    if let Err(code) = reject_unsupported(
-        "provenance",
-        &[
-            ("--fail-on", args.fail_on.is_some()),
-            ("--min-score", args.min_score.is_some()),
-            // Emitted provenance describes a dataset; from a sample it would describe a subset while
-            // carrying the dataset's name.
-            ("sampling flags", args.any_sampling_flag()),
-        ],
-    ) {
+    // No sampling: emitted provenance describes a dataset, and from a sample it would describe a
+    // subset while carrying the dataset's name.
+    if let Err(code) =
+        reject_flags_except("provenance", &args, &[&["--emit", "--out"], INGEST_FLAGS])
+    {
         return code;
     }
     let mut ingested = match ingest(&args) {
@@ -1130,6 +1219,10 @@ fn cmd_diff(rest: &[String]) -> ExitCode {
         Ok(a) => a,
         Err(code) => return code,
     };
+    // `diff` reads two reports, not a dataset: nothing about ingestion, scoring, or signing applies.
+    if let Err(code) = reject_flags_except("diff", &args, &[&["--json", "--fail-on-regression"]]) {
+        return code;
+    }
     let json_out = args.json;
     let fail_on_regression = args.fail_on_regression;
     let paths: Vec<&String> = args.positionals.iter().collect();

@@ -309,6 +309,58 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **A broken transform tree could be reported by neither calibration check.** `CalibrationCompleteness`
+  deferred its disconnected-tree finding whenever *any* rig sensor declared a `frame_id`, but
+  `SensorFrameResolution` speaks about a stream only if *that stream* declares one, and its
+  connectivity half additionally needs a camera whose frame the tree knows. The suppression
+  precondition was far weaker than the successor's speaking precondition, so four real rig shapes went
+  silent: the stranded sensor is the one with no frame (a mixed log where one driver omits
+  `header.frame_id` lands here); no camera declares a frame; the camera names a frame the tree does not
+  know; and a LiDAR-only rig with no camera at all. Suppression is now conditional on the successor
+  actually being able to name the stranded sensors, so the worst case is a defect reported twice rather
+  than not at all.
+- **One mis-stamped sensor produced one finding per episode.** The calibration is dataset-level and
+  stream names repeat in every episode, so a 50-episode drive log yielded 50 identical error-severity
+  copies of a single defect, and 60 decoded CAN signals off one stranded bus yielded 60. Each
+  `(stream, code)` is now claimed once, the same way the dataset-level statistical checks dedupe.
+- **A bus signal was asked to reach the camera.** `SensorFrameResolution` scanned every rig modality,
+  so a `CanSignal` (a scalar, never projected into an image) or an `EgoPose` stream (whose frame is
+  joined to the body dynamically, not by the static TF tree) could be flagged for having no transform
+  chain to a camera. It now scans the sensors a reprojection is actually defined for: point-cloud,
+  camera, IMU, GNSS.
+- **A lying `total_episodes` could exhaust memory before a byte of data was read.** Under a sampling
+  request with no `meta/episodes.jsonl`, the episode set was built from `info.json`'s declared total —
+  an attacker-controlled `u64` in a few-hundred-byte manifest, materialized before either ingest budget
+  exists, so neither `--max-frames` nor `--max-decompression-ratio` bounded it. `u64::MAX` panicked on
+  capacity overflow; `100000000` measured 16.6 s and 1.3 GB and then returned *Ok*. `--sample-episodes`
+  now materializes only the indices it can select, and the random draw refuses a declared total above
+  1,000,000 rather than trusting it.
+- **A frame name could expand past the decompression budget.** The CDR reader's slice is bounded by
+  the message body, but invalid UTF-8 expands 3x on the way out (each bad byte becomes a 3-byte
+  U+FFFD) and the decoded name is *retained* in the CDM, while the budget charges the raw body: 63
+  channels each carrying 1 MiB of `0xFF` measured 198 MB retained from a 19.8 KB file. Names are now
+  capped at 4 KiB — three orders of magnitude above any real ROS frame id.
+- **A sampled run dropped a truncation it could still see.** Dropping the dataset-level declared totals
+  under a sample also dropped the comparison that *is* in the sample's scope: the sample selected N
+  episodes and only 2 materialized. A dataset declaring 10 episodes while holding 2 passed clean under
+  `--sample-episodes 10`. The selected-episode count is now recorded, so the structural check still
+  catches an episode set the manifest declares and the data lacks.
+- **Python discarded `sample_seed` when given with `sample_episodes`.** The CLI rejects that pair (a
+  seed only means something for the random draw); the binding's own doc comment claimed it did too, and
+  only the no-sample branch enforced it.
+- **A non-finite LeRobot timestamp was cast rather than rejected.** `(ts * 1e9).round() as i64` turned
+  a `NaN` cell into `0` — a fabricated start-of-recording that reads as an ordinary timestamp — and an
+  infinity into `i64::MAX`. Non-finite cells now contribute no frame, matching `mdf4::seconds_to_ns`,
+  which had this guard first.
+- **Every command silently tolerated the flags it does not act on.** The shared parser accepts one flag
+  set for all eight commands, and the per-command rejection list was a hand-maintained deny-list, so
+  `check --out r.json` looked like it wrote a file, `diff --min-score 90` looked like a gate, and
+  `checks` ignored all twenty other flags — each silent by construction, which is the exact failure the
+  list existed to prevent. It is now an allow-list per command: a flag missing from one is rejected,
+  which is loud and trivially fixed. `certify` keeps its own message for the sampling flags, because
+  "does not support --sample-episodes" is true but does not say why.
+- **The coverage banner carried floating-point noise.** `--sample-fraction 0.29` rendered as
+  `28.999999999999996% of episodes`, in every report and in the verdict hash.
 - **A rig that could not be spatially fused certified as `world-model-ready`.** Adding
   `autonomy.sensor-frame-resolution` moved the disconnected-transform-tree report off
   `autonomy.calibration-completeness` — which the profile judges — and onto the new check, which was

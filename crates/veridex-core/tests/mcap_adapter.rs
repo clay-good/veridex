@@ -1245,3 +1245,51 @@ fn a_lidar_stranded_from_the_camera_is_caught_end_to_end() {
         veridex_core::content_hash(&ingest_rig(&bad))
     );
 }
+
+#[test]
+fn an_absurdly_long_frame_name_is_declined_rather_than_retained() {
+    // The CDR reader's slice is bounded by the message body, but invalid UTF-8 expands 3x on the way
+    // out (each bad byte becomes a 3-byte U+FFFD) and the decoded string is *retained* in the CDM,
+    // while the ingest budget charges the raw body. 63 channels each carrying 1 MiB of 0xFF measured
+    // 198 MB retained from a 19.8 KB file — right past the budget meant to cap exactly that.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longname.mcap");
+    let mut out = Vec::new();
+    {
+        let mut w = mcap::Writer::new(Cursor::new(&mut out)).unwrap();
+        let sid = w.add_schema("sensor_msgs/Image", "ros2msg", b"").unwrap();
+        let cid = w
+            .add_channel(sid, "/camera", "cdr", &BTreeMap::new())
+            .unwrap();
+        // A header whose frame_id is 1 MiB of invalid UTF-8.
+        let mut body: Vec<u8> = vec![0x00, 0x01, 0x00, 0x00];
+        body.extend_from_slice(&0u32.to_le_bytes());
+        body.extend_from_slice(&0u32.to_le_bytes());
+        let n = 1024 * 1024usize;
+        body.extend_from_slice(&(n as u32).to_le_bytes());
+        body.extend(std::iter::repeat(0xFFu8).take(n));
+        w.write_to_known_channel(
+            &mcap::records::MessageHeader {
+                channel_id: cid,
+                sequence: 0,
+                log_time: 0,
+                publish_time: 0,
+            },
+            &body,
+        )
+        .unwrap();
+        w.finish().unwrap();
+    }
+    fs::write(&path, &out).unwrap();
+
+    let d = ingest_rig(&path);
+    let retained: usize = d.episodes[0]
+        .streams
+        .iter()
+        .filter_map(|s| s.frame_id.as_ref().map(|f| f.len()))
+        .sum();
+    assert_eq!(
+        retained, 0,
+        "a megabyte-long frame name is not a frame name; it must be declined, not retained"
+    );
+}

@@ -2723,6 +2723,7 @@ fn wired_rig() -> veridex_core::cdm::Calibration {
             xf("base_link", "lidar_top"),
             xf("base_link", "camera_front"),
             xf("base_link", "imu_link"),
+            xf("base_link", "gnss_link"),
         ],
         intrinsics: vec![intr("cam")],
     }
@@ -2734,7 +2735,12 @@ fn a_sensor_whose_frame_is_absent_from_the_tree_is_named() {
     // frame name. Nothing about the tree's shape reveals this.
     let d = rig_with_frames(
         Some(wired_rig()),
-        &[("lidar", "lidar_top_v2"), ("cam", "camera_front")],
+        &[
+            ("lidar", "lidar_top_v2"),
+            ("cam", "camera_front"),
+            ("imu", "imu_link"),
+            ("gnss", "gnss_link"),
+        ],
     );
     let f = autonomy::SensorFrameResolution.run(&d);
     assert_eq!(f.len(), 1, "one finding, naming the one stranded sensor");
@@ -2759,7 +2765,12 @@ fn a_sensor_with_no_transform_path_to_the_camera_is_named() {
     };
     let d = rig_with_frames(
         Some(cal),
-        &[("lidar", "lidar_top"), ("cam", "camera_front")],
+        &[
+            ("lidar", "lidar_top"),
+            ("cam", "camera_front"),
+            ("imu", "base_link"),
+            ("gnss", "base_link"),
+        ],
     );
     let f = autonomy::SensorFrameResolution.run(&d);
     assert_eq!(f.len(), 1);
@@ -2775,6 +2786,7 @@ fn a_correctly_wired_rig_is_clean() {
             ("lidar", "lidar_top"),
             ("cam", "camera_front"),
             ("imu", "imu_link"),
+            ("gnss", "gnss_link"),
         ],
     );
     assert!(autonomy::SensorFrameResolution.run(&d).is_empty());
@@ -2823,7 +2835,12 @@ fn the_disconnected_tree_is_reported_once_at_the_finest_granularity_available() 
 
     let named = rig_with_frames(
         Some(cal.clone()),
-        &[("lidar", "lidar_top"), ("cam", "camera_front")],
+        &[
+            ("lidar", "lidar_top"),
+            ("cam", "camera_front"),
+            ("imu", "base_link"),
+            ("gnss", "base_link"),
+        ],
     );
     assert!(
         !autonomy::CalibrationCompleteness
@@ -2840,5 +2857,181 @@ fn the_disconnected_tree_is_reported_once_at_the_finest_granularity_available() 
             .iter()
             .any(|x| x.message.contains("disconnected")),
         "with no sensor frames, the episode-level report is all there is"
+    );
+}
+
+/// A disconnected tree: `{lidar_mount, lidar_top}` apart from `{base_link, camera_front, imu_link,
+/// gnss_link}`.
+fn split_rig() -> veridex_core::cdm::Calibration {
+    veridex_core::cdm::Calibration {
+        transforms: vec![
+            xf("lidar_mount", "lidar_top"),
+            xf("base_link", "camera_front"),
+            xf("base_link", "imu_link"),
+            xf("base_link", "gnss_link"),
+        ],
+        intrinsics: vec![intr("cam")],
+    }
+}
+
+/// Whether either autonomy calibration check says anything at all about `d`.
+fn any_calibration_finding(d: &Dataset) -> Vec<String> {
+    let mut codes: Vec<String> = autonomy::CalibrationCompleteness
+        .run(d)
+        .iter()
+        .map(|f| f.code.clone())
+        .collect();
+    codes.extend(
+        autonomy::SensorFrameResolution
+            .run(d)
+            .iter()
+            .map(|f| f.code.clone()),
+    );
+    codes
+}
+
+#[test]
+fn a_disconnected_tree_is_never_reported_by_neither_check() {
+    // The supersession hazard, as four concrete rig shapes. `calibration-completeness` may only stay
+    // silent about a broken tree when `sensor-frame-resolution` can actually name the stranded
+    // sensors. Every shape below defeats one of the successor's preconditions, so the episode-level
+    // report has to survive — a break reported by NEITHER check is the worst possible outcome, worse
+    // than reporting it twice.
+    let shapes: &[(&str, &[(&str, &str)])] = &[
+        // (a) the stranded sensor is the one that declares no frame.
+        (
+            "stranded sensor declares no frame",
+            &[
+                ("cam", "camera_front"),
+                ("imu", "imu_link"),
+                ("gnss", "gnss_link"),
+            ],
+        ),
+        // (b) no camera frame, so the connectivity half has nothing to measure against.
+        (
+            "no camera frame to anchor connectivity",
+            &[
+                ("lidar", "lidar_top"),
+                ("imu", "imu_link"),
+                ("gnss", "gnss_link"),
+            ],
+        ),
+        // (c) the camera names a frame the tree does not know.
+        (
+            "camera frame unknown to the tree",
+            &[
+                ("lidar", "lidar_top"),
+                ("cam", "camera_unlisted"),
+                ("imu", "imu_link"),
+                ("gnss", "gnss_link"),
+            ],
+        ),
+    ];
+    for (name, frames) in shapes {
+        let d = rig_with_frames(Some(split_rig()), frames);
+        let codes = any_calibration_finding(&d);
+        assert!(
+            !codes.is_empty(),
+            "{name}: the disconnected tree must be reported by someone, got nothing"
+        );
+    }
+}
+
+#[test]
+fn a_rig_with_no_camera_at_all_still_reports_a_broken_tree() {
+    // (d) A LiDAR-only rig has no reprojection target, so the per-sensor check cannot speak about
+    // connectivity at all — the episode-level report is the only warning there is.
+    let ep = episode(
+        0,
+        vec![
+            rig_stream("lidar", Modality::PointCloud, 1_000_000_000),
+            rig_stream("gnss", Modality::Gnss, 1_000_000_000),
+            rig_stream("imu", Modality::Imu, 1_000_000_000),
+        ],
+    );
+    let mut d = dataset(vec![ep]);
+    d.calibration = Some(split_rig());
+    for s in &mut d.episodes[0].streams {
+        s.frame_id = match s.name.as_str() {
+            "lidar" => Some("lidar_top".into()),
+            "imu" => Some("imu_link".into()),
+            "gnss" => Some("gnss_link".into()),
+            _ => None,
+        };
+    }
+    assert!(
+        autonomy::CalibrationCompleteness
+            .run(&d)
+            .iter()
+            .any(|f| f.message.contains("disconnected")),
+        "a camera-less rig's broken tree is still reported"
+    );
+}
+
+#[test]
+fn one_mis_stamped_sensor_is_one_finding_however_many_episodes_it_spans() {
+    // The calibration is dataset-level and stream names repeat per episode, so a 50-episode drive log
+    // with one mis-stamped LiDAR is one defect — not fifty error-severity copies of it.
+    let episodes: Vec<_> = (0..50)
+        .map(|i| {
+            episode(
+                i,
+                vec![
+                    rig_stream("lidar", Modality::PointCloud, 1_000_000_000),
+                    rig_stream("gnss", Modality::Gnss, 1_000_000_000),
+                    rig_stream("imu", Modality::Imu, 1_000_000_000),
+                    rig_stream("cam", Modality::Video, 1_000_000_000),
+                ],
+            )
+        })
+        .collect();
+    let mut d = dataset(episodes);
+    d.calibration = Some(wired_rig());
+    for ep in &mut d.episodes {
+        for s in &mut ep.streams {
+            s.frame_id = match s.name.as_str() {
+                "lidar" => Some("lidar_top_v2".into()), // the one defect
+                "cam" => Some("camera_front".into()),
+                "imu" => Some("imu_link".into()),
+                "gnss" => Some("gnss_link".into()),
+                _ => None,
+            };
+        }
+    }
+    let f = autonomy::SensorFrameResolution.run(&d);
+    assert_eq!(f.len(), 1, "one defect, one finding: {:?}", f.len());
+    assert_eq!(f[0].code, "AUTONOMY.SENSOR_FRAME_UNKNOWN");
+}
+
+#[test]
+fn a_bus_signal_is_not_asked_to_reach_the_camera() {
+    // A CAN signal is a scalar, never projected into an image, and an ego-pose frame is joined to the
+    // body dynamically rather than by the static TF tree. Demanding a static chain from either would
+    // flag honest rigs — a decoded DBC alone can contribute dozens of `CanSignal` streams.
+    let ep = episode(
+        0,
+        vec![
+            rig_stream("lidar", Modality::PointCloud, 1_000_000_000),
+            rig_stream("cam", Modality::Video, 1_000_000_000),
+            rig_stream("imu", Modality::Imu, 1_000_000_000),
+            rig_stream("vehicle_speed", Modality::CanSignal, 1_000_000_000),
+            rig_stream("odom", Modality::EgoPose, 1_000_000_000),
+        ],
+    );
+    let mut d = dataset(vec![ep]);
+    d.calibration = Some(wired_rig());
+    for s in &mut d.episodes[0].streams {
+        s.frame_id = match s.name.as_str() {
+            "lidar" => Some("lidar_top".into()),
+            "cam" => Some("camera_front".into()),
+            "imu" => Some("imu_link".into()),
+            "vehicle_speed" => Some("chassis".into()), // never in a TF tree
+            "odom" => Some("odom".into()),             // joined dynamically, not statically
+            _ => None,
+        };
+    }
+    assert!(
+        autonomy::SensorFrameResolution.run(&d).is_empty(),
+        "a bus signal and an ego-pose frame are not reprojection targets"
     );
 }

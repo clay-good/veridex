@@ -49,7 +49,17 @@ fn ingest_options_from(
                 "sample_episodes and sample_fraction cannot both be given".into(),
             ))
         }
-        (Some(n), None) => Sample::FirstEpisodes(n),
+        (Some(n), None) => {
+            // Mirrors the CLI: a seed only makes sense for the random draw, so accepting one here and
+            // discarding it would leave the caller believing it took effect.
+            if sample_seed != 0 {
+                return Err(value_error(
+                    "sample_seed applies to sample_fraction; sample_episodes is not a random draw"
+                        .into(),
+                ));
+            }
+            Sample::FirstEpisodes(n)
+        }
         (None, Some(fraction)) => Sample::Fraction {
             fraction,
             seed: sample_seed,

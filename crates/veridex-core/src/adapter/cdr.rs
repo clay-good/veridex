@@ -16,6 +16,11 @@
 
 use crate::cdm::{CameraIntrinsics, PointField, Pose, Transform};
 
+/// Ceiling on any name this reader will return (coordinate frames, point-field names, distortion
+/// models). ROS names are identifiers — tens of bytes — so this is generous by three orders of
+/// magnitude while still bounding what an untrusted message can make the CDM retain.
+const MAX_NAME_BYTES: usize = 4096;
+
 /// A cursor over a CDR message body (the bytes *after* the 4-byte encapsulation header). `pos` is the
 /// offset from the body start, which is the origin all alignment is measured against.
 struct Reader<'a> {
@@ -81,7 +86,17 @@ impl<'a> Reader<'a> {
         let bytes = self.take(len)?;
         // Drop the trailing NUL terminator if present.
         let end = bytes.iter().position(|&c| c == 0).unwrap_or(bytes.len());
-        Some(String::from_utf8_lossy(&bytes[..end]).into_owned())
+        let bytes = &bytes[..end];
+        // Every string this reader returns is a *name* — a coordinate frame, a point field, a
+        // distortion model — and every one is retained in the CDM. Two reasons for the cap. The slice
+        // is bounded by the message body, but invalid UTF-8 expands 3x on the way out (each bad byte
+        // becomes a 3-byte U+FFFD), and the ingest budget charges the raw body, not the decoded
+        // string: 63 channels each carrying 1 MiB of 0xFF measured 198 MB retained from a 19.8 KB
+        // file, right past a budget meant to cap exactly that. And a name this long is not a name.
+        if bytes.len() > MAX_NAME_BYTES {
+            return None;
+        }
+        Some(String::from_utf8_lossy(bytes).into_owned())
     }
 
     /// Skip a `std_msgs/Header`: `{ int32 sec, uint32 nanosec }` then a `string frame_id`. Returns the

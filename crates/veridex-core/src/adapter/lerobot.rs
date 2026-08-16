@@ -36,11 +36,33 @@ use crate::cdm::{
 };
 
 use super::{
-    Adapter, Coverage, Detection, IngestError, IngestOptions, IngestReport, Ingested, Source,
-    UnmappedField,
+    Adapter, Coverage, Detection, IngestError, IngestOptions, IngestReport, Ingested, Sample,
+    Source, UnmappedField,
 };
 
 const CLOCK_ID: &str = "lerobot";
+
+/// Ceiling on the episode set a sampled ingest will derive from `info.json`'s declared
+/// `total_episodes` alone.
+///
+/// That number is a handful of bytes in a manifest, and the index set it implies is materialized
+/// before either ingest budget is constructed — so nothing else bounds it. Chosen far above any real
+/// dataset (LeRobot datasets run to thousands of episodes) so it only ever refuses a manifest that is
+/// lying, and even then points at the fix: `meta/episodes.jsonl`, whose cost is bounded by its size.
+const MAX_DECLARED_EPISODES_FOR_SAMPLING: u64 = 1_000_000;
+
+/// Seconds to nanoseconds, saturating at the `i64` bounds rather than wrapping.
+///
+/// A `timestamp` cell is a number from an untrusted file. `as i64` on a value past the range is
+/// saturating in Rust, but the multiply can still overflow to infinity first, and a NaN would cast to
+/// `0` — a fabricated "start of recording" that reads as an ordinary timestamp. Non-finite inputs are
+/// filtered out by the caller (the row contributes no frame); this handles the merely enormous.
+/// Mirrors `mdf4::seconds_to_ns`, which had this guard first.
+fn seconds_to_ns(seconds: f64) -> i64 {
+    (seconds * 1_000_000_000.0)
+        .round()
+        .clamp(i64::MIN as f64, i64::MAX as f64) as i64
+}
 
 /// A data feature resolved from `meta/info.json`: its name, inferred modality, and declared
 /// dtype/shape (both preserved so the structural checks can verify cross-episode consistency).
@@ -584,9 +606,12 @@ fn read_rows(
 
         for (row, ep) in kept {
             // Prefer the recorded timestamp; fall back to frame_index / fps.
-            let ts_ns = if let Some(ts) = ts_col.as_ref().and_then(|c| column_f64(c.as_ref(), row))
+            let ts_ns = if let Some(ts) = ts_col
+                .as_ref()
+                .and_then(|c| column_f64(c.as_ref(), row))
+                .filter(|t| t.is_finite())
             {
-                (ts * 1_000_000_000.0).round() as i64
+                seconds_to_ns(ts)
             } else if let Some(fi) = frame_col.as_ref().and_then(|c| column_i64(c.as_ref(), row)) {
                 if fps <= 0.0 {
                     return Err(IngestError::Parse {
@@ -595,7 +620,7 @@ fn read_rows(
                             .into(),
                     });
                 }
-                ((fi as f64) * 1_000_000_000.0 / fps).round() as i64
+                seconds_to_ns(fi as f64 / fps)
             } else {
                 return Err(IngestError::Parse {
                     format_id: "lerobot",
@@ -811,7 +836,31 @@ impl Adapter for LeRobotAdapter {
             let available: BTreeSet<u64> = if !declared_lengths.is_empty() {
                 declared_lengths.keys().copied().collect()
             } else if let Some(total) = info.total_episodes.filter(|t| *t > 0) {
-                (0..total).collect()
+                match &options.sample {
+                    // Only the first `n` indices can ever be selected, so a large declared total need
+                    // not be materialized to answer this — and cannot be used to exhaust memory.
+                    Sample::FirstEpisodes(n) => (0..total.min(*n)).collect(),
+                    // The random draw ranks the whole set, so it is the arm that must materialize it.
+                    // `total_episodes` is a number in a few-hundred-byte manifest and this runs before
+                    // either ingest budget exists, so nothing else bounds it: `u64::MAX` panicked on
+                    // capacity overflow, and merely enormous values were a straight OOM that still
+                    // returned Ok. Past the ceiling the manifest must be backed by
+                    // `meta/episodes.jsonl`, whose cost is bounded by its own size on disk.
+                    _ => {
+                        if total > MAX_DECLARED_EPISODES_FOR_SAMPLING {
+                            return Err(IngestError::SamplingUnsupported {
+                                format_id: "lerobot",
+                                reason: format!(
+                                    "meta/info.json declares {total} episodes, over the \
+                                     {MAX_DECLARED_EPISODES_FOR_SAMPLING} ceiling for deriving the \
+                                     episode set from a declared total alone — ship \
+                                     meta/episodes.jsonl to sample a dataset this large"
+                                ),
+                            });
+                        }
+                        (0..total).collect()
+                    }
+                }
             } else {
                 return Err(IngestError::SamplingUnsupported {
                     format_id: "lerobot",
@@ -1041,9 +1090,18 @@ impl Adapter for LeRobotAdapter {
                         info.codebase_version.clone().unwrap_or_default(),
                     ),
                 ];
-                // Record the declared counts so checks can catch a truncated export. A sampled ingest
-                // records neither: the manifest totals describe the whole dataset, so comparing them
-                // against a deliberately partial ingest would report every sample as a truncation.
+                // Record the declared counts so checks can catch a truncated export. Under a sample
+                // the manifest's dataset-level totals describe the whole dataset, so comparing them
+                // against a deliberately partial ingest would report every sample as a truncation —
+                // but the count of episodes the sample *selected* is a claim about the sample itself,
+                // and comparing it against what materialized is the assertion that catches "the
+                // episode set the manifest declares does not exist in the data". Keep that one.
+                if let Some(sel) = &selected {
+                    m.push((
+                        crate::cdm::META_DECLARED_EPISODES.to_string(),
+                        sel.len().to_string(),
+                    ));
+                }
                 if selected.is_none() {
                     if let Some(total) = info.total_episodes {
                         m.push((

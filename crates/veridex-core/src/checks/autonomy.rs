@@ -562,10 +562,11 @@ impl Check for CalibrationCompleteness {
                         ep.index
                     ),
                 ));
-            } else if !declares_sensor_frames(ep) {
-                // When the sensors name their frames, `autonomy.sensor-frame-resolution` reports the
-                // break against the specific sensors it strands, which is what a reader can act on.
-                // Reporting it here too would charge one defect twice.
+            } else if !break_is_localizable(ep, transforms) {
+                // Deferred to `autonomy.sensor-frame-resolution` only when that check can actually
+                // name the stranded sensors — which is what a reader acts on. When it cannot (a
+                // sensor that declares no frame, or no camera to anchor connectivity against), this
+                // episode-level report is the only warning that exists, so it stays.
                 let components = tf_component_count(transforms);
                 if components > 1 {
                     findings.push(flag(
@@ -623,13 +624,45 @@ fn tf_reachable_from<'a>(transforms: &'a [Transform], start: &str) -> HashSet<&'
     seen
 }
 
-/// Whether any rig sensor in `ep` declares a coordinate frame. When none do,
-/// [`SensorFrameResolution`] can say nothing and [`CalibrationCompleteness`] reports a disconnected
-/// tree at episode level instead — so one defect is charged once, at the finest granularity available.
-fn declares_sensor_frames(ep: &Episode) -> bool {
-    ep.streams
+/// The sensors whose observations are placed in space, and so must resolve through the transform
+/// tree: the perception sensors plus the inertial/positioning units that carry a mount pose.
+///
+/// Deliberately excludes `CanSignal` and `EgoPose`. A bus signal (vehicle speed, steering angle) is a
+/// scalar, never projected into an image; and an ego-pose stream's frame (`odom`, `map`) is joined to
+/// the body dynamically, not by the static TF tree — demanding a static chain from either would be a
+/// threshold meaningful for spatial sensors applied to everything, which is how a check starts
+/// flagging honest data.
+fn is_spatial_sensor(modality: Modality) -> bool {
+    matches!(
+        modality,
+        Modality::PointCloud | Modality::Video | Modality::Imu | Modality::Gnss
+    )
+}
+
+/// Whether [`SensorFrameResolution`] can localize a transform-tree break in this episode — the only
+/// condition under which [`CalibrationCompleteness`] may stay silent about a disconnected tree.
+///
+/// The successor speaks about a stream **only if that stream declares a frame**, and its connectivity
+/// half needs a camera whose frame the tree knows. So suppression is sound only when both hold for the
+/// whole episode: a camera anchors the connectivity question, and every spatial sensor declares a
+/// frame. Miss either and the stranded sensor may be one the successor never mentions — leaving the
+/// break reported by neither check, which is worse than reporting it twice.
+fn break_is_localizable(ep: &Episode, transforms: &[Transform]) -> bool {
+    let known: HashSet<&str> = transforms
         .iter()
-        .any(|s| s.modality.is_rig_sensor() && s.frame_id.is_some())
+        .flat_map(|t| [t.parent_frame.as_str(), t.child_frame.as_str()])
+        .collect();
+    let camera_anchors_the_question = ep
+        .streams
+        .iter()
+        .filter(|s| s.modality == Modality::Video)
+        .any(|s| s.frame_id.as_deref().is_some_and(|f| known.contains(f)));
+    camera_anchors_the_question
+        && ep
+            .streams
+            .iter()
+            .filter(|s| is_spatial_sensor(s.modality))
+            .all(|s| s.frame_id.is_some())
 }
 
 /// **Per-sensor calibration resolution (design A2, the LiDAR-camera miscalibration class).**
@@ -689,6 +722,11 @@ impl Check for SensorFrameResolution {
         }
 
         let mut findings = Vec::new();
+        // The calibration is dataset-level and stream names repeat in every episode, so the same
+        // mis-stamped sensor is the same single defect however many episodes it appears in. Claim each
+        // (stream, code) once — a 200-episode drive log would otherwise bury the one actionable line
+        // under 200 copies of it. Same reason `statistical.rs` dedupes its dataset-level stats checks.
+        let mut reported: BTreeSet<(&str, &'static str)> = BTreeSet::new();
         for ep in &dataset.episodes {
             if !is_rig_episode(ep) {
                 continue;
@@ -709,7 +747,7 @@ impl Check for SensorFrameResolution {
                 .collect();
 
             for stream in &ep.streams {
-                if !stream.modality.is_rig_sensor() && stream.modality != Modality::Video {
+                if !is_spatial_sensor(stream.modality) {
                     continue;
                 }
                 let Some(frame) = stream.frame_id.as_deref() else {
@@ -717,6 +755,9 @@ impl Check for SensorFrameResolution {
                 };
                 let located = tf_reachable_from(transforms, frame);
                 if located.is_empty() {
+                    if !reported.insert((stream.name.as_str(), "AUTONOMY.SENSOR_FRAME_UNKNOWN")) {
+                        continue;
+                    }
                     findings.push(
                         Finding::new(
                             "autonomy.sensor-frame-resolution",
@@ -753,6 +794,9 @@ impl Check for SensorFrameResolution {
                     continue; // no usable camera reference, or this stream is the camera
                 }
                 if !reachable_from_a_camera.contains(frame) {
+                    if !reported.insert((stream.name.as_str(), "AUTONOMY.SENSOR_FRAME_UNRELATED")) {
+                        continue;
+                    }
                     findings.push(
                         Finding::new(
                             "autonomy.sensor-frame-resolution",

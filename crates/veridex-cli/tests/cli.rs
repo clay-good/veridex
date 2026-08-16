@@ -583,7 +583,7 @@ fn commands_that_cannot_honor_a_sample_refuse_the_flags() {
         let (code, _, stderr) = run(&[cmd, &dataset, "--sample-episodes", "1"]);
         assert_eq!(code, 2, "{cmd} must refuse sampling flags");
         assert!(
-            stderr.contains("does not support sampling flags"),
+            stderr.contains("does not support --sample-episodes"),
             "{cmd}: unexpected stderr {stderr}"
         );
     }
@@ -641,11 +641,85 @@ fn a_sampled_check_reports_its_coverage_and_cannot_be_certified() {
     ]);
     assert_eq!(code, 2, "certifying a sample must be a tool error");
     assert!(
-        stderr.contains("cannot certify a sampled run"),
-        "unexpected stderr {stderr}"
+        stderr.contains("certify does not support sampling")
+            && stderr.contains("speaks for the whole dataset"),
+        "the refusal must say why: {stderr}"
     );
     assert!(
         !keydir.join("c.json").exists(),
         "no certificate may be written for a sampled run"
     );
+}
+
+#[test]
+fn every_command_refuses_the_flags_it_does_not_act_on() {
+    // The shared parser accepts one flag set for every command, so without an allow-list a command
+    // silently tolerates flags it has no use for: `check --out r.json` looks like it writes a file,
+    // `diff --min-score 90` looks like a gate, and neither is. Each pair below is a flag the command
+    // genuinely ignores, and each must be a loud tool error.
+    let dataset = fixture_dataset();
+    let cases: &[(&str, &[&str])] = &[
+        ("check", &["--out", "/dev/null"]),
+        ("check", &["--key", "k"]),
+        ("check", &["--emit", "croissant"]),
+        ("check", &["--timestamp", "1"]),
+        ("check", &["--certificate", "c.json"]),
+        ("check", &["--force"]),
+        ("check", &["--allow-any-issuer"]),
+        ("check", &["--fail-on-regression"]),
+        ("inspect", &["--sarif"]),
+        ("inspect", &["--html"]),
+        ("inspect", &["--profile", "world-model-ready"]),
+        ("inspect", &["--config", "veridex.toml"]),
+        ("checks", &["--min-score", "90"]),
+        ("checks", &["--format", "mcap"]),
+        ("provenance", &["--json"]),
+        ("provenance", &["--profile", "world-model-ready"]),
+        ("verify", &["--profile", "world-model-ready"]),
+        ("verify", &["--out", "/dev/null"]),
+        ("diff", &["--min-score", "90"]),
+        ("diff", &["--sarif"]),
+        ("diff", &["--max-frames", "10"]),
+        ("keygen", &["--json"]),
+        ("keygen", &["--profile", "world-model-ready"]),
+    ];
+    for (cmd, flag) in cases {
+        let mut args: Vec<&str> = vec![cmd, &dataset];
+        args.extend_from_slice(flag);
+        let (code, _, stderr) = run(&args);
+        assert_eq!(code, 2, "{cmd} {flag:?} must be a tool error, got {code}");
+        assert!(
+            stderr.contains("does not support"),
+            "{cmd} {flag:?}: unexpected stderr {stderr}"
+        );
+    }
+}
+
+#[test]
+fn every_command_still_accepts_the_flags_it_does_act_on() {
+    // The guard against over-tightening the allow-lists: rejecting a flag a command genuinely honors
+    // would be a worse regression than the silent-ignore it replaced.
+    let dataset = fixture_dataset();
+    let cases: &[(&str, &[&str])] = &[
+        ("check", &["--json"]),
+        ("check", &["--sarif"]),
+        ("check", &["--html"]),
+        ("check", &["--fail-on", "warning"]),
+        ("check", &["--min-score", "1"]),
+        ("check", &["--profile", "world-model-ready"]),
+        ("check", &["--max-frames", "1000000"]),
+        ("inspect", &["--json"]),
+        ("inspect", &["--max-frames", "1000000"]),
+        ("checks", &["--json"]),
+        ("provenance", &["--emit", "prov"]),
+    ];
+    for (cmd, flag) in cases {
+        let mut args: Vec<&str> = vec![cmd, &dataset];
+        args.extend_from_slice(flag);
+        let (_, _, stderr) = run(&args);
+        assert!(
+            !stderr.contains("does not support"),
+            "{cmd} {flag:?} must be honored: {stderr}"
+        );
+    }
 }
