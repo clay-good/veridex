@@ -304,6 +304,13 @@ impl Check for StreamKeyClarity {
     }
     fn run(&self, dataset: &Dataset) -> Vec<Finding> {
         let mut findings = Vec::new();
+        // A naming mistake is a property of the dataset's schema, not of an episode: the same
+        // duplicated or ambiguous key repeats in every episode that carries those streams. Report each
+        // distinct collision once, naming the first episode it appears in, so one mistake costs one
+        // finding instead of one per episode (at 50 episodes a single case-collision otherwise
+        // produced 100 warnings and drove the data score to zero).
+        let mut reported_duplicate: BTreeSet<String> = BTreeSet::new();
+        let mut reported_ambiguous: BTreeSet<String> = BTreeSet::new();
         for ep in &dataset.episodes {
             // (1) Exact-duplicate stream names — a violation of the CDM's "unique within its episode"
             // invariant. A repeated key is not a usable identifier at all, so this is the harder
@@ -314,6 +321,9 @@ impl Check for StreamKeyClarity {
                 *counts.entry(stream.name.as_str()).or_default() += 1;
             }
             for (name, count) in counts.iter().filter(|(_, c)| **c > 1) {
+                if !reported_duplicate.insert((*name).to_string()) {
+                    continue;
+                }
                 findings.push(
                     Finding::new(
                         self.id(),
@@ -351,7 +361,10 @@ impl Check for StreamKeyClarity {
                 let norm = stream.name.trim().to_ascii_lowercase();
                 groups.entry(norm).or_default().insert(&stream.name);
             }
-            for (_, names) in groups.iter().filter(|(_, n)| n.len() > 1) {
+            for (norm, names) in groups.iter().filter(|(_, n)| n.len() > 1) {
+                if !reported_ambiguous.insert(norm.clone()) {
+                    continue;
+                }
                 for name in names {
                     // `names` is a sorted set of distinct names, so `others` is non-empty and stable.
                     let others: Vec<&str> = names.iter().copied().filter(|n| n != name).collect();

@@ -283,6 +283,36 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   above real datasets — a one-hour ten-sensor 100 Hz rig is 3.6M) *before* allocating, and refuses
   with a clear error naming the limit rather than being killed. `--max-frames <n>` raises it;
   `--max-frames 0` removes it.
+- **Every honest multi-rate rig was reported as clock-skewed.** `TEMPORAL.CLOCK_SKEW` and
+  `AUTONOMY.RIG_SYNC` compare stream *spans*, but a stream observing a window at period `T` spans a
+  whole number of `T`s — so two perfectly synchronized sensors at different rates differ by up to one
+  period with no drift at all. The 50 ms tolerance was therefore smaller than the intrinsic bias of
+  any sensor slower than 20 Hz: a zero-drift rig of 10 Hz LiDAR + 100 Hz IMU + 5 Hz GNSS was measured
+  reporting a 70 ms "drift" (500 ms with a 1 Hz GNSS), and a 30 fps camera beside a 10 Hz state stream
+  scored F. Both checks now widen the tolerance by the larger of the two streams' own sampling
+  periods. A real 500 ms drift on a 10 Hz sensor is still flagged.
+- **`AUTONOMY.SEQUENCE_COMPLETE` still called complete event-driven data dropped.** Dividing the span
+  by the median cadence charges idle stretches as missing frames, and the interval-uniformity guard
+  did not bound that (a stream of 40 x 80 ms and 10 x 200 ms intervals — every event present — sat
+  under the guard and was reported ~23% dropped). It now counts the frames that gaps at *multiples* of
+  the cadence actually swallowed, so an idle burst costs nothing and a steady sensor's real drops are
+  still found.
+- **One root cause could be deducted many times.** `TEMPORAL.NON_MONOTONIC` had no shared-timeline
+  guard, so a single stuck timestamp on an 8-channel CAN group cost eight Errors and floored the data
+  score; it now reports once per timeline and names the rest, as `TEMPORAL.GAP` and `TEMPORAL.JITTER`
+  already did. `SEMANTIC.AMBIGUOUS_STREAM_KEY` and `SEMANTIC.DUPLICATE_STREAM_KEY` were emitted per
+  episode, so one naming mistake across 50 episodes cost 100 warnings; a naming mistake is a property
+  of the schema, so each collision is now reported once, naming the first episode it appears in.
+- **A constant stream's float-noise `std` was either missed or called impossible.** `DEGENERATE`
+  required `std == 0.0` exactly, and the Popoviciu tolerance scaled with the *range* rather than the
+  magnitude of the values. A constant channel at 0.7 with a `std` of 1e-12 escaped entirely; at 1e-8 —
+  what naive `E[x²] − E[x]²` cancellation produces at that magnitude — it became a
+  `STATISTICAL.STD_IMPLAUSIBLE` **error**, as did a near-constant channel at 300.0 with an f32-computed
+  `std`. Both now use one magnitude-scaled rounding tolerance. A genuinely impossible `std` is still an
+  error.
+- **`STATISTICAL.SATURATED` claimed a stream before testing it**, the same defect just fixed in
+  `range-sanity`: a clean episode-0 copy of a stream masked a saturated one in a later episode, and
+  the finding depended on episode order.
 - **Three thresholds were unreachable from config.** `STATISTICAL.OUTLIER`'s sigma and the two
   autonomy tolerances (`AUTONOMY.SEQUENCE_COMPLETE`'s tolerated drop fraction,
   `AUTONOMY.EGO_POSE_CONTINUITY`'s maximum plausible speed) were hardcoded to their defaults while

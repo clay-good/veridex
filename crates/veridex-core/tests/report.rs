@@ -50,6 +50,14 @@ fn episode(index: u64, streams: Vec<Stream>) -> Episode {
     }
 }
 
+/// Timestamps at 100 Hz across `span_ns` — a span comparison allows for each stream's own sampling
+/// period, so a realistic cadence is what makes the drift below evidence of skew.
+fn dense(span_ns: i64) -> Vec<i64> {
+    (0..=(span_ns / 10_000_000))
+        .map(|i| i * 10_000_000)
+        .collect()
+}
+
 /// A dataset with a clock-skew error in episode 7 and a clean episode 0.
 fn skewed_dataset() -> Dataset {
     Dataset {
@@ -62,8 +70,8 @@ fn skewed_dataset() -> Dataset {
             episode(
                 7,
                 vec![
-                    stream("cam", "camera", &[0, 1_000_000_000]),
-                    stream("robot", "robot", &[0, 1_500_000_000]),
+                    stream("cam", "camera", &dense(1_000_000_000)),
+                    stream("robot", "robot", &dense(1_500_000_000)),
                 ],
             ),
         ],
@@ -231,8 +239,8 @@ fn html_escapes_special_characters() {
         episodes: vec![episode(
             0,
             vec![
-                stream("a<script>b", "camera", &[0, 1_000_000_000]),
-                stream("robot", "robot", &[0, 1_500_000_000]),
+                stream("a<script>b", "camera", &dense(1_000_000_000)),
+                stream("robot", "robot", &dense(1_500_000_000)),
             ],
         )],
     };

@@ -402,17 +402,24 @@ fn report_declares_fidelity_and_omissions() {
 
 #[test]
 fn ingested_mcap_flows_through_the_engine() {
-    // camera spans 1000 ms, robot spans 1500 ms => a clock-skew error via the standard engine.
+    // Camera spans 1000 ms, robot 1500 ms, both recorded at 100 Hz => a clock-skew error via the
+    // standard engine. The cadence matters: the span comparison allows for each stream's own sampling
+    // period, so two-frame streams could not evidence the drift.
+    let dense = |span_ns: i64| -> Vec<u64> {
+        (0..=(span_ns / 10_000_000))
+            .map(|i| (i * 10_000_000) as u64)
+            .collect()
+    };
     let bytes = build_mcap(&[
         Chan {
             schema: "sensor_msgs/msg/Image",
             topic: "/cam",
-            times: vec![0, 1_000_000_000],
+            times: dense(1_000_000_000),
         },
         Chan {
             schema: "sensor_msgs/msg/JointState",
             topic: "/robot",
-            times: vec![0, 1_500_000_000],
+            times: dense(1_500_000_000),
         },
     ]);
     let path = write_temp_mcap(&bytes);

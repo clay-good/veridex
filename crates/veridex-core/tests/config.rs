@@ -34,6 +34,13 @@ fn stream(name: &str, clock: &str, ts: &[i64]) -> Stream {
     }
 }
 
+/// Timestamps at 100 Hz across `span_ns`.
+fn dense(span_ns: i64) -> Vec<i64> {
+    (0..=(span_ns / 10_000_000))
+        .map(|i| i * 10_000_000)
+        .collect()
+}
+
 fn skewed() -> Dataset {
     Dataset {
         id: "t".into(),
@@ -44,9 +51,12 @@ fn skewed() -> Dataset {
             index: 0,
             start_ts: None,
             end_ts: None,
+            // Both sample at 100 Hz. The cadence is load-bearing: a span comparison allows for each
+            // stream's own sampling period, so a two-frame stream is a 1 Hz sensor whose span cannot
+            // evidence a 500 ms drift (see `temporal::sampling_period_ns`).
             streams: vec![
-                stream("cam", "camera", &[0, 1_000_000_000]),
-                stream("robot", "robot", &[0, 1_500_000_000]),
+                stream("cam", "camera", &dense(1_000_000_000)),
+                stream("robot", "robot", &dense(1_500_000_000)),
             ],
             task: None,
             labels: vec![],

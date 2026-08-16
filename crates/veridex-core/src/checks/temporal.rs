@@ -28,6 +28,29 @@ fn median_sorted(sorted: &[i64]) -> f64 {
     }
 }
 
+/// A stream's own sampling period: the median positive inter-frame interval, in nanoseconds, or 0
+/// when the stream has fewer than two distinct timestamps.
+///
+/// This is the *quantum* of a span comparison. A stream observing a window of length `W` at period
+/// `T` spans `floor(W / T) * T`, so its measured span understates `W` by up to one full period —
+/// even with a perfect clock. Two synchronized sensors therefore differ in span by up to the larger
+/// of their two periods, with no drift whatever: a 10 Hz LiDAR against a 100 Hz IMU carries an
+/// intrinsic 100 ms difference, twice the default 50 ms tolerance. Any check comparing spans across
+/// streams must widen its tolerance by this, or it reports every honest multi-rate rig as skewed.
+pub(crate) fn sampling_period_ns(stream: &Stream) -> i64 {
+    let mut intervals: Vec<i64> = stream
+        .frames
+        .windows(2)
+        .map(|w| w[1].ts.saturating_sub(w[0].ts))
+        .filter(|d| *d > 0)
+        .collect();
+    if intervals.is_empty() {
+        return 0;
+    }
+    intervals.sort_unstable();
+    median_sorted(&intervals).max(0.0) as i64
+}
+
 /// Timestamp monotonicity: within a stream, timestamps must strictly increase. A decrease or repeat
 /// means frames are out of order or duplicated.
 pub struct Monotonicity;
@@ -58,6 +81,15 @@ impl Check for Monotonicity {
         let mut findings = Vec::new();
         for ep in &dataset.episodes {
             for stream in &ep.streams {
+                // Streams sharing one timeline (a CAN or MF4 group is dozens of channels off a single
+                // clock) share the fault too: one repeated timestamp is one defect, not one per
+                // channel. Report it against the first stream on that timeline and name the rest, as
+                // `Gaps` and `Jitter` already do — at Error severity, eight channels otherwise cost
+                // eight deductions for a single stuck clock.
+                let (is_representative, shared) = timeline_group(ep, stream);
+                if !is_representative {
+                    continue;
+                }
                 for i in 1..stream.frames.len() {
                     let prev = stream.frames[i - 1].ts;
                     let cur = stream.frames[i].ts;
@@ -76,8 +108,10 @@ impl Check for Monotonicity {
                                 "TEMPORAL.NON_MONOTONIC",
                                 format!(
                                     "stream `{}` in episode {}: timestamp does not increase at \
-                                     frame {i} ({prev} -> {cur})",
-                                    stream.name, ep.index
+                                     frame {i} ({prev} -> {cur}){}",
+                                    stream.name,
+                                    ep.index,
+                                    shared_suffix(shared)
                                 ),
                             )
                             .with_risk(
@@ -588,24 +622,34 @@ impl Check for ClockSkew {
             if crate::checks::autonomy::is_rig_episode(ep) {
                 continue;
             }
-            // (name, clock_id, span) for streams with a measurable span.
-            let spans: Vec<(&str, &str, i64)> = ep
+            // (name, clock_id, span, sampling period) for streams with a measurable span.
+            let spans: Vec<(&str, &str, i64, i64)> = ep
                 .streams
                 .iter()
                 .filter_map(|s| {
                     span_bounds(s).map(|(lo, hi)| {
-                        (s.name.as_str(), s.clock_id.as_str(), hi.saturating_sub(lo))
+                        (
+                            s.name.as_str(),
+                            s.clock_id.as_str(),
+                            hi.saturating_sub(lo),
+                            sampling_period_ns(s),
+                        )
                     })
                 })
-                .filter(|(_, _, span)| *span > 0)
+                .filter(|(_, _, span, _)| *span > 0)
                 .collect();
 
             for i in 0..spans.len() {
                 for j in (i + 1)..spans.len() {
-                    let (name_a, clock_a, span_a) = spans[i];
-                    let (name_b, clock_b, span_b) = spans[j];
+                    let (name_a, clock_a, span_a, period_a) = spans[i];
+                    let (name_b, clock_b, span_b, period_b) = spans[j];
                     let drift = (span_a - span_b).abs();
-                    if drift > self.tolerance_ns {
+                    // Two synchronized streams sampling the same window differ in span by up to the
+                    // larger of their periods (see `sampling_period_ns`), so that quantum is added to
+                    // the tolerance. Without it every multi-rate pairing — a 30 fps camera against a
+                    // 10 Hz state stream — reports drift it does not have.
+                    let allowance = self.tolerance_ns.saturating_add(period_a.max(period_b));
+                    if drift > allowance {
                         findings.push(
                             Finding::new(
                                 self.id(),

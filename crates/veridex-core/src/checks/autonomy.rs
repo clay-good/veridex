@@ -94,24 +94,38 @@ impl Check for RigSync {
             if !is_rig_episode(ep) {
                 continue;
             }
-            // Every sensor with a measurable span (name, span), sorted by (span, name) so the tightest
-            // and widest are deterministic and ties break stably.
-            let mut spans: Vec<(&str, i64)> = ep
+            // Every sensor with a measurable span (name, span, sampling period), sorted by
+            // (span, name) so the tightest and widest are deterministic and ties break stably.
+            let mut spans: Vec<(&str, i64, i64)> = ep
                 .streams
                 .iter()
                 .filter_map(|s| {
-                    span_bounds(s).map(|(lo, hi)| (s.name.as_str(), hi.saturating_sub(lo)))
+                    span_bounds(s).map(|(lo, hi)| {
+                        (
+                            s.name.as_str(),
+                            hi.saturating_sub(lo),
+                            crate::checks::temporal::sampling_period_ns(s),
+                        )
+                    })
                 })
-                .filter(|(_, span)| *span > 0)
+                .filter(|(_, span, _)| *span > 0)
                 .collect();
             if spans.len() < 2 {
                 continue;
             }
             spans.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(b.0)));
-            let (tight_name, tight_span) = spans[0];
-            let (wide_name, wide_span) = spans[spans.len() - 1];
+            let (tight_name, tight_span, tight_period) = spans[0];
+            let (wide_name, wide_span, wide_period) = spans[spans.len() - 1];
             let spread = wide_span - tight_span;
-            if spread > self.tolerance_ns {
+            // A rig is multi-rate by construction — a 10 Hz LiDAR beside a 100 Hz IMU beside a 5 Hz
+            // GNSS — and each sensor's span quantizes to its own period, so a perfectly synchronized
+            // rig shows a spread of up to the slower sensor's period with no drift at all. Widen the
+            // tolerance by that quantum (see `temporal::sampling_period_ns`); without it the check
+            // fires on every honest rig carrying a sensor slower than 20 Hz.
+            let allowance = self
+                .tolerance_ns
+                .saturating_add(tight_period.max(wide_period));
+            if spread > allowance {
                 findings.push(
                     Finding::new(
                         self.id(),
@@ -179,6 +193,11 @@ impl SequenceComplete {
 
     /// Minimum frames for a stable median inter-frame interval; below this the drop estimate is noise.
     const MIN_FRAMES: usize = 8;
+
+    /// How far an inter-frame interval may sit from an exact multiple of the cadence and still be
+    /// read as swallowed frames, in units of the cadence. A dropped frame leaves a hole near `k·T`;
+    /// an idle burst lands anywhere, so it is not counted.
+    const MULTIPLE_TOLERANCE: f64 = 0.25;
 }
 
 impl Check for SequenceComplete {
@@ -245,20 +264,34 @@ impl Check for SequenceComplete {
                         continue;
                     }
                 }
-                let Some((lo, hi)) = span_bounds(stream) else {
-                    continue;
-                };
-                let span = hi.saturating_sub(lo) as f64;
-                if median <= 0.0 || span <= 0.0 {
+                if median <= 0.0 {
                     continue;
                 }
-                // Frames the cadence implies over the active span, vs what actually arrived.
-                let expected = span / median + 1.0;
+                // Count the frames that are actually missing, rather than dividing the span by the
+                // median. A dropped frame leaves a hole that is a *multiple* of the cadence — two
+                // periods where one was due — so only an interval close to an integer multiple is
+                // counted, and each contributes the `k - 1` frames it swallowed. An interval of no
+                // particular relation to the cadence is not a drop: it is a stream that idles, which
+                // the span/median estimator charged as missing frames and reported a complete
+                // event-driven log as a quarter dropped.
+                let missing: f64 = intervals
+                    .iter()
+                    .map(|d| {
+                        let ratio = *d as f64 / median;
+                        let k = ratio.round();
+                        if k >= 2.0 && (ratio - k).abs() <= Self::MULTIPLE_TOLERANCE {
+                            k - 1.0
+                        } else {
+                            0.0
+                        }
+                    })
+                    .sum();
+                if missing <= 0.0 {
+                    continue;
+                }
                 let observed = stream.frames.len() as f64;
-                if observed >= expected {
-                    continue;
-                }
-                let drop_fraction = (expected - observed) / expected;
+                let expected = observed + missing;
+                let drop_fraction = missing / expected;
                 if drop_fraction > self.max_drop_fraction {
                     findings.push(
                         Finding::new(
@@ -271,14 +304,15 @@ impl Check for SequenceComplete {
                             },
                             "AUTONOMY.SEQUENCE_COMPLETE",
                             format!(
-                                "episode {}: sensor `{}` dropped ~{:.0}% of its frames — {} arrived \
-                                 but its ~{:.1} ms cadence over the episode implies ~{:.0}",
+                                "episode {}: sensor `{}` dropped ~{:.0}% of its frames — {} arrived, \
+                                 and the gaps at multiples of its ~{:.1} ms cadence account for \
+                                 ~{:.0} more",
                                 ep.index,
                                 stream.name,
                                 drop_fraction * 100.0,
                                 stream.frames.len(),
                                 median / 1e6,
-                                expected,
+                                missing,
                             ),
                         )
                         .with_risk(

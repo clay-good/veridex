@@ -78,9 +78,6 @@ impl Check for Saturation {
                 if sat.min == sat.max {
                     continue;
                 }
-                if !reported.insert(stream.name.as_str()) {
-                    continue;
-                }
                 let n = sat.sample_count as f64;
                 let hi = sat.at_max as f64 / n;
                 let lo = sat.at_min as f64 / n;
@@ -90,6 +87,11 @@ impl Check for Saturation {
                     (lo, sat.min, "minimum")
                 };
                 if frac < self.min_fraction {
+                    continue;
+                }
+                // Claim the stream only now that it has produced a finding — claiming it on sight
+                // would let a clean episode-0 copy mask a saturated one in a later episode.
+                if !reported.insert(stream.name.as_str()) {
                     continue;
                 }
                 // Name the dimension for a multi-DoF feature (e.g. the gripper joint); a scalar
@@ -351,7 +353,7 @@ impl RangeSanity {
         // tolerance — a source's independently-rounded mean can land one ULP past a bound on a
         // near-constant stream, which is honest data, not corruption (mirrors the Popoviciu std
         // check below).
-        let mean_tol = 1e-9 + stats.min.abs().max(stats.max.abs()) * 1e-6;
+        let mean_tol = rounding_tolerance(stats);
         if stats.mean < stats.min - mean_tol || stats.mean > stats.max + mean_tol {
             return Some(
                 Finding::new(
@@ -374,8 +376,7 @@ impl RangeSanity {
         // exceed (max - min) / 2. A stored std above that bound is mathematically impossible — the
         // min/max and std cannot describe the same values.
         let bound = (stats.max - stats.min) / 2.0;
-        let tol = 1e-9 + bound.abs() * 1e-6;
-        if stats.std > bound + tol {
+        if stats.std > bound + rounding_tolerance(stats) {
             return Some(
                 Finding::new(
                     self.id(),
@@ -441,8 +442,24 @@ impl RangeSanity {
     }
 }
 
+/// The slack a stored statistic gets before it is called impossible, scaled to the magnitude of the
+/// values it describes.
+///
+/// A source computes its statistics independently and in its own precision, so a value near the
+/// bound can land a few ULPs past it. The scale has to follow the *values*, not the width of their
+/// range: a channel sitting at 300.0 with a range of 0.0002 has a Popoviciu bound of 1e-4, while the
+/// naive `E[x²] − E[x]²` any exporter might use loses about 3e-4 to cancellation at that magnitude —
+/// so a range-scaled tolerance calls honest float noise mathematically impossible.
+fn rounding_tolerance(stats: &StreamStats) -> f64 {
+    1e-9 + stats.min.abs().max(stats.max.abs()) * 1e-6
+}
+
+/// A constant stream: every value the same. The std is *reported* as zero-ish rather than exactly
+/// zero by any exporter that computes it in floating point, so the same rounding slack applies —
+/// otherwise a constant channel with a 1e-12 std escapes the degeneracy warning entirely, and one
+/// with a 1e-8 std is called an impossible standard deviation instead.
 fn is_degenerate(stats: &StreamStats) -> bool {
-    stats.min == stats.max && stats.std == 0.0
+    stats.min == stats.max && stats.std.abs() <= rounding_tolerance(stats)
 }
 
 /// The representable `[min, max]` of a declared integer dtype, as f64. Returns `None` for float,

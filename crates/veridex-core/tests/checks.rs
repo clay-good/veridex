@@ -831,9 +831,15 @@ fn jitter_needs_enough_intervals_to_be_meaningful() {
 
 #[test]
 fn clock_skew_flags_streams_that_drift_apart() {
-    // camera spans 1000 ms, robot spans 1200 ms => 200 ms drift, beyond the 50 ms default.
-    let cam = stream("cam", "camera", None, &[0, 500_000_000, 1_000_000_000]);
-    let robot = stream("robot", "robot", None, &[0, 600_000_000, 1_200_000_000]);
+    // Both sample at 100 Hz: the camera spans 1000 ms, the robot 1200 ms => 200 ms drift, well beyond
+    // the 50 ms default plus the 10 ms sampling quantum.
+    let dense = |span_ns: i64| -> Vec<i64> {
+        (0..=(span_ns / 10_000_000))
+            .map(|i| i * 10_000_000)
+            .collect()
+    };
+    let cam = stream("cam", "camera", None, &dense(1_000_000_000));
+    let robot = stream("robot", "robot", None, &dense(1_200_000_000));
     let d = dataset(vec![episode(0, vec![cam, robot])]);
     let f = temporal::ClockSkew::default().run(&d);
     assert_eq!(f.len(), 1);
@@ -1070,9 +1076,15 @@ fn internally_inconsistent_element_is_flagged() {
 
 #[test]
 fn default_engine_runs_all_families_end_to_end() {
-    // A dataset with a clock-skew problem should fail via the standard engine.
-    let cam = stream("cam", "camera", None, &[0, 1_000_000_000]);
-    let robot = stream("robot", "robot", None, &[0, 1_500_000_000]);
+    // A dataset with a clock-skew problem should fail via the standard engine. Both streams sample at
+    // 100 Hz, so the 500 ms drift is far larger than the sampling quantum a span comparison allows for.
+    let dense = |span_ns: i64| -> Vec<i64> {
+        (0..=(span_ns / 10_000_000))
+            .map(|i| i * 10_000_000)
+            .collect()
+    };
+    let cam = stream("cam", "camera", None, &dense(1_000_000_000));
+    let robot = stream("robot", "robot", None, &dense(1_500_000_000));
     let d = dataset(vec![episode(0, vec![cam, robot])]);
     let engine = veridex_core::checks::default_engine().expect("standard checks have unique ids");
     let hash = veridex_core::content_hash(&d);
@@ -1901,8 +1913,13 @@ fn non_finite_tolerances_are_sanitized_to_defaults() {
 // ---- autonomy: rig-wide sync ----
 
 /// A rig-sensor stream of a given modality spanning `span_ns` from t=0.
+/// A rig sensor sampling at 100 Hz across `span_ns`. The cadence matters: a span comparison cannot
+/// resolve drift smaller than a stream's own sampling period, so a two-frame stream spanning a second
+/// is a 1 Hz sensor whose span is meaningless to a 50 ms tolerance (see `temporal::sampling_period_ns`).
 fn rig_stream(name: &str, modality: Modality, span_ns: i64) -> Stream {
-    let mut s = stream(name, "rig", None, &[0, span_ns]);
+    const STEP_NS: i64 = 10_000_000; // 100 Hz
+    let ts: Vec<i64> = (0..=(span_ns / STEP_NS)).map(|i| i * STEP_NS).collect();
+    let mut s = stream(name, "rig", None, &ts);
     s.modality = modality;
     s
 }
@@ -2419,4 +2436,259 @@ fn the_configured_autonomy_tolerances_reach_the_checks() {
     };
     assert_eq!(run_at(100.0), 1, "500 m/s exceeds the default 100 m/s");
     assert_eq!(run_at(600.0), 0, "a 600 m/s ceiling tolerates it");
+}
+
+// ---- regression: span comparisons must allow for each stream's own sampling period ----
+
+/// Timestamps for a sensor of period `period_ns` observing a window of `window_ns`.
+fn sampled(period_ns: i64, window_ns: i64) -> Vec<i64> {
+    (0..=(window_ns / period_ns))
+        .map(|i| i * period_ns)
+        .collect()
+}
+
+#[test]
+fn a_synchronized_multi_rate_rig_is_clean() {
+    // A perfectly synchronized rig with zero drift: LiDAR 10 Hz, IMU 100 Hz, GNSS 5 Hz, all observing
+    // the same ~30 s window. Each sensor's span quantizes to its own period, so the raw spans differ
+    // by up to 200 ms with nothing wrong — which the check used to report as a 200 ms "drift".
+    let window = 30_070_000_000;
+    let ep = episode(
+        0,
+        vec![
+            rig_stream_ts("lidar", Modality::PointCloud, &sampled(100_000_000, window)),
+            rig_stream_ts("imu", Modality::Imu, &sampled(10_000_000, window)),
+            rig_stream_ts("gnss", Modality::Gnss, &sampled(200_000_000, window)),
+        ],
+    );
+    let f = autonomy::RigSync::default().run(&dataset(vec![ep]));
+    assert!(
+        f.is_empty(),
+        "a synchronized rig must not be flagged: {f:?}"
+    );
+}
+
+#[test]
+fn a_multi_rate_pair_is_not_reported_as_clock_skew() {
+    // 30 fps camera against a 10 Hz state stream over one window — the ordinary manipulation shape.
+    let window = 30_070_000_000;
+    let d = dataset(vec![episode(
+        0,
+        vec![
+            stream("cam", "c", None, &sampled(33_000_000, window)),
+            stream("state", "c", None, &sampled(100_000_000, window)),
+        ],
+    )]);
+    assert!(
+        temporal::ClockSkew::default().run(&d).is_empty(),
+        "differing sample rates are not clock skew"
+    );
+}
+
+#[test]
+fn a_slow_sensor_that_really_drifts_is_still_flagged() {
+    // The allowance is one sampling period, not a blank cheque: a 10 Hz LiDAR cut half a second short
+    // is still well past it.
+    let ep = episode(
+        0,
+        vec![
+            rig_stream_ts(
+                "lidar",
+                Modality::PointCloud,
+                &sampled(100_000_000, 9_500_000_000),
+            ),
+            rig_stream_ts("imu", Modality::Imu, &sampled(10_000_000, 10_000_000_000)),
+            rig_stream_ts(
+                "gnss",
+                Modality::Gnss,
+                &sampled(200_000_000, 10_000_000_000),
+            ),
+        ],
+    );
+    let f = autonomy::RigSync::default().run(&dataset(vec![ep]));
+    assert_eq!(f.len(), 1, "a real 500 ms drift must still be flagged");
+    assert!(f[0].message.contains("lidar"));
+}
+
+// ---- regression: one root cause, one finding ----
+
+#[test]
+fn one_stuck_clock_on_a_shared_timeline_is_one_monotonicity_finding() {
+    // Eight CAN channels off one bus share a timeline; a single repeated timestamp is one defect, not
+    // eight Errors (which cost 8 x 15 points and floored the data score).
+    let ts = [0i64, 10_000_000, 10_000_000, 20_000_000];
+    let streams: Vec<_> = (0..8)
+        .map(|i| stream(&format!("sig{i}"), "can", None, &ts))
+        .collect();
+    let f = temporal::Monotonicity.run(&dataset(vec![episode(0, streams)]));
+    assert_eq!(f.len(), 1, "one shared-timeline defect, one finding: {f:?}");
+    assert!(f[0]
+        .message
+        .contains("other stream(s) on the same timeline"));
+}
+
+#[test]
+fn an_ambiguous_stream_key_is_reported_once_for_the_dataset() {
+    // One naming mistake repeated across every episode is one mistake. Counts must not scale with
+    // episode count (50 episodes once produced 100 warnings).
+    let count_for = |episodes: u64| {
+        let eps: Vec<_> = (0..episodes)
+            .map(|i| {
+                episode(
+                    i,
+                    vec![
+                        stream("Gripper", "c", None, &[0, 1_000_000]),
+                        stream("gripper", "c", None, &[0, 1_000_000]),
+                    ],
+                )
+            })
+            .collect();
+        semantic::StreamKeyClarity
+            .run(&dataset(eps))
+            .iter()
+            .filter(|f| f.code == "SEMANTIC.AMBIGUOUS_STREAM_KEY")
+            .count()
+    };
+    assert_eq!(
+        count_for(1),
+        count_for(50),
+        "findings must not scale with episodes"
+    );
+}
+
+// ---- regression: sequence completeness counts real holes, not idle time ----
+
+#[test]
+fn an_event_driven_stream_with_every_event_present_is_not_called_incomplete() {
+    // A change-triggered CAN channel: 40 intervals of 80 ms and 10 of 200 ms, every event present.
+    // Its interval CV (0.46) slips under the uniformity guard, and dividing the span by the median
+    // charged the idle stretches as ~23% dropped frames. 200 ms is no multiple of 80 ms, so nothing
+    // was swallowed.
+    let mut ts = vec![0i64];
+    for i in 0..50 {
+        let step = if i % 5 == 4 { 200_000_000 } else { 80_000_000 };
+        ts.push(ts[ts.len() - 1] + step);
+    }
+    let ep = episode(
+        0,
+        vec![
+            rig_stream_ts("can", Modality::CanSignal, &ts),
+            rig_stream_ts("imu", Modality::Imu, &sampled(10_000_000, 5_000_000_000)),
+            rig_stream_ts("gnss", Modality::Gnss, &sampled(200_000_000, 5_000_000_000)),
+        ],
+    );
+    let f = autonomy::SequenceComplete::default().run(&dataset(vec![ep]));
+    assert!(
+        !f.iter().any(|f| f.message.contains("`can`")),
+        "a complete event-driven stream is not incomplete: {f:?}"
+    );
+}
+
+#[test]
+fn a_steady_sensor_dropping_frames_is_still_flagged() {
+    // 100 ms cadence with 5 frames missing out of 20: each hole is exactly two periods wide, so the
+    // multiples estimator sees them.
+    let full: Vec<i64> = (0..20).map(|i| i * 100_000_000).collect();
+    let dropped: Vec<i64> = full
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| ![3usize, 7, 11, 15, 17].contains(i))
+        .map(|(_, t)| *t)
+        .collect();
+    let ep = episode(
+        0,
+        vec![
+            rig_stream_ts("imu", Modality::Imu, &dropped),
+            rig_stream_ts("lidar", Modality::PointCloud, &full),
+            rig_stream_ts("gnss", Modality::Gnss, &full),
+        ],
+    );
+    let f = autonomy::SequenceComplete::default().run(&dataset(vec![ep]));
+    assert_eq!(
+        f.len(),
+        1,
+        "the dropping sensor must still be flagged: {f:?}"
+    );
+    assert!(f[0].message.contains("imu"));
+}
+
+// ---- regression: float-noise statistics ----
+
+#[test]
+fn a_constant_stream_whose_std_is_float_noise_is_degenerate_not_impossible() {
+    // An exporter computing std as E[x²] - E[x]² on values near 0.7 loses ~1e-8 to cancellation. That
+    // is a constant stream reported honestly, not a mathematically impossible standard deviation.
+    for std in [0.0, 1e-12, 1e-8] {
+        let d = dataset(vec![episode(
+            0,
+            vec![stream_with_stats("s", stats(0.7, 0.7, 0.7, std))],
+        )]);
+        let f = statistical::RangeSanity.run(&d);
+        assert_eq!(
+            f.len(),
+            1,
+            "std {std}: expected exactly one finding, got {f:?}"
+        );
+        assert_eq!(f[0].code, "STATISTICAL.DEGENERATE", "std {std}");
+        assert_eq!(f[0].severity, Severity::Warning, "std {std}");
+    }
+}
+
+#[test]
+fn a_near_constant_channel_at_a_large_magnitude_is_not_impossible() {
+    // min 300.0, max 300.0002 — a Popoviciu bound of 1e-4, against an f32-computed std of 3e-4. The
+    // tolerance has to scale with the magnitude of the values, not the width of their range.
+    let d = dataset(vec![episode(
+        0,
+        vec![stream_with_stats(
+            "s",
+            stats(300.0, 300.0002, 300.0001, 3e-4),
+        )],
+    )]);
+    assert!(
+        statistical::RangeSanity.run(&d).is_empty(),
+        "honest float noise at magnitude 300 is not an impossible std"
+    );
+}
+
+#[test]
+fn a_genuinely_impossible_std_is_still_an_error() {
+    let d = dataset(vec![episode(
+        0,
+        vec![stream_with_stats("s", stats(0.0, 1.0, 0.5, 5.0))],
+    )]);
+    let f = statistical::RangeSanity.run(&d);
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].code, "STATISTICAL.STD_IMPLAUSIBLE");
+}
+
+#[test]
+fn a_saturated_later_episode_is_not_masked_by_a_clean_earlier_one() {
+    // Saturation reports each stream once, but it must claim the stream when it finds something, not
+    // when it first sees it — otherwise the finding depends on episode order.
+    let sat = |at_max: u64| {
+        let mut s = stream("gripper", "c", None, &[0, 1_000_000]);
+        s.observed_saturation = Some(veridex_core::cdm::Saturation {
+            min: 0.0,
+            max: 1.0,
+            at_min: 0,
+            at_max,
+            sample_count: 100,
+            dim: 0,
+        });
+        s
+    };
+    let clean_first = dataset(vec![episode(0, vec![sat(1)]), episode(1, vec![sat(95)])]);
+    let saturated_first = dataset(vec![episode(0, vec![sat(95)]), episode(1, vec![sat(1)])]);
+    let count = |d| statistical::Saturation::default().run(d).len();
+    assert_eq!(
+        count(&clean_first),
+        1,
+        "the saturated episode must be reported"
+    );
+    assert_eq!(
+        count(&clean_first),
+        count(&saturated_first),
+        "the finding must not depend on episode order"
+    );
 }

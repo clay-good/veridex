@@ -120,10 +120,16 @@ fn clean_data_with_no_provenance_is_capped_at_seventy() {
 
 #[test]
 fn a_clock_skew_error_drags_the_data_score_down() {
-    // Two streams drifting 500 ms => one CLOCK_SKEW error (-15 data). Full provenance isolates the
-    // effect to the data axis.
-    let cam = stream("cam", "camera", None, &[0, 1_000_000_000]);
-    let robot = stream("robot", "robot", None, &[0, 1_500_000_000]);
+    // Two 100 Hz streams drifting 500 ms => one CLOCK_SKEW error (-15 data). Full provenance isolates
+    // the effect to the data axis. The cadence is load-bearing: a span comparison allows for each
+    // stream's own sampling period, so a two-frame stream could not evidence the drift.
+    let dense = |span_ns: i64| -> Vec<i64> {
+        (0..=(span_ns / 10_000_000))
+            .map(|i| i * 10_000_000)
+            .collect()
+    };
+    let cam = stream("cam", "camera", None, &dense(1_000_000_000));
+    let robot = stream("robot", "robot", None, &dense(1_500_000_000));
     let d = dataset(vec![cam, robot], all_provenance());
     let verdict = run(&d);
     let ts = score(&verdict, &ProvenanceCoverage::of(&d));
