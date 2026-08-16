@@ -195,7 +195,7 @@ impl Adapter for McapAdapter {
         }
     }
 
-    fn ingest(&self, source: &Source, _options: &IngestOptions) -> Result<Ingested, IngestError> {
+    fn ingest(&self, source: &Source, options: &IngestOptions) -> Result<Ingested, IngestError> {
         let path = match source {
             Source::Local(p) => p,
             Source::Remote(_) => {
@@ -225,6 +225,10 @@ impl Adapter for McapAdapter {
         let mut intrinsics: BTreeMap<String, CameraIntrinsics> = BTreeMap::new();
         let mut transforms: BTreeMap<(String, String), Transform> = BTreeMap::new();
 
+        // One message is one frame, but the message count comes from the file — and a chunked MCAP
+        // can expand a 100 KB file into a gigabyte of payload, all of which gets hashed. The budget
+        // bounds that work.
+        let mut budget = super::FrameBudget::new(options);
         for message in mcap::MessageStream::new(&bytes).map_err(|e| IngestError::Parse {
             format_id: "mcap",
             message: e.to_string(),
@@ -255,6 +259,7 @@ impl Adapter for McapAdapter {
                     frames: Vec::new(),
                     point_fields: None,
                 });
+            budget.take("mcap", 1)?;
             builder.frames.push(Frame {
                 ts,
                 value_ref: ValueRef {

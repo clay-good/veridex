@@ -27,7 +27,10 @@ const EXIT_FAIL: u8 = 20;
 const EXIT_TOOL_ERROR: u8 = 2;
 
 const COMMANDS: &[(&str, &str)] = &[
-    ("check", "validate a dataset and report findings"),
+    (
+        "check",
+        "validate a dataset and report findings (--max-frames <n> raises the ingest ceiling)",
+    ),
     (
         "certify",
         "issue a signed trust certificate (--key <secret>; --profile world-model-ready)",
@@ -69,6 +72,7 @@ struct Args {
     config: Option<String>,
     force: bool,
     allow_any_issuer: bool,
+    max_frames: Option<String>,
     profile: Option<String>,
 }
 
@@ -91,6 +95,7 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
     let mut config = None;
     let mut force = false;
     let mut allow_any_issuer = false;
+    let mut max_frames = None;
     let mut profile = None;
     let mut it = rest.iter();
     while let Some(arg) = it.next() {
@@ -118,6 +123,7 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
             "--fail-on" => fail_on = Some(value("--fail-on")?),
             "--min-score" => min_score = Some(value("--min-score")?),
             "--profile" => profile = Some(value("--profile")?),
+            "--max-frames" => max_frames = Some(value("--max-frames")?),
             other if other.starts_with('-') => return Err(format!("unknown option `{other}`")),
             other => path = Some(other.to_string()),
         }
@@ -138,6 +144,7 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
         config,
         force,
         allow_any_issuer,
+        max_frames,
         profile,
     })
 }
@@ -178,6 +185,27 @@ fn main() -> ExitCode {
     }
 }
 
+/// The ingest options `args` asks for. `--max-frames 0` removes the ceiling; anything else must be a
+/// positive integer, so a typo can never silently disable the guard.
+fn ingest_options(args: &Args) -> Result<IngestOptions, String> {
+    let max_frames = match args.max_frames.as_deref() {
+        None => IngestOptions::default().max_frames,
+        Some("0") => None,
+        Some(v) => match v.parse::<u64>() {
+            Ok(n) => Some(n),
+            Err(_) => {
+                return Err(format!(
+                    "invalid --max-frames `{v}` (expected a positive integer, or 0 for no limit)"
+                ))
+            }
+        },
+    };
+    Ok(IngestOptions {
+        max_frames,
+        ..IngestOptions::default()
+    })
+}
+
 /// Ingest the dataset named by `args`, autodetecting or honoring `--format`.
 fn ingest(args: &Args) -> Result<veridex_core::Ingested, ExitCode> {
     let Some(path) = &args.path else {
@@ -186,7 +214,13 @@ fn ingest(args: &Args) -> Result<veridex_core::Ingested, ExitCode> {
     };
     let source = Source::Local(PathBuf::from(path));
     let registry = veridex_core::default_registry();
-    let opts = IngestOptions::default();
+    let opts = match ingest_options(args) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("veridex: {e}");
+            return Err(ExitCode::from(EXIT_TOOL_ERROR));
+        }
+    };
     let result = match &args.format {
         Some(fmt) => registry.ingest_as(fmt, &source, &opts),
         None => registry.ingest(&source, &opts),
@@ -264,13 +298,20 @@ fn cmd_check(rest: &[String]) -> ExitCode {
     // The CLI flag overrides the config's min_score (which defaults to no gate).
     let min_score = cli_min_score.or(config.min_score);
 
+    let ingest_opts = match ingest_options(&args) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("veridex: {e}");
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
+    };
     let source = Source::Local(PathBuf::from(path));
     let registry = veridex_core::default_registry();
     let out = match veridex_core::run_check_with(
         &registry,
         &source,
         args.format.as_deref(),
-        &IngestOptions::default(),
+        &ingest_opts,
         &config.to_run_config(),
     ) {
         Ok(o) => o,
@@ -578,6 +619,13 @@ fn cmd_certify(rest: &[String]) -> ExitCode {
 
     let source = Source::Local(PathBuf::from(path));
     let registry = veridex_core::default_registry();
+    let ingest_opts = match ingest_options(&args) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("veridex: {e}");
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
+    };
     // A profile applies its own tolerances to the run (e.g. tighter cross-sensor sync).
     let run_config = veridex_core::RunConfig {
         tolerances: profile.as_ref().map(|p| p.tolerances).unwrap_or_default(),
@@ -587,7 +635,7 @@ fn cmd_certify(rest: &[String]) -> ExitCode {
         &registry,
         &source,
         args.format.as_deref(),
-        &IngestOptions::default(),
+        &ingest_opts,
         &run_config,
     ) {
         Ok(o) => o,

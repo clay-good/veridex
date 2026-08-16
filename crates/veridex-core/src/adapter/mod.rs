@@ -47,14 +47,70 @@ pub enum Sample {
     Fraction { fraction: f64, seed: u64 },
 }
 
+/// The default ceiling on frames a single ingest will materialize.
+///
+/// Every adapter builds *streams × samples* frames, and both factors come from the file: a CAN log's
+/// signals-per-id against its frame count, an MF4 group's channels against its records, a LeRobot
+/// `info.json`'s declared features against its rows. That product is quadratic in attacker-controlled
+/// input — 344 KB of crafted CAN measured 6.4M frames and 900 MB — so ingestion refuses past a budget
+/// rather than being OOM-killed inside someone's CI gate. Chosen well above real datasets: a one-hour
+/// ten-sensor rig at 100 Hz is 3.6M frames.
+pub const DEFAULT_MAX_FRAMES: u64 = 20_000_000;
+
 /// Options controlling an ingest.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct IngestOptions {
     /// Ingest structure/metadata only; do not fetch or index stream payloads. Required for the
     /// remote structural-check path.
     pub metadata_only: bool,
     /// Which episodes to ingest.
     pub sample: Sample,
+    /// Ceiling on the frames this ingest may materialize; `None` removes the limit. Defaults to
+    /// [`DEFAULT_MAX_FRAMES`].
+    pub max_frames: Option<u64>,
+}
+
+impl Default for IngestOptions {
+    fn default() -> Self {
+        IngestOptions {
+            metadata_only: false,
+            sample: Sample::default(),
+            max_frames: Some(DEFAULT_MAX_FRAMES),
+        }
+    }
+}
+
+/// Tracks how many frames an ingest has committed to, refusing past the budget.
+///
+/// Adapters charge the budget *before* allocating, so a hostile file is rejected on the strength of
+/// what it declares rather than after the memory is already gone.
+#[derive(Debug)]
+pub struct FrameBudget {
+    limit: Option<u64>,
+    used: u64,
+}
+
+impl FrameBudget {
+    /// A budget for one ingest.
+    pub fn new(options: &IngestOptions) -> Self {
+        FrameBudget {
+            limit: options.max_frames,
+            used: 0,
+        }
+    }
+
+    /// Charge `n` frames, or fail with a clear error naming the budget.
+    pub fn take(&mut self, format_id: &'static str, n: u64) -> Result<(), IngestError> {
+        self.used = self.used.saturating_add(n);
+        match self.limit {
+            Some(limit) if self.used > limit => Err(IngestError::FrameBudgetExceeded {
+                format_id,
+                limit,
+                requested: self.used,
+            }),
+            _ => Ok(()),
+        }
+    }
 }
 
 /// What coverage an ingest actually achieved — recorded so verdicts and certificates can state
@@ -156,6 +212,17 @@ pub enum IngestError {
     AmbiguousFormat {
         /// The format ids that all recognized the source.
         candidates: Vec<&'static str>,
+    },
+
+    /// The source declares more frames than the ingest budget allows.
+    #[error("{format_id}: dataset would materialize {requested} frames, over the {limit} budget — raise it with --max-frames if this dataset is genuinely this large")]
+    FrameBudgetExceeded {
+        /// The recognizing adapter's format id.
+        format_id: &'static str,
+        /// The budget in force.
+        limit: u64,
+        /// Frames the source would have produced.
+        requested: u64,
     },
 
     /// An I/O error occurred while reading the source.

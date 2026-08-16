@@ -334,7 +334,7 @@ impl Adapter for Mdf4Adapter {
         }
     }
 
-    fn ingest(&self, source: &Source, _options: &IngestOptions) -> Result<Ingested, IngestError> {
+    fn ingest(&self, source: &Source, options: &IngestOptions) -> Result<Ingested, IngestError> {
         let Source::Local(path) = source else {
             return Err(IngestError::Parse {
                 format_id: FORMAT_ID,
@@ -382,6 +382,7 @@ impl Adapter for Mdf4Adapter {
         // groups each re-walking the same n channels is O(n³) streams, and a 33 KB file measured
         // 1.35 GB of allocation. Visiting each block once makes the whole walk linear in file size.
         let mut seen: BTreeSet<u64> = BTreeSet::new();
+        let mut budget = super::FrameBudget::new(options);
         while let Some(at) = dg_at {
             if !seen.insert(at) {
                 unmapped.push(UnmappedField {
@@ -407,7 +408,7 @@ impl Adapter for Mdf4Adapter {
                 });
                 break;
             }
-            let result = ingest_data_group(&bytes, at, &dg, group_index, &mut seen);
+            let result = ingest_data_group(&bytes, at, &dg, group_index, &mut seen, &mut budget)?;
             for mut stream in result.streams {
                 // Channel names are only unique within a group, and not always even there;
                 // disambiguate until the name is genuinely free so no stream is dropped — or worse,
@@ -516,7 +517,8 @@ fn ingest_data_group(
     dg: &BlockHeader,
     group_index: u64,
     seen: &mut BTreeSet<u64>,
-) -> GroupResult {
+    budget: &mut super::FrameBudget,
+) -> Result<GroupResult, IngestError> {
     let mut out = GroupResult {
         streams: Vec::new(),
         unmapped: Vec::new(),
@@ -534,7 +536,7 @@ fn ingest_data_group(
                 "unsorted data group (record id size {rec_id_size}) is not decoded; its channels contribute no frames"
             ),
         });
-        return out;
+        return Ok(out);
     }
 
     // The group's data block. Only an uncompressed ##DT is read; compressed/listed data is reported.
@@ -549,14 +551,14 @@ fn ingest_data_group(
                     String::from_utf8_lossy(&h.id)
                 ),
             });
-            return out;
+            return Ok(out);
         }
         None => {
             out.unmapped.push(UnmappedField {
                 source_path: locator("data"),
                 note: "data group carries no readable data block".into(),
             });
-            return out;
+            return Ok(out);
         }
     };
 
@@ -606,6 +608,19 @@ fn ingest_data_group(
         }
 
         let locate = |name: &str| format!("##DG[{group_index}].##CG[{cg_index}].{name}");
+        // A group materializes channels × records frames; charge that before decoding.
+        let decodable = channels.iter().filter(|c| c.is_decodable()).count() as u64;
+        let available = if record_len == 0 {
+            0
+        } else {
+            (records.len() / record_len) as u64
+        };
+        let planned = if cycle_count == 0 {
+            available
+        } else {
+            available.min(cycle_count)
+        };
+        budget.take(FORMAT_ID, decodable.saturating_mul(planned))?;
         // Whatever this group could not contribute is recorded as an unmapped field inside.
         decode_channel_group(
             records,
@@ -621,7 +636,7 @@ fn ingest_data_group(
         cg_index += 1;
         cg_at = opt_link(bytes, at, &cg, 0);
     }
-    out
+    Ok(out)
 }
 
 /// Decode one channel group's records into streams, appending to `out`. Returns whether any stream

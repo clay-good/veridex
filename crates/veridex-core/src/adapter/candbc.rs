@@ -240,6 +240,19 @@ impl Adapter for CanDbcAdapter {
         }
         frames.sort_by_key(|f| f.ts_ns);
 
+        // One CAN frame becomes one CDM frame *per signal its message defines*, so the total is a
+        // product of two file-controlled numbers. Charge the budget before decoding anything.
+        let mut budget = super::FrameBudget::new(_options);
+        let declared: u64 = frames
+            .iter()
+            .map(|f| {
+                messages
+                    .get(&f.id)
+                    .map_or(0, |m| m.signals.len().min(u32::MAX as usize) as u64)
+            })
+            .sum();
+        budget.take("candbc", declared)?;
+
         // Per signal stream (keyed by "<Message>.<Signal>"), the decoded frames.
         let mut signal_frames: BTreeMap<String, Vec<Frame>> = BTreeMap::new();
         let mut unknown_ids: BTreeMap<u32, u64> = BTreeMap::new();

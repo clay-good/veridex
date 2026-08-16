@@ -711,7 +711,7 @@ impl Adapter for LeRobotAdapter {
         }
     }
 
-    fn ingest(&self, source: &Source, _options: &IngestOptions) -> Result<Ingested, IngestError> {
+    fn ingest(&self, source: &Source, options: &IngestOptions) -> Result<Ingested, IngestError> {
         let dir = match source {
             Source::Local(p) => p,
             Source::Remote(_) => {
@@ -777,10 +777,16 @@ impl Adapter for LeRobotAdapter {
         // dataset without mid-episode task changes is unaffected.
         let mut episode_task_events: BTreeMap<u64, Vec<(i64, i64)>> = BTreeMap::new();
         let mut last_task_index: BTreeMap<u64, i64> = BTreeMap::new();
+        // Every row becomes one frame per declared feature, and `info.json` declares the features
+        // independently of what the Parquet actually holds — so a few-KB manifest naming 50k features
+        // multiplies against every row. Charge the budget as rows arrive, before the frames are built.
+        let mut budget = super::FrameBudget::new(options);
+        let per_row = features.len().max(1) as u64;
         // Dataset-level recomputed statistics per feature (LeRobot's stored stats are dataset-level).
         let mut observed: BTreeMap<String, FeatureAccum> = BTreeMap::new();
         for path in &parquet_files {
             for (ep, ts, task_index, feature_values) in read_rows(path, fps)? {
+                budget.take("lerobot", per_row)?;
                 let mut hashes = BTreeMap::new();
                 for (name, hash, scalars) in feature_values {
                     // Feed every dimension of the cell: finite values grow their dimension's stats,

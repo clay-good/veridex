@@ -123,3 +123,69 @@ fn missing_path_is_reported_as_not_found_not_unsupported_format() {
 fn supported_formats_reflects_registrations() {
     assert_eq!(registry().supported_formats(), vec!["fake"]);
 }
+
+#[test]
+fn an_ingest_refuses_to_materialize_more_frames_than_its_budget() {
+    // The product of streams × samples is quadratic in file-controlled numbers, so ingestion must
+    // refuse on what a file declares rather than being OOM-killed inside a CI gate.
+    use std::collections::BTreeMap;
+    use std::io::Cursor;
+    use veridex_core::adapter::mcap::McapAdapter;
+    use veridex_core::adapter::{Adapter, IngestError, IngestOptions, Source};
+
+    let mut bytes = Vec::new();
+    {
+        let mut w = mcap::Writer::new(Cursor::new(&mut bytes)).expect("writer");
+        let schema = w
+            .add_schema("std_msgs/msg/String", "ros2msg", b"")
+            .expect("s");
+        let channel = w
+            .add_channel(schema, "/t", "cdr", &BTreeMap::new())
+            .expect("c");
+        for i in 0..50u64 {
+            w.write_to_known_channel(
+                &mcap::records::MessageHeader {
+                    channel_id: channel,
+                    sequence: i as u32,
+                    log_time: i * 1_000_000,
+                    publish_time: i * 1_000_000,
+                },
+                b"x",
+            )
+            .expect("m");
+        }
+        w.finish().expect("finish");
+    }
+    let mut f = tempfile::Builder::new()
+        .suffix(".mcap")
+        .tempfile()
+        .expect("temp");
+    std::io::Write::write_all(&mut f, &bytes).expect("write");
+    let path = f.into_temp_path();
+    let source = Source::Local(path.to_path_buf());
+
+    // The default budget is far above this file.
+    assert!(McapAdapter
+        .ingest(&source, &IngestOptions::default())
+        .is_ok());
+
+    // A budget below what the file holds is refused with a clear error, not a partial ingest.
+    let opts = IngestOptions {
+        max_frames: Some(10),
+        ..IngestOptions::default()
+    };
+    let err = McapAdapter
+        .ingest(&source, &opts)
+        .expect_err("over budget must fail");
+    assert!(
+        matches!(err, IngestError::FrameBudgetExceeded { limit: 10, .. }),
+        "{err:?}"
+    );
+
+    // And `None` removes the limit entirely, for a genuinely large dataset.
+    let opts = IngestOptions {
+        max_frames: None,
+        ..IngestOptions::default()
+    };
+    assert!(McapAdapter.ingest(&source, &opts).is_ok());
+}

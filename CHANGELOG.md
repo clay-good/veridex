@@ -260,6 +260,15 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **A few hundred KB of crafted input could exhaust memory.** Every adapter materializes
+  *streams × samples* frames and both factors come from the file — a CAN log's signals-per-id against
+  its frame count, an MF4 group's channels against its records, a LeRobot `info.json`'s declared
+  features (which need no matching Parquet column) against its rows. Measured: 344 KB of crafted CAN
+  produced 6.4M frames and 900 MB, doubling with each doubling of input, so a ~10 MB file projects to
+  tens of GB and an OOM-killed CI gate. Ingestion now charges a **frame budget** (default 20M, well
+  above real datasets — a one-hour ten-sensor 100 Hz rig is 3.6M) *before* allocating, and refuses
+  with a clear error naming the limit rather than being killed. `--max-frames <n>` raises it;
+  `--max-frames 0` removes it.
 - **A scenario/map version could be read from the wrong place and recorded as extracted.** The ASAM
   `revMajor`/`revMinor` scan searched the whole file for each attribute independently, so a templated
   `.xodr` whose comment or `description` mentioned `revMajor="0"` had that read as its declared

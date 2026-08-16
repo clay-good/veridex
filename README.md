@@ -146,6 +146,11 @@ rate, gap, jitter, start-offset, end-offset, episode-duration, saturation), and 
 threshold — the effective config is recorded in every
 verdict, and unknown keys, check ids, or invalid tolerances are rejected, not silently ignored.
 
+Veridex reads untrusted files, so ingestion carries a **frame budget** (20M by default): a dataset
+that would materialize more is refused with a clear error rather than exhausting memory, because the
+frame count is a product of two numbers the file itself controls. Raise it with `--max-frames <n>`,
+or remove it with `--max-frames 0`.
+
 The same command works on a LeRobot v3 dataset — proof of the cross-format claim. Generate a demo
 one (its second episode carries an out-of-order timestamp) and check it the same way:
 
