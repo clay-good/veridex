@@ -250,13 +250,16 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   adapter is tested against the on-disk layout rather than a writer sharing its assumptions.
 - **CAN + DBC adapter** — a new AV-native ingestion path (`adapter/candbc.rs`). It ingests a directory
   holding a `.dbc` signal database and one or more candump ASCII logs (`.log`/`.asc`), parses the DBC
-  (`BO_` messages, `SG_` signals), and decodes each CAN frame's little-endian (Intel) signals —
-  applying the factor/offset and sign-extension — into one `CanSignal` stream per `Message.Signal`.
-  Two fidelity signals are surfaced as `unmapped` fields: DBC-coverage gaps (CAN ids seen in the log
-  with no DBC definition) and signals not yet decoded (Motorola/big-endian byte order). Decoded values
-  are fingerprinted into the CDM content hash. Autodetected by the registry (a directory with a
-  `.dbc`). Dependency-free text parsing; unit, integration, and CLI end-to-end tests. Motorola bit
-  numbering and recomputed signal stats (to feed the statistical checks) are follow-ups.
+  (`BO_` messages, `SG_` signals), and decodes each CAN frame's signals in **both DBC byte orders** —
+  little-endian (Intel, `@1`) and big-endian (Motorola, `@0`, walking the sawtooth bit numbering from
+  the signal's most-significant bit) — applying the factor/offset and sign-extension, into one
+  `CanSignal` stream per `Message.Signal`. A signal whose bits fall outside the frame is declined
+  rather than truncated. DBC-coverage gaps (CAN ids seen in the log with no DBC definition) are
+  surfaced as `unmapped` fields. Decoded values are fingerprinted into the CDM content hash.
+  Autodetected by the registry (a directory with a `.dbc`). Dependency-free text parsing; unit,
+  integration, and CLI end-to-end tests — including a Motorola signal laid over a byte-swapped copy
+  of its Intel twin, which must decode to identical samples. Recomputed signal stats (to feed the
+  statistical checks) remain a follow-up.
 
 ### Fixed
 

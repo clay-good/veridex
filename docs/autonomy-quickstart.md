@@ -84,7 +84,7 @@ See [profiles.md](profiles.md) for the profile's criteria and the full verificat
 | Source | Becomes |
 |---|---|
 | ROS/ROS 2 MCAP topics (`PointCloud2`, `Image`/`CameraInfo`, `Imu`, `NavSatFix`, `Odometry`, TF) | streams with rig modalities, camera intrinsics, the transform tree, the ego trajectory |
-| CAN frames + a `.dbc` | one named signal stream per `Message.Signal` (point the CLI at the directory) |
+| CAN frames + a `.dbc` | one named signal stream per `Message.Signal`, both Intel and Motorola byte order (point the CLI at the directory) |
 | ASAM MDF/MF4 (`.mf4`) | one stream per measured channel, on the group's time master, with linear conversions applied |
 | Producer metadata | rig lineage (firmware, platform, drive, region, map, redaction/consent) as provenance |
 | Scenario/map references (`.xosc`, `.xodr`, OSI, simulator) | provenance, with the version read from the sidecar's own ASAM header |

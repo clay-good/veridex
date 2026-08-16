@@ -3,13 +3,14 @@
 //! A CAN log on its own is opaque bytes; the DBC is the signal database that gives those bytes
 //! meaning. This adapter ingests a **directory** holding exactly one `.dbc` and one or more candump
 //! ASCII logs (`.log` / `.asc`), decodes each frame's signals per the DBC, and emits one CDM
-//! [`Stream`] per signal (`Modality::CanSignal`). Two fidelity signals the ingestion spec asks for
-//! are surfaced: **DBC-coverage gaps** — CAN ids seen in the log with no DBC definition — and signals
-//! Veridex does not yet decode (Motorola/big-endian byte order), both reported as `unmapped` fields.
+//! [`Stream`] per signal (`Modality::CanSignal`). The fidelity signal the ingestion spec asks for is
+//! surfaced: **DBC-coverage gaps** — CAN ids seen in the log with no DBC definition — reported as
+//! `unmapped` fields.
 //!
-//! Scope: little-endian (Intel) signals are decoded (factor/offset applied, sign-extended); the
-//! Motorola bit numbering is a follow-up. Decoded values are fingerprinted into
-//! `frame.value_ref.content_hash`, so the CDM hash is sensitive to actual signal content.
+//! Scope: both DBC byte orders are decoded — little-endian (Intel, `@1`) and big-endian (Motorola,
+//! `@0`) — with factor/offset applied and signed signals sign-extended. Decoded values are
+//! fingerprinted into `frame.value_ref.content_hash`, so the CDM hash is sensitive to actual signal
+//! content.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -158,31 +159,19 @@ fn parse_hex_bytes(s: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// Decode a little-endian (Intel) signal's physical value from a frame's data bytes, or `None` when
-/// the frame is too short to hold the signal's bits.
-fn decode_le_signal(sig: &DbcSignal, data: &[u8]) -> Option<f64> {
-    let end_bit = sig.start_bit.checked_add(sig.length)?;
-    // Reject a zero-length, over-wide, or out-of-range signal. This also guards every shift below: a
-    // shift by >= 64 panics in debug and silently mis-computes in release, and a length-0 signal at
-    // bit 64 would otherwise reach `raw >> 64`.
-    if sig.length == 0
-        || sig.length > 64
-        || sig.start_bit >= 64
-        || end_bit as usize > data.len() * 8
-    {
+/// Decode a signal's physical value from a frame's data bytes, or `None` when the signal's shape is
+/// unusable (zero-length, wider than 64 bits) or the frame is too short to hold its bits.
+fn decode_signal(sig: &DbcSignal, data: &[u8]) -> Option<f64> {
+    // Reject a zero-length or over-wide signal up front. This guards every shift below: a shift by
+    // >= 64 panics in debug and silently mis-computes in release.
+    if sig.length == 0 || sig.length > 64 {
         return None;
     }
-    // Assemble up to 8 data bytes as a little-endian u64, then shift/mask.
-    let mut raw: u64 = 0;
-    for (i, &b) in data.iter().take(8).enumerate() {
-        raw |= (b as u64) << (i * 8);
-    }
-    let mask = if sig.length == 64 {
-        u64::MAX
+    let bits = if sig.little_endian {
+        raw_bits_le(sig.start_bit, sig.length, data)?
     } else {
-        (1u64 << sig.length) - 1
+        raw_bits_be(sig.start_bit, sig.length, data)?
     };
-    let bits = (raw >> sig.start_bit) & mask;
     let value: f64 = if !sig.signed {
         // Unsigned: direct u64 -> f64 (correct across the full 64-bit range).
         bits as f64
@@ -194,6 +183,49 @@ fn decode_le_signal(sig: &DbcSignal, data: &[u8]) -> Option<f64> {
         bits as i64 as f64
     };
     Some(value * sig.factor + sig.offset)
+}
+
+/// Raw bits of a little-endian (Intel) signal: `start_bit` is the signal's least-significant bit in
+/// the sawtooth numbering (bit `n` = byte `n / 8`, bit `n % 8` counted from that byte's LSB), and the
+/// signal runs upward from there.
+fn raw_bits_le(start_bit: u32, length: u32, data: &[u8]) -> Option<u64> {
+    let end_bit = start_bit.checked_add(length)?;
+    if start_bit >= 64 || end_bit as usize > data.len() * 8 {
+        return None;
+    }
+    // Assemble up to 8 data bytes as a little-endian u64, then shift/mask.
+    let mut raw: u64 = 0;
+    for (i, &b) in data.iter().take(8).enumerate() {
+        raw |= (b as u64) << (i * 8);
+    }
+    let mask = if length == 64 {
+        u64::MAX
+    } else {
+        (1u64 << length) - 1
+    };
+    Some((raw >> start_bit) & mask)
+}
+
+/// Raw bits of a big-endian (Motorola) signal. `start_bit` names the signal's *most*-significant bit
+/// in the same sawtooth numbering, and the signal walks toward less-significant bits: down within the
+/// byte, then continuing at bit 7 of the *next* byte. Returns `None` if any bit falls outside `data`.
+fn raw_bits_be(start_bit: u32, length: u32, data: &[u8]) -> Option<u64> {
+    let mut bits: u64 = 0;
+    let mut bit = start_bit;
+    for _ in 0..length {
+        let byte = (bit / 8) as usize;
+        let bit_in_byte = bit % 8;
+        let b = *data.get(byte)?;
+        bits = (bits << 1) | ((b >> bit_in_byte) as u64 & 1);
+        // Step to the next-less-significant bit. At a byte's LSB, wrap to the MSB of the next byte:
+        // that is +15 in sawtooth numbering (byte*8 + 0 -> (byte + 1) * 8 + 7).
+        bit = if bit_in_byte == 0 {
+            bit.checked_add(15)?
+        } else {
+            bit - 1
+        };
+    }
+    Some(bits)
 }
 
 impl Adapter for CanDbcAdapter {
@@ -256,8 +288,6 @@ impl Adapter for CanDbcAdapter {
         // Per signal stream (keyed by "<Message>.<Signal>"), the decoded frames.
         let mut signal_frames: BTreeMap<String, Vec<Frame>> = BTreeMap::new();
         let mut unknown_ids: BTreeMap<u32, u64> = BTreeMap::new();
-        let mut skipped_motorola: std::collections::BTreeSet<String> =
-            std::collections::BTreeSet::new();
         let mut min_ts: Option<i64> = None;
         let mut max_ts: Option<i64> = None;
 
@@ -270,11 +300,7 @@ impl Adapter for CanDbcAdapter {
             };
             for sig in &message.signals {
                 let stream_name = format!("{}.{}", message.name, sig.name);
-                if !sig.little_endian {
-                    skipped_motorola.insert(stream_name);
-                    continue;
-                }
-                let Some(value) = decode_le_signal(sig, &frame.data) else {
+                let Some(value) = decode_signal(sig, &frame.data) else {
                     continue; // frame too short for this signal — skip this sample
                 };
                 // Fingerprint the decoded value so the CDM hash reflects signal content.
@@ -333,18 +359,14 @@ impl Adapter for CanDbcAdapter {
             calibration: None,
         };
 
-        // Fidelity: DBC-coverage gaps (undefined ids) and undecoded Motorola signals.
-        let mut unmapped_fields: Vec<UnmappedField> = unknown_ids
+        // Fidelity: DBC-coverage gaps (CAN ids in the log with no DBC message definition).
+        let unmapped_fields: Vec<UnmappedField> = unknown_ids
             .iter()
             .map(|(id, count)| UnmappedField {
                 source_path: format!("can id 0x{id:x}"),
                 note: format!("{count} frame(s) with no DBC message definition (coverage gap)"),
             })
             .collect();
-        unmapped_fields.extend(skipped_motorola.iter().map(|name| UnmappedField {
-            source_path: name.clone(),
-            note: "Motorola/big-endian signal byte order is not decoded yet".into(),
-        }));
 
         Ok(Ingested {
             dataset,
@@ -353,7 +375,8 @@ impl Adapter for CanDbcAdapter {
                 source_version: Some("dbc".into()),
                 coverage: Coverage::Full,
                 mapped_fields: vec![
-                    "DBC SG_ signal -> stream (Message.Signal)".into(),
+                    "DBC SG_ signal -> stream (Message.Signal), Intel @1 and Motorola @0 byte order"
+                        .into(),
                     "candump frame timestamp -> frame.ts".into(),
                     "decoded signal value -> frame.value_ref.content_hash (SHA-256)".into(),
                 ],
@@ -453,9 +476,9 @@ BO_ 256 EngineData: 8 ECU
         let msg = &m[&256];
         let data = [0x40, 0x01, 0x00, 0x00, 0, 0, 0, 0];
         // EngineSpeed: raw 0x0140 = 320, *0.25 = 80 rpm.
-        assert_eq!(decode_le_signal(&msg.signals[0], &data), Some(80.0));
+        assert_eq!(decode_signal(&msg.signals[0], &data), Some(80.0));
         // CoolantTemp: raw 0x00, +(-40) = -40 degC.
-        assert_eq!(decode_le_signal(&msg.signals[1], &data), Some(-40.0));
+        assert_eq!(decode_signal(&msg.signals[1], &data), Some(-40.0));
     }
 
     #[test]
@@ -470,14 +493,14 @@ BO_ 256 EngineData: 8 ECU
             offset: 0.0,
         };
         // 0xFF as signed 8-bit = -1.
-        assert_eq!(decode_le_signal(&sig, &[0xFF]), Some(-1.0));
+        assert_eq!(decode_signal(&sig, &[0xFF]), Some(-1.0));
     }
 
     #[test]
     fn a_too_short_frame_skips_the_signal() {
         let m = parse_dbc(DBC);
         // CoolantTemp needs bits 16..24 (byte 2); a 1-byte frame can't supply it.
-        assert_eq!(decode_le_signal(&m[&256].signals[1], &[0x40]), None);
+        assert_eq!(decode_signal(&m[&256].signals[1], &[0x40]), None);
     }
 
     fn sig(start_bit: u32, length: u32, signed: bool) -> DbcSignal {
@@ -492,21 +515,83 @@ BO_ 256 EngineData: 8 ECU
         }
     }
 
+    fn be_sig(start_bit: u32, length: u32, signed: bool) -> DbcSignal {
+        DbcSignal {
+            little_endian: false,
+            ..sig(start_bit, length, signed)
+        }
+    }
+
     #[test]
     fn extreme_signal_shapes_never_panic() {
         let full = [0xFFu8; 8];
         // Signed 64-bit with the top bit set: `1i64 << 64` must not be evaluated.
-        assert_eq!(decode_le_signal(&sig(0, 64, true), &full), Some(-1.0));
+        assert_eq!(decode_signal(&sig(0, 64, true), &full), Some(-1.0));
         // Unsigned 64-bit of all-ones is 2^64 - 1, decoded via u64 -> f64 (not `as i64`).
         assert_eq!(
-            decode_le_signal(&sig(0, 64, false), &full),
+            decode_signal(&sig(0, 64, false), &full),
             Some(u64::MAX as f64)
         );
         // A zero-length signal, an over-wide one, and a start bit at/over 64 are all declined, not
         // panics (each would otherwise reach a shift by >= 64).
-        assert_eq!(decode_le_signal(&sig(64, 0, false), &full), None);
-        assert_eq!(decode_le_signal(&sig(0, 65, false), &full), None);
-        assert_eq!(decode_le_signal(&sig(64, 1, false), &full), None);
+        assert_eq!(decode_signal(&sig(64, 0, false), &full), None);
+        assert_eq!(decode_signal(&sig(0, 65, false), &full), None);
+        assert_eq!(decode_signal(&sig(64, 1, false), &full), None);
+        // The same shapes on the Motorola path, where the walk itself must stay in bounds.
+        assert_eq!(decode_signal(&be_sig(7, 0, false), &full), None);
+        assert_eq!(decode_signal(&be_sig(7, 65, false), &full), None);
+        assert_eq!(decode_signal(&be_sig(u32::MAX, 1, false), &full), None);
+        // A full-width Motorola signal has to start at byte 0's MSB; starting anywhere else runs off
+        // the end of an 8-byte frame and is declined rather than truncated.
+        assert_eq!(decode_signal(&be_sig(7, 64, true), &full), Some(-1.0));
+        assert_eq!(
+            decode_signal(&be_sig(7, 64, false), &full),
+            Some(u64::MAX as f64)
+        );
+        assert_eq!(decode_signal(&be_sig(0, 64, false), &full), None);
+    }
+
+    #[test]
+    fn decodes_big_endian_motorola_signals() {
+        // A byte-aligned 16-bit Motorola signal starting at bit 7 spans bytes 0..2, MSB first:
+        // 0x1234 = 4660.
+        let data = [0x12, 0x34, 0x00, 0x00, 0, 0, 0, 0];
+        assert_eq!(decode_signal(&be_sig(7, 16, false), &data), Some(4660.0));
+        // The same bytes read as Intel from bit 0 give the byte-swapped 0x3412 — the two orders are
+        // genuinely different, so a mislabeled signal cannot accidentally agree.
+        assert_eq!(decode_signal(&sig(0, 16, false), &data), Some(13330.0)); // 0x3412
+                                                                             // Signed: 0xFF80 as a 16-bit two's-complement value is -128.
+        let neg = [0xFF, 0x80, 0, 0, 0, 0, 0, 0];
+        assert_eq!(decode_signal(&be_sig(7, 16, true), &neg), Some(-128.0));
+    }
+
+    #[test]
+    fn a_motorola_signal_crossing_a_byte_boundary_walks_the_sawtooth() {
+        // 12-bit Motorola signal starting at bit 3 of byte 0: the low nibble of byte 0 (high bits)
+        // followed by all of byte 1. Bytes 0xAB, 0xCD -> 0xB<<8 | 0xCD = 0xBCD = 3021.
+        let data = [0xAB, 0xCD, 0, 0, 0, 0, 0, 0];
+        assert_eq!(decode_signal(&be_sig(3, 12, false), &data), Some(3021.0));
+        // Two bytes are exactly enough; one byte is not, and is declined rather than truncated.
+        assert_eq!(
+            decode_signal(&be_sig(3, 12, false), &data[..2]),
+            Some(3021.0)
+        );
+        assert_eq!(decode_signal(&be_sig(3, 12, false), &data[..1]), None);
+    }
+
+    #[test]
+    fn scale_and_offset_apply_to_motorola_signals_too() {
+        let m = parse_dbc(DBC);
+        // `MotorolaSig : 24|8@0+ (1,0)` — start bit 24 is byte 3's LSB-numbered bit 0, so an
+        // 8-bit big-endian signal there walks byte 3 then byte 4's high bits... but with start bit
+        // 24 (bit_in_byte 0) the very next step wraps to byte 4 bit 7.
+        let mut scaled = m[&256].signals[2].clone();
+        scaled.factor = 0.5;
+        scaled.offset = -1.0;
+        // byte 3 bit 0 = 1, then byte 4 bits 7..1 = 0b1111111 -> 0b1_1111111 truncated to 8 bits:
+        // bits collected = 1 then 1111111 = 0xFF -> 255 * 0.5 - 1 = 126.5.
+        let data = [0, 0, 0, 0x01, 0xFE, 0, 0, 0];
+        assert_eq!(decode_signal(&scaled, &data), Some(126.5));
     }
 
     #[test]
