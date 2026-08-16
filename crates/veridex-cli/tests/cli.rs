@@ -493,3 +493,20 @@ fn check_honors_the_profile_it_accepts() {
     assert_eq!(code, 2);
     assert!(stderr.contains("unknown profile"), "unexpected: {stderr}");
 }
+
+#[test]
+fn a_command_refuses_a_gate_flag_it_cannot_honor() {
+    // The shared parser accepts one flag set for every command, so `inspect --min-score 90` used to
+    // look like a gate and silently be none. Naming it is better than ignoring it.
+    let dataset = fixture_dataset();
+    let (code, _, stderr) = run(&["inspect", "--min-score", "90", &dataset]);
+    assert_eq!(code, 2);
+    assert!(stderr.contains("does not support --min-score"), "{stderr}");
+
+    // The commands that do gate still accept it.
+    let (code, _, _) = run(&["check", "--min-score", "0", &dataset]);
+    assert!(
+        code == 0 || code == 10 || code == 20,
+        "unexpected exit {code}"
+    );
+}

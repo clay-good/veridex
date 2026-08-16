@@ -163,6 +163,21 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
     })
 }
 
+/// Reject a flag a command parses but does not act on.
+///
+/// The shared parser accepts one flag set for every command, so a command silently tolerated flags it
+/// had no use for — `inspect --min-score 90` looked like a gate and was not one. Naming the flag is
+/// better than ignoring it: the user asked for something that was not going to happen.
+fn reject_unsupported(command: &str, unsupported: &[(&str, bool)]) -> Result<(), ExitCode> {
+    for (flag, given) in unsupported {
+        if *given {
+            eprintln!("veridex: {command} does not support {flag}");
+            return Err(ExitCode::from(EXIT_TOOL_ERROR));
+        }
+    }
+    Ok(())
+}
+
 /// Parse the shared flags or print the error and return a tool-error exit code. Used by every
 /// data-consuming command so a bad flag fails loudly and identically everywhere.
 fn parse_args_or_exit(rest: &[String]) -> Result<Args, ExitCode> {
@@ -507,6 +522,15 @@ fn cmd_inspect(rest: &[String]) -> ExitCode {
         Ok(a) => a,
         Err(code) => return code,
     };
+    if let Err(code) = reject_unsupported(
+        "inspect",
+        &[
+            ("--fail-on", args.fail_on.is_some()),
+            ("--min-score", args.min_score.is_some()),
+        ],
+    ) {
+        return code;
+    }
     let mut ingested = match ingest(&args) {
         Ok(i) => i,
         Err(code) => return code,
@@ -801,6 +825,15 @@ fn cmd_verify(rest: &[String]) -> ExitCode {
         Ok(a) => a,
         Err(code) => return code,
     };
+    if let Err(code) = reject_unsupported(
+        "verify",
+        &[
+            ("--fail-on", args.fail_on.is_some()),
+            ("--min-score", args.min_score.is_some()),
+        ],
+    ) {
+        return code;
+    }
     let Some(cert_path) = &args.certificate else {
         eprintln!("veridex: verify requires --certificate <cert.json>");
         return ExitCode::from(EXIT_TOOL_ERROR);
@@ -958,6 +991,15 @@ fn cmd_provenance(rest: &[String]) -> ExitCode {
         Ok(a) => a,
         Err(code) => return code,
     };
+    if let Err(code) = reject_unsupported(
+        "provenance",
+        &[
+            ("--fail-on", args.fail_on.is_some()),
+            ("--min-score", args.min_score.is_some()),
+        ],
+    ) {
+        return code;
+    }
     let mut ingested = match ingest(&args) {
         Ok(i) => i,
         Err(code) => return code,

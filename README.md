@@ -241,7 +241,7 @@ reference extraction** (OpenSCENARIO / OpenDRIVE / OSI / simulator, with the ver
 referenced sidecar's own ASAM header); Croissant + W3C PROV provenance emit; Ed25519 **certificate signing with
 offline verification** (tamper + transplant rejection); a working CLI (`check`, `inspect`, `checks`,
 `certify`, `verify`, `provenance`, `keygen`, `diff`) — see the [Quickstart](#quickstart); and **Python
-bindings** (`import veridex`, exposing `check`/`inspect`/`content_hash`/`catalog`/`provenance`/`diff`/`keygen`/`certify`/`verify`/`version`) that call the same
+bindings** (`import veridex`, exposing `check`/`check_sarif`/`check_html`/`inspect`/`content_hash`/`catalog`/`provenance`/`diff`/`keygen`/`certify`/`verify`/`version`) that call the same
 core pipeline, with a CLI⇄Python parity test run in CI. Next up: streaming/remote ingestion.
 
 Start with [openspec/project.md](openspec/project.md) for the design, or track progress in

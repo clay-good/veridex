@@ -284,6 +284,12 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   above real datasets — a one-hour ten-sensor 100 Hz rig is 3.6M) *before* allocating, and refuses
   with a clear error naming the limit rather than being killed. `--max-frames <n>` raises it;
   `--max-frames 0` removes it.
+- **Python had no SARIF or HTML binding**, so the two CI-facing render formats were CLI-only despite
+  the stated parity. `veridex.check_sarif` and `veridex.check_html` now expose them through the same
+  shared render helpers, so their output is byte-identical to `--sarif` and `--html`.
+- **Commands accepted gate flags they could not honor.** `inspect --min-score 90` looked like a gate
+  and was none, and `--fail-on` was equally inert on `inspect`, `provenance`, and `verify`. Each now
+  refuses the flag by name rather than ignoring it.
 - **The `av` demo's ego trajectory never decoded, so the flagship readiness demo said N/A.** Its
   Odometry topic carried an 8-byte dummy payload like every other sensor, so `Episode.ego_poses` came
   back empty — and the `world-model-ready` profile, which applies only to a rig carrying a perception

@@ -277,6 +277,49 @@ fn diff(old_report_json: &str, new_report_json: &str) -> PyResult<String> {
     Ok(veridex_core::render_diff_json(&old, &new))
 }
 
+/// `veridex.check_sarif(path, format=None, config=None) -> str`
+///
+/// Validate a dataset and return the report as SARIF 2.1.0 JSON, byte-identical to
+/// `veridex check --sarif`. For CI code-scanning pipelines driven from Python.
+#[pyfunction]
+#[pyo3(signature = (path, format=None, config=None))]
+fn check_sarif(path: &str, format: Option<&str>, config: Option<&str>) -> PyResult<String> {
+    let registry = veridex_core::default_registry();
+    let run_config = run_config_from(config)?;
+    let out = veridex_core::run_check_with(
+        &registry,
+        &source_for(path),
+        format,
+        &IngestOptions::default(),
+        &run_config,
+    )
+    .map_err(to_py_err)?;
+    Ok(
+        serde_json::to_string_pretty(&veridex_core::render_sarif(&out.verdict))
+            .expect("sarif serializes"),
+    )
+}
+
+/// `veridex.check_html(path, format=None, config=None) -> str`
+///
+/// Validate a dataset and return the self-contained HTML report, byte-identical to
+/// `veridex check --html`.
+#[pyfunction]
+#[pyo3(signature = (path, format=None, config=None))]
+fn check_html(path: &str, format: Option<&str>, config: Option<&str>) -> PyResult<String> {
+    let registry = veridex_core::default_registry();
+    let run_config = run_config_from(config)?;
+    let out = veridex_core::run_check_with(
+        &registry,
+        &source_for(path),
+        format,
+        &IngestOptions::default(),
+        &run_config,
+    )
+    .map_err(to_py_err)?;
+    Ok(veridex_core::render_html(&out.verdict, Some(out.trust)))
+}
+
 /// `veridex.version() -> str`
 #[pyfunction]
 fn version() -> &'static str {
@@ -288,6 +331,8 @@ fn version() -> &'static str {
 fn veridex(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", veridex_core::VERSION)?;
     m.add_function(wrap_pyfunction!(check, m)?)?;
+    m.add_function(wrap_pyfunction!(check_sarif, m)?)?;
+    m.add_function(wrap_pyfunction!(check_html, m)?)?;
     m.add_function(wrap_pyfunction!(content_hash, m)?)?;
     m.add_function(wrap_pyfunction!(inspect, m)?)?;
     m.add_function(wrap_pyfunction!(catalog, m)?)?;
