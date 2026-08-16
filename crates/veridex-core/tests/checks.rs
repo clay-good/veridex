@@ -2384,3 +2384,39 @@ fn corrupt_stats_in_a_later_episode_are_not_masked_by_a_clean_earlier_one() {
         f[0].location
     );
 }
+
+#[test]
+fn the_configured_autonomy_tolerances_reach_the_checks() {
+    // The autonomy thresholds are config-wired like every other family: an engine built at a looser
+    // ego-speed ceiling must stop flagging a trajectory the default ceiling rejects.
+    let poses = vec![
+        ego(0, 0.0, 0.0),
+        ego(100_000_000, 0.1, 0.0),
+        ego(200_000_000, 50.1, 0.0), // 500 m/s
+    ];
+    let d = dataset(vec![rig_episode_with_ego(poses)]);
+    let run_at = |ego_max_speed_mps: f64| {
+        let tolerances = veridex_core::Tolerances {
+            ego_max_speed_mps,
+            ..Default::default()
+        };
+        let engine = veridex_core::checks::default_engine_with(&tolerances)
+            .expect("standard checks have unique ids");
+        let hash = veridex_core::content_hash(&d);
+        let verdict = engine.run(
+            &d,
+            hash,
+            &veridex_core::RunConfig {
+                tolerances,
+                ..Default::default()
+            },
+        );
+        verdict
+            .findings
+            .iter()
+            .filter(|f| f.code == "AUTONOMY.EGO_POSE_CONTINUITY")
+            .count()
+    };
+    assert_eq!(run_at(100.0), 1, "500 m/s exceeds the default 100 m/s");
+    assert_eq!(run_at(600.0), 0, "a 600 m/s ceiling tolerates it");
+}

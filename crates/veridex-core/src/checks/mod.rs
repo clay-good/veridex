@@ -60,8 +60,12 @@ pub fn standard_checks_with(t: &Tolerances) -> Vec<Box<dyn Check>> {
             // Shares the cross-sensor sync tolerance with ClockSkew: same semantics, one knob.
             tolerance_ns: t.clock_skew_ns,
         }),
-        Box::new(autonomy::SequenceComplete::default()),
-        Box::new(autonomy::EgoPoseContinuity::default()),
+        Box::new(autonomy::SequenceComplete {
+            max_drop_fraction: t.sequence_drop_fraction,
+        }),
+        Box::new(autonomy::EgoPoseContinuity {
+            max_speed_mps: t.ego_max_speed_mps,
+        }),
         Box::new(autonomy::CalibrationCompleteness),
         Box::new(statistical::RangeSanity),
         Box::new(statistical::StoredVsObserved),
@@ -69,7 +73,9 @@ pub fn standard_checks_with(t: &Tolerances) -> Vec<Box<dyn Check>> {
             min_fraction: t.saturation_fraction,
             min_samples: t.saturation_min_samples,
         }),
-        Box::new(statistical::ExtremeOutlier::default()),
+        Box::new(statistical::ExtremeOutlier {
+            z_threshold: t.outlier_z,
+        }),
         Box::new(statistical::NonFiniteObserved),
         Box::new(semantic::TaskQuality),
         Box::new(semantic::StreamKeyClarity),

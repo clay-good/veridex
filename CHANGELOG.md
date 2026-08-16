@@ -283,6 +283,15 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   above real datasets — a one-hour ten-sensor 100 Hz rig is 3.6M) *before* allocating, and refuses
   with a clear error naming the limit rather than being killed. `--max-frames <n>` raises it;
   `--max-frames 0` removes it.
+- **Three thresholds were unreachable from config.** `STATISTICAL.OUTLIER`'s sigma and the two
+  autonomy tolerances (`AUTONOMY.SEQUENCE_COMPLETE`'s tolerated drop fraction,
+  `AUTONOMY.EGO_POSE_CONTINUITY`'s maximum plausible speed) were hardcoded to their defaults while
+  every other family's were tunable — so a rig with a legitimately faster platform, or a
+  deliberately sparse sensor, had no way to say so. They are now `outlier_z`,
+  `sequence_drop_fraction`, and `ego_max_speed_mps` under `[tolerances]`: validated on parse
+  (a sigma at or below 1.0, a drop fraction outside `[0, 1)`, or a non-positive speed is rejected,
+  not silently accepted), snapshotted into the signed effective config, and listed in the report's
+  non-default-tolerances note.
 - **A clean episode could mask a later episode's corrupt statistics.** `statistical.range-sanity`
   reports each stream once (stored stats are dataset-level), but it claimed the stream name *before*
   evaluating it — so only the first episode carrying a stream was ever examined. Exact today, wrong

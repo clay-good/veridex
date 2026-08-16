@@ -53,6 +53,16 @@ pub struct TolerancesConfig {
     pub saturation_fraction: Option<f64>,
     /// `STATISTICAL.SATURATED` minimum sample count below which the check abstains.
     pub saturation_min_samples: Option<u64>,
+    /// `STATISTICAL.OUTLIER` standard-deviations-from-mean at or beyond which a value is flagged.
+    /// Must be greater than 1.0: at or below 1σ the Chebyshev bound says nothing, so every stream
+    /// would be flagged.
+    pub outlier_z: Option<f64>,
+    /// `AUTONOMY.SEQUENCE_COMPLETE` tolerated fraction of a rig sensor's implied frames that may be
+    /// missing (0.05 = 5%). Must be within [0.0, 1.0).
+    pub sequence_drop_fraction: Option<f64>,
+    /// `AUTONOMY.EGO_POSE_CONTINUITY` maximum plausible ego speed, in metres per second; a step
+    /// implying more than this is a teleport.
+    pub ego_max_speed_mps: Option<f64>,
 }
 
 /// A parsed `veridex.toml`.
@@ -178,6 +188,27 @@ impl TolerancesConfig {
                 )));
             }
         }
+        if let Some(z) = self.outlier_z {
+            if !z.is_finite() || z <= 1.0 {
+                return Err(ConfigError::Parse(format!(
+                    "outlier_z must be a finite number greater than 1.0, got {z}"
+                )));
+            }
+        }
+        if let Some(f) = self.sequence_drop_fraction {
+            if !f.is_finite() || !(0.0..1.0).contains(&f) {
+                return Err(ConfigError::Parse(format!(
+                    "sequence_drop_fraction must be a finite number in [0.0, 1.0), got {f}"
+                )));
+            }
+        }
+        if let Some(v) = self.ego_max_speed_mps {
+            if !v.is_finite() || v <= 0.0 {
+                return Err(ConfigError::Parse(format!(
+                    "ego_max_speed_mps must be a finite, positive number, got {v}"
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -208,6 +239,11 @@ impl TolerancesConfig {
             saturation_min_samples: self
                 .saturation_min_samples
                 .unwrap_or(d.saturation_min_samples),
+            outlier_z: self.outlier_z.unwrap_or(d.outlier_z),
+            sequence_drop_fraction: self
+                .sequence_drop_fraction
+                .unwrap_or(d.sequence_drop_fraction),
+            ego_max_speed_mps: self.ego_max_speed_mps.unwrap_or(d.ego_max_speed_mps),
         }
     }
 }

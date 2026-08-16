@@ -182,7 +182,8 @@ fn tolerances_parse_resolve_and_validate() {
     let cfg = CheckConfig::from_toml(
         "[tolerances]\nclock_skew_ms = 250\nstart_offset_ms = 120\nend_offset_ms = 90\n\
          rate_deviation = 0.2\ngap_factor = 5\njitter_cv = 0.8\nepisode_duration_factor = 6\n\
-         saturation_fraction = 0.7\nsaturation_min_samples = 50\n",
+         saturation_fraction = 0.7\nsaturation_min_samples = 50\noutlier_z = 6\n\
+         sequence_drop_fraction = 0.2\nego_max_speed_mps = 40\n",
     )
     .expect("parses");
     let rc = cfg.to_run_config();
@@ -195,6 +196,9 @@ fn tolerances_parse_resolve_and_validate() {
     assert_eq!(rc.tolerances.episode_duration_factor, 6.0);
     assert_eq!(rc.tolerances.saturation_fraction, 0.7);
     assert_eq!(rc.tolerances.saturation_min_samples, 50);
+    assert_eq!(rc.tolerances.outlier_z, 6.0);
+    assert_eq!(rc.tolerances.sequence_drop_fraction, 0.2);
+    assert_eq!(rc.tolerances.ego_max_speed_mps, 40.0);
 
     // Unset time tolerances fall back to the 50 ms default.
     let defaults = CheckConfig::from_toml("[tolerances]\nclock_skew_ms = 250\n")
@@ -220,6 +224,17 @@ fn tolerances_parse_resolve_and_validate() {
     // An unset saturation fraction falls back to the 0.5 default.
     assert_eq!(defaults.tolerances.saturation_fraction, 0.5);
     assert_eq!(defaults.tolerances.saturation_min_samples, 20);
+    // Below 1σ the Chebyshev bound says nothing, so every stream would be flagged — rejected.
+    assert!(CheckConfig::from_toml("[tolerances]\noutlier_z = 1.0\n").is_err());
+    assert!(CheckConfig::from_toml("[tolerances]\noutlier_z = -3\n").is_err());
+    // A drop fraction of 1.0 could never be exceeded; a negative one flags everything.
+    assert!(CheckConfig::from_toml("[tolerances]\nsequence_drop_fraction = 1.0\n").is_err());
+    assert!(CheckConfig::from_toml("[tolerances]\nsequence_drop_fraction = -0.1\n").is_err());
+    // A zero or negative speed limit would call every step a teleport.
+    assert!(CheckConfig::from_toml("[tolerances]\nego_max_speed_mps = 0\n").is_err());
+    assert_eq!(defaults.tolerances.outlier_z, 10.0);
+    assert_eq!(defaults.tolerances.sequence_drop_fraction, 0.05);
+    assert_eq!(defaults.tolerances.ego_max_speed_mps, 100.0);
 }
 
 #[test]

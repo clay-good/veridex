@@ -164,6 +164,18 @@ fn non_default_tolerances(t: &crate::Tolerances) -> Vec<String> {
             t.saturation_min_samples
         ));
     }
+    if t.outlier_z != d.outlier_z {
+        out.push(format!("outlier {}σ", t.outlier_z));
+    }
+    if t.sequence_drop_fraction != d.sequence_drop_fraction {
+        out.push(format!(
+            "sequence drop {:.0}%",
+            t.sequence_drop_fraction * 100.0
+        ));
+    }
+    if t.ego_max_speed_mps != d.ego_max_speed_mps {
+        out.push(format!("ego max speed {} m/s", t.ego_max_speed_mps));
+    }
     out
 }
 

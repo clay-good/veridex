@@ -107,8 +107,9 @@ No code until this change is approved; this is the build plan.
       (`ReadinessReport`) records profile name, `applicable` (is it a rig), overall `ready`, and each
       criterion's check id / threshold / passed / finding count — signed like every field, honest by
       construction (a non-rig is `N/A`, never a vacuous pass). Proven end-to-end (`certify --profile`
-      on the `av` rig prints and signs NOT READY) + unit tests (`tests/profile.rs`). Tolerances for
-      the sequence/ego-pose/calibration criteria are their defaults (config-wiring them is a follow-up).
+      on the `av` rig prints and signs NOT READY) + unit tests (`tests/profile.rs`). The sequence
+      and ego-pose thresholds are now config-wired like every other family (`sequence_drop_fraction`,
+      `ego_max_speed_mps` in `[tolerances]`); the profile still applies its own defaults.
 
 ## A5 — Proof
 - [ ] End-to-end on a real multi-sensor rig log (MF4 and/or ROS bag): LiDAR + multi-camera + CAN +

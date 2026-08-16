@@ -51,6 +51,15 @@ pub struct Tolerances {
     /// `STATISTICAL.SATURATED` abstains on streams with fewer than this many recomputed samples, where
     /// a pinned "fraction" isn't yet meaningful.
     pub saturation_min_samples: u64,
+    /// `STATISTICAL.OUTLIER` fires on a value at least this many standard deviations from the mean.
+    /// The Chebyshev tail bound is `1/z²`, so `z = 10` means the flagged value is ≤1% of samples.
+    pub outlier_z: f64,
+    /// `AUTONOMY.SEQUENCE_COMPLETE` fires when more than this fraction of the frames a rig sensor's
+    /// own median cadence implies over its span are missing (0.05 = 5%).
+    pub sequence_drop_fraction: f64,
+    /// `AUTONOMY.EGO_POSE_CONTINUITY` fires on an ego-trajectory step implying a speed above this,
+    /// in metres per second — a teleport rather than motion.
+    pub ego_max_speed_mps: f64,
 }
 
 impl Tolerances {
@@ -68,6 +77,9 @@ impl Tolerances {
             jitter_cv: fix(self.jitter_cv, d.jitter_cv),
             episode_duration_factor: fix(self.episode_duration_factor, d.episode_duration_factor),
             saturation_fraction: fix(self.saturation_fraction, d.saturation_fraction),
+            outlier_z: fix(self.outlier_z, d.outlier_z),
+            sequence_drop_fraction: fix(self.sequence_drop_fraction, d.sequence_drop_fraction),
+            ego_max_speed_mps: fix(self.ego_max_speed_mps, d.ego_max_speed_mps),
             ..self
         }
     }
@@ -85,6 +97,9 @@ impl Default for Tolerances {
             episode_duration_factor: 10.0,
             saturation_fraction: 0.5,
             saturation_min_samples: 20,
+            outlier_z: 10.0,
+            sequence_drop_fraction: 0.05, // 5%
+            ego_max_speed_mps: 100.0,
         }
     }
 }
