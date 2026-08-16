@@ -125,7 +125,13 @@ pub fn version_from_value(value: &str) -> Option<String> {
             }
         }
         if dots > 0 {
-            return Some(value[start..end].to_string());
+            let candidate = &value[start..end];
+            // A date (`run_2026.08.16`) is not a version. ASAM and tool versions are small numbers,
+            // so a first component longer than two digits is something else — better none than wrong.
+            let first_len = candidate.split('.').next().map_or(0, str::len);
+            if first_len <= 2 {
+                return Some(candidate.to_string());
+            }
         }
         i = end.max(start + 1);
     }
@@ -388,6 +394,8 @@ mod tests {
         assert_eq!(version_from_value("town10.xodr"), None);
         assert_eq!(version_from_value("cut_in.xosc"), None);
         assert_eq!(version_from_value("no digits here"), None);
+        // A date is not a version.
+        assert_eq!(version_from_value("run_2026.08.16"), None);
     }
 
     #[test]

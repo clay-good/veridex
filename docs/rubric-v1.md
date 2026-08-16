@@ -61,3 +61,21 @@ Because provenance carries 30% weight, a dataset with **zero provenance** cannot
 - Deliberately simple (design D7): correctness and determinism over cleverness. Weights can be
   refined in a future rubric version without invalidating v1 certificates, which stay pinned to
   `rubric_version: v1`.
+
+## What the score does not measure
+
+Two limits are worth stating plainly, because both let a dataset look better than a fuller one:
+
+- **Narrowing the run costs nothing.** A check that *errors* is charged as a coverage gap (−10), but a
+  check switched off in `veridex.toml`, excluded by `categories`/`only_checks`, or downgraded through
+  `severity_overrides` simply produces no findings and no deduction. Configuration is a legitimate
+  tool, so the score does not second-guess it — instead the **effective config and the checks that
+  ran are recorded in every verdict and signed into every certificate**, so a reader can see the
+  scope a score was earned within. Compare scores only across runs with the same configuration. (For
+  readiness specifically this is not left to the reader: a criterion whose check did not run cannot
+  pass — see [profiles.md](profiles.md).)
+- **Absent evidence beats imperfect evidence.** Several statistical checks need the source's stored
+  statistics; a dataset that ships none is not judged on them, while one that ships honest-but-flawed
+  stats is. Publishing less can therefore score higher. Veridex will not infer statistics it was not
+  given, so the fix is to read the coverage notes alongside the score rather than to penalize
+  what *is* declared.
