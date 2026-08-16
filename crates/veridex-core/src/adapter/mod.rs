@@ -57,6 +57,21 @@ pub enum Sample {
 /// ten-sensor rig at 100 Hz is 3.6M frames.
 pub const DEFAULT_MAX_FRAMES: u64 = 20_000_000;
 
+/// The default ceiling on how far a compressed container may expand, as a multiple of the file's own
+/// size.
+///
+/// The frame budget bounds how many frames a file produces; it does not bound how many *bytes* a
+/// compressed container unpacks into on the way there. A single MCAP chunk can declare a gigabyte of
+/// uncompressed records inside a hundred kilobytes on disk, and one oversized message inside it is
+/// one frame — cheap by the frame budget, ruinous in memory. Expansion is bounded relative to the
+/// source instead, so the limit scales with genuinely large logs while a decompression bomb (ratios
+/// in the thousands) is refused. Real sensor payloads — already-compressed images and point clouds —
+/// rarely clear 10x.
+pub const DEFAULT_MAX_DECOMPRESSION_RATIO: u64 = 100;
+
+/// The floor under a decompression budget, so a small file still gets a workable allowance.
+const DECOMPRESSION_BUDGET_FLOOR_BYTES: u64 = 64 * 1024 * 1024;
+
 /// Options controlling an ingest.
 #[derive(Debug, Clone)]
 pub struct IngestOptions {
@@ -68,6 +83,9 @@ pub struct IngestOptions {
     /// Ceiling on the frames this ingest may materialize; `None` removes the limit. Defaults to
     /// [`DEFAULT_MAX_FRAMES`].
     pub max_frames: Option<u64>,
+    /// Ceiling on how far a compressed container may expand, as a multiple of the source's size;
+    /// `None` removes the limit. Defaults to [`DEFAULT_MAX_DECOMPRESSION_RATIO`].
+    pub max_decompression_ratio: Option<u64>,
 }
 
 impl Default for IngestOptions {
@@ -76,6 +94,7 @@ impl Default for IngestOptions {
             metadata_only: false,
             sample: Sample::default(),
             max_frames: Some(DEFAULT_MAX_FRAMES),
+            max_decompression_ratio: Some(DEFAULT_MAX_DECOMPRESSION_RATIO),
         }
     }
 }
@@ -104,6 +123,45 @@ impl FrameBudget {
         self.used = self.used.saturating_add(n);
         match self.limit {
             Some(limit) if self.used > limit => Err(IngestError::FrameBudgetExceeded {
+                format_id,
+                limit,
+                requested: self.used,
+            }),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Tracks how many decompressed bytes an ingest has committed to, refusing past the budget.
+///
+/// The budget is derived from the source's own size (see [`DEFAULT_MAX_DECOMPRESSION_RATIO`]), so it
+/// scales with genuinely large logs. Like [`FrameBudget`], adapters charge it on what the file
+/// *declares* before unpacking anything, and again on what actually arrives — a header that
+/// understates its expansion buys nothing.
+#[derive(Debug)]
+pub struct DecompressionBudget {
+    limit: Option<u64>,
+    used: u64,
+}
+
+impl DecompressionBudget {
+    /// A budget for one ingest of a source of `source_bytes` bytes.
+    pub fn new(options: &IngestOptions, source_bytes: u64) -> Self {
+        DecompressionBudget {
+            limit: options.max_decompression_ratio.map(|ratio| {
+                source_bytes
+                    .saturating_mul(ratio)
+                    .max(DECOMPRESSION_BUDGET_FLOOR_BYTES)
+            }),
+            used: 0,
+        }
+    }
+
+    /// Charge `n` decompressed bytes, or fail with a clear error naming the budget.
+    pub fn take(&mut self, format_id: &'static str, n: u64) -> Result<(), IngestError> {
+        self.used = self.used.saturating_add(n);
+        match self.limit {
+            Some(limit) if self.used > limit => Err(IngestError::DecompressionBudgetExceeded {
                 format_id,
                 limit,
                 requested: self.used,
@@ -225,6 +283,17 @@ pub enum IngestError {
         requested: u64,
     },
 
+    /// The source's compressed data would expand past the ingest budget.
+    #[error("{format_id}: compressed data would expand to {requested} bytes, over the {limit}-byte budget — raise it with --max-decompression-ratio if this file is genuinely this compressible")]
+    DecompressionBudgetExceeded {
+        /// The recognizing adapter's format id.
+        format_id: &'static str,
+        /// The budget in force, in bytes.
+        limit: u64,
+        /// Decompressed bytes the source would have produced.
+        requested: u64,
+    },
+
     /// An I/O error occurred while reading the source.
     #[error("io error: {0}")]
     Io(String),
@@ -341,4 +410,67 @@ pub fn default_registry() -> AdapterRegistry {
     reg.register(Box::new(candbc::CanDbcAdapter));
     reg.register(Box::new(mdf4::Mdf4Adapter));
     reg
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn options(ratio: Option<u64>) -> IngestOptions {
+        IngestOptions {
+            max_decompression_ratio: ratio,
+            ..IngestOptions::default()
+        }
+    }
+
+    #[test]
+    fn the_decompression_budget_scales_with_the_source() {
+        // A 1 GB log gets a proportionate allowance: 100x its own size.
+        let big = 1_000_000_000u64;
+        let mut budget = DecompressionBudget::new(&options(Some(100)), big);
+        assert!(budget.take("mcap", big * 100).is_ok());
+        assert!(budget.take("mcap", 1).is_err());
+    }
+
+    #[test]
+    fn a_small_file_still_gets_the_floor() {
+        // 100 KB x 100 is under the floor, so the floor is what applies — a small honest file is
+        // never squeezed, and a small hostile one is still bounded.
+        let mut budget = DecompressionBudget::new(&options(Some(100)), 100_000);
+        assert!(budget
+            .take("mcap", DECOMPRESSION_BUDGET_FLOOR_BYTES)
+            .is_ok());
+        assert!(budget.take("mcap", 1).is_err());
+    }
+
+    #[test]
+    fn charges_accumulate_and_name_the_budget() {
+        let mut budget = DecompressionBudget::new(&options(Some(1)), 1_000_000_000);
+        assert!(budget.take("mcap", 600_000_000).is_ok());
+        match budget.take("mcap", 600_000_000) {
+            Err(IngestError::DecompressionBudgetExceeded {
+                format_id,
+                limit,
+                requested,
+            }) => {
+                assert_eq!(format_id, "mcap");
+                assert_eq!(limit, 1_000_000_000);
+                assert_eq!(requested, 1_200_000_000, "charges accumulate across calls");
+            }
+            other => panic!("expected a decompression-budget error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn no_ratio_means_no_ceiling() {
+        let mut budget = DecompressionBudget::new(&options(None), 1);
+        assert!(budget.take("mcap", u64::MAX).is_ok());
+    }
+
+    #[test]
+    fn an_enormous_ratio_saturates_rather_than_wrapping() {
+        // A ratio that would overflow the multiply must not wrap to a tiny limit.
+        let mut budget = DecompressionBudget::new(&options(Some(u64::MAX)), u64::MAX);
+        assert!(budget.take("mcap", u64::MAX - 1).is_ok());
+    }
 }

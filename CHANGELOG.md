@@ -283,6 +283,15 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   above real datasets — a one-hour ten-sensor 100 Hz rig is 3.6M) *before* allocating, and refuses
   with a clear error naming the limit rather than being killed. `--max-frames <n>` raises it;
   `--max-frames 0` removes it.
+- **The frame budget bounded frames, not the bytes they arrive in.** An MCAP chunk header declares how
+  much it unpacks into, and nothing checked that figure: a few hundred bytes claiming 8 GiB of chunk
+  contents sent the reader into an unbounded read loop, and a chunk full of oversized messages costs
+  one frame each — cheap by the frame budget, ruinous in memory. Ingestion now also charges a
+  **decompression budget**, sized at 100x the file's own size (with a 64 MiB floor) so it scales with
+  genuinely large logs while refusing bomb-scale ratios. It is charged off the chunk headers *before*
+  the file reaches the reader, and again against the message bytes that actually arrive, so a header
+  that understates its expansion buys nothing. `--max-decompression-ratio <n>` raises it; `0` removes
+  it.
 - **A scenario/map version could be read from the wrong place and recorded as extracted.** The ASAM
   `revMajor`/`revMinor` scan searched the whole file for each attribute independently, so a templated
   `.xodr` whose comment or `description` mentioned `revMajor="0"` had that read as its declared

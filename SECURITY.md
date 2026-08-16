@@ -23,6 +23,12 @@ document states what Veridex guarantees, what it does **not**, and how signing k
 - **No wall-clock in core.** Issuance timestamps are caller-supplied, so signing is reproducible and
   testable; the core reads no ambient clock.
 - **Memory safety.** `veridex-core` is compiled with `#![forbid(unsafe_code)]`.
+- **Bounded ingestion.** Reading a dataset is reading untrusted input, so ingestion is bounded twice
+  before it allocates: a **frame budget** (20M frames by default, `--max-frames`) on what a file can
+  materialize, and a **decompression budget** (100x the file's own size, `--max-decompression-ratio`)
+  on how far a compressed container may expand. Both are charged against what the file *declares*,
+  and the decompression budget again against what actually arrives — so a header that understates
+  its expansion buys nothing. A file past either budget is refused with an error naming the limit.
 
 ## What Veridex does NOT guarantee
 

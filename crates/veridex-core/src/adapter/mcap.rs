@@ -119,6 +119,9 @@ struct McapRecords {
     header: Option<mcap::records::Header>,
     metadata: Vec<mcap::records::Metadata>,
     attachments: Vec<(String, String)>, // (name, media_type)
+    /// Sum of every chunk's *declared* uncompressed size. Read from the chunk headers without
+    /// unpacking anything, so a decompression bomb can be refused before it costs memory.
+    declared_uncompressed_bytes: u64,
 }
 
 /// Read the header, Metadata records, and Attachment summaries in a single linear pass. Absent or
@@ -135,6 +138,11 @@ fn read_records(bytes: &[u8]) -> McapRecords {
             Ok(mcap::records::Record::Attachment { header, .. }) => {
                 out.attachments
                     .push((header.name.clone(), header.media_type.clone()));
+            }
+            Ok(mcap::records::Record::Chunk { header, .. }) => {
+                out.declared_uncompressed_bytes = out
+                    .declared_uncompressed_bytes
+                    .saturating_add(header.uncompressed_size);
             }
             Ok(_) => {}
             Err(_) => break,
@@ -213,6 +221,17 @@ impl Adapter for McapAdapter {
         let records = read_records(&bytes);
         let header = records.header.clone();
 
+        // Chunks are decompressed on the way to messages, and the frame budget below counts frames,
+        // not the bytes they arrive in: a 100 KB file can declare a gigabyte of chunk contents, and
+        // one oversized message inside it is a single frame. Charge what the chunk headers declare
+        // *before* anything is unpacked, then charge what actually arrives, so a header that
+        // understates its expansion is caught too.
+        // The two are charged against separate budgets of the same size rather than one shared
+        // total, so an honest file is not charged twice for the same bytes.
+        super::DecompressionBudget::new(options, bytes.len() as u64)
+            .take("mcap", records.declared_uncompressed_bytes)?;
+        let mut arrived = super::DecompressionBudget::new(options, bytes.len() as u64);
+
         // Accumulate streams by topic (BTreeMap keeps a deterministic order before canonicalization).
         let mut streams: BTreeMap<String, StreamBuilder> = BTreeMap::new();
         let mut min_ts: Option<i64> = None;
@@ -260,6 +279,7 @@ impl Adapter for McapAdapter {
                     point_fields: None,
                 });
             budget.take("mcap", 1)?;
+            arrived.take("mcap", message.data.len() as u64)?;
             builder.frames.push(Frame {
                 ts,
                 value_ref: ValueRef {

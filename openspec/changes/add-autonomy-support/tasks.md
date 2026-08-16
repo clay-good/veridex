@@ -150,7 +150,8 @@ call, not a defect fix:
   reader knows what the binding does and does not cover; folding it in would need a
   `CANONICAL_VERSION` bump to 4.
 
-Still open from the audit, unblocked but unbuilt: an MCAP decompressed-byte budget (the frame budget
-bounds the frame count, not chunk expansion), and `statistical.range-sanity` claiming a stream name
+Still open from the audit, unblocked but unbuilt: `statistical.range-sanity` claiming a stream name
 before evaluating it (exact today because stored stats are dataset-level; wrong the moment an adapter
-attaches per-episode stats).
+attaches per-episode stats). The MCAP decompressed-byte budget is now built — expansion is capped at
+100x the file's own size (`--max-decompression-ratio`), charged off the chunk headers before the
+reader sees the file and again against the bytes that arrive.

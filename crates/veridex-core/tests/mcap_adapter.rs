@@ -952,3 +952,88 @@ fn scenario_metadata_becomes_episode_labels() {
     let cov = veridex_core::scenario::coverage(&d);
     assert_eq!(cov.len(), 2);
 }
+
+/// Sum of the *declared* uncompressed size of every chunk in an MCAP file, read from the chunk
+/// headers without unpacking them — the same figure the adapter's budget charges.
+fn declared_chunk_bytes(bytes: &[u8]) -> u64 {
+    mcap::read::LinearReader::new(bytes)
+        .expect("linear reader")
+        .filter_map(|rec| match rec {
+            Ok(mcap::records::Record::Chunk { header, .. }) => Some(header.uncompressed_size),
+            _ => None,
+        })
+        .sum()
+}
+
+/// Rewrite every little-endian occurrence of `from` (the chunk header's declared uncompressed size,
+/// which the chunk index repeats) to `to`, so a test can forge a decompression bomb's *claim*
+/// without having to produce gigabytes of real data.
+fn forge_declared_size(bytes: &mut [u8], from: u64, to: u64) -> usize {
+    let (from, to) = (from.to_le_bytes(), to.to_le_bytes());
+    let mut patched = 0;
+    for i in 0..bytes.len().saturating_sub(8) {
+        if bytes[i..i + 8] == from {
+            bytes[i..i + 8].copy_from_slice(&to);
+            patched += 1;
+        }
+    }
+    patched
+}
+
+/// Without the budget this file does not merely cost memory: the MCAP reader keeps asking for the
+/// 8 GiB the header promises and spins indefinitely on a few hundred bytes. The refusal has to come
+/// before the reader is handed the file, which is why the budget is charged off the chunk headers.
+#[test]
+fn a_chunk_declaring_a_huge_expansion_is_refused_before_it_is_unpacked() {
+    let mut bytes = build_mcap(&[Chan {
+        topic: "/camera",
+        schema: "sensor_msgs/msg/Image",
+        times: vec![1_000, 2_000, 3_000],
+    }]);
+    let declared = declared_chunk_bytes(&bytes);
+    assert!(declared > 0, "the fixture writer must produce a chunk");
+    // Claim 8 GiB of contents inside a file of a few hundred bytes.
+    assert!(forge_declared_size(&mut bytes, declared, 8 * 1024 * 1024 * 1024) > 0);
+    let path = write_temp_mcap(&bytes);
+
+    let err = McapAdapter
+        .ingest(
+            &Source::Local(path.to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect_err("a chunk claiming 8 GiB must be refused");
+    match err {
+        veridex_core::adapter::IngestError::DecompressionBudgetExceeded {
+            format_id,
+            limit,
+            requested,
+        } => {
+            assert_eq!(format_id, "mcap");
+            assert_eq!(requested, 8 * 1024 * 1024 * 1024);
+            assert!(
+                limit < requested,
+                "the budget must be the binding constraint"
+            );
+        }
+        other => panic!("expected a decompression-budget error, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_ordinary_recording_is_well_inside_the_decompression_budget() {
+    let bytes = build_mcap_payload(
+        &[Chan {
+            topic: "/camera",
+            schema: "sensor_msgs/msg/Image",
+            times: vec![1_000, 2_000, 3_000],
+        }],
+        &[7u8; 4096],
+    );
+    let path = write_temp_mcap(&bytes);
+    McapAdapter
+        .ingest(
+            &Source::Local(path.to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("a real recording must ingest under the default budget");
+}

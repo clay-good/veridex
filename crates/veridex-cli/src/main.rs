@@ -29,7 +29,7 @@ const EXIT_TOOL_ERROR: u8 = 2;
 const COMMANDS: &[(&str, &str)] = &[
     (
         "check",
-        "validate a dataset and report findings (--max-frames <n> raises the ingest ceiling)",
+        "validate a dataset and report findings (--max-frames <n> / --max-decompression-ratio <n> raise the ingest ceilings)",
     ),
     (
         "certify",
@@ -73,6 +73,7 @@ struct Args {
     force: bool,
     allow_any_issuer: bool,
     max_frames: Option<String>,
+    max_decompression_ratio: Option<String>,
     profile: Option<String>,
 }
 
@@ -96,6 +97,7 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
     let mut force = false;
     let mut allow_any_issuer = false;
     let mut max_frames = None;
+    let mut max_decompression_ratio = None;
     let mut profile = None;
     let mut it = rest.iter();
     while let Some(arg) = it.next() {
@@ -124,6 +126,9 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
             "--min-score" => min_score = Some(value("--min-score")?),
             "--profile" => profile = Some(value("--profile")?),
             "--max-frames" => max_frames = Some(value("--max-frames")?),
+            "--max-decompression-ratio" => {
+                max_decompression_ratio = Some(value("--max-decompression-ratio")?)
+            }
             other if other.starts_with('-') => return Err(format!("unknown option `{other}`")),
             other => path = Some(other.to_string()),
         }
@@ -145,6 +150,7 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
         force,
         allow_any_issuer,
         max_frames,
+        max_decompression_ratio,
         profile,
     })
 }
@@ -185,24 +191,36 @@ fn main() -> ExitCode {
     }
 }
 
-/// The ingest options `args` asks for. `--max-frames 0` removes the ceiling; anything else must be a
-/// positive integer, so a typo can never silently disable the guard.
+/// The ingest options `args` asks for. `0` removes the ceiling on either budget; anything else must
+/// be a positive integer, so a typo can never silently disable a guard.
 fn ingest_options(args: &Args) -> Result<IngestOptions, String> {
-    let max_frames = match args.max_frames.as_deref() {
-        None => IngestOptions::default().max_frames,
-        Some("0") => None,
-        Some(v) => match v.parse::<u64>() {
-            Ok(n) => Some(n),
-            Err(_) => {
-                return Err(format!(
-                    "invalid --max-frames `{v}` (expected a positive integer, or 0 for no limit)"
-                ))
-            }
-        },
-    };
+    /// Parse one budget flag: absent keeps the default, `0` removes the limit.
+    fn budget(
+        flag: &str,
+        given: Option<&str>,
+        default: Option<u64>,
+    ) -> Result<Option<u64>, String> {
+        match given {
+            None => Ok(default),
+            Some("0") => Ok(None),
+            Some(v) => v.parse::<u64>().map(Some).map_err(|_| {
+                format!("invalid {flag} `{v}` (expected a positive integer, or 0 for no limit)")
+            }),
+        }
+    }
+    let defaults = IngestOptions::default();
     Ok(IngestOptions {
-        max_frames,
-        ..IngestOptions::default()
+        max_frames: budget(
+            "--max-frames",
+            args.max_frames.as_deref(),
+            defaults.max_frames,
+        )?,
+        max_decompression_ratio: budget(
+            "--max-decompression-ratio",
+            args.max_decompression_ratio.as_deref(),
+            defaults.max_decompression_ratio,
+        )?,
+        ..defaults
     })
 }
 
