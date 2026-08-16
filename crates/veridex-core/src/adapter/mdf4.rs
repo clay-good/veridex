@@ -760,7 +760,10 @@ fn decode_channel_group(
                     byte_len: None,
                     // Fingerprint the physical value, matching the other adapters: the CDM hash is
                     // sensitive to measured content without ever storing it.
-                    content_hash: Some(Sha256::digest(value.to_bits().to_le_bytes()).into()),
+                    content_hash: Some(
+                        Sha256::digest(crate::canonical::canon_f64_bits(value).to_le_bytes())
+                            .into(),
+                    ),
                 },
             });
         }

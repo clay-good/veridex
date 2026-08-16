@@ -265,7 +265,8 @@ impl Adapter for CanDbcAdapter {
                     continue; // frame too short for this signal — skip this sample
                 };
                 // Fingerprint the decoded value so the CDM hash reflects signal content.
-                let content_hash = Sha256::digest(value.to_bits().to_le_bytes()).into();
+                let content_hash =
+                    Sha256::digest(crate::canonical::canon_f64_bits(value).to_le_bytes()).into();
                 signal_frames.entry(stream_name).or_default().push(Frame {
                     ts: frame.ts_ns,
                     value_ref: ValueRef {

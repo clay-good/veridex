@@ -349,17 +349,17 @@ fn scope_key(scope: &ProvenanceScope) -> (u8, u64, &str) {
 
 /// A total ordering key for a provenance element: its full (key, value, class) content, so two
 /// elements sharing a `key` never tie.
-type ElementKey<'a> = (&'a str, Option<&'a str>, &'a str);
+pub(crate) type ElementKey<'a> = (&'a str, Option<&'a str>, &'a str);
 
-fn element_sort_key(el: &ProvenanceElement) -> ElementKey<'_> {
+pub(crate) fn element_sort_key(el: &ProvenanceElement) -> ElementKey<'_> {
     (el.key.as_str(), el.value.as_deref(), el.class.tag())
 }
 
 /// A total ordering key for a provenance record: its scope plus every element's content (sorted), so
 /// two records in the same scope never tie and the encoding is permutation-independent.
-type ProvKey<'a> = ((u8, u64, &'a str), Vec<ElementKey<'a>>);
+pub(crate) type ProvKey<'a> = ((u8, u64, &'a str), Vec<ElementKey<'a>>);
 
-fn prov_sort_key(p: &Provenance) -> ProvKey<'_> {
+pub(crate) fn prov_sort_key(p: &Provenance) -> ProvKey<'_> {
     let mut elements: Vec<_> = p.elements.iter().map(element_sort_key).collect();
     elements.sort();
     (scope_key(&p.scope), elements)
@@ -368,7 +368,7 @@ fn prov_sort_key(p: &Provenance) -> ProvKey<'_> {
 /// Canonical f64 bit pattern: normalize signed zero and all NaN payloads so `-0.0`/`+0.0` and any NaN
 /// map to one value. Shared by the encoder (so the hash is stable) and the content sort keys below (so
 /// the order canonicalization stays in lockstep with what is hashed).
-fn canon_f64_bits(v: f64) -> u64 {
+pub(crate) fn canon_f64_bits(v: f64) -> u64 {
     if v.is_nan() {
         0x7ff8_0000_0000_0000
     } else if v == 0.0 {
@@ -419,7 +419,7 @@ fn intrinsics_sort_key(c: &CameraIntrinsics) -> IntrinsicsKey<'_> {
 }
 
 /// Content tie-break key for an [`EgoPose`] (used only to order poses that share a timestamp).
-fn ego_pose_bits(p: &EgoPose) -> ([u64; 3], [u64; 4]) {
+pub(crate) fn ego_pose_bits(p: &EgoPose) -> ([u64; 3], [u64; 4]) {
     (
         p.pose.translation.map(canon_f64_bits),
         p.pose.rotation.map(canon_f64_bits),

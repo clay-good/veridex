@@ -17,7 +17,12 @@ fn collect_elements(dataset: &Dataset) -> Vec<&ProvenanceElement> {
             out.push(el);
         }
     }
-    out.sort_by(|a, b| a.key.cmp(&b.key));
+    // Sorted by full content (key, value, class) — the encoder's key. Sorting by `key` alone leaves
+    // ties resolved by Vec order, so two datasets with an identical content hash could emit
+    // contradictory attribution.
+    out.sort_by(|a, b| {
+        crate::canonical::element_sort_key(a).cmp(&crate::canonical::element_sort_key(b))
+    });
     out
 }
 
@@ -25,11 +30,16 @@ fn collect_elements(dataset: &Dataset) -> Vec<&ProvenanceElement> {
 /// `n/a`, …) are skipped: emitting them into a mapped schema.org field like `license` would present
 /// fake provenance as real. The classified `veridex:provenance` list still carries every element.
 fn known_value<'a>(dataset: &'a Dataset, key: &str) -> Option<&'a str> {
+    // Deterministic across permutations: pick the content-smallest matching element rather than
+    // whichever happens to come first in Vec order.
     dataset
         .provenance
         .iter()
         .flat_map(|r| &r.elements)
-        .find(|e| e.key == key && e.class != ProvenanceClass::Unknown && e.has_real_value())
+        .filter(|e| e.key == key && e.class != ProvenanceClass::Unknown && e.has_real_value())
+        .min_by(|a, b| {
+            crate::canonical::element_sort_key(a).cmp(&crate::canonical::element_sort_key(b))
+        })
         .and_then(|e| e.value.as_deref())
 }
 

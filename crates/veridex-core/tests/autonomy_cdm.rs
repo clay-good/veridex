@@ -209,3 +209,127 @@ fn a_manipulation_dataset_is_unaffected_by_the_extension() {
     let d2 = d.clone();
     assert_eq!(content_hash(&d2), baseline);
 }
+
+/// Permuting every collection the encoder canonicalizes must leave **both** the content hash and the
+/// verdict unchanged after `canonicalize_order`.
+///
+/// The hash treating a collection as a set while a check reads it as a sequence — or by "first match"
+/// — is the dangerous shape: two datasets share a content hash but disagree on the verdict, so a
+/// certificate attests a hash that also matches a dataset that fails. This one property covers
+/// ego-pose order (read as a trajectory), metadata order (read by first match), and provenance
+/// record/element order (read by first match, and emitted).
+#[test]
+fn permuting_every_canonicalized_collection_changes_neither_the_hash_nor_the_verdict() {
+    use veridex_core::cdm::{
+        Dataset, EgoPose, Episode, Frame, Modality, Pose, Provenance, ProvenanceClass,
+        ProvenanceElement, ProvenanceScope, Stream, ValueRef,
+    };
+
+    let frames: Vec<Frame> = (0..10)
+        .map(|i| Frame {
+            ts: i * 100_000_000,
+            value_ref: ValueRef {
+                uri: "u".into(),
+                byte_offset: None,
+                byte_len: None,
+                content_hash: None,
+            },
+        })
+        .collect();
+    let stream = |name: &str, modality: Modality| Stream {
+        name: name.into(),
+        modality,
+        declared_rate_hz: None,
+        clock_id: "rig".into(),
+        dtype: None,
+        shape: None,
+        frames: frames.clone(),
+        stats: None,
+        dim_stats: None,
+        observed_stats: None,
+        observed_saturation: None,
+        observed_non_finite: None,
+        observed_dim_stats: None,
+        point_fields: None,
+    };
+    // A trajectory that is continuous in ts order and full of teleports in any other order.
+    let poses: Vec<EgoPose> = (0..6)
+        .map(|i| EgoPose {
+            ts: i * 100_000_000,
+            pose: Pose {
+                translation: [i as f64 * 1.0, 0.0, 0.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+            },
+        })
+        .collect();
+    let element = |key: &str, value: &str| ProvenanceElement {
+        key: key.into(),
+        value: Some(value.into()),
+        class: ProvenanceClass::Known,
+    };
+
+    let base = Dataset {
+        id: "perm".into(),
+        metadata: vec![
+            ("declared_total_frames".into(), "10".into()),
+            ("source_format".into(), "test".into()),
+        ],
+        provenance: vec![
+            Provenance {
+                scope: ProvenanceScope::Dataset,
+                elements: vec![element("license", "MIT"), element("sensor", "cam")],
+            },
+            Provenance {
+                scope: ProvenanceScope::Dataset,
+                elements: vec![element("annotator", "a"), element("recorder", "r")],
+            },
+        ],
+        episodes: vec![Episode {
+            index: 0,
+            start_ts: Some(0),
+            end_ts: Some(900_000_000),
+            streams: vec![
+                stream("lidar", Modality::PointCloud),
+                stream("imu", Modality::Imu),
+                stream("gnss", Modality::Gnss),
+            ],
+            task: None,
+            labels: vec![],
+            ego_poses: Some(poses.clone()),
+            declared_frame_count: None,
+        }],
+        calibration: None,
+    };
+
+    // A permutation of every collection at once.
+    let mut permuted = base.clone();
+    permuted.metadata.reverse();
+    permuted.provenance.reverse();
+    for r in &mut permuted.provenance {
+        r.elements.reverse();
+    }
+    permuted.episodes[0].streams.reverse();
+    if let Some(p) = &mut permuted.episodes[0].ego_poses {
+        p.reverse();
+    }
+
+    let run = |mut d: Dataset| {
+        d.canonicalize_order();
+        let hash = veridex_core::content_hash(&d);
+        let engine = veridex_core::checks::default_engine().expect("engine");
+        let verdict = engine.run(&d, hash, &veridex_core::RunConfig::default());
+        (hash, verdict.result_content_hash.clone(), verdict.status)
+    };
+
+    let (hash_a, result_a, status_a) = run(base);
+    let (hash_b, result_b, status_b) = run(permuted);
+    assert_eq!(
+        hash_a, hash_b,
+        "content hash must be permutation-independent"
+    );
+    assert_eq!(
+        result_a, result_b,
+        "the verdict must be permutation-independent too — a hash-identical twin cannot disagree"
+    );
+    assert_eq!(status_a, status_b);
+}

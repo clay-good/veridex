@@ -260,6 +260,25 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **Two datasets could share a content hash and disagree on the verdict.** The canonical encoder
+  treats several collections as *sets* — the ego trajectory, dataset metadata, provenance records and
+  their elements — but `canonicalize_order` sorted only episodes and streams, and some checks read
+  those collections as sequences or by first match. Verified: the same six ego poses in two Vec orders
+  hashed identically while one reported five 200 m/s teleports and the other passed; duplicate
+  metadata keys and provenance records behaved the same way. Since a certificate binds the content
+  hash, it could attest a hash that also matches a dataset that fails. `canonicalize_order` now sorts
+  every collection the encoder canonicalizes, with the encoder's own sort keys so the two cannot
+  drift, and a property test permutes all of them at once and asserts both the content hash and the
+  verdict are unchanged.
+- **Provenance emit could contradict itself across permutations.** Elements were sorted by `key`
+  alone (ties left in Vec order) and mapped fields like `license` took the first match, so two
+  datasets with an identical content hash emitted different attribution. Both now use the encoder's
+  full content key, and `inspect`/`provenance` canonicalize before rendering on both surfaces.
+- **A decoded value's fingerprint could differ between x86 and ARM.** The CAN+DBC and MF4 adapters
+  hashed `f64::to_bits` of an *arithmetic result*, and a DBC or `##CC` coefficient of `inf` makes
+  `0.0 * inf` a NaN whose default sign is platform-specific (`-0.0` was likewise distinguishable from
+  `+0.0`). Both now route through the encoder's canonical float bits, so the same bytes hash the same
+  everywhere — which is what the determinism contract promises.
 - **A 33 KB MF4 file could allocate 1.35 GB.** The block-graph walk kept a visited set per parent
   chain, but MF4 links may legally point at shared blocks — so *n* data groups each re-walking the
   same *n* channel groups each re-walking the same *n* channels was O(n³) streams. One visited set

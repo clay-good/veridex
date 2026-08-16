@@ -82,7 +82,9 @@ fn inspect(path: &str, format: Option<&str>) -> PyResult<String> {
         None => registry.ingest(&source, &opts),
     }
     .map_err(to_py_err)?;
-    serde_json::to_string_pretty(&ingested.dataset).map_err(to_py_err)
+    let mut dataset = ingested.dataset;
+    dataset.canonicalize_order();
+    serde_json::to_string_pretty(&dataset).map_err(to_py_err)
 }
 
 /// `veridex.provenance(path, emit="croissant", format=None) -> str`
@@ -100,7 +102,9 @@ fn provenance(path: &str, emit: &str, format: Option<&str>) -> PyResult<String> 
         None => registry.ingest(&source, &opts),
     }
     .map_err(to_py_err)?;
-    veridex_core::render_provenance(&ingested.dataset, emit).map_err(to_py_err)
+    let mut dataset = ingested.dataset;
+    dataset.canonicalize_order();
+    veridex_core::render_provenance(&dataset, emit).map_err(to_py_err)
 }
 
 /// `veridex.catalog() -> str`

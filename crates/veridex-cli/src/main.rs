@@ -420,10 +420,13 @@ fn cmd_inspect(rest: &[String]) -> ExitCode {
         Ok(a) => a,
         Err(code) => return code,
     };
-    let ingested = match ingest(&args) {
+    let mut ingested = match ingest(&args) {
         Ok(i) => i,
         Err(code) => return code,
     };
+    // Canonicalize before rendering: the content hash treats these collections as sets, so two
+    // ingests that hash identically must also render identically.
+    ingested.dataset.canonicalize_order();
     let d = &ingested.dataset;
 
     if args.json {
@@ -830,10 +833,13 @@ fn cmd_provenance(rest: &[String]) -> ExitCode {
         Ok(a) => a,
         Err(code) => return code,
     };
-    let ingested = match ingest(&args) {
+    let mut ingested = match ingest(&args) {
         Ok(i) => i,
         Err(code) => return code,
     };
+    // Canonicalize before rendering: the content hash treats these collections as sets, so two
+    // ingests that hash identically must also render identically.
+    ingested.dataset.canonicalize_order();
     let d = &ingested.dataset;
 
     let emit = args.emit.as_deref().unwrap_or("croissant");

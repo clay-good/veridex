@@ -89,9 +89,30 @@ impl Dataset {
     /// produce byte-identical findings and `result_content_hash`. Only the top-level `Vec`s are
     /// reordered (cheap struct moves); frames are never touched. Idempotent.
     pub fn canonicalize_order(&mut self) {
+        // Every collection the encoder canonicalizes must be sorted here with the *same* key.
+        // Anything the hash treats as a set but a check reads as a sequence — or reads by "first
+        // match" — otherwise lets two datasets share a content hash and produce different verdicts,
+        // which would let a certificate attest a hash that also matches a dataset that fails.
+        self.metadata
+            .sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        for record in &mut self.provenance {
+            record.elements.sort_by(|a, b| {
+                crate::canonical::element_sort_key(a).cmp(&crate::canonical::element_sort_key(b))
+            });
+        }
+        self.provenance.sort_by(|a, b| {
+            crate::canonical::prov_sort_key(a).cmp(&crate::canonical::prov_sort_key(b))
+        });
         self.episodes.sort_by_key(|ep| ep.index);
         for ep in &mut self.episodes {
             ep.streams.sort_by(|a, b| a.name.cmp(&b.name));
+            if let Some(poses) = &mut ep.ego_poses {
+                poses.sort_by(|a, b| {
+                    a.ts.cmp(&b.ts).then_with(|| {
+                        crate::canonical::ego_pose_bits(a).cmp(&crate::canonical::ego_pose_bits(b))
+                    })
+                });
+            }
         }
     }
 }
