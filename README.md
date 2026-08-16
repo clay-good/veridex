@@ -106,7 +106,9 @@ veridex keygen     issuer                                        # write issuer 
 ```
 
 Built on a Rust core (`veridex-core`) with a `veridex` CLI and a Python package (`import veridex`,
-built locally with maturin — not yet published to PyPI) that produce identical verdicts.
+built locally with maturin — not yet published to PyPI) that produce identical verdicts. Pass a
+config to Python explicitly (`veridex.check(path, config=open("veridex.toml").read())`) — unlike the
+CLI, an import never picks one up from the working directory.
 
 ## Quickstart
 

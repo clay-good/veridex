@@ -266,3 +266,74 @@ fn json_and_terminal_agree_on_finding_count() {
     assert_eq!(json_count, v.findings.len());
     assert_eq!(term_count, v.findings.len());
 }
+
+/// A single-episode dataset holding `streams`.
+fn simple_dataset(streams: Vec<Stream>) -> Dataset {
+    Dataset {
+        id: "t".into(),
+        calibration: None,
+        metadata: vec![],
+        provenance: vec![],
+        episodes: vec![episode(0, streams)],
+    }
+}
+
+/// A verdict whose only content is a check that failed to run: no findings, nothing wrong found —
+/// because the check never ran.
+fn verdict_with_an_errored_check() -> veridex_core::Verdict {
+    let d = simple_dataset(vec![stream("s", "c", &[0, 1_000_000])]);
+    let mut v = verdict_for(&d);
+    v.findings.clear();
+    v.counts = Default::default();
+    v.errored_checks.push(veridex_core::engine::ErroredCheck {
+        check_id: "temporal.clock-skew",
+        version: "1",
+        message: "panicked".into(),
+    });
+    v
+}
+
+#[test]
+fn a_check_that_failed_to_run_is_visible_in_every_renderer() {
+    // "No findings" from a check that crashed is not a pass. A shared HTML artifact or a SARIF gate
+    // that omitted this read as clean while a check never ran.
+    let v = verdict_with_an_errored_check();
+
+    let text = veridex_core::render_terminal(&v, None, 5);
+    assert!(text.contains("Errored checks"), "terminal: {text}");
+
+    let html = render_html(&v, None);
+    assert!(html.contains("Errored checks"), "html omits errored checks");
+    assert!(html.contains("temporal.clock-skew"));
+
+    let sarif = veridex_core::render_sarif(&v);
+    let results = sarif["runs"][0]["results"].as_array().expect("results");
+    assert_eq!(results.len(), 1, "sarif must report the errored check");
+    assert_eq!(results[0]["ruleId"], "VERIDEX.CHECK_ERRORED");
+    assert_eq!(results[0]["level"], "error");
+    let rules = sarif["runs"][0]["tool"]["driver"]["rules"]
+        .as_array()
+        .expect("rules");
+    assert!(
+        rules.iter().any(|r| r["id"] == "VERIDEX.CHECK_ERRORED"),
+        "the rule must be declared alongside its result"
+    );
+}
+
+#[test]
+fn a_loosened_tolerance_is_disclosed_in_the_html_report_too() {
+    // A shared report has to say what thresholds produced it, not just the terminal one.
+    let d = simple_dataset(vec![stream("s", "c", &[0, 1_000_000])]);
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let config = RunConfig {
+        tolerances: veridex_core::Tolerances {
+            clock_skew_ns: 5_000_000_000,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let v = engine.run(&d, content_hash(&d), &config);
+    let html = render_html(&v, None);
+    assert!(html.contains("Tolerances (non-default)"), "html: {html}");
+    assert!(html.contains("clock-skew 5000ms"));
+}

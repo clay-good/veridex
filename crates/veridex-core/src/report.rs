@@ -321,6 +321,33 @@ pub fn render_html(verdict: &Verdict, trust_score: Option<TrustScore>) -> String
         body.push_str("</ul>");
     }
 
+    // A check that panicked produced no findings, which is not the same as finding nothing. A shared
+    // HTML artifact that omitted this read as a clean pass while a check never ran at all.
+    if !verdict.errored_checks.is_empty() {
+        body.push_str("<h2>Errored checks (failed to run)</h2><ul>");
+        for e in &verdict.errored_checks {
+            let _ = write!(
+                body,
+                "<li><code>{}</code> (v{}): {}</li>",
+                esc(e.check_id),
+                esc(e.version),
+                esc(&e.message)
+            );
+        }
+        body.push_str("</ul>");
+    }
+
+    // Disclose any loosened threshold, as the terminal report does: "no findings" is only meaningful
+    // against the tolerances that produced it.
+    let overrides = non_default_tolerances(&verdict.effective_config.tolerances);
+    if !overrides.is_empty() {
+        let _ = write!(
+            body,
+            "<p><strong>Tolerances (non-default):</strong> {}</p>",
+            esc(&overrides.join(", "))
+        );
+    }
+
     if verdict.findings.is_empty() {
         body.push_str("<h2>Findings</h2><p>No findings.</p>");
     } else {
@@ -359,6 +386,9 @@ pub fn render_html(verdict: &Verdict, trust_score: Option<TrustScore>) -> String
     )
 }
 
+/// The SARIF rule id reported for a check that failed to run.
+const CHECK_ERRORED_RULE: &str = "VERIDEX.CHECK_ERRORED";
+
 /// SARIF severity level for a finding.
 fn sarif_level(sev: Severity) -> &'static str {
     match sev {
@@ -378,7 +408,7 @@ pub fn render_sarif(verdict: &Verdict) -> Value {
     rule_ids.dedup();
     // Enrich each rule with a description (the risk of a representative finding) and a link to the
     // check catalog, so GitHub code scanning shows what each rule means rather than a bare id.
-    let rules: Vec<Value> = rule_ids
+    let mut rules: Vec<Value> = rule_ids
         .iter()
         .map(|id| {
             let risk = verdict
@@ -396,6 +426,28 @@ pub fn render_sarif(verdict: &Verdict) -> Value {
             })
         })
         .collect();
+
+    if !verdict.errored_checks.is_empty() {
+        rules.push(json!({
+            "id": CHECK_ERRORED_RULE,
+            "name": CHECK_ERRORED_RULE,
+            "shortDescription": { "text": "A check failed to run" },
+            "fullDescription": { "text": "The check panicked or errored, so whatever it would have found is absent from this report. A clean result is not evidence that it passed." },
+            "helpUri": "https://github.com/clay-good/veridex/blob/main/docs/checks.md"
+        }));
+    }
+
+    // One result per errored check, so a CI job gating on SARIF cannot read a crashed check as a
+    // clean pass.
+    let errored_results = verdict.errored_checks.iter().map(|e| {
+        json!({
+            "ruleId": CHECK_ERRORED_RULE,
+            "level": "error",
+            "message": { "text": format!("check `{}` (v{}) failed to run: {} — whatever it would have found is absent from this report", e.check_id, e.version, e.message) },
+            "locations": [{ "logicalLocations": [{ "name": "dataset" }] }],
+            "properties": { "checkId": e.check_id }
+        })
+    });
 
     let results: Vec<Value> = verdict
         .findings
@@ -416,6 +468,7 @@ pub fn render_sarif(verdict: &Verdict) -> Value {
                 }
             })
         })
+        .chain(errored_results)
         .collect();
 
     json!({

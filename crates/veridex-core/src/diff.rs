@@ -31,6 +31,21 @@ impl ReportDiff {
     }
 }
 
+/// Whether a JSON value is shaped like a Veridex report at all: it must carry a findings array,
+/// either in a full envelope (`{"verdict": {"findings": [...]}}`) or as a bare verdict
+/// (`{"findings": [...]}`).
+///
+/// Absence is not emptiness. Without this, a truncated or wrong-shaped artifact — an empty `{}`, or a
+/// SARIF file handed over by mistake — read as "no findings", so a CI step gating on
+/// `--fail-on-regression` saw every prior finding as resolved and passed.
+pub fn is_report_shaped(report: &Value) -> bool {
+    report
+        .get("verdict")
+        .and_then(|v| v.get("findings"))
+        .or_else(|| report.get("findings"))
+        .is_some_and(Value::is_array)
+}
+
 /// Findings array from a report, tolerant of either a full report envelope
 /// (`{"verdict": {"findings": [...]}}`) or a bare verdict (`{"findings": [...]}`).
 fn findings(report: &Value) -> Vec<Value> {

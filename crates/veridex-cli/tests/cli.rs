@@ -421,3 +421,75 @@ fn a_certificate_carrying_unknown_fields_is_rejected() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn diff_rejects_an_unknown_flag_instead_of_ignoring_it() {
+    // `diff` used to scan argv for the flags it knew and drop the rest, so one dropped letter turned
+    // a CI gate off and still exited 0.
+    let old = temp_report(
+        "old_typo",
+        r#"{"verdict":{"findings":[]},"trust_score":{"score":90}}"#,
+    );
+    let new = temp_report(
+        "new_typo",
+        r#"{"verdict":{"findings":[{"code":"X","severity":"error","message":"x"}]},"trust_score":{"score":70}}"#,
+    );
+    let (o, n) = (old.to_str().unwrap(), new.to_str().unwrap());
+
+    let (code, _, stderr) = run(&["diff", "--fail-on-regresion", o, n]);
+    assert_eq!(code, 2, "a typo'd gate flag must be a tool error");
+    assert!(stderr.contains("unknown option"), "unexpected: {stderr}");
+
+    let _ = std::fs::remove_file(&old);
+    let _ = std::fs::remove_file(&new);
+}
+
+#[test]
+fn diff_refuses_a_file_that_is_not_a_report() {
+    // An empty or wrong-shaped artifact is not "a report with no findings": read that way, a
+    // truncated CI artifact looked like every finding had been resolved and passed the gate.
+    let old = temp_report(
+        "old_shape",
+        r#"{"verdict":{"findings":[{"code":"X","severity":"error","message":"x"}]},"trust_score":{"score":70}}"#,
+    );
+    let empty = temp_report("new_shape", "{}");
+    let (o, e) = (old.to_str().unwrap(), empty.to_str().unwrap());
+
+    let (code, _, stderr) = run(&["diff", "--fail-on-regression", o, e]);
+    assert_eq!(code, 2);
+    assert!(
+        stderr.contains("not a Veridex report"),
+        "unexpected: {stderr}"
+    );
+
+    let _ = std::fs::remove_file(&old);
+    let _ = std::fs::remove_file(&empty);
+}
+
+#[test]
+fn check_honors_the_profile_it_accepts() {
+    // `check --profile` was parsed and thrown away, so the run silently used the looser defaults
+    // while the user believed the profile's thresholds applied.
+    let dataset = fixture_dataset();
+    let (code, stdout, _) = run(&[
+        "check",
+        "--profile",
+        "world-model-ready",
+        "--json",
+        &dataset,
+    ]);
+    assert!(
+        code == 0 || code == 10 || code == 20,
+        "unexpected exit {code}"
+    );
+    let report: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(
+        report["verdict"]["effective_config"]["tolerances"]["clock_skew_ns"], 20_000_000,
+        "the profile's tightened tolerance must reach the run"
+    );
+
+    // And an unknown profile is refused rather than silently ignored.
+    let (code, _, stderr) = run(&["check", "--profile", "no-such-profile", &dataset]);
+    assert_eq!(code, 2);
+    assert!(stderr.contains("unknown profile"), "unexpected: {stderr}");
+}

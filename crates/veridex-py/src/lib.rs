@@ -32,22 +32,44 @@ fn unix_timestamp() -> String {
         .unwrap_or_else(|_| "0".to_string())
 }
 
-/// `veridex.check(path, format=None) -> str`
+/// `veridex.check(path, format=None, config=None) -> str`
 ///
 /// Validate a dataset and return the report as a JSON string, byte-identical to
 /// `veridex check --json`.
+///
+/// `config` is the *contents* of a `veridex.toml` (not a path). Unlike the CLI, Python never
+/// auto-discovers a config file — an import should not pick up behavior from the working directory —
+/// so pass it explicitly to get the same verdict the CLI gives under that config. Check ids are
+/// validated, so a typo in `disabled_checks` raises rather than silently no-opping.
 #[pyfunction]
-#[pyo3(signature = (path, format=None))]
-fn check(path: &str, format: Option<&str>) -> PyResult<String> {
+#[pyo3(signature = (path, format=None, config=None))]
+fn check(path: &str, format: Option<&str>, config: Option<&str>) -> PyResult<String> {
     let registry = veridex_core::default_registry();
-    let out = veridex_core::run_check(
+    let run_config = run_config_from(config)?;
+    let out = veridex_core::run_check_with(
         &registry,
         &source_for(path),
         format,
         &IngestOptions::default(),
+        &run_config,
     )
     .map_err(to_py_err)?;
     Ok(veridex_core::render_json(&out.verdict, Some(out.trust)))
+}
+
+/// Parse optional `veridex.toml` contents into a [`RunConfig`], validating every check id it names.
+fn run_config_from(config: Option<&str>) -> PyResult<veridex_core::RunConfig> {
+    let Some(text) = config else {
+        return Ok(veridex_core::RunConfig::default());
+    };
+    let parsed = veridex_core::CheckConfig::from_toml(text)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    let engine = veridex_core::checks::default_engine()
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    parsed
+        .validate_check_ids(engine.check_ids())
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    Ok(parsed.to_run_config())
 }
 
 /// `veridex.content_hash(path, format=None) -> str`

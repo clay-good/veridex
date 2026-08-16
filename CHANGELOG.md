@@ -283,6 +283,35 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   above real datasets — a one-hour ten-sensor 100 Hz rig is 3.6M) *before* allocating, and refuses
   with a clear error naming the limit rather than being killed. `--max-frames <n>` raises it;
   `--max-frames 0` removes it.
+- **`veridex diff` skipped flag validation, so a typo turned the CI gate off.** It scanned argv for
+  the flags it recognized and dropped everything else, so `--fail-on-regresion` (one letter short)
+  silently disabled the regression gate and exited 0 — the exact failure the shared parser exists to
+  prevent. `diff` now goes through it, and unknown options are a tool error like everywhere else.
+- **`veridex diff` read a wrong-shaped file as "no findings".** An empty `{}`, a truncated artifact,
+  or a SARIF file passed by mistake produced "all resolved, no regression" and passed the gate.
+  Both inputs must now carry a findings array, and a diff between reports bound to different dataset
+  content says so.
+- **`check --profile` was parsed and thrown away.** The run silently used the default, looser
+  thresholds while the user believed the profile's applied, and an unknown profile name passed
+  without a word. `check` now resolves the profile, applies its tolerances, and rejects an unknown
+  name — matching `certify`.
+- **`certify --config` was accepted and ignored**, including its validation. A signed certificate
+  could disagree with the `check` just run on the same data in the same directory (`check` also
+  auto-discovers `veridex.toml`; `certify` did not), and a config naming a nonexistent check was
+  silently accepted here while `check` rejected it. `certify` now loads, validates, and applies the
+  same configuration, with a profile's tolerances taking precedence.
+- **A crashed check rendered as a clean pass in HTML and SARIF.** Only the terminal report listed
+  `errored_checks`, so a CI job gating on SARIF or a human reading the shareable HTML artifact saw
+  green while a check never ran. HTML gains an "Errored checks" section, SARIF a
+  `VERIDEX.CHECK_ERRORED` result per errored check. The HTML report now also discloses non-default
+  tolerances, as the terminal one already did.
+- **`verify --json` printed plain text on failure**, leaving a machine consumer nothing to parse.
+- **`veridex --help` omitted four real flags**, including `--allow-any-issuer`, the documented way to
+  skip issuer trust.
+- **Python could not see a config, so it disagreed with the CLI.** `veridex.check` now takes
+  `config=` (the contents of a `veridex.toml`), validated the same way; Python still never
+  auto-discovers a config file, since an import should not pick up behavior from the working
+  directory.
 - **The LeRobot/Parquet path had no expansion bound at all.** Every row of a Parquet file was decoded
   into memory before the frame budget was charged, and the decompression budget was never consulted:
   a 50 KB zstd file measured **1.26 GB** resident and a 149 KB file **3.76 GB**, in both cases raising

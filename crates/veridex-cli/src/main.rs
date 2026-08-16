@@ -75,13 +75,15 @@ struct Args {
     max_frames: Option<String>,
     max_decompression_ratio: Option<String>,
     profile: Option<String>,
+    fail_on_regression: bool,
+    /// Every positional argument, in order. `path` is the first; `diff` takes two.
+    positionals: Vec<String>,
 }
 
 /// Parse the shared flag set. Rejects unknown `--`-flags and value-flags whose value is missing or
 /// looks like another flag, so a typo can never silently disable a gate (e.g. `--min-scor 90` would
 /// otherwise drop the score threshold) nor swallow the next flag as a value (`--key --format`).
 fn parse_args(rest: &[String]) -> Result<Args, String> {
-    let mut path = None;
     let mut format = None;
     let mut json = false;
     let mut key = None;
@@ -99,6 +101,8 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
     let mut max_frames = None;
     let mut max_decompression_ratio = None;
     let mut profile = None;
+    let mut fail_on_regression = false;
+    let mut positionals: Vec<String> = Vec::new();
     let mut it = rest.iter();
     while let Some(arg) = it.next() {
         // Take the value for a value-flag, rejecting a missing value or one that starts with `-`
@@ -115,6 +119,7 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
             "--html" => html = true,
             "--force" => force = true,
             "--allow-any-issuer" => allow_any_issuer = true,
+            "--fail-on-regression" => fail_on_regression = true,
             "--config" => config = Some(value("--config")?),
             "--format" => format = Some(value("--format")?),
             "--key" => key = Some(value("--key")?),
@@ -130,9 +135,10 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
                 max_decompression_ratio = Some(value("--max-decompression-ratio")?)
             }
             other if other.starts_with('-') => return Err(format!("unknown option `{other}`")),
-            other => path = Some(other.to_string()),
+            other => positionals.push(other.to_string()),
         }
     }
+    let path = positionals.first().cloned();
     Ok(Args {
         path,
         format,
@@ -152,6 +158,8 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
         max_frames,
         max_decompression_ratio,
         profile,
+        fail_on_regression,
+        positionals,
     })
 }
 
@@ -313,6 +321,20 @@ fn cmd_check(rest: &[String]) -> ExitCode {
         return ExitCode::from(EXIT_TOOL_ERROR);
     }
 
+    // A named profile applies its own (tighter) tolerances to the run, exactly as `certify` does.
+    // Accepting the flag and ignoring it meant `check --profile world-model-ready` silently judged the
+    // data at the looser defaults, and an unknown profile name passed without a word.
+    let profile = match args.profile.as_deref() {
+        None => None,
+        Some(name) => match veridex_core::profile::by_name(name) {
+            Some(p) => Some(p),
+            None => {
+                eprintln!("veridex: unknown profile `{name}` (known: world-model-ready)");
+                return ExitCode::from(EXIT_TOOL_ERROR);
+            }
+        },
+    };
+
     // The CLI flag overrides the config's min_score (which defaults to no gate).
     let min_score = cli_min_score.or(config.min_score);
 
@@ -325,12 +347,18 @@ fn cmd_check(rest: &[String]) -> ExitCode {
     };
     let source = Source::Local(PathBuf::from(path));
     let registry = veridex_core::default_registry();
+    // The profile's tolerances win over the config's: a readiness judgement is only meaningful at the
+    // thresholds the profile names.
+    let mut run_config = config.to_run_config();
+    if let Some(p) = &profile {
+        run_config.tolerances = p.tolerances;
+    }
     let out = match veridex_core::run_check_with(
         &registry,
         &source,
         args.format.as_deref(),
         &ingest_opts,
-        &config.to_run_config(),
+        &run_config,
     ) {
         Ok(o) => o,
         Err(e) => {
@@ -644,11 +672,34 @@ fn cmd_certify(rest: &[String]) -> ExitCode {
             return ExitCode::from(EXIT_TOOL_ERROR);
         }
     };
-    // A profile applies its own tolerances to the run (e.g. tighter cross-sensor sync).
-    let run_config = veridex_core::RunConfig {
-        tolerances: profile.as_ref().map(|p| p.tolerances).unwrap_or_default(),
-        ..veridex_core::RunConfig::default()
+    // Honor the same configuration `check` does — from `--config` or an auto-discovered
+    // `veridex.toml`. Ignoring it meant a certificate could disagree with the `check` a user had just
+    // run on the same data in the same directory, and that a config naming a nonexistent check was
+    // silently accepted here while `check` rejected it.
+    let config = match load_config(args.config.as_deref()) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("veridex: {e}");
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
     };
+    let engine = match veridex_core::checks::default_engine() {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("veridex: {e}");
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
+    };
+    if let Err(e) = config.validate_check_ids(engine.check_ids()) {
+        eprintln!("veridex: {e}");
+        return ExitCode::from(EXIT_TOOL_ERROR);
+    }
+    // A profile applies its own tolerances to the run (e.g. tighter cross-sensor sync), overriding
+    // the config's — a readiness judgement means nothing at looser thresholds than it names.
+    let mut run_config = config.to_run_config();
+    if let Some(p) = &profile {
+        run_config.tolerances = p.tolerances;
+    }
     let out = match veridex_core::run_check_with(
         &registry,
         &source,
@@ -826,6 +877,14 @@ fn cmd_verify(rest: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => {
+            // A machine consumer asked for JSON; give it JSON on failure too, or it has nothing to
+            // parse and must fall back to scraping stderr.
+            if args.json {
+                println!(
+                    "{}",
+                    serde_json::json!({ "verified": false, "error": e.to_string() })
+                );
+            }
             eprintln!("✗ verification failed: {e}");
             ExitCode::from(EXIT_FAIL)
         }
@@ -935,9 +994,16 @@ fn is_regression(diff: &veridex_core::ReportDiff) -> bool {
 }
 
 fn cmd_diff(rest: &[String]) -> ExitCode {
-    let json_out = rest.iter().any(|a| a == "--json");
-    let fail_on_regression = rest.iter().any(|a| a == "--fail-on-regression");
-    let paths: Vec<&String> = rest.iter().filter(|a| !a.starts_with('-')).collect();
+    // Parse through the shared validator like every other command. Scanning the raw argv for known
+    // flags meant an unknown one was silently dropped, so `--fail-on-regresion` (one letter short)
+    // disabled the CI gate and still exited 0.
+    let args = match parse_args_or_exit(rest) {
+        Ok(a) => a,
+        Err(code) => return code,
+    };
+    let json_out = args.json;
+    let fail_on_regression = args.fail_on_regression;
+    let paths: Vec<&String> = args.positionals.iter().collect();
     let [old_path, new_path] = paths.as_slice() else {
         eprintln!("veridex: diff requires two report files: veridex diff <old.json> <new.json>");
         return ExitCode::from(EXIT_TOOL_ERROR);
@@ -961,6 +1027,30 @@ fn cmd_diff(rest: &[String]) -> ExitCode {
         Ok(v) => v,
         Err(c) => return c,
     };
+    // A file that carries no findings array is not a report with no findings — it is not a report.
+    // Reading one as empty made a truncated artifact look like "everything resolved" and pass a
+    // `--fail-on-regression` gate.
+    for (label, value) in [(old_path, &old), (new_path, &new)] {
+        if !veridex_core::is_report_shaped(value) {
+            eprintln!(
+                "veridex: {label} is not a Veridex report (no findings array) — expected the output of `veridex check --json`"
+            );
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
+    }
+    // Diffing two different datasets compares nothing meaningful; say so rather than printing a
+    // score movement between unrelated runs.
+    let bound = |v: &serde_json::Value| -> Option<String> {
+        v.get("verdict")
+            .and_then(|x| x.get("cdm_content_hash"))
+            .and_then(|x| x.as_str())
+            .map(str::to_string)
+    };
+    if let (Some(a), Some(b)) = (bound(&old), bound(&new)) {
+        if a != b {
+            eprintln!("veridex: note — these reports describe different dataset content ({a} vs {b}); the diff compares findings across two different datasets");
+        }
+    }
 
     let diff = veridex_core::diff_reports(&old, &new);
     if json_out {
@@ -1025,6 +1115,13 @@ fn print_help() {
     --fail-on-regression fail (exit 20) if the new report introduced findings or a lower score (diff)"
     );
     println!("    --config <file>      veridex.toml (auto-discovered in cwd if present)");
+    println!("    --profile <name>     policy profile to judge against: world-model-ready (check, certify)");
+    println!(
+        "    --max-frames <n>     ceiling on frames an ingest may materialize (0 = no limit)
+    --max-decompression-ratio <n>
+                         ceiling on compressed expansion, as a multiple of the file's size (0 = no limit)"
+    );
+    println!("    --allow-any-issuer   verify without pinning an issuer key — accepts ANY signer (verify)");
     println!("    --force              overwrite existing key files (keygen)");
     println!("    --version            print the version");
     println!("    --help               print this help");
