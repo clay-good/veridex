@@ -232,6 +232,21 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   "scenario & map references" section; the `av` demo carries them. Reading the reference is the scope
   — Veridex does not parse scenario semantics, road geometry, or ground truth.
 
+- **ASAM MDF 4.x (MF4) adapter** — the dominant automotive measurement format, read into the CDM
+  (`adapter/mdf4.rs`, no new dependency). Walks the block graph (`##HD` → `##DG` → `##CG` → `##CN`),
+  takes each channel group's **time master** as the timeline, and emits one stream per measured
+  channel with a frame per record, applying identity and linear (`##CC` type 1) conversions to get
+  physical values. Integer and float channels decode in both byte orders; values are fingerprinted
+  into the CDM content hash, so an altered measurement no longer hashes the same. The writing program
+  from the identification block becomes `recorder` provenance, and a non-4.x file is rejected as an
+  unsupported version rather than mis-parsed. Everything outside that core — compressed (`##DZ`) or
+  listed (`##DL`) data, unsorted data groups, bit-packed or non-numeric channels, other conversion
+  types, an over-declared cycle count — is reported as an `unmapped` field and contributes no frames,
+  so a reader always knows what the verdict covered. Every block read is bounds-checked and every
+  chain walk is loop-guarded: a truncated or byte-corrupted file yields an error or an empty result,
+  never a panic (tested against file prefixes and corrupted bytes). Autodetected by the registry from
+  the file's own identification block, not its extension. Fixtures are assembled byte by byte, so the
+  adapter is tested against the on-disk layout rather than a writer sharing its assumptions.
 - **CAN + DBC adapter** — a new AV-native ingestion path (`adapter/candbc.rs`). It ingests a directory
   holding a `.dbc` signal database and one or more candump ASCII logs (`.log`/`.asc`), parses the DBC
   (`BO_` messages, `SG_` signals), and decodes each CAN frame's little-endian (Intel) signals —

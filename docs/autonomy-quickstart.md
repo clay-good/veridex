@@ -83,6 +83,7 @@ See [profiles.md](profiles.md) for the profile's criteria and the full verificat
 |---|---|
 | ROS/ROS 2 MCAP topics (`PointCloud2`, `Image`/`CameraInfo`, `Imu`, `NavSatFix`, `Odometry`, TF) | streams with rig modalities, camera intrinsics, the transform tree, the ego trajectory |
 | CAN frames + a `.dbc` | one named signal stream per `Message.Signal` (point the CLI at the directory) |
+| ASAM MDF/MF4 (`.mf4`) | one stream per measured channel, on the group's time master, with linear conversions applied |
 | Producer metadata | rig lineage (firmware, platform, drive, region, map, redaction/consent) as provenance |
 | Scenario/map references (`.xosc`, `.xodr`, OSI, simulator) | provenance, with the version read from the sidecar's own ASAM header |
 
@@ -92,7 +93,9 @@ little to check.
 
 ## Limits worth knowing
 
-- **ASAM MDF/MF4 is not yet supported.** ROS/MCAP and CAN+DBC are.
+- **MF4 coverage is the uncompressed core.** Compressed (`##DZ`) or listed (`##DL`) data blocks,
+  unsorted data groups, bit-packed channels, and lookup-table conversions are reported as unmapped
+  rather than decoded — `veridex inspect` lists exactly what was skipped.
 - **Per-sensor trigger/latency offsets** aren't modeled yet, so a rig with known constant offsets
   will report that drift as sync spread.
 - **Coverage is never prescriptive.** Veridex reports scenario distribution and sparse cells; the

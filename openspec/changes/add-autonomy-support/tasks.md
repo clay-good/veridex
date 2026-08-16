@@ -28,7 +28,15 @@ No code until this change is approved; this is the build plan.
       adapter and proven end-to-end (`ros_message_bodies_populate_the_autonomy_cdm_end_to_end`) plus
       per-decoder unit tests. Validity ranges on decoded transforms/intrinsics are left open (time-
       varying calibration from per-message stamps is a refinement).
-- [ ] ASAM MDF/MF4 adapter → CDM; record unmapped channels.
+- [~] ASAM MDF/MF4 adapter → CDM; record unmapped channels. `adapter/mdf4.rs` walks the MDF 4.x block
+      graph (`##HD` → `##DG` → `##CG` → `##CN`), uses each channel group's time master as the
+      timeline, and emits one stream per measured channel, applying identity/linear (`##CC` type 1)
+      conversions; integer and float channels in both byte orders; values fingerprinted into the
+      content hash; the identification block's program becomes `recorder` provenance. Every block read
+      is bounds-checked and every chain walk loop-guarded (truncation/corruption fuzz tests). Recorded
+      as unmapped rather than decoded: compressed (`##DZ`) / listed (`##DL`) data, unsorted data
+      groups, bit-packed and non-numeric channels, other conversion types. Those — plus `##SR` sample
+      reduction, attachments, and the `##FH`/`##MD` metadata comments — are the follow-ups.
 - [~] CAN + DBC decoding → named signal streams; surface DBC-coverage gaps and decode errors.
       `adapter/candbc.rs`: ingests a directory holding a `.dbc` + candump `.log`/`.asc`, parses the
       DBC (`BO_`/`SG_`), decodes each frame's little-endian (Intel) signals (factor/offset, sign
