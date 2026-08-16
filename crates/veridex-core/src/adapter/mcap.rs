@@ -367,6 +367,10 @@ impl Adapter for McapAdapter {
         // for the descriptive scenario-coverage report (design A3/A6).
         let mut scenario_dims: BTreeSet<&'static str> = BTreeSet::new();
         let mut scenario_labels: Vec<Label> = Vec::new();
+        // Scenario/map/simulation references (design A3, format priority 4), collected in file order
+        // so the first value per kind wins deterministically.
+        let mut sim_refs: Vec<(crate::simref::SimRefKind, String)> = Vec::new();
+        let mut sim_kinds: BTreeSet<crate::simref::SimRefKind> = BTreeSet::new();
         for m in &records.metadata {
             for (k, v) in &m.metadata {
                 if v.trim().is_empty() {
@@ -382,6 +386,11 @@ impl Adapter for McapAdapter {
                         });
                     }
                 }
+                if let Some(kind) = crate::simref::simref_key_for(k) {
+                    if sim_kinds.insert(kind) {
+                        sim_refs.push((kind, v.clone()));
+                    }
+                }
                 if let Some(dim) = crate::scenario::scenario_dim_for(k) {
                     if scenario_dims.insert(dim) {
                         scenario_labels.push(Label {
@@ -393,6 +402,34 @@ impl Adapter for McapAdapter {
                 }
             }
         }
+        // Simulation references become provenance, plus the version each one declares. The version
+        // is read from the referenced sidecar's own ASAM header when that file exists next to the
+        // log; otherwise it is whatever dotted version the recorded value itself carries. Either way
+        // it comes from recorded bytes, so it is `Known` — and an explicitly recorded `map_version`
+        // always wins over an OpenDRIVE header revision, because `mapped` already holds the key.
+        let root = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        for (kind, value) in &sim_refs {
+            elements.push(ProvenanceElement {
+                key: kind.provenance_key().into(),
+                value: Some(value.clone()),
+                class: ProvenanceClass::Known,
+            });
+            let Some(version_key) = kind.version_key() else {
+                continue;
+            };
+            let version = crate::simref::sidecar_version(root, *kind, value)
+                .or_else(|| crate::simref::version_from_value(value));
+            if let Some(version) = version {
+                if mapped.insert(version_key) {
+                    elements.push(ProvenanceElement {
+                        key: version_key.into(),
+                        value: Some(version),
+                        class: ProvenanceClass::Known,
+                    });
+                }
+            }
+        }
+
         // Labels are canonicalized by (key, value, ts), so a stable order in is not required.
         // Attachments: record their presence, and let a calibration-looking attachment supply the
         // `calibration` element when no metadata key already did. This is inferred from the file
@@ -454,6 +491,9 @@ impl Adapter for McapAdapter {
                 }
                 if !records.metadata.is_empty() {
                     m.push("metadata records -> dataset metadata + provenance".into());
+                }
+                if !sim_refs.is_empty() {
+                    m.push("scenario/map/sim references -> provenance (+ declared version)".into());
                 }
                 if !records.attachments.is_empty() {
                     m.push("attachment names -> dataset metadata (+ calibration)".into());

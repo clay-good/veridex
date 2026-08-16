@@ -64,6 +64,11 @@ fn main() {
             meta.insert("weather".to_string(), "rain".to_string());
             meta.insert("time_of_day".to_string(), "night".to_string());
             meta.insert("environment".to_string(), "urban".to_string());
+            // Scenario/map/sim references (A3): what the run was recorded or replayed against.
+            meta.insert("scenario".to_string(), "OpenSCENARIO 1.2".to_string());
+            meta.insert("opendrive".to_string(), "maps/demo_town.xodr".to_string());
+            meta.insert("osi_version".to_string(), "3.5.0".to_string());
+            meta.insert("simulator".to_string(), "carla-0.9.15".to_string());
         }
         w.write_metadata(&mcap::records::Metadata {
             name: "recording_info".to_string(),

@@ -37,7 +37,16 @@ No code until this change is approved; this is the build plan.
       `default_registry` (autodetected). Decoded values fingerprinted into the content hash. Unit +
       integration + CLI e2e tests. Motorola/big-endian bit numbering and recomputed signal stats
       (for statistical checks) remain follow-ups.
-- [ ] Read scenario/map/sim references (OpenSCENARIO/OpenDRIVE/OSI) and versions.
+- [x] Read scenario/map/sim references (OpenSCENARIO/OpenDRIVE/OSI) and versions. `crate::simref`
+      maps the well-known metadata spellings to four reference kinds (scenario / map / OSI /
+      simulator); the MCAP adapter records them as `scenario_ref` / `map_ref` / `osi_version` /
+      `simulator` provenance, class Known. Versions are extracted, not guessed: the ASAM
+      `revMajor`/`revMinor` revision is read from the referenced sidecar's own header when that file
+      exists next to the log (bounded 64 KiB read, relative in-dataset paths only — an absolute or
+      `..` reference is recorded but never followed), else from a dotted version in the value itself,
+      else absent. An explicitly recorded `map_version` outranks an OpenDRIVE header revision.
+      Surfaced in `veridex inspect`, both provenance emits, and the `av` demo; unit + e2e tests.
+      Parsing scenario *semantics* (manoeuvres, road geometry, ground truth) stays out of scope.
 
 ## A2 — Autonomy checks
 - [~] `AUTONOMY.RIG_SYNC` — rig-wide time sync. Implemented in `checks/autonomy.rs` as the N-sensor

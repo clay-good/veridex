@@ -121,6 +121,12 @@ const PROV_ENTITY_PROPERTIES: &[&str] = &[
     "map_version",
     "redaction",
     "consent",
+    // Scenario/map/simulation references the log was recorded or replayed against.
+    "scenario_ref",
+    "scenario_version",
+    "map_ref",
+    "osi_version",
+    "simulator",
 ];
 
 /// Emit a minimal W3C PROV document: the dataset as a `prov:Entity`, attributed to each known agent

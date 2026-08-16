@@ -213,7 +213,9 @@ sensor-rig checks `AUTONOMY.RIG_SYNC` / `SEQUENCE_COMPLETE` / `EGO_POSE_CONTINUI
 `CALIBRATION_INCOMPLETE`); the v1 trust-score rubric and the `world-model-ready` readiness profile;
 terminal + JSON reporting; **LeRobot v3, MCAP (with ROS-message decode into an autonomy rig), and
 CAN+DBC adapters** with a passing cross-format neutrality gate (the same logical dataset yields
-equivalent CDMs in both formats); Croissant + W3C PROV provenance emit; Ed25519 **certificate signing with
+equivalent CDMs in both formats); descriptive scenario-dimension coverage and **scenario/map/sim
+reference extraction** (OpenSCENARIO / OpenDRIVE / OSI / simulator, with the version read from the
+referenced sidecar's own ASAM header); Croissant + W3C PROV provenance emit; Ed25519 **certificate signing with
 offline verification** (tamper + transplant rejection); a working CLI (`check`, `inspect`, `checks`,
 `certify`, `verify`, `provenance`, `keygen`, `diff`) — see the [Quickstart](#quickstart); and **Python
 bindings** (`import veridex`, exposing `check`/`inspect`/`content_hash`/`catalog`/`provenance`/`diff`/`keygen`/`certify`/`verify`) that call the same

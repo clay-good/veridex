@@ -207,6 +207,19 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   design (A6): never a finding, never a score change, never a required balance — the target
   distribution is the training team's call. The MCAP adapter extracts recognized scenario metadata
   keys into episode labels, and `veridex inspect` shows a "scenario coverage" section.
+- **Scenario / map / simulation references (A1)** — Veridex now records *what a log was recorded or
+  replayed against*: the OpenSCENARIO scenario, the OpenDRIVE road network / HD map, the OSI version,
+  and the simulator or replay tool. `crate::simref` recognizes the well-known metadata spellings and
+  the MCAP adapter maps them to `scenario_ref` / `map_ref` / `osi_version` / `simulator` provenance,
+  each `known`. Versions are extracted, never guessed: when the reference names a sidecar that really
+  sits next to the log, the ASAM revision declared in that file's own header (`revMajor`/`revMinor`,
+  the same shape in `.xosc` and `.xodr`) is read from its bytes; otherwise the version is whatever
+  dotted version the recorded value itself carries, and a bare file name (`town10.xodr`) yields no
+  version rather than a wrong one. A reference pointing outside the dataset (absolute, or with `..`)
+  is recorded but never followed. An explicitly recorded `map_version` always wins over an OpenDRIVE
+  header revision. References travel with both provenance emits and show in `veridex inspect` as a
+  "scenario & map references" section; the `av` demo carries them. Reading the reference is the scope
+  — Veridex does not parse scenario semantics, road geometry, or ground truth.
 
 - **CAN + DBC adapter** — a new AV-native ingestion path (`adapter/candbc.rs`). It ingests a directory
   holding a `.dbc` signal database and one or more candump ASCII logs (`.log`/`.asc`), parses the DBC
