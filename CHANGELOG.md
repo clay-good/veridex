@@ -260,6 +260,21 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **A readiness criterion could pass without its check ever running.** `ReadinessReport::evaluate`
+  derived `passed` from "this check produced no findings" — but a check disabled in `veridex.toml`,
+  filtered out by `categories`/`only_checks`, or one that failed internally also produces none. A
+  dataset that genuinely failed `autonomy.rig-sync` could be certified `READY` by disabling that
+  check. Each criterion now records whether its check actually **ran** (executed and did not error);
+  silence from a check that never ran blocks `ready` and prints as `? … [check did not run]`. The
+  field is omitted when the check ran, so certificates issued before it existed still verify
+  byte-identically.
+- **`world-model-ready` applied to datasets its criteria couldn't judge.** Applicability was "is this
+  a sensor rig", and a rig is ≥3 AV-native sensors — which a bus-only CAN or MF4 log satisfies. With
+  no perception sensor and no ego trajectory, calibration completeness and ego-pose continuity abstain,
+  so such a log was certified ready on two criteria that examined nothing. A profile now carries an
+  explicit `applies_to` predicate, and `world-model-ready` demands a rig **with** a perception sensor
+  and an ego trajectory; anything else is `N/A`.
+
 - The `veridex-data` wheel could not build: `pyproject.toml` was missing a `version` (now taken
   dynamically from the crate) and referenced a nonexistent package `README.md` (now added). The
   wheel builds and the parity test passes under pyo3 0.29.

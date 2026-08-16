@@ -38,8 +38,18 @@ pub fn render_readiness(report: &ReadinessReport, indent: &str) -> String {
         readiness_verdict(report)
     );
     for c in &report.criteria {
-        let mark = if c.passed { "✓" } else { "✗" };
-        let _ = writeln!(out, "{indent}  {mark} {} — {}", c.check_id, c.threshold);
+        // A criterion whose check never ran is neither a pass nor a failure of the data — it is a
+        // gap in what was examined, and saying so is the whole point of reporting per criterion.
+        let (mark, suffix) = match (c.ran, c.passed) {
+            (false, _) => ("?", " [check did not run]"),
+            (true, true) => ("✓", ""),
+            (true, false) => ("✗", ""),
+        };
+        let _ = writeln!(
+            out,
+            "{indent}  {mark} {} — {}{suffix}",
+            c.check_id, c.threshold
+        );
     }
     out
 }

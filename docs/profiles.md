@@ -16,9 +16,19 @@ The certificate gains a signed `readiness` section, and the terminal prints each
 ## `world-model-ready`
 
 For multi-sensor autonomy rigs. It tightens cross-sensor sync and bundles the four autonomy criteria a
-world-model training set needs. A dataset is **ready** only when it is actually a sensor rig *and*
-every criterion's check produced no findings — a non-rig dataset is reported `N/A`, never a vacuous
-pass.
+world-model training set needs. A dataset is **ready** only when the profile applies *and* every
+criterion's check **ran cleanly and found nothing**.
+
+Two rules keep that honest:
+
+- **Applicability demands the data the criteria are about.** The profile applies to a sensor rig that
+  carries a perception sensor (LiDAR or camera) *and* an ego trajectory. A bus-only measurement (a
+  CAN or MF4 log) is a rig by sensor count, but calibration completeness and ego-pose continuity have
+  nothing to examine there, so it is reported `N/A` rather than passing on empty criteria.
+- **Silence is not a pass.** A check that was disabled in `veridex.toml`, filtered out of the run, or
+  that failed internally produces no findings — so each criterion records whether its check actually
+  ran, and one that didn't blocks `ready` and prints as `? … [check did not run]`. A dataset cannot
+  be certified ready by switching the checks off.
 
 | Criterion | Check | Passes when |
 |---|---|---|
@@ -28,7 +38,7 @@ pass.
 | Calibration completeness | `autonomy.calibration-completeness` | connected transform (TF) tree and camera intrinsics present |
 
 The `readiness` block on the certificate records the profile name, whether it was `applicable`, the
-overall `ready` flag, and each criterion's `check_id`, `threshold`, `passed`, and finding count — and
+overall `ready` flag, and each criterion's `check_id`, `threshold`, `passed`, `ran`, and finding count — and
 it is signed like every other field, so a reader can trust it offline. The certificate claims nothing
 beyond the criteria listed.
 

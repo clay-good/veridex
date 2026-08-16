@@ -86,10 +86,26 @@ pub struct CriterionResult {
     pub check_id: String,
     /// The human-readable threshold/guarantee this criterion attests.
     pub threshold: String,
-    /// Whether the dataset passed: the check ran and produced no findings.
+    /// Whether the dataset passed: the check ran cleanly and produced no findings.
     pub passed: bool,
     /// Number of findings the check produced (0 when passed).
     pub findings: u64,
+    /// Whether the criterion's check actually ran. A check that was disabled by configuration,
+    /// filtered out of the run, or that failed internally produces no findings — which must never be
+    /// read as a pass. Omitted from the document when the check ran (the ordinary case), so a
+    /// certificate issued before this field existed still serializes, and verifies, byte-identically.
+    #[serde(default = "ran_by_default", skip_serializing_if = "is_true")]
+    pub ran: bool,
+}
+
+/// A criterion's check is assumed to have run unless the document says otherwise.
+fn ran_by_default() -> bool {
+    true
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's `skip_serializing_if` hands us a reference.
+fn is_true(b: &bool) -> bool {
+    *b
 }
 
 /// A per-criterion readiness report against a named policy profile (design A4). Honest by
@@ -110,17 +126,20 @@ pub struct ReadinessReport {
 
 impl ReadinessReport {
     /// Evaluate a [`Profile`](crate::profile::Profile) against a verdict. `applicable` reflects whether
-    /// the profile's domain applies (for the autonomy profiles, whether the dataset is a sensor rig);
-    /// a non-applicable dataset is never `ready`, so its criteria can't be vacuously satisfied.
+    /// the profile's domain applies (for the autonomy profiles, whether the dataset carries the
+    /// sensors the criteria are about); a non-applicable dataset is never `ready`, so its criteria
+    /// can't be vacuously satisfied.
+    ///
+    /// A criterion passes only when its check **ran cleanly and found nothing**. Absence of findings
+    /// is not evidence on its own: a check disabled by configuration, filtered out of the run, or one
+    /// that failed internally also produces zero findings, and reading that as a pass would let a
+    /// dataset be certified ready by switching the checks off.
     pub fn evaluate(
         profile: &crate::profile::Profile,
         verdict: &Verdict,
         dataset: &crate::cdm::Dataset,
     ) -> ReadinessReport {
-        let applicable = dataset
-            .episodes
-            .iter()
-            .any(crate::checks::autonomy::is_rig_episode);
+        let applicable = (profile.applies_to)(dataset);
         let criteria: Vec<CriterionResult> = profile
             .criteria
             .iter()
@@ -130,11 +149,14 @@ impl ReadinessReport {
                     .iter()
                     .filter(|f| f.check_id == *id)
                     .count() as u64;
+                let ran = verdict.executed_checks.iter().any(|c| c.check_id == *id)
+                    && !verdict.errored_checks.iter().any(|c| c.check_id == *id);
                 CriterionResult {
                     check_id: (*id).to_string(),
                     threshold: (*threshold).to_string(),
-                    passed: findings == 0,
+                    passed: ran && findings == 0,
                     findings,
+                    ran,
                 }
             })
             .collect();

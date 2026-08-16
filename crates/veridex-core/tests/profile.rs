@@ -82,7 +82,20 @@ fn healthy_rig() -> Dataset {
             ],
             task: None,
             labels: vec![],
-            ego_poses: None,
+            // A world-model candidate carries an ego trajectory; a steady 1 m/s crawl is continuous.
+            ego_poses: Some(
+                ticks
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &t)| veridex_core::cdm::EgoPose {
+                        ts: t,
+                        pose: Pose {
+                            translation: [i as f64 * 0.1, 0.0, 0.0],
+                            rotation: [0.0, 0.0, 0.0, 1.0],
+                        },
+                    })
+                    .collect(),
+            ),
             declared_frame_count: None,
         }],
         calibration: Some(Calibration {
@@ -276,4 +289,84 @@ fn a_non_rig_readiness_certificate_verifies_and_reports_n_a_not_a_pass() {
         !text.contains("READY"),
         "N/A must never read as ready: {text}"
     );
+}
+
+#[test]
+fn a_criterion_whose_check_was_disabled_never_counts_as_passed() {
+    // The attack this closes: a dataset that genuinely fails a criterion can otherwise be certified
+    // ready by switching that check off, because a disabled check produces no findings.
+    let p = profile::world_model_ready();
+    let mut d = healthy_rig();
+    let short: Vec<i64> = (0..10).map(|i| i * 100_000_000).collect();
+    d.episodes[0].streams[2] = sensor("imu", Modality::Imu, &short);
+    d.canonicalize_order();
+    let hash = content_hash(&d);
+
+    let rc = RunConfig {
+        tolerances: p.tolerances,
+        disabled_checks: ["autonomy.rig-sync".to_string()].into_iter().collect(),
+        ..RunConfig::default()
+    };
+    let engine =
+        veridex_core::checks::default_engine_with(&p.tolerances).expect("unique check ids");
+    let verdict = engine.run(&d, hash, &rc);
+    assert!(
+        !verdict
+            .findings
+            .iter()
+            .any(|f| f.check_id == "autonomy.rig-sync"),
+        "the disabled check must produce no findings"
+    );
+
+    let r = ReadinessReport::evaluate(&p, &verdict, &d);
+    let sync = r
+        .criteria
+        .iter()
+        .find(|c| c.check_id == "autonomy.rig-sync")
+        .expect("criterion present");
+    assert!(!sync.ran, "a disabled check did not run");
+    assert!(
+        !sync.passed,
+        "silence from a check that never ran is not a pass"
+    );
+    assert!(
+        !r.ready,
+        "a dataset cannot become ready by disabling the check"
+    );
+}
+
+#[test]
+fn a_bus_only_measurement_is_not_a_world_model_candidate() {
+    // A CAN or MF4 log is a "rig" by sensor count alone, but two of the four criteria abstain
+    // without a perception sensor or an ego trajectory — so they would pass with nothing examined.
+    let p = profile::world_model_ready();
+    let ticks: Vec<i64> = (0..20).map(|i| i * 100_000_000).collect();
+    let d = Dataset {
+        id: "bus".into(),
+        metadata: vec![],
+        provenance: vec![],
+        episodes: vec![Episode {
+            index: 0,
+            start_ts: Some(0),
+            end_ts: Some(1_900_000_000),
+            streams: vec![
+                sensor("speed", Modality::CanSignal, &ticks),
+                sensor("rpm", Modality::CanSignal, &ticks),
+                sensor("gear", Modality::CanSignal, &ticks),
+                sensor("brake", Modality::CanSignal, &ticks),
+            ],
+            task: None,
+            labels: vec![],
+            ego_poses: None,
+            declared_frame_count: None,
+        }],
+        calibration: None,
+    };
+    let v = verdict_for(&d, &p);
+    let r = ReadinessReport::evaluate(&p, &v, &d);
+    assert!(
+        !r.applicable,
+        "a bus-only measurement carries none of what the criteria are about"
+    );
+    assert!(!r.ready, "not applicable is never ready");
 }
