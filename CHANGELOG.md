@@ -118,7 +118,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   `disabled_checks`, `only_checks`, or a `severity_overrides` key) is a hard error rather than a
   silent no-op. A `[tolerances]` table tunes the temporal and statistical checks' numeric thresholds
   (`clock_skew_ms`, `start_offset_ms`, `end_offset_ms`, `rate_deviation`, `gap_factor`, `jitter_cv`,
-  `episode_duration_factor`, `saturation_fraction`, `saturation_min_samples` — see
+  `episode_duration_factor`, `saturation_fraction`, `saturation_min_samples`, `outlier_z`,
+  `sequence_drop_fraction`, `ego_max_speed_mps` — see
   [docs/veridex.toml.example](docs/veridex.toml.example)); each is optional, validated
   (finite, non-negative; positive `gap_factor`), and falls back to the check's default. The
   tolerances the run used are recorded in the verdict's effective config, so a result is fully
@@ -283,6 +284,12 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   above real datasets — a one-hour ten-sensor 100 Hz rig is 3.6M) *before* allocating, and refuses
   with a clear error naming the limit rather than being killed. `--max-frames <n>` raises it;
   `--max-frames 0` removes it.
+- **The `av` demo's ego trajectory never decoded, so the flagship readiness demo said N/A.** Its
+  Odometry topic carried an 8-byte dummy payload like every other sensor, so `Episode.ego_poses` came
+  back empty — and the `world-model-ready` profile, which applies only to a rig carrying a perception
+  sensor *and* an ego trajectory, correctly abstained. The generator now writes a real CDR Odometry
+  body (a ~10 m/s drive down +x), so the demo exercises ego-pose decoding and prints the NOT READY
+  report the quickstart documents. A test pins profile applicability in both directions.
 - **`veridex diff` skipped flag validation, so a typo turned the CI gate off.** It scanned argv for
   the flags it recognized and dropped everything else, so `--fail-on-regresion` (one letter short)
   silently disabled the regression gate and exited 0 — the exact failure the shared parser exists to

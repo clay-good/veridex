@@ -284,7 +284,7 @@ fn a_non_rig_readiness_certificate_verifies_and_reports_n_a_not_a_pass() {
     let signed = certify_with(&d, &p);
     let v = veridex_core::verify(&signed, None, None).expect("verifies");
     let text = veridex_core::render_verified(&signed, &v, true);
-    assert!(text.contains("N/A (not a sensor rig)"), "{text}");
+    assert!(text.contains("N/A (profile does not apply)"), "{text}");
     assert!(
         !text.contains("READY"),
         "N/A must never read as ready: {text}"
@@ -369,4 +369,23 @@ fn a_bus_only_measurement_is_not_a_world_model_candidate() {
         "a bus-only measurement carries none of what the criteria are about"
     );
     assert!(!r.ready, "not applicable is never ready");
+}
+
+#[test]
+fn a_rig_without_a_decoded_ego_trajectory_is_not_a_readiness_candidate() {
+    // The profile applies to a rig that carries what a world model is built from: a perception sensor
+    // *and* an ego trajectory. This is the drift that silently turned the flagship demo's readiness
+    // report into N/A when its Odometry payload stopped decoding — so it is worth pinning in both
+    // directions.
+    let mut d = healthy_rig();
+    let profile = veridex_core::profile::world_model_ready();
+    assert!(
+        (profile.applies_to)(&d),
+        "a rig with a perception sensor and an ego trajectory is a candidate"
+    );
+    d.episodes[0].ego_poses = None;
+    assert!(
+        !(profile.applies_to)(&d),
+        "without a decoded ego trajectory the profile must abstain, not vacuously pass"
+    );
 }

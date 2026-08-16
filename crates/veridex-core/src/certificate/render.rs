@@ -18,7 +18,7 @@ use crate::engine::Status;
 /// apply to this dataset (an autonomy profile against a non-rig), which is never a vacuous pass.
 pub fn readiness_verdict(report: &ReadinessReport) -> &'static str {
     if !report.applicable {
-        "N/A (not a sensor rig)"
+        "N/A (profile does not apply)"
     } else if report.ready {
         "READY"
     } else {

@@ -38,8 +38,9 @@ Two rules keep that honest:
 | Calibration completeness | `autonomy.calibration-completeness` | connected transform (TF) tree and camera intrinsics present |
 
 The `readiness` block on the certificate records the profile name, whether it was `applicable`, the
-overall `ready` flag, and each criterion's `check_id`, `threshold`, `passed`, `ran`, and finding count — and
-it is signed like every other field, so a reader can trust it offline. The certificate claims nothing
+overall `ready` flag, and each criterion's `check_id`, `threshold`, `passed`, and finding count — plus
+`ran`, which is written out only when it is `false` (a criterion whose check did not run cannot pass,
+and says so). It is signed like every other field, so a reader can trust it offline. The certificate claims nothing
 beyond the criteria listed.
 
 ## Reading a readiness certificate back

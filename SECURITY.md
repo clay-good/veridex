@@ -30,7 +30,8 @@ document states what Veridex guarantees, what it does **not**, and how signing k
 - **Memory safety.** `veridex-core` is compiled with `#![forbid(unsafe_code)]`.
 - **Bounded ingestion.** Reading a dataset is reading untrusted input, so ingestion is bounded twice
   before it allocates: a **frame budget** (20M frames by default, `--max-frames`) on what a file can
-  materialize, and a **decompression budget** (100x the file's own size, `--max-decompression-ratio`)
+  materialize, and a **decompression budget** (100x the file's own size, with a
+  64 MiB floor so a small file still gets a workable allowance; `--max-decompression-ratio`)
   on how far a compressed container may expand. Both are charged against what the file *declares*,
   and the decompression budget again against what actually arrives — so a header that understates
   its expansion buys nothing. A file past either budget is refused with an error naming the limit.

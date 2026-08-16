@@ -79,7 +79,7 @@ the build plan.
       silent guess.
 - [x] CI exit codes (0 pass · 10 warnings · 20 fail · 2 tool-error) with a configurable failure
       threshold (`--fail-on error|warning`, default error).
-- [x] Python bindings (`veridex-py`, pyo3/abi3) exposing `check`/`content_hash`/`inspect`/`version`;
+- [x] Python bindings (`veridex-py`, pyo3/abi3) exposing the full operation set (10 functions: `check`, `content_hash`, `inspect`, `catalog`, `certify`, `verify`, `provenance`, `diff`, `keygen`, `version`);
       both front-ends call one shared `veridex_core` pipeline so parity is by construction.
       **Parity test** (`crates/veridex-py/tests/test_parity.py`) asserts CLI and Python produce
       byte-identical `check` and `inspect` output — run in CI (maturin build + pytest). The

@@ -152,9 +152,9 @@ verdict, and unknown keys, check ids, or invalid tolerances are rejected, not si
 Veridex reads untrusted files, so ingestion carries two budgets. A **frame budget** (20M by default):
 a dataset that would materialize more frames is refused with a clear error rather than exhausting
 memory, because the frame count is a product of two numbers the file itself controls. And a
-**decompression budget** for compressed containers (MCAP chunks), capping expansion at 100x the
-file's own size — so a hundred-kilobyte file cannot unpack into a gigabyte, while a genuinely large
-log keeps a proportionate allowance. Raise either with `--max-frames <n>` /
+**decompression budget** for compressed containers (MCAP chunks and LeRobot Parquet), capping
+expansion at 100x the file's own size with a 64 MiB floor — so a small file cannot unpack into a
+gigabyte, while a genuinely large log keeps a proportionate allowance. Raise either with `--max-frames <n>` /
 `--max-decompression-ratio <n>`, or remove it with `0`.
 
 The same command works on a LeRobot v3 dataset — proof of the cross-format claim. Generate a demo

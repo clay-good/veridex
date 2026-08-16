@@ -163,11 +163,56 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(w: &mut mcap::Writer<W>) {
             .unwrap();
         for i in 0..*count {
             let t = i * interval;
-            // Vary payload per (sensor, frame) so frames are content-distinct.
-            let payload = ((seq_base as u64) << 32) | i;
-            write_msg(w, channel, i as u32, t, &payload.to_le_bytes());
+            if *schema == "nav_msgs/msg/Odometry" {
+                // A real CDR Odometry body, so the ego trajectory is genuinely decoded rather than
+                // skipped: the demo drives ~10 m/s down +x, which is what makes the rig a
+                // world-model-readiness *candidate* (the profile needs a perception sensor **and** an
+                // ego trajectory). A dummy payload here left `ego_poses` empty, and the flagship demo
+                // reported the profile as N/A.
+                let x = i as f64 * 10.0 * (*interval as f64 / 1e9);
+                write_msg(w, channel, i as u32, t, &odometry_body(x));
+            } else {
+                // Vary payload per (sensor, frame) so frames are content-distinct.
+                let payload = ((seq_base as u64) << 32) | i;
+                write_msg(w, channel, i as u32, t, &payload.to_le_bytes());
+            }
         }
     }
+}
+
+/// A `nav_msgs/msg/Odometry` CDR body (little-endian, ROS 2 default) whose pose sits at `x` metres
+/// along +x, level and unrotated. Only the prefix Veridex reads is written: `Header`,
+/// `child_frame_id`, then `pose.pose` — the covariance and twist that follow are not decoded.
+fn odometry_body(x: f64) -> Vec<u8> {
+    let mut buf: Vec<u8> = vec![0x00, 0x01, 0x00, 0x00]; // encapsulation: CDR_LE
+    let align = |buf: &mut Vec<u8>, n: usize| {
+        while (buf.len() - 4) % n != 0 {
+            buf.push(0)
+        }
+    };
+    let u32v = |buf: &mut Vec<u8>, v: u32| {
+        align(buf, 4);
+        buf.extend_from_slice(&v.to_le_bytes());
+    };
+    let strv = |buf: &mut Vec<u8>, s: &str| {
+        u32v(buf, (s.len() + 1) as u32);
+        buf.extend_from_slice(s.as_bytes());
+        buf.push(0);
+    };
+    let f64v = |buf: &mut Vec<u8>, v: f64| {
+        align(buf, 8);
+        buf.extend_from_slice(&v.to_le_bytes());
+    };
+    // Header { stamp { sec, nanosec }, frame_id }
+    u32v(&mut buf, 0);
+    u32v(&mut buf, 0);
+    strv(&mut buf, "odom");
+    strv(&mut buf, "base_link"); // child_frame_id
+                                 // pose.pose { position { x, y, z }, orientation { x, y, z, w } }
+    for v in [x, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0] {
+        f64v(&mut buf, v);
+    }
+    buf
 }
 
 fn write_msg<W: std::io::Write + std::io::Seek>(

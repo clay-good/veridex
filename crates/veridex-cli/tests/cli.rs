@@ -289,7 +289,7 @@ fn a_readiness_certificate_is_issued_and_read_back_by_verify() {
     assert!(stdout.contains("trust:"), "{stdout}");
     assert!(stdout.contains("bound to:"), "{stdout}");
     // The demo is a manipulation dataset, so the autonomy profile is honestly N/A, never a pass.
-    assert!(stdout.contains("N/A (not a sensor rig)"), "{stdout}");
+    assert!(stdout.contains("N/A (profile does not apply)"), "{stdout}");
 
     // `--json` carries the same signed facts for a machine.
     let (code, stdout, _) = run(&[

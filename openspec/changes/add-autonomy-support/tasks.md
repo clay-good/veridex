@@ -104,7 +104,9 @@ No code until this change is approved; this is the build plan.
       (`crate::profile`): tightens cross-sensor sync to 20 ms and names the four autonomy criteria.
       Applied via `veridex certify --profile world-model-ready`.
 - [x] Certificate reports per-criterion pass/fail against that profile. A `readiness` block
-      (`ReadinessReport`) records profile name, `applicable` (is it a rig), overall `ready`, and each
+      (`ReadinessReport`) records profile name, `applicable` (a rig that also carries a
+      perception sensor and an ego trajectory — the things a world model is built from), overall
+      `ready`, and each
       criterion's check id / threshold / passed / finding count — signed like every field, honest by
       construction (a non-rig is `N/A`, never a vacuous pass). Proven end-to-end (`certify --profile`
       on the `av` rig prints and signs NOT READY) + unit tests (`tests/profile.rs`). The sequence
@@ -153,6 +155,7 @@ call, not a defect fix:
 
 Both audit follow-ups are now built. `statistical.range-sanity` claims a stream only once it has
 produced a finding, matching its sibling checks, so a later episode's corrupt stats can no longer be
-masked by an earlier clean one. The MCAP decompressed-byte budget is built — expansion is capped at
-100x the file's own size (`--max-decompression-ratio`), charged off the chunk headers before the
-reader sees the file and again against the bytes that arrive.
+masked by an earlier clean one. The decompressed-byte budget is built — expansion is capped at
+100x the file's own size with a 64 MiB floor (`--max-decompression-ratio`), charged off the MCAP
+chunk headers before the reader sees the file and again against the bytes that arrive, and per
+record batch on the LeRobot Parquet path.
