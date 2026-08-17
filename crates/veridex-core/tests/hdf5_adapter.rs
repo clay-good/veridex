@@ -650,7 +650,7 @@ fn everything_the_reader_skips_is_named_in_the_report() {
     says("variable-length array");
     says("scalar array");
     says("sits beside the episode groups");
-    says("array or a compound value");
+    says("holds several values");
 
     // A zero-row array is a stream with no frames — a fact for the structural checks to report,
     // not something to drop.
@@ -1076,4 +1076,120 @@ fn an_integer_array_counts_as_read_and_clean() {
         Some(0),
         "a uint8 image is integer data too"
     );
+}
+
+/// Write a copy of `name` with `patch` applied, and return the ingest result.
+fn ingest_patched(
+    name: &str,
+    label: &str,
+    patch: impl FnOnce(&mut Vec<u8>),
+) -> Result<veridex_core::adapter::Ingested, IngestError> {
+    let mut bytes = std::fs::read(fixture(name)).expect("read fixture");
+    patch(&mut bytes);
+    // Leaked deliberately: the returned result borrows nothing, but the file has to outlive the
+    // call, and a test process is short-lived.
+    let dir = Box::leak(Box::new(tempfile::tempdir().expect("temp dir")));
+    let path = dir.path().join(format!("{label}.h5"));
+    std::fs::write(&path, &bytes).expect("write");
+    default_registry().ingest(&Source::Local(path), &IngestOptions::default())
+}
+
+fn parse_message(result: Result<veridex_core::adapter::Ingested, IngestError>) -> String {
+    match result {
+        Err(IngestError::Parse { message, .. }) => message,
+        Err(other) => panic!("expected a parse error, got {other:?}"),
+        Ok(_) => panic!("expected a refusal, got a dataset"),
+    }
+}
+
+#[test]
+fn each_structure_the_reader_cannot_read_names_itself() {
+    // These messages are the user's only remedy, so they are worth asserting rather than assuming.
+    // Every one is reached by corrupting the structure it describes in a copy of a real file.
+    let find = |bytes: &[u8], needle: &[u8]| {
+        bytes
+            .windows(needle.len())
+            .position(|w| w == needle)
+            .unwrap_or_else(|| panic!("fixture holds {}", String::from_utf8_lossy(needle)))
+    };
+
+    let message = parse_message(ingest_patched("robomimic_small.h5", "superblock", |b| {
+        b[8] = 9; // the superblock version
+    }));
+    assert!(
+        message.contains("superblock version 9"),
+        "names the version it found: {message}"
+    );
+
+    for signature in [&b"TREE"[..], &b"HEAP"[..], &b"SNOD"[..]] {
+        let name = String::from_utf8_lossy(signature).to_string();
+        let message = parse_message(ingest_patched(
+            "robomimic_small.h5",
+            &format!("sig-{name}"),
+            |b| {
+                let at = find(b, signature);
+                b[at] = b'X';
+            },
+        ));
+        assert!(
+            message.contains(&name),
+            "a corrupt {name} block names the block: {message}"
+        );
+    }
+
+    // A `GCOL` collection holds the variable-length string attributes; a broken one must not take
+    // the whole ingest down, because an attribute is an annotation, not the data.
+    let ingested = ingest_patched("robomimic_small.h5", "sig-GCOL", |b| {
+        let at = find(b, b"GCOL");
+        b[at] = b'X';
+    })
+    .expect("an unreadable attribute does not fail an otherwise sound dataset");
+    assert!(
+        ingested
+            .dataset
+            .metadata
+            .iter()
+            .all(|(k, _)| k != "h5:env_args"),
+        "the attribute that could not be read is absent…"
+    );
+    assert!(
+        ingested
+            .report
+            .unmapped_fields
+            .iter()
+            .any(|f| f.note.contains("global-heap object could not be read")),
+        "…and the report says the attribute could not be *read*, not that it was some kind of \
+         value the CDM cannot hold: {:?}",
+        ingested.report.unmapped_fields
+    );
+}
+
+#[test]
+fn a_sampled_hdf5_run_carries_its_coverage_and_cannot_be_certified() {
+    let sampled = veridex_core::pipeline::run_check(
+        &default_registry(),
+        &Source::Local(fixture("robomimic_small.h5")),
+        None,
+        &IngestOptions {
+            sample: Sample::FirstEpisodes(1),
+            ..IngestOptions::default()
+        },
+    )
+    .expect("the sampled run completes");
+    let full = veridex_core::pipeline::run_check(
+        &default_registry(),
+        &Source::Local(fixture("robomimic_small.h5")),
+        None,
+        &IngestOptions::default(),
+    )
+    .expect("the full run completes");
+
+    assert_ne!(
+        sampled.verdict.result_content_hash, full.verdict.result_content_hash,
+        "a run that saw one of two episodes must not share a verdict hash with one that saw both"
+    );
+    let err = veridex_core::certificate::Certificate::certifiable(&sampled.verdict)
+        .expect_err("a certificate speaks for a dataset, not for the part of it that was read");
+    assert!(err.contains("sampled run"), "{err}");
+    assert!(veridex_core::certificate::Certificate::certifiable(&full.verdict).is_ok());
 }

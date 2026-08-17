@@ -316,12 +316,9 @@ impl Adapter for Hdf5Adapter {
             match value {
                 AttrValue::Text(text) => metadata.push((format!("h5:{name}"), text.clone())),
                 AttrValue::Number(n) => metadata.push((format!("h5:{name}"), format_number(*n))),
-                AttrValue::Opaque => notes.unmapped.push(UnmappedField {
+                AttrValue::Opaque(reason) => notes.unmapped.push(UnmappedField {
                     source_path: format!("attribute {name}"),
-                    note:
-                        "the attribute is an array or a compound value, which the CDM's key/value \
-                           metadata cannot hold"
-                            .into(),
+                    note: (*reason).into(),
                 }),
             }
         }

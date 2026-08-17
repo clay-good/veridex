@@ -277,8 +277,10 @@ pub(crate) struct Attribute {
 pub(crate) enum AttrValue {
     Text(String),
     Number(f64),
-    /// A value this reader does not render (a compound, a multi-element array, a reference).
-    Opaque,
+    /// A value that did not become text or a number, carrying *why* — an attribute the CDM cannot
+    /// hold and an attribute this reader failed to read are different facts, and reporting the second
+    /// as the first tells the user to change their data when the tool is what fell short.
+    Opaque(&'static str),
 }
 
 /// A parsed object header: every message at one address.
@@ -1068,17 +1070,25 @@ impl H5File {
     pub fn attribute_value(&mut self, attr: &Attribute) -> AttrValue {
         let elements: u64 = attr.dims.iter().product::<u64>().max(1);
         if elements != 1 {
-            return AttrValue::Opaque;
+            return AttrValue::Opaque(
+                "the attribute holds several values, which the CDM's key/value metadata cannot hold",
+            );
         }
         match attr.datatype.class {
             DatatypeClass::FixedString => AttrValue::Text(decode_text(&attr.data)),
             DatatypeClass::VariableLength => match self.read_vlen(&attr.data) {
                 Ok(bytes) => AttrValue::Text(decode_text(&bytes)),
-                Err(_) => AttrValue::Opaque,
+                Err(_) => AttrValue::Opaque(
+                    "the attribute is a variable-length value whose global-heap object could not be \
+                     read",
+                ),
             },
             _ => match attr.datatype.decode(&attr.data) {
                 Some(n) => AttrValue::Number(n),
-                None => AttrValue::Opaque,
+                None => AttrValue::Opaque(
+                    "the attribute is a compound, opaque, or reference value the CDM's key/value \
+                     metadata cannot hold",
+                ),
             },
         }
     }

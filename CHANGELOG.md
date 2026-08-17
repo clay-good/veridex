@@ -10,6 +10,15 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **The refusal messages are now asserted, and one of them was lying.** An HDF5 attribute this reader
+  *failed to read* (a variable-length string whose global-heap object is corrupt) was reported as "an
+  array or a compound value, which the CDM cannot hold" — telling the user to change their data when
+  the tool was what fell short. Each case now carries its own reason. Alongside it: the messages for a
+  bad superblock version and for corrupt `TREE`, `HEAP`, and `SNOD` blocks are pinned by tests that
+  reach them by patching a real file, because a message no test ever sees is a message that is wrong.
+  A sampled HDF5 run is also now covered for what the rest of the formats already were: its coverage
+  moves the verdict hash, and it cannot be certified.
+
 - **HDF5 values are summarized, which makes the statistical checks live.** The adapter already read
   every row to fingerprint it; it now also recomputes, per dimension, what the values *are* —
   min/max/mean/std (Welford, single-pass), how often a dimension sits exactly at an extreme, and how
