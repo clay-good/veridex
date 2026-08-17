@@ -1673,3 +1673,117 @@ fn a_sampled_run_reads_only_the_records_it_selected() {
         }
     );
 }
+
+/// The same rule as `asking_for_more_episodes_than_exist_does_not_forge_a_manifest_claim`, on the
+/// path that test could not reach: its fixture always writes `shardLengths`, so it only exercised
+/// the *clamped* branch. With no declared total there is nothing to clamp against, `want` stayed at
+/// the operator's `n`, and a manifest that never stated a number was reported as declaring 10.
+#[test]
+fn a_sample_does_not_forge_a_count_when_the_manifest_declares_none() {
+    for info in [
+        // No `splits` key at all.
+        dataset_info_json(None, "tfrecord"),
+        // Two splits, one without `shardLengths` — a shape the adapter supports by name.
+        serde_json::json!({
+            "name": "demo_rlds",
+            "version": "0.1.0",
+            "fileFormat": "tfrecord",
+            "moduleName": "tensorflow_datasets.robotics.demo_rlds",
+            "citation": "@article{demo}",
+            "redistributionInfo": {"license": "Apache-2.0"},
+            "splits": [{"name": "train", "shardLengths": ["3"]}, {"name": "test"}],
+        })
+        .to_string(),
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        write_dataset(tmp.path(), 3, 4);
+        std::fs::write(tmp.path().join("dataset_info.json"), &info).unwrap();
+
+        let out = veridex_core::pipeline::run_check(
+            &default_registry(),
+            &Source::Local(tmp.path().to_path_buf()),
+            None,
+            &IngestOptions {
+                sample: Sample::FirstEpisodes(10),
+                ..IngestOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert!(
+            !out.verdict
+                .findings
+                .iter()
+                .any(|f| f.code == "STRUCTURAL.EPISODE_COUNT_MISMATCH"),
+            "the manifest declared no total, so nothing may be compared against one: {:?}",
+            out.verdict
+                .findings
+                .iter()
+                .map(|f| &f.code)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(out.ingested.dataset.episodes.len(), 3);
+    }
+}
+
+/// Protobuf merges repeated instances of an embedded message field, so TensorFlow concatenates the
+/// two `float_list`s in a map entry that carries `value` twice. Letting the last one win made the
+/// same shard bytes yield a different step count depending on who read them — and Veridex signed
+/// its own answer. Refused, so the two can never disagree.
+#[test]
+fn a_map_entry_carrying_its_value_twice_is_refused() {
+    // key = "steps/action", then field 2 (value) twice: 7 floats, then 14 floats.
+    let mut entry: Vec<u8> = Vec::new();
+    entry.push(0x0a); // field 1, wire 2
+    let key = b"steps/action";
+    entry.push(key.len() as u8);
+    entry.extend_from_slice(key);
+    for count in [7usize, 14usize] {
+        let mut float_list = Vec::new();
+        float_list.push(0x0a); // FloatList.value, packed
+        float_list.push((count * 4) as u8);
+        for i in 0..count {
+            float_list.extend_from_slice(&(i as f32).to_le_bytes());
+        }
+        let mut feature = Vec::new();
+        feature.push(0x12); // Feature.float_list = field 2
+        feature.push(float_list.len() as u8);
+        feature.extend_from_slice(&float_list);
+
+        entry.push(0x12); // map entry field 2 (value)
+        entry.push(feature.len() as u8);
+        entry.extend_from_slice(&feature);
+    }
+
+    let mut features = Vec::new();
+    features.push(0x0a); // Features.feature map entry
+    features.push(entry.len() as u8);
+    features.extend_from_slice(&entry);
+
+    let mut example = Vec::new();
+    example.push(0x0a); // Example.features
+    example.push(features.len() as u8);
+    example.extend_from_slice(&features);
+
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("features.json"), features_json()).unwrap();
+    std::fs::write(
+        tmp.path().join("dataset_info.json"),
+        dataset_info_json(Some(vec![1]), "tfrecord"),
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("demo_rlds-train.tfrecord-00000-of-00001"),
+        shard(&[example]),
+    )
+    .unwrap();
+
+    let err = default_registry().ingest(
+        &Source::Local(tmp.path().to_path_buf()),
+        &IngestOptions::default(),
+    );
+    assert!(
+        err.is_err(),
+        "an ambiguous record must be refused, not resolved by last-wins"
+    );
+}

@@ -435,6 +435,15 @@ fn parse_example(record: &[u8]) -> Option<BTreeMap<String, FeatureValues<'_>>> {
     Some(out)
 }
 
+/// Parse one `map<string, Feature>` entry.
+///
+/// Both fields are refused on a repeat rather than letting the last one win. That is the guard
+/// [`set_once`] applies to `Feature`'s oneof and the one the caller applies to duplicate map keys,
+/// and it was missing exactly one level down: an entry carrying the `value` submessage *twice* had
+/// its first instance silently dropped. Protobuf's own rule for a repeated embedded message is to
+/// *merge* them, so TensorFlow concatenates the two `float_list`s and reads three steps where
+/// Veridex read two — the same shard bytes yielding a different episode length depending on who
+/// reads them, and Veridex certifying its own answer. Refusing means the two can never disagree.
 fn parse_map_entry(entry: &[u8]) -> Option<(String, FeatureValues<'_>)> {
     let mut buf = Buf::new(entry);
     let mut key: Option<String> = None;
@@ -442,8 +451,13 @@ fn parse_map_entry(entry: &[u8]) -> Option<(String, FeatureValues<'_>)> {
     while !buf.done() {
         let (field, wire) = buf.tag()?;
         match (field, wire) {
-            (1, 2) => key = Some(String::from_utf8(buf.length_delimited()?.to_vec()).ok()?),
-            (2, 2) => values = Some(parse_feature(buf.length_delimited()?)?),
+            (1, 2) => {
+                if key.is_some() {
+                    return None;
+                }
+                key = Some(String::from_utf8(buf.length_delimited()?.to_vec()).ok()?);
+            }
+            (2, 2) => set_once(&mut values, parse_feature(buf.length_delimited()?)?)?,
             _ => buf.skip(wire)?,
         }
     }
@@ -612,6 +626,15 @@ fn shape_dims(shape: Option<&serde_json::Value>) -> Option<Vec<u64>> {
         // No `shape` object at all is a scalar, which has a known (empty) shape.
         return Some(Vec::new());
     };
+    // A `shape` that is present but is not an object does not declare a scalar — it declares
+    // something this reader cannot interpret, and reading it as a scalar sets the element width to
+    // 1. A `"shape": ["7"]` beside 14 float32s then yields 14 frames where 2 was right: a 7x
+    // inflated timeline, `shape: None`, and nothing in `unmapped_fields` or `omitted_fields` to say
+    // so. `shape_dims` failed closed for `-1` and for a non-array `dimensions`, and failed open
+    // here. TFDS itself always writes the object form, so this is a malformed-manifest guard.
+    if !shape.is_object() {
+        return None;
+    }
     let Some(dims) = shape.get("dimensions") else {
         return Some(Vec::new());
     };
@@ -987,7 +1010,19 @@ impl Adapter for RldsAdapter {
                 match split.shard_lengths.as_ref() {
                     Some(lengths) => {
                         for length in lengths {
-                            total = total.saturating_add(json_u64(length)?);
+                            // An entry that will not parse as a number is *not* the same as a split
+                            // that declares no lengths. `json_u64` returning None used to abandon
+                            // the whole closure, disabling the count check and reporting "declares
+                            // none" — which sends a reader looking for a missing key that is right
+                            // there, holding a value nothing could read. Named as its own case.
+                            let Some(parsed) = json_u64(length) else {
+                                splits_without_lengths.push(format!(
+                                    "{} (unreadable shard length)",
+                                    split.name.clone().unwrap_or_else(|| format!("split #{n}"))
+                                ));
+                                break;
+                            };
+                            total = total.saturating_add(parsed);
                             saw_any = true;
                         }
                     }
@@ -1234,11 +1269,25 @@ impl Adapter for RldsAdapter {
         // The declared episode total is an assertion about the whole dataset, so it is only
         // comparable against a full ingest. Under a sample, what is comparable is the count the
         // sample itself selected.
+        //
+        // But only when the manifest declared a total at all. `FirstEpisodes` is clamped against
+        // `declared_episodes`, and when that is `None` there is nothing to clamp against, so `want`
+        // stayed at the operator's `n`: `--sample-episodes 10` over a 3-episode dataset whose
+        // `dataset_info.json` omits `splits` (or has one split without `shardLengths`) recorded a
+        // *declared* total of 10 and then failed the dataset with
+        // `STRUCTURAL.EPISODE_COUNT_MISMATCH`, an Error, for the size of the user's own flag. The
+        // manifest never said 10. With no declaration to compare against, the declared-count check
+        // has nothing to do — exactly as it already has nothing to do on a full ingest of the same
+        // dataset.
         match &selected {
-            Some(sel) => metadata.push((
-                crate::cdm::META_DECLARED_EPISODES.to_string(),
-                sel.len().to_string(),
-            )),
+            Some(sel) => {
+                if declared_episodes.is_some() {
+                    metadata.push((
+                        crate::cdm::META_DECLARED_EPISODES.to_string(),
+                        sel.len().to_string(),
+                    ));
+                }
+            }
             None => {
                 if let Some(total) = declared_episodes {
                     metadata.push((
@@ -1270,7 +1319,17 @@ impl Adapter for RldsAdapter {
             "leaf dtype -> stream.dtype".into(),
             "leaf shape -> stream.shape".into(),
             "step values -> frame.value_ref.content_hash (SHA-256)".into(),
-            "tfrecord masked CRC-32C -> verified on every record".into(),
+            // Under a sample, only the *length prefix* of an unselected record is checked; its
+            // payload is stepped over and its payload CRC is never computed, so a corrupt payload in
+            // a skipped record passes the run. Claiming "verified on every record" beside an honest
+            // `Coverage::Sample` was a false attestation about the integrity of data never read.
+            if selected.is_some() {
+                "tfrecord masked CRC-32C -> verified on every record read (a sample checks the \
+                 length prefix of the records it skips, not their payload)"
+                    .into()
+            } else {
+                "tfrecord masked CRC-32C -> verified on every record".into()
+            },
         ];
         let mut omitted_fields = vec![
             "per-step timestamps (RLDS records no wall clock; the timeline is the step index, so \
