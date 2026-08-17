@@ -463,11 +463,7 @@ impl Adapter for CanDbcAdapter {
             .collect();
 
         let dataset = Dataset {
-            id: dir
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("candbc")
-                .to_string(),
+            id: crate::adapter::dataset_id_from_path(dir, "candbc"),
             metadata: vec![("source_format".into(), "candbc".into())],
             provenance: vec![],
             episodes: vec![Episode {

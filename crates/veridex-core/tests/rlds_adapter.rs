@@ -259,6 +259,42 @@ fn ingest(dir: &Path) -> Result<veridex_core::adapter::Ingested, IngestError> {
     RldsAdapter.ingest(&Source::Local(dir.to_path_buf()), &IngestOptions::default())
 }
 
+/// A TFDS export whose `dataset_info.json` omits `name`, so the id falls back to the path.
+#[test]
+fn an_unnamed_export_is_identified_by_its_directory_however_the_path_is_spelled() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("openx_export");
+    std::fs::create_dir_all(&dir).unwrap();
+    write_dataset(&dir, 1, 3);
+    // `name` is what the id normally comes from; without it the adapter falls back to the path,
+    // and that fallback used a raw `file_name()`. `Path::file_name` answers about the path as
+    // written and has no answer for one terminating in `..` — the spelling `cd <dir> && veridex
+    // verify .` produces — so the same export hashed one way from outside and another from
+    // inside, and a genuine certificate was rejected against its own dataset.
+    let mut info: serde_json::Value =
+        serde_json::from_str(&dataset_info_json(Some(vec![1]), "tfrecord")).unwrap();
+    info.as_object_mut().unwrap().remove("name");
+    std::fs::write(dir.join("dataset_info.json"), info.to_string()).unwrap();
+
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    let from_outside = ingest(&dir).expect("rlds ingest").dataset;
+    let from_inside = ingest(&dir.join("sub").join(".."))
+        .expect("rlds ingest")
+        .dataset;
+
+    assert_eq!(from_outside.id, "openx_export");
+    assert_eq!(
+        from_inside.id, "openx_export",
+        "a path with no `file_name()` must still name the directory, not fall through to the \
+         adapter's `rlds` fallback"
+    );
+    assert_eq!(
+        veridex_core::content_hash(&from_inside),
+        veridex_core::content_hash(&from_outside),
+        "the same export hashed two ways depending on how the path was spelled"
+    );
+}
+
 // ---- Tests ----
 
 #[test]

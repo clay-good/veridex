@@ -14,6 +14,7 @@ use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use parquet::arrow::ArrowWriter;
 
+use veridex_core::adapter::candbc::CanDbcAdapter;
 use veridex_core::adapter::lerobot::LeRobotAdapter;
 use veridex_core::adapter::{Adapter, IngestOptions, Source};
 use veridex_core::cdm::Dataset;
@@ -63,7 +64,19 @@ fn ingest(path: &Path) -> Dataset {
         .dataset
 }
 
-/// The four ways a user reaches one directory. Every one must name it the same, because the name is
+/// A path spelling that genuinely leaves [`Path::file_name`] with no answer.
+///
+/// The obvious spellings do not: Rust normalizes a trailing `.` away, so `Path::new("/a/b/.")
+/// `.file_name()` is `Some("b")` and `/a/b/` is too. Only a bare `.` — which needs the process
+/// working directory, and so cannot be used from a threaded test without racing its neighbours —
+/// and a path *terminating* in `..` return `None`. `<dir>/sub/..` names `<dir>` exactly as `cd
+/// <dir> && veridex verify .` does, reaches the same `None` branch, and needs no `chdir`.
+fn unnameable_spelling_of(dir: &Path) -> std::path::PathBuf {
+    fs::create_dir_all(dir.join("sub")).unwrap();
+    dir.join("sub").join("..")
+}
+
+/// The ways a user reaches one directory. Every one must name it the same, because the name is
 /// in the hash the certificate is bound to.
 #[test]
 fn every_spelling_of_one_path_yields_one_id_and_one_hash() {
@@ -75,12 +88,17 @@ fn every_spelling_of_one_path_yields_one_id_and_one_hash() {
     let with_dot = ingest(&dir.join("."));
     let trailing_slash = ingest(Path::new(&format!("{}/", dir.display())));
     let via_parent = ingest(&dir.join("..").join("my_dataset"));
+    // The spelling that actually exercises the defect. Without it this test passed with the fix
+    // fully reverted: none of the four above leave `file_name()` without an answer, so for all its
+    // thoroughness it never tested its own invariant.
+    let unnameable = ingest(&unnameable_spelling_of(&dir));
 
     for (label, ds) in [
         ("absolute", &absolute),
         ("trailing `.`", &with_dot),
         ("trailing slash", &trailing_slash),
         ("through `..`", &via_parent),
+        ("terminating in `..`", &unnameable),
     ] {
         assert_eq!(
             ds.id, "my_dataset",
@@ -93,6 +111,7 @@ fn every_spelling_of_one_path_yields_one_id_and_one_hash() {
         ("trailing `.`", &with_dot),
         ("trailing slash", &trailing_slash),
         ("through `..`", &via_parent),
+        ("terminating in `..`", &unnameable),
     ] {
         assert_eq!(
             content_hash(ds),
@@ -101,4 +120,53 @@ fn every_spelling_of_one_path_yields_one_id_and_one_hash() {
              would be rejected against the other, on identical bytes"
         );
     }
+}
+
+const DBC: &str = "\
+BO_ 256 EngineData: 8 ECU
+ SG_ EngineSpeed : 0|16@1+ (0.25,0) [0|16383.75] \"rpm\" Vector__XXX
+";
+
+const LOG: &str = "\
+(1000.000000) can0 100#4001000012343412
+(1000.100000) can0 100#80020000ABCDCDAB
+";
+
+/// The same invariant for the other directory-shaped adapters. `dataset_id_from_path` was written
+/// for this and applied to LeRobot and Zarr; CAN+DBC and RLDS kept a raw `file_name()`, so `veridex
+/// certify mycandata` and `cd mycandata && veridex verify .` disagreed on the hash and the genuine
+/// certificate was rejected against its own dataset.
+#[test]
+fn a_candbc_directory_is_named_the_same_from_inside_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("mycandata");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("vehicle.dbc"), DBC).unwrap();
+    fs::write(dir.join("drive.log"), LOG).unwrap();
+
+    let ingest = |p: &Path| {
+        CanDbcAdapter
+            .ingest(&Source::Local(p.to_path_buf()), &IngestOptions::default())
+            .expect("candbc ingest")
+            .dataset
+    };
+
+    let absolute = ingest(&dir);
+    let from_inside = ingest(&unnameable_spelling_of(&dir));
+
+    assert_eq!(
+        absolute.id, "mycandata",
+        "an absolute path must name the directory the CAN log is in"
+    );
+    assert_eq!(
+        from_inside.id, "mycandata",
+        "a path with no `file_name()` must still name the directory, not fall through to the \
+         adapter's `candbc` fallback"
+    );
+    assert_eq!(
+        content_hash(&from_inside),
+        content_hash(&absolute),
+        "the same CAN dataset hashed two ways depending on how the path was spelled — a \
+         certificate issued from outside the directory is rejected from inside it"
+    );
 }

@@ -1299,12 +1299,10 @@ impl Adapter for RldsAdapter {
         }
 
         let dataset = Dataset {
-            id: info.name.clone().unwrap_or_else(|| {
-                dir.file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or(FORMAT_ID)
-                    .to_string()
-            }),
+            id: info
+                .name
+                .clone()
+                .unwrap_or_else(|| crate::adapter::dataset_id_from_path(dir, FORMAT_ID)),
             metadata,
             provenance,
             episodes,

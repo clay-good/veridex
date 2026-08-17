@@ -74,8 +74,11 @@ pub struct Episode {
     /// Frame count the **source manifest** declares for this episode (e.g. LeRobot
     /// `meta/episodes.jsonl` `length`), if any. This is an assertion *about* the content, not the
     /// content itself: a structural check compares it against the frames actually ingested to catch
-    /// the corrupted-cumulative-length class from lerobot#4143. Deliberately excluded from the CDM
-    /// content hash (`canonical.rs`) — a corrupt manifest does not change what frames a dataset holds.
+    /// the corrupted-cumulative-length class from lerobot#4143. Bound into the CDM content hash
+    /// (`canonical.rs`) since CANONICAL_VERSION v4 — `structural.episode-boundary` fails an episode
+    /// whose frames disagree with it, and a field a check can fail on has to be in the hash, or a
+    /// passing and a failing dataset share one and the clean one's certificate verifies the corrupt
+    /// one. Do not "restore" the earlier exclusion.
     #[serde(default)]
     pub declared_frame_count: Option<u64>,
 }
