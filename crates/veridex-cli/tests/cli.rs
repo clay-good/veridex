@@ -1074,3 +1074,49 @@ fn a_certificate_verifies_from_inside_the_dataset_it_was_issued_for() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+/// `--profile` is documented as what a run is "judged against", but its criterion verdicts reached
+/// only the terminal report — so a CI job, which is exactly who reads `--json`, `--sarif` and
+/// `--html`, got the profile's tolerances applied and no verdict about them.
+#[test]
+fn a_profile_verdict_reaches_the_machine_readable_outputs() {
+    let dir = temp_dir("profile-machine-output");
+    let path = dir.join("av.mcap");
+    let status = std::process::Command::new(env!("CARGO"))
+        .args([
+            "run",
+            "--quiet",
+            "-p",
+            "veridex-core",
+            "--example",
+            "make_demo_mcap",
+            "--",
+        ])
+        .arg(&path)
+        .arg("av")
+        .status()
+        .expect("run the demo generator");
+    assert!(status.success());
+    let path = path.to_str().unwrap();
+
+    let (_, stdout, _) = run(&["check", path, "--json", "--profile", "world-model-ready"]);
+    let doc: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    let readiness = &doc["readiness"];
+    assert!(
+        readiness.is_object(),
+        "a profile run must carry its readiness verdict in --json: {stdout}"
+    );
+    assert_eq!(readiness["profile"], "world-model-ready");
+    assert!(readiness["criteria"].as_array().unwrap().len() >= 5);
+
+    let (_, html, _) = run(&["check", path, "--html", "--profile", "world-model-ready"]);
+    assert!(
+        html.contains("Profile readiness"),
+        "the html report omits the readiness block"
+    );
+
+    // Without a profile the field is absent, so an ordinary report's bytes are unchanged.
+    let (_, plain, _) = run(&["check", path, "--json"]);
+    let doc: serde_json::Value = serde_json::from_str(&plain).unwrap();
+    assert!(doc.get("readiness").is_none());
+}

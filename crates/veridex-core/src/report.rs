@@ -28,14 +28,33 @@ pub struct JsonReport<'a> {
     /// The trust score, when the report is produced alongside scoring.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trust_score: Option<TrustScore>,
+    /// The per-criterion readiness verdict, when the run named a policy profile.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub readiness: Option<&'a crate::certificate::ReadinessReport>,
 }
 
 /// Render the verdict as stable, versioned JSON.
 pub fn render_json(verdict: &Verdict, trust_score: Option<TrustScore>) -> String {
+    render_json_with_readiness(verdict, trust_score, None)
+}
+
+/// As [`render_json`], plus the per-criterion readiness verdict when a profile was named.
+///
+/// A profile is what a run is judged against, and its criterion results reached only the terminal
+/// report — so the consumer most likely to be gating on them, a CI job reading `--json`, could see
+/// the profile's tolerances applied and no verdict about them. The block is the same one `certify`
+/// signs; here it is simply unsigned. Absent when no profile was named, so an ordinary report's
+/// bytes are unchanged.
+pub fn render_json_with_readiness(
+    verdict: &Verdict,
+    trust_score: Option<TrustScore>,
+    readiness: Option<&crate::certificate::ReadinessReport>,
+) -> String {
     let report = JsonReport {
         schema: REPORT_SCHEMA_VERSION,
         verdict,
         trust_score,
+        readiness,
     };
     // Pretty JSON is deterministic here: struct field order is fixed and the verdict's collections
     // are already stably ordered.
@@ -367,6 +386,17 @@ fn esc(s: &str) -> String {
 /// Render the verdict as a self-contained HTML report (inline CSS, no external assets), suitable for
 /// sharing or archiving. Derives from the same verdict as every other renderer.
 pub fn render_html(verdict: &Verdict, trust_score: Option<TrustScore>) -> String {
+    render_html_with_readiness(verdict, trust_score, None)
+}
+
+/// As [`render_html`], plus the per-criterion readiness verdict when a profile was named. The HTML
+/// report is the artifact built to travel, so a readiness judgement that reached only the terminal
+/// was the one place it was least likely to be read.
+pub fn render_html_with_readiness(
+    verdict: &Verdict,
+    trust_score: Option<TrustScore>,
+    readiness: Option<&crate::certificate::ReadinessReport>,
+) -> String {
     let mut body = String::new();
 
     let _ = write!(
@@ -488,6 +518,16 @@ pub fn render_html(verdict: &Verdict, trust_score: Option<TrustScore>) -> String
             );
         }
         body.push_str("</tbody></table>");
+    }
+
+    // The readiness verdict, when a profile was named. `render_readiness` writes plain text, so it
+    // goes in a <pre> and is escaped like every other dataset-derived string in this document.
+    if let Some(readiness) = readiness {
+        let _ = write!(
+            body,
+            "<h2>Profile readiness</h2><pre>{}</pre>",
+            esc(&crate::certificate::render_readiness(readiness, ""))
+        );
     }
 
     const STYLE: &str = "body{font-family:system-ui,sans-serif;max-width:60rem;margin:2rem auto;\

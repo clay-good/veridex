@@ -604,10 +604,22 @@ fn cmd_check(rest: &[String]) -> ExitCode {
     // Capture the score before rendering, which consumes `out.trust`.
     let trust_score = out.trust.score;
 
+    // The readiness verdict, when a profile was named. Rendered for *every* output shape, not only
+    // the terminal one: a profile is what the run is "judged against", and a CI consumer -- which
+    // is precisely who reads --json, --sarif and --html -- was given the profile's tolerances and
+    // none of its criterion verdicts, so the one thing the flag names was unreportable to a machine.
+    let readiness = profile
+        .as_ref()
+        .map(|p| ReadinessReport::evaluate(p, &out.verdict, &out.ingested.dataset));
+
     if args.html {
         println!(
             "{}",
-            veridex_core::render_html(&out.verdict, Some(out.trust))
+            veridex_core::render_html_with_readiness(
+                &out.verdict,
+                Some(out.trust),
+                readiness.as_ref()
+            )
         );
     } else if args.sarif {
         println!(
@@ -617,7 +629,11 @@ fn cmd_check(rest: &[String]) -> ExitCode {
     } else if args.json {
         println!(
             "{}",
-            veridex_core::render_json(&out.verdict, Some(out.trust))
+            veridex_core::render_json_with_readiness(
+                &out.verdict,
+                Some(out.trust),
+                readiness.as_ref()
+            )
         );
     } else {
         print!(
@@ -628,9 +644,8 @@ fn cmd_check(rest: &[String]) -> ExitCode {
         // borrowed its tolerances — it printed no criterion verdicts at all, so the one thing the
         // flag names was the one thing it did not report. `certify` renders the same block from the
         // same helper; the difference is that this one is not signed.
-        if let Some(p) = &profile {
-            let readiness = ReadinessReport::evaluate(p, &out.verdict, &out.ingested.dataset);
-            print!("\n{}", veridex_core::render_readiness(&readiness, "  "));
+        if let Some(readiness) = &readiness {
+            print!("\n{}", veridex_core::render_readiness(readiness, "  "));
         }
     }
 

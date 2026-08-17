@@ -50,8 +50,8 @@ pub use engine::{
 };
 pub use pipeline::{run_check, run_check_with, CheckOutput};
 pub use report::{
-    render_catalog_json, render_html, render_json, render_sarif, render_terminal,
-    REPORT_SCHEMA_VERSION,
+    render_catalog_json, render_html, render_html_with_readiness, render_json,
+    render_json_with_readiness, render_sarif, render_terminal, REPORT_SCHEMA_VERSION,
 };
 
 /// The version of `veridex-core`, from Cargo.

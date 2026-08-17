@@ -148,6 +148,20 @@ pub fn render_verified(
         status_label(cert.status),
         cert.trust_score.provenance_pct
     );
+    // A score means something only within the rubric that produced it — the rubric is versioned for
+    // exactly that reason, and `verify` accepts a certificate scored under any of them (a newer
+    // issuer's document is still perfectly readable; refusing it would be the wrong trade). What
+    // must not happen is a reader comparing a v2 number against v1 expectations without being told,
+    // so a rubric this build does not use is named right beside the score it produced.
+    if cert.trust_score.rubric_version != crate::certificate::RUBRIC_VERSION {
+        let _ = writeln!(
+            out,
+            "⚠ scored under rubric {} (this build uses {}) — the number above is not comparable to \
+             scores from this version",
+            cert.trust_score.rubric_version,
+            crate::certificate::RUBRIC_VERSION
+        );
+    }
     if let Some(readiness) = &cert.readiness {
         out.push_str(&render_readiness(readiness, "  "));
     }
