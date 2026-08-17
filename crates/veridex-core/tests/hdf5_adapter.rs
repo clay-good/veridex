@@ -1280,3 +1280,34 @@ fn a_nan_fill_value_is_seen_by_the_non_finite_check() {
         "two NaN columns over four rows must be counted, not read as zeros"
     );
 }
+
+/// The frame budget's contract is to refuse on what a file *declares*, before anything is
+/// allocated — and the timeline read was the one path that never charged it. A 5,000,000-row `time`
+/// array was read in full and only then measured against the limit, so the correct refusal arrived
+/// after the memory had already been spent. (The audit measured the extreme form on a hostile file:
+/// a datatype patched to zero width makes the row reader non-terminating, and a 24 MB input grew
+/// past 2.6 GB with no ceiling and no error.)
+///
+/// The fixture is 7.8 KB and declares 5M rows, so a run that returns promptly is itself the
+/// assertion: it cannot have read them.
+#[test]
+fn the_frame_budget_refuses_a_declared_timeline_before_reading_it() {
+    let started = std::time::Instant::now();
+    let err = default_registry()
+        .ingest(
+            &Source::Local(fixture("huge_timeline.h5")),
+            &IngestOptions {
+                max_frames: Some(10),
+                ..IngestOptions::default()
+            },
+        )
+        .expect_err("a budget of 10 frames cannot hold a declared 5,000,000-row timeline");
+    assert!(
+        matches!(err, IngestError::FrameBudgetExceeded { format_id, .. } if format_id == "hdf5"),
+        "got {err:?}"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "the refusal must come from the declared row count, not from reading the rows"
+    );
+}

@@ -31,10 +31,23 @@ Regenerating changes the row hashes pinned in the tests (the arrays are drawn fr
 | `dense_links.h5` | 40 links in one group, which moves them into fractal-heap (dense) storage |
 | `statistical_faults.h5` | A saturated dimension, a lone 250x spike, and NaNs — each in a non-first dimension, so an element-0-only recompute would miss them |
 | `bomb.h5` | 100 KB on disk declaring a 98 MB chunk — refused on what it declares, before anything is inflated |
+| `huge_timeline.h5` | 7.8 KB declaring a 5,000,000-row `time` array — the timeline read must be refused on the declared row count, before the rows are read |
 | `partial_fill.h5` | Chunked arrays that are only *partly* written, with non-zero, negative, and NaN fill values — the regions no chunk covers are defined by HDF5 to be the fill value, including rows covered by no chunk at all |
 
 
-`partial_fill.h5` is written by:
+`huge_timeline.h5` and `partial_fill.h5` are written by:
+
+```python
+import h5py
+
+with h5py.File("huge_timeline.h5", "w") as f:
+    g = f.create_group("data/demo_0")
+    t = g.create_dataset("time", shape=(5_000_000,), dtype="f8", chunks=(5_000_000,))
+    t.attrs["units"] = "s"
+    g.create_dataset("actions", shape=(4, 3), dtype="f4")
+```
+
+and
 
 ```python
 import h5py, numpy as np

@@ -639,10 +639,21 @@ fn collect_arrays(
 
 /// The timeline an episode records, when it records one with declared units: `(frame count, ns
 /// timestamps)`.
+/// Read the episode's timestamp array.
+///
+/// Takes the frame budget for the reason `build_stream` does, and charges it *before* allocating:
+/// this path used to be the one hole in that contract. A 20M-row float64 `time` array was read in
+/// full and only then compared against `max_frames: 10` — the correct refusal arrived after 59
+/// seconds and 160 MB. Worse on a hostile file: a datatype patched to zero width makes the row
+/// readers non-terminating (a zero-length read succeeds, a zero-width fixed-point decodes to 0.0,
+/// and the offset never advances), so a 24 MB input grew past 2.6 GB with no ceiling and no error a
+/// CI gate could report. The identical construction on a non-timeline array was refused instantly,
+/// because `build_stream` charges first.
 fn read_timeline(
     file: &mut H5File,
     arrays: &[ArrayEntry],
     notes: &mut Notes,
+    budget: &mut FrameBudget,
 ) -> Result<Option<(u64, Vec<i64>)>, IngestError> {
     let Some(entry) = arrays.iter().find(|a| {
         TIME_LEAVES.contains(&leaf_name(&a.path))
@@ -682,6 +693,8 @@ fn read_timeline(
         return Ok(None);
     };
     let count = entry.info.dims.first().copied().unwrap_or(0);
+    // Charged on what the file *declares*, before a single row is read or a byte reserved.
+    budget.take(FORMAT_ID, count)?;
     let datatype = entry.info.datatype.clone();
     let info = entry.info.clone();
     let mut stamps = Vec::with_capacity(count.min(1 << 20) as usize);
@@ -733,7 +746,7 @@ fn build_episode(
     // Sorted by path so the streams of an episode are built in a file-independent order.
     arrays.sort_by(|a, b| a.path.cmp(&b.path));
 
-    let timeline = read_timeline(file, &arrays, notes)?;
+    let timeline = read_timeline(file, &arrays, notes, budget)?;
 
     let header = file.object_header(group.addr)?;
     let attrs = read_attributes(file, &header, &mut notes.skipped_attrs);
