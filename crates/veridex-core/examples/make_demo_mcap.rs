@@ -42,6 +42,20 @@ fn main() {
     // subtree, so the LiDAR-camera reprojection is undefined.
     let miscalibrated = mode.as_deref() == Some("av-miscalibrated");
     let av = mode.as_deref() == Some("av") || miscalibrated;
+    // A typo used to fall through to the default skew dataset, silently producing a different
+    // fixture than the one asked for.
+    if let Some(other) = mode.as_deref() {
+        if !matches!(
+            other,
+            "clean" | "stuck" | "late-start" | "av" | "av-miscalibrated"
+        ) {
+            eprintln!(
+                "unknown variant `{other}` — known: clean, stuck, late-start, av, \
+                 av-miscalibrated (omit for the default clock-skew recording)"
+            );
+            std::process::exit(2);
+        }
+    }
 
     let mut buf = Vec::new();
     {

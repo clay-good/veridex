@@ -358,7 +358,10 @@ impl Check for EgoPoseContinuity {
         "autonomy.ego-pose-continuity"
     }
     fn finding_codes(&self) -> &'static [&'static str] {
-        &["AUTONOMY.EGO_POSE_CONTINUITY"]
+        &[
+            "AUTONOMY.EGO_POSE_CONTINUITY",
+            "AUTONOMY.EGO_POSE_NON_FINITE",
+        ]
     }
     fn title(&self) -> &'static str {
         "Ego-pose continuity"
@@ -388,6 +391,7 @@ impl Check for EgoPoseContinuity {
             let mut breaks = 0u64;
             let mut worst_speed = 0.0f64;
             let mut worst_ts = 0i64;
+            let mut non_finite = 0u64;
             for pair in poses.windows(2) {
                 let (a, b) = (&pair[0], &pair[1]);
                 let dt = b.ts.saturating_sub(a.ts) as f64 / NS_PER_S;
@@ -400,6 +404,16 @@ impl Check for EgoPoseContinuity {
                 let dz = b.pose.translation[2] - a.pose.translation[2];
                 let dist = (dx * dx + dy * dy + dz * dz).sqrt();
                 let speed = dist / dt;
+                // A non-finite coordinate makes `dist` NaN, and `NaN > max` is false — so the pair
+                // was neither flagged nor mentioned, and it poisons *both* pairs it touches. A
+                // trajectory reading (0, NaN, 10000) over two seconds hid a genuine 10 km/s teleport
+                // and certified clean. Counted and reported instead: this check cannot measure a
+                // trajectory it cannot subtract, and saying nothing is the one answer it must not
+                // give.
+                if !speed.is_finite() {
+                    non_finite += 1;
+                    continue;
+                }
                 if speed > self.max_speed_mps {
                     breaks += 1;
                     if speed > worst_speed {
@@ -407,6 +421,27 @@ impl Check for EgoPoseContinuity {
                         worst_ts = b.ts;
                     }
                 }
+            }
+            if non_finite > 0 {
+                findings.push(
+                    Finding::new(
+                        self.id(),
+                        Category::Autonomy,
+                        Severity::Error,
+                        Location::Episode { episode: ep.index },
+                        "AUTONOMY.EGO_POSE_NON_FINITE",
+                        format!(
+                            "episode {}: {non_finite} ego-trajectory step(s) have a non-finite                              position, so the distance travelled over them cannot be computed —                              the trajectory's continuity is unverifiable across those steps, not                              verified",
+                            ep.index
+                        ),
+                    )
+                    .with_risk(
+                        "A NaN or infinite pose breaks every geometric use of the trajectory, and                          it hides the discontinuities on either side of it: the comparison that                          would catch a teleport silently evaluates to false against a NaN.",
+                    )
+                    .with_remedy(
+                        "Find where the localization output went non-finite and drop or repair                          those poses before training on the segment.",
+                    ),
+                );
             }
             if breaks > 0 {
                 findings.push(

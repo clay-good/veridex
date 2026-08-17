@@ -129,6 +129,104 @@ struct McapRecords {
     declared_uncompressed_bytes: u64,
 }
 
+/// The MCAP opcode for a Chunk record.
+const OP_CHUNK: u8 = 0x06;
+
+/// Prove every chunk decompresses to no more than the size it declares, before the reader is handed
+/// the file.
+///
+/// The chunk *record header* declares an `uncompressed_size`, and the budget above charges the sum of
+/// those. That bounds an honest file. It does not bound a corrupt one: the compressed stream inside
+/// the chunk carries its own length claims, and the reader trusts those, not the header. One flipped
+/// byte inside a zstd frame of the 7,756-byte demo log — with the record header still declaring a
+/// truthful 17 KB — sent the reader into an allocation loop that had passed 700 MB after five
+/// minutes and was still going, under both ingest budgets and under a 2 GB address-space limit. The
+/// file never returns a verdict and never returns an error; the process just grows.
+///
+/// So each chunk is decompressed here first, into a buffer capped at one byte past what the chunk
+/// itself declared. Overrunning that cap, or failing to decompress at all, means the two disagree —
+/// which no valid file does — and the file is refused by name. This walks the record framing
+/// directly rather than through the reader, so the check cannot be skipped by a record the reader
+/// gives up on before reaching.
+fn validate_chunks(bytes: &[u8], format_id: &'static str) -> Result<(), IngestError> {
+    let refuse = |detail: String| IngestError::Parse {
+        format_id,
+        message: detail,
+    };
+    // Past the 8-byte magic, a record is `opcode: u8, data_len: u64le, data`.
+    let mut at = 8usize;
+    while at + 9 <= bytes.len() {
+        let opcode = bytes[at];
+        let len = u64::from_le_bytes(bytes[at + 1..at + 9].try_into().expect("9 bytes read"));
+        let Ok(len) = usize::try_from(len) else {
+            return Ok(()); // A length past `usize` is malformed framing; the reader will say so.
+        };
+        let Some(payload) = bytes.get(at + 9..at + 9 + len) else {
+            return Ok(()); // Truncated: the reader reports it, and stops before this chunk.
+        };
+        if opcode == OP_CHUNK {
+            validate_one_chunk(payload, &refuse)?;
+        }
+        at += 9 + len;
+    }
+    Ok(())
+}
+
+/// Decompress one Chunk record's payload into a buffer bounded by its own declared size.
+fn validate_one_chunk(
+    payload: &[u8],
+    refuse: &dyn Fn(String) -> IngestError,
+) -> Result<(), IngestError> {
+    // start(8) end(8) uncompressed_size(8) uncompressed_crc(4) compression(4 + n) records_len(8)
+    let Some(head) = payload.get(..32) else {
+        return Ok(()); // Too short to be a chunk header; the reader reports the malformed record.
+    };
+    let declared = u64::from_le_bytes(head[16..24].try_into().expect("8 bytes read"));
+    let name_len = u32::from_le_bytes(head[28..32].try_into().expect("4 bytes read")) as usize;
+    let Some(name) = payload.get(32..32 + name_len) else {
+        return Ok(());
+    };
+    let Some(records) = payload.get(32 + name_len + 8..) else {
+        return Ok(());
+    };
+    // One byte past the declaration: reading it means the stream produced more than the chunk said
+    // it holds, which is the disagreement being tested for.
+    let cap = declared.saturating_add(1);
+
+    let produced = match name {
+        b"" => return Ok(()), // Stored uncompressed; its length is bounded by the file itself.
+        b"zstd" => drain(
+            zstd::stream::Decoder::new(records)
+                .map_err(|e| refuse(format!("a chunk's zstd stream could not be opened: {e}")))?,
+            cap,
+        ),
+        b"lz4" => drain(lz4_flex::frame::FrameDecoder::new(records), cap),
+        other => {
+            // An unknown codec is not decompressed here, and is not silently accepted either: the
+            // reader will refuse it by name, which is the honest outcome.
+            let _ = other;
+            return Ok(());
+        }
+    };
+    match produced {
+        Ok(n) if n > declared => Err(refuse(format!(
+            "a chunk declares {declared} uncompressed bytes but its compressed stream produces \
+             more; the chunk is corrupt and decompressing it would not terminate at the declared \
+             size"
+        ))),
+        Ok(_) => Ok(()),
+        Err(e) => Err(refuse(format!(
+            "a chunk's compressed stream is corrupt and could not be decompressed: {e}"
+        ))),
+    }
+}
+
+/// Read at most `cap` bytes out of `reader`, returning how many arrived. The bound is the point: a
+/// corrupt stream is stopped by it rather than by exhausting memory.
+fn drain(reader: impl std::io::Read, cap: u64) -> std::io::Result<u64> {
+    std::io::copy(&mut std::io::Read::take(reader, cap), &mut std::io::sink())
+}
+
 /// Read the header, Metadata records, and Attachment summaries in a single linear pass. Absent or
 /// malformed records are skipped, never fabricated (the pass stops at the first read error).
 fn read_records(bytes: &[u8]) -> McapRecords {
@@ -237,6 +335,9 @@ impl Adapter for McapAdapter {
         // total, so an honest file is not charged twice for the same bytes.
         super::DecompressionBudget::new(options, bytes.len() as u64)
             .take("mcap", records.declared_uncompressed_bytes)?;
+        // The budget above trusts the chunk record headers. This proves the compressed streams
+        // inside them agree, before the reader is handed a chunk that would not stop unpacking.
+        validate_chunks(&bytes, "mcap")?;
         let mut arrived = super::DecompressionBudget::new(options, bytes.len() as u64);
 
         // Accumulate streams by topic (BTreeMap keeps a deterministic order before canonicalization).

@@ -1828,15 +1828,61 @@ fn docs_checks_md_lists_no_unknown_finding_codes() {
         }
     };
 
+    // The engine's own coverage disclosure. Not emitted by a registered check — coverage is a
+    // property of the ingest, which no check can read from the CDM — so it is documented without
+    // appearing in the catalog. Named explicitly here rather than pattern-matched away, so a typo in
+    // either the docs or the engine is still caught.
+    let engine_emitted: std::collections::BTreeSet<&str> =
+        ["COVERAGE.SAMPLE", "COVERAGE.METADATA_ONLY"].into();
+
     // Backtick-delimited spans are the odd-indexed pieces when splitting on '`'.
     for token in doc.split('`').skip(1).step_by(2) {
         if is_finding_code(token) {
             assert!(
-                registered.contains(token),
+                registered.contains(token) || engine_emitted.contains(token),
                 "docs/checks.md lists `{token}`, which no registered check emits"
             );
         }
     }
+}
+
+#[test]
+fn the_engines_coverage_codes_are_the_ones_it_actually_emits() {
+    // The pair above is hand-maintained, so it is pinned to the engine's real output: a renamed
+    // code would otherwise be waved through the catalog gate by a stale exemption.
+    let d = dataset(vec![episode(0, vec![stream("a", "c", None, &[0, 1])])]);
+    let hash = veridex_core::content_hash(&d);
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let config = veridex_core::RunConfig::default();
+
+    for (coverage, expected) in [
+        (
+            veridex_core::CoverageNote::Sample {
+                request: "first 1 episode(s) by index".into(),
+                episodes_ingested: 1,
+            },
+            "COVERAGE.SAMPLE",
+        ),
+        (
+            veridex_core::CoverageNote::MetadataOnly {
+                episodes_declared: 1,
+            },
+            "COVERAGE.METADATA_ONLY",
+        ),
+    ] {
+        let v = engine.run_over(&d, hash, &config, coverage);
+        assert!(
+            v.findings.iter().any(|f| f.code == expected),
+            "expected {expected}, got {:?}",
+            v.findings.iter().map(|f| &f.code).collect::<Vec<_>>()
+        );
+    }
+    // And a full run says nothing about coverage at all.
+    let full = engine.run(&d, hash, &config);
+    assert!(!full
+        .findings
+        .iter()
+        .any(|f| f.code.starts_with("COVERAGE.")));
 }
 
 #[test]
@@ -3121,4 +3167,126 @@ fn an_ordinary_index_gap_is_still_reported_exactly() {
         "{}",
         f[0].message
     );
+}
+
+#[test]
+fn an_impossible_statistic_is_still_impossible_at_a_large_magnitude() {
+    // The rounding slack scales with the magnitude of the values, which is right — and uncapped it
+    // grew until it swallowed the quantity it was guarding. At values around 1e9 (nanosecond stamps
+    // carried as a feature, GPS in millimetres, encoder counts) it was 1000 units, so a channel
+    // 100 wide got a tolerance ten times its own range and both impossibility rules went inert.
+    let d = dataset(vec![episode(
+        0,
+        vec![
+            // std 900 against a Popoviciu bound of 50 — eighteen times impossible.
+            stream_with_stats("std", stats(1e9, 1e9 + 100.0, 1e9 + 50.0, 900.0)),
+            // a mean sitting 800 units outside its own [min, max].
+            stream_with_stats("mean", stats(1e9, 1e9 + 100.0, 1e9 + 900.0, 10.0)),
+        ],
+    )]);
+    let found = statistical::RangeSanity.run(&d);
+    let codes: Vec<&str> = found.iter().map(|f| f.code.as_str()).collect();
+    assert!(
+        codes.contains(&"STATISTICAL.STD_IMPLAUSIBLE"),
+        "an 18x-impossible std must be caught at any scale: {codes:?}"
+    );
+    assert!(
+        codes.contains(&"STATISTICAL.MEAN_OUT_OF_RANGE"),
+        "a mean outside its own range must be caught at any scale: {codes:?}"
+    );
+}
+
+#[test]
+fn a_non_finite_rail_is_not_reported_as_saturation() {
+    // `NaN == NaN` is false, so a NaN-railed stream slipped past the "both rails are the same"
+    // guard and was reported as "90% of values sit exactly at its minimum (NaN)" — a saturation
+    // claim about a value that is not a value. Non-finites belong to the non-finite check.
+    let d = dataset(vec![episode(
+        0,
+        vec![stream_with_saturation(
+            "s",
+            1000,
+            900,
+            0,
+            f64::NAN,
+            f64::NAN,
+        )],
+    )]);
+    assert!(statistical::Saturation::default().run(&d).is_empty());
+}
+
+#[test]
+fn an_astronomical_z_score_is_not_printed_in_full() {
+    // A std of `f64::MIN_POSITIVE` clears the `std <= 0` guard and gives a z around 2.2e307, which
+    // `{z:.1}` expanded to 310 digits — into the message, the JSON, the SARIF, and the certificate.
+    let d = dataset(vec![episode(
+        0,
+        vec![stream_with_stats(
+            "s",
+            stats(0.0, 1.0, 0.5, f64::MIN_POSITIVE),
+        )],
+    )]);
+    let f = statistical::ExtremeOutlier::default().run(&d);
+    assert_eq!(f.len(), 1);
+    assert!(
+        f[0].message.len() < 200,
+        "message is {} chars: {}",
+        f[0].message.len(),
+        f[0].message
+    );
+    assert!(f[0].message.contains("e307"), "{}", f[0].message);
+}
+
+#[test]
+fn a_two_frame_stream_does_not_grant_a_ten_second_sync_allowance() {
+    // The span-comparison checks widen their tolerance by the sampling period, because a stream
+    // sampling every T cannot resolve the window better than T. With a single interval there is no
+    // cadence to take a median of: a stream whose only two frames sit at 0 s and 10 s reported a
+    // ten-second "period", and the allowance built from it (`tolerance + max(period)`) was wide
+    // enough that no drift of any size could be reported — while a sensor that fired twice and died
+    // is exactly what these checks exist to catch.
+    let mut lidar = stream("lidar", "rig", None, &[0, 10_000_000_000]);
+    lidar.modality = Modality::PointCloud;
+    let ticks: Vec<i64> = (0..1000).map(|i| i * 1_000_000).collect();
+    let mut imu = stream("imu", "rig", None, &ticks);
+    imu.modality = Modality::Imu;
+    let mut gnss = stream("gnss", "rig", None, &ticks);
+    gnss.modality = Modality::Gnss;
+    let d = dataset(vec![episode(0, vec![lidar, imu, gnss])]);
+
+    let f = autonomy::RigSync::default().run(&d);
+    assert_eq!(
+        f.len(),
+        1,
+        "a sensor spanning 10 s against sensors spanning 1 s is a nine-second drift: {f:?}"
+    );
+    assert_eq!(f[0].code, "AUTONOMY.RIG_SYNC");
+}
+
+#[test]
+fn a_non_finite_ego_pose_is_reported_rather_than_hiding_a_teleport() {
+    // `dist` is NaN if any coordinate is, and `NaN > max_speed` is false — so the step was neither
+    // flagged nor mentioned, and the NaN poisoned both pairs it touched. This trajectory hides a
+    // genuine 10 km/s jump in its third pose.
+    let mut d = dataset(vec![episode(0, vec![stream("a", "c", None, &[0, 1])])]);
+    d.episodes[0].ego_poses = Some(vec![
+        ego_pose(0, [0.0, 0.0, 0.0]),
+        ego_pose(1_000_000_000, [f64::NAN, 0.0, 0.0]),
+        ego_pose(2_000_000_000, [10_000.0, 0.0, 0.0]),
+    ]);
+    let f = autonomy::EgoPoseContinuity::default().run(&d);
+    assert!(
+        f.iter().any(|f| f.code == "AUTONOMY.EGO_POSE_NON_FINITE"),
+        "the unmeasurable steps must be named, not passed over: {f:?}"
+    );
+}
+
+fn ego_pose(ts: i64, translation: [f64; 3]) -> veridex_core::cdm::EgoPose {
+    veridex_core::cdm::EgoPose {
+        ts,
+        pose: veridex_core::cdm::Pose {
+            translation,
+            rotation: [0.0, 0.0, 0.0, 1.0],
+        },
+    }
 }

@@ -78,5 +78,10 @@ From Python:
 
 ```python
 cert = veridex.certify("my-rig.mcap", secret_key_hex, profile="world-model-ready")
-readiness = json.loads(veridex.verify(cert, "my-rig.mcap"))["readiness"]
+# `verify` requires a trusted issuer: a valid signature only proves a certificate is
+# self-consistent, and anyone can mint one. Pass the issuer's public key (from `veridex keygen`),
+# or `allow_any_issuer=True` to accept any signer and get `issuer_verified: false` back.
+readiness = json.loads(
+    veridex.verify(cert, "my-rig.mcap", public_key_hex=issuer_pub)
+)["readiness"]
 ```

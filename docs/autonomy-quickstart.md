@@ -95,6 +95,7 @@ certified av — grade C (70), bound to 87cbf54311e1f0c4
     ✓ autonomy.sequence-complete — no rig sensor dropping more than 5% of its frames
     ✓ autonomy.ego-pose-continuity — ego trajectory continuous (no step above 100 m/s implied speed)
     ✗ autonomy.calibration-completeness — connected transform (TF) tree and camera intrinsics present
+    ✓ autonomy.sensor-frame-resolution — every sensor's own frame resolves through the tree to a camera
 ```
 
 Anyone can read that back offline, with no network and no access to your data:

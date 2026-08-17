@@ -784,3 +784,34 @@ fn a_metadata_only_check_reports_its_coverage_and_cannot_be_certified() {
         "no certificate may be written for a metadata-only run"
     );
 }
+
+#[test]
+fn a_refusal_names_the_thing_that_was_wrong() {
+    // Each of these used to be reported as a problem with something the user got right.
+    let dataset = fixture_dataset();
+
+    // The file is a perfectly good MCAP; it is the flag value that is not a format.
+    let (code, _, stderr) = run(&["check", &dataset, "--format", "nope"]);
+    assert_eq!(code, 2);
+    assert!(
+        stderr.contains("unknown format `nope`"),
+        "must name the value, not blame the source: {stderr}"
+    );
+
+    // A remote source is refused because remote ingestion is not built — not because the URL is a
+    // mistyped path, which is what "no such file or directory: https://…" reads as.
+    let (code, _, stderr) = run(&["check", "https://huggingface.co/datasets/x"]);
+    assert_eq!(code, 2);
+    assert!(
+        stderr.contains("remote ingestion is not implemented"),
+        "unexpected stderr {stderr}"
+    );
+
+    // And an ordinary mistyped path still says so.
+    let (code, _, stderr) = run(&["check", "/tmp/veridex-no-such-dataset-9e3f"]);
+    assert_eq!(code, 2);
+    assert!(
+        stderr.contains("no such file or directory"),
+        "unexpected stderr {stderr}"
+    );
+}

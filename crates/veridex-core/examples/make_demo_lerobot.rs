@@ -97,7 +97,19 @@ fn main() {
         Some("video-desync") => Mode::VideoDesync,
         Some("video-missing") => Mode::VideoMissing,
         Some("video-reencoded") => Mode::VideoReencoded,
-        _ => Mode::NonMonotonic,
+        None => Mode::NonMonotonic,
+        // A typo used to fall through to the default dataset, so `late_start` or `videodesync`
+        // silently produced a *different* fixture than the one asked for — and a CI gate built on
+        // these examples would go green against data it never meant to check.
+        Some(other) => {
+            eprintln!(
+                "unknown variant `{other}` — known: clean, truncated, boundary, jitter, \
+                 short-episode, duplicate, saturated, spike, nan, multi-joint, video, \
+                 video-desync, video-missing, video-reencoded (omit for the default \
+                 non-monotonic dataset)"
+            );
+            std::process::exit(2);
+        }
     };
     let dir = Path::new(&dir);
 

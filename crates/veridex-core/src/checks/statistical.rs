@@ -78,6 +78,14 @@ impl Check for Saturation {
                 if sat.min == sat.max {
                     continue;
                 }
+                // A non-finite rail is not a rail. `NaN == NaN` is false, so a NaN-railed stream
+                // slipped past the check above and was reported as "90% of values sit exactly at
+                // its minimum (NaN)" — a saturation claim about a value that is not a value. The
+                // adapters hold non-finites out, but the CDM deserializes, so a JSON CDM reaches
+                // here. Non-finite values are `STATISTICAL.NON_FINITE_OBSERVED`'s to report.
+                if !sat.min.is_finite() || !sat.max.is_finite() {
+                    continue;
+                }
                 let n = sat.sample_count as f64;
                 let hi = sat.at_max as f64 / n;
                 let lo = sat.at_min as f64 / n;
@@ -429,7 +437,11 @@ impl RangeSanity {
                     at(),
                     "STATISTICAL.DEGENERATE",
                     format!(
-                        "stream `{}` in episode {} is constant (min == max, std == 0)",
+                        // Says `min == max`, which is exactly what was tested, rather than
+                        // `std == 0`, which is not: the std only has to be within the rounding
+                        // slack, and at magnitude 1e6 that slack is 1.0 — so this line asserted a
+                        // std of zero over a stored std of 0.9, in a signed certificate.
+                        "stream `{}` in episode {} is constant (min == max)",
                         stream.name, episode
                     ),
                 )
@@ -451,7 +463,22 @@ impl RangeSanity {
 /// naive `E[x²] − E[x]²` any exporter might use loses about 3e-4 to cancellation at that magnitude —
 /// so a range-scaled tolerance calls honest float noise mathematically impossible.
 fn rounding_tolerance(stats: &StreamStats) -> f64 {
-    1e-9 + stats.min.abs().max(stats.max.abs()) * 1e-6
+    let magnitude = 1e-9 + stats.min.abs().max(stats.max.abs()) * 1e-6;
+    // Scaled to the magnitude, but capped relative to the range it is slack *within*. Uncapped, the
+    // magnitude term swallowed the quantity it was guarding: at values around 1e9 — nanosecond
+    // stamps carried as a feature, GPS in millimetres, encoder counts — it is 1000 units, so a
+    // channel with `min = 1e9, max = 1e9 + 100` got a tolerance ten times its own range, and a
+    // standard deviation eighteen times past the Popoviciu bound and a mean sitting 800 units
+    // outside its own `[min, max]` both passed in silence. Four times the range is a deliberately
+    // loose ceiling: it still admits every case the magnitude scaling exists for (the 0.0002-wide
+    // channel at 300.0 above keeps its full 3e-4) and only binds where the magnitude term had grown
+    // large enough to disable the check outright.
+    let range = (stats.max - stats.min).abs();
+    if range.is_finite() && range > 0.0 {
+        magnitude.min(range * 4.0)
+    } else {
+        magnitude
+    }
 }
 
 /// A constant stream: every value the same. The std is *reported* as zero-ish rather than exactly
@@ -705,6 +732,15 @@ impl Check for ExtremeOutlier {
                     String::new()
                 };
                 let tail_pct = 100.0 / (z * z);
+                // Rendered in scientific notation past four digits. A stream whose std is
+                // `f64::MIN_POSITIVE` — which clears the `std <= 0.0` guard — gives a z around
+                // 2.2e307, and `{z:.1}` expands that to 310 digits of decimal, all of which end up
+                // in the message, the JSON, the SARIF, and the certificate.
+                let z_text = if z >= 10_000.0 {
+                    format!("{z:.1e}")
+                } else {
+                    format!("{z:.1}")
+                };
                 findings.push(
                     Finding::new(
                         self.id(),
@@ -716,7 +752,7 @@ impl Check for ExtremeOutlier {
                         },
                         "STATISTICAL.OUTLIER",
                         format!(
-                            "stream `{}`{where_}: its {end} ({value}) is {z:.1}σ from the mean — \
+                            "stream `{}`{where_}: its {end} ({value}) is {z_text}σ from the mean — \
                              an extreme outlier (at most {tail_pct:.2}% of samples can lie this far out)",
                             stream.name
                         ),

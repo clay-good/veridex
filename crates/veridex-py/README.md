@@ -39,13 +39,19 @@ print(delta["introduced"], delta["score_delta"])
 
 # Issue and verify a signed, content-bound trust certificate (same as `veridex certify`/`verify`).
 cert = veridex.certify("my-dataset.mcap", secret_key_hex)   # from `veridex keygen`
-result = json.loads(veridex.verify(cert, "my-dataset.mcap"))  # raises ValueError if tampered
+# `verify` requires a trusted issuer — pass the issuer public key, or `allow_any_issuer=True`.
+issuer_pub = open("issuer.pub").read().strip()
+result = json.loads(  # raises ValueError if tampered
+    veridex.verify(cert, "my-dataset.mcap", public_key_hex=issuer_pub)
+)
 print(result["verified"], result["key_id"], result["trust_score"]["score"])
 
 # Certify against a readiness profile: the certificate gains a signed per-criterion `readiness`
 # block, which `verify` reports back (same as `veridex certify --profile`).
 cert = veridex.certify("my-rig.mcap", secret_key_hex, profile="world-model-ready")
-readiness = json.loads(veridex.verify(cert, "my-rig.mcap"))["readiness"]
+readiness = json.loads(
+    veridex.verify(cert, "my-rig.mcap", public_key_hex=issuer_pub)
+)["readiness"]
 print(readiness["ready"], [c["check_id"] for c in readiness["criteria"]])
 
 # The veridex-core version behind these bindings.

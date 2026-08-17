@@ -6,8 +6,9 @@ the finding codes it can emit (add `--json` for a machine-readable catalog) — 
 **risk** and a **remedy**; this page is the quick reference for the codes you'll see.
 
 Checks are selected, disabled, or re-severitied via [`veridex.toml`](veridex.toml.example).
-Severities below are the defaults. A threshold marked *configurable* has a `veridex.toml` key; the
-others are fixed defaults today (config-wiring them is a follow-up).
+Severities below are the defaults. Every numeric threshold named in this catalog has a
+[`veridex.toml`](veridex.toml.example) key — the *configurable* marker on some rows is redundant, not
+exclusive.
 
 ## Structural — is the dataset shaped like trainable data?
 
@@ -30,8 +31,9 @@ others are fixed defaults today (config-wiring them is a follow-up).
 
 Every check in this family except `temporal.rate-validity` and `temporal.rate-consistency` (which
 grade a *declared* rate, not a timeline) reads only streams whose timestamps are **measured time**.
-A source that records no clock — RLDS/TFDS has no per-step timestamp, and neither HDF5 nor Zarr has
-any notion of time — carries a step index instead,
+A source that records no clock carries a step index instead: RLDS/TFDS has no per-step timestamp at
+all, and HDF5 and Zarr have one only when the file both stores a timestamp array and declares that
+array's units (see "What is *not* covered" below). An index
 and an index satisfies all of them trivially: flawlessly monotonic, perfectly regular, identical
 across every stream of an episode. Grading it would put a clean temporal result in a report and a
 signed certificate on the strength of a timeline nobody measured, so those streams are skipped and
@@ -133,6 +135,7 @@ make an episode a rig.
 |---|---|---|---|
 | `autonomy.rig-sync` | `AUTONOMY.RIG_SYNC` | error | The rig's sensors span materially different durations over an episode — the widest sensor span minus the tightest exceeds the tolerance (default 50 ms, shares `clock_skew_ms`), widened by the slower sensor's own sampling period — a rig is multi-rate by construction, and each span quantizes to its sensor's period, so a synchronized 10 Hz LiDAR and 100 Hz IMU differ by up to 100 ms with no drift. The N-sensor generalization of `TEMPORAL.CLOCK_SKEW`: one finding names the tightest- and widest-spanning sensors and the drift, and on a rig it *replaces* the pairwise clock-skew report to avoid O(n²) findings for one drifting sensor. |
 | `autonomy.sequence-complete` | `AUTONOMY.SEQUENCE_COMPLETE` | warning | A rig sensor dropped an aggregate fraction of its frames (> 5%, configurable via `sequence_drop_fraction`): its inter-frame gaps sitting at *multiples* of its own median cadence account for the frames those gaps swallowed. Counting multiples rather than dividing the span by the cadence is what keeps an idling event-driven signal from being called incomplete. Catches many small drops that `TEMPORAL.GAP` (single large gap) and `TEMPORAL.RATE` (needs a declared rate MCAP lacks) miss. Robust median baseline; skips streams with too few frames for a stable estimate, and abstains on an event-driven signal whose intervals are far from uniform (no cadence to fall short of — that shape is `TEMPORAL.JITTER`'s). |
+| `autonomy.ego-pose-continuity` | `AUTONOMY.EGO_POSE_NON_FINITE` | error | An ego-trajectory step has a non-finite (NaN or infinite) position, so the distance travelled over it cannot be computed. Reported rather than skipped because the skip was worse than silent: `NaN > max_speed` is *false*, so the step was not flagged — and the NaN poisons both pairs it touches, so a trajectory of `(0, NaN, 10000)` over two seconds hid a genuine 10 km/s teleport and certified clean. The continuity of those steps is unverifiable, not verified. |
 | `autonomy.ego-pose-continuity` | `AUTONOMY.EGO_POSE_CONTINUITY` | error | The ego trajectory (`Episode.ego_poses`, decoded from Odometry) has a step whose implied speed (distance / elapsed time) exceeds the plausible maximum (100 m/s ≈ 360 km/h, configurable via `ego_max_speed_mps`) — a GPS glitch, localization reset, or stitched log that teleports the ego frame, so every later observation registers against a wrong pose. Reports the worst jump and how many occurred. |
 | `autonomy.calibration-completeness` | `AUTONOMY.CALIBRATION_INCOMPLETE` | warning | A rig with spatial sensors (point-cloud or camera) is missing the calibration needed to fuse them: no transform (TF) tree at all, a TF tree split into disconnected components (sensors that can't be related), or cameras with no intrinsics (CameraInfo). The principle-respecting form of the LiDAR-camera reprojection check — Veridex never decodes the bulk point/pixel payload, so it verifies the calibration is *present and coherent* rather than reprojecting actual points. The disconnected-tree case is left to `autonomy.sensor-frame-resolution` only when that check can actually name the stranded sensors — every spatial sensor declares a frame and a camera names one the tree knows. Otherwise this reports it, so a broken tree is never silent. |
 | `autonomy.sensor-frame-resolution` | `AUTONOMY.SENSOR_FRAME_UNDECLARED` | warning | A spatial sensor on a rig that **does** carry a transform tree declares no coordinate frame at all, so it cannot be located in that tree — what an unconfigured ROS driver publishing an empty `header.frame_id` produces. A warning rather than an error because the recording may be fine for non-geometric use; what is certain is that the sensor's calibration is *unverifiable*, and passing over it silently made this check find nothing, which made the `world-model-ready` criterion it backs read as satisfied. Reported once per stream. Silent when the rig has no transform tree at all — that single defect belongs to `autonomy.calibration-completeness`, which is why an MF4 or CAN rig (no frames, no tree) is not flagged per sensor. |

@@ -350,6 +350,15 @@ pub enum IngestError {
     #[error("no such file or directory: {0}")]
     SourceNotFound(PathBuf),
 
+    /// An explicit `--format` named a format no registered adapter provides.
+    #[error("unknown format `{requested}` (supported: {})", .supported.join(", "))]
+    UnknownFormat {
+        /// The format id the caller asked for.
+        requested: String,
+        /// The format ids the registry does support.
+        supported: Vec<&'static str>,
+    },
+
     /// No registered adapter recognized the source.
     #[error("unsupported format: no adapter recognized the source (supported: {})", .supported.join(", "))]
     UnsupportedFormat {
@@ -586,7 +595,11 @@ impl AdapterRegistry {
                 check_adapter_supports_options(adapter.as_ref(), options)?;
                 adapter.ingest(source, options)
             }
-            None => Err(IngestError::UnsupportedFormat {
+            // Names the value that was wrong. `UnsupportedFormat` says "no adapter recognized the
+            // source", which is a statement about the file — and the file is usually fine; it is
+            // `--format nope` that is not.
+            None => Err(IngestError::UnknownFormat {
+                requested: format.to_string(),
                 supported: self.supported_formats(),
             }),
         }
@@ -618,10 +631,28 @@ fn check_adapter_supports_options(
 fn check_source_exists(source: &Source) -> Result<(), IngestError> {
     if let Source::Local(path) = source {
         if !path.exists() {
+            // A URL reaching this function is a *remote* source the front-end wrapped as a local
+            // path, and "no such file or directory: https://…" reads as a typo in the URL rather
+            // than as the feature not existing. Both front-ends build `Source::Local` from whatever
+            // string they were handed, so the distinction is drawn here.
+            if let Some(text) = path.to_str() {
+                if looks_remote(text) {
+                    return Err(IngestError::NotImplemented {
+                        what: "remote ingestion",
+                        hint: "fetch the dataset locally and check the path",
+                    });
+                }
+            }
             return Err(IngestError::SourceNotFound(path.clone()));
         }
     }
     Ok(())
+}
+
+/// Whether a source string names somewhere other than this filesystem.
+fn looks_remote(text: &str) -> bool {
+    const REMOTE_SCHEMES: &[&str] = &["http://", "https://", "s3://", "gs://", "hf://"];
+    REMOTE_SCHEMES.iter().any(|s| text.starts_with(s))
 }
 
 /// A registry preloaded with the standard adapters: LeRobot v3, MCAP, CAN+DBC, ASAM MF4, RLDS/TFDS,

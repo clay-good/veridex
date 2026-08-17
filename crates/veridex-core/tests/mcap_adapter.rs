@@ -5,7 +5,9 @@ use std::fs;
 use std::io::Cursor;
 
 use veridex_core::adapter::mcap::McapAdapter;
-use veridex_core::adapter::{Adapter, Coverage, Detection, IngestOptions, Source};
+use veridex_core::adapter::{
+    default_registry, Adapter, Coverage, Detection, IngestError, IngestOptions, Source,
+};
 use veridex_core::cdm::Modality;
 use veridex_core::check::Check;
 use veridex_core::checks::autonomy::{RigSync, SequenceComplete};
@@ -1292,4 +1294,61 @@ fn an_absurdly_long_frame_name_is_declined_rather_than_retained() {
         retained, 0,
         "a megabyte-long frame name is not a frame name; it must be declined, not retained"
     );
+}
+
+#[test]
+fn a_corrupt_chunk_stream_is_refused_rather_than_unpacked_forever() {
+    // The chunk *record header* declares an uncompressed size, and the decompression budget charges
+    // the sum of those — which bounds an honest file and not a corrupt one, because the compressed
+    // stream inside the chunk carries its own length claims and the reader trusts those. One flipped
+    // byte inside the zstd frame of the 7,756-byte demo log, with the record header still declaring
+    // a truthful 17 KB, sent the reader into an allocation loop that had passed 700 MB after five
+    // minutes and was still going — under both ingest budgets and under a 2 GB address-space limit.
+    // Not a slow check and not an error: a process that grows until it is killed.
+    let dir = tempfile::tempdir().unwrap();
+    let good = dir.path().join("good.mcap");
+    let status = std::process::Command::new(env!("CARGO"))
+        .args([
+            "run",
+            "--quiet",
+            "-p",
+            "veridex-core",
+            "--example",
+            "make_demo_mcap",
+            "--",
+        ])
+        .arg(&good)
+        .arg("av")
+        .status()
+        .expect("run the demo generator");
+    assert!(status.success());
+
+    let bytes = std::fs::read(&good).unwrap();
+    // The clean file still ingests, so the new pre-pass is not refusing valid chunks.
+    default_registry()
+        .ingest(&Source::Local(good.clone()), &IngestOptions::default())
+        .expect("a well-formed chunked MCAP still ingests");
+
+    // Byte 2044 sits inside the chunk's compressed payload, past the region the chunk CRC covers in
+    // a way the reader notices. Every byte here is decompressed under a bound or refused.
+    let mut patched = bytes.clone();
+    patched[2044] = 0x76;
+    let bad = dir.path().join("bad.mcap");
+    std::fs::write(&bad, &patched).unwrap();
+
+    let started = std::time::Instant::now();
+    let err = default_registry()
+        .ingest(&Source::Local(bad), &IngestOptions::default())
+        .expect_err("a chunk whose stream outruns its own declaration must be refused");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(30),
+        "the refusal must be prompt, not the result of exhausting memory"
+    );
+    match err {
+        IngestError::Parse { message, .. } => assert!(
+            message.contains("chunk") && (message.contains("corrupt") || message.contains("more")),
+            "got {message}"
+        ),
+        other => panic!("expected a named parse error, got {other:?}"),
+    }
 }

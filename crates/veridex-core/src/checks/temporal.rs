@@ -59,7 +59,14 @@ pub(crate) fn sampling_period_ns(stream: &Stream) -> i64 {
         .map(|w| w[1].ts.saturating_sub(w[0].ts))
         .filter(|d| *d > 0)
         .collect();
-    if intervals.is_empty() {
+    // A single interval is not a cadence, and treating it as one turns this widening against the
+    // checks it exists to protect. The allowance is `tolerance + max(period)`, so a stream whose
+    // only two frames sit at 0 s and 10 s reports a 10-second "period" — and a rig where that
+    // sensor died after two frames while every other stream covered one second gets a ten-second
+    // allowance, under which no drift of any size can be reported. One interval is equally
+    // consistent with a 0.1 Hz sensor and a sensor that fired twice and stopped; the second is
+    // exactly what these checks exist to catch, so the cadence is not guessed from it.
+    if intervals.len() < 2 {
         return 0;
     }
     intervals.sort_unstable();
@@ -748,13 +755,14 @@ impl Check for StartOffset {
         for ep in &dataset.episodes {
             // Group each stream's start (min ts) by clock_id; BTreeMap keeps clocks in a stable
             // order so findings are deterministic.
-            let mut by_clock: BTreeMap<&str, Vec<(&str, i64)>> = BTreeMap::new();
+            let mut by_clock: BTreeMap<&str, Vec<(&str, i64, i64)>> = BTreeMap::new();
             for s in measured_streams(ep) {
                 if let Some((lo, _hi)) = span_bounds(s) {
-                    by_clock
-                        .entry(s.clock_id.as_str())
-                        .or_default()
-                        .push((s.name.as_str(), lo));
+                    by_clock.entry(s.clock_id.as_str()).or_default().push((
+                        s.name.as_str(),
+                        lo,
+                        sampling_period_ns(s),
+                    ));
                 }
             }
             for (clock, mut starts) in by_clock {
@@ -762,11 +770,20 @@ impl Check for StartOffset {
                     continue;
                 }
                 // Earliest and latest starting streams on this clock.
-                starts.sort_by_key(|(_, start)| *start);
-                let (early_name, early_start) = starts[0];
-                let (late_name, late_start) = starts[starts.len() - 1];
+                starts.sort_by_key(|(_, start, _)| *start);
+                let (early_name, early_start, early_period) = starts[0];
+                let (late_name, late_start, late_period) = starts[starts.len() - 1];
                 let offset = late_start.saturating_sub(early_start);
-                if offset > self.tolerance_ns {
+                // The same sampling quantum `ClockSkew` allows for, and for the same reason: a
+                // sensor sampling every `T` cannot place its first sample nearer the true start of
+                // the recording than `T`, so two perfectly synchronized streams differ in start by
+                // up to the slower one's period with no offset at all. Every adapter that puts its
+                // streams on one shared clock — MCAP, LeRobot, CAN+DBC — reported this on any rig
+                // carrying a sensor slower than 20 Hz, unconditionally, on honest data.
+                let allowance = self
+                    .tolerance_ns
+                    .saturating_add(early_period.max(late_period));
+                if offset > allowance {
                     findings.push(
                         Finding::new(
                             self.id(),
@@ -847,13 +864,14 @@ impl Check for EndOffset {
         for ep in &dataset.episodes {
             // Group each stream's end (max ts) by clock_id; BTreeMap keeps clocks in a stable
             // order so findings are deterministic.
-            let mut by_clock: BTreeMap<&str, Vec<(&str, i64)>> = BTreeMap::new();
+            let mut by_clock: BTreeMap<&str, Vec<(&str, i64, i64)>> = BTreeMap::new();
             for s in measured_streams(ep) {
                 if let Some((_lo, hi)) = span_bounds(s) {
-                    by_clock
-                        .entry(s.clock_id.as_str())
-                        .or_default()
-                        .push((s.name.as_str(), hi));
+                    by_clock.entry(s.clock_id.as_str()).or_default().push((
+                        s.name.as_str(),
+                        hi,
+                        sampling_period_ns(s),
+                    ));
                 }
             }
             for (clock, mut ends) in by_clock {
@@ -861,11 +879,16 @@ impl Check for EndOffset {
                     continue;
                 }
                 // Earliest- and latest-ending streams on this clock.
-                ends.sort_by_key(|(_, end)| *end);
-                let (early_name, early_end) = ends[0];
-                let (late_name, late_end) = ends[ends.len() - 1];
+                ends.sort_by_key(|(_, end, _)| *end);
+                let (early_name, early_end, early_period) = ends[0];
+                let (late_name, late_end, late_period) = ends[ends.len() - 1];
                 let offset = late_end.saturating_sub(early_end);
-                if offset > self.tolerance_ns {
+                // Widened by the sampling quantum, exactly as the start-offset and clock-skew checks
+                // are: a stream's last sample lands up to its own period before the true end.
+                let allowance = self
+                    .tolerance_ns
+                    .saturating_add(early_period.max(late_period));
+                if offset > allowance {
                     findings.push(
                         Finding::new(
                             self.id(),

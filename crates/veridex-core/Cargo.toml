@@ -20,7 +20,7 @@ arrow = "59"
 toml = "0.8"
 flate2 = "1"
 zstd = "0.13"
-lz4_flex = { version = "0.14", default-features = false, features = ["std"] }
+lz4_flex = { version = "0.14", default-features = false, features = ["std", "frame"] }
 
 [dev-dependencies]
 proptest = "1"
