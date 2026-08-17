@@ -1832,8 +1832,14 @@ fn docs_checks_md_lists_no_unknown_finding_codes() {
     // property of the ingest, which no check can read from the CDM — so it is documented without
     // appearing in the catalog. Named explicitly here rather than pattern-matched away, so a typo in
     // either the docs or the engine is still caught.
-    let engine_emitted: std::collections::BTreeSet<&str> =
-        ["COVERAGE.SAMPLE", "COVERAGE.METADATA_ONLY"].into();
+    let engine_emitted: std::collections::BTreeSet<&str> = [
+        "COVERAGE.SAMPLE",
+        "COVERAGE.METADATA_ONLY",
+        // The scope disclosure, emitted by the engine for the same reason: whether the catalog was
+        // narrowed is a property of the run's configuration, which no check can read from the CDM.
+        "SCOPE.NARROWED",
+    ]
+    .into();
 
     // Backtick-delimited spans are the odd-indexed pieces when splitting on '`'.
     for token in doc.split('`').skip(1).step_by(2) {
