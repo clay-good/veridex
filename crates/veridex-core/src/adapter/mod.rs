@@ -262,6 +262,15 @@ impl DecompressionBudget {
         }
     }
 
+    /// Bytes still allowed, or `None` when this budget is unlimited.
+    ///
+    /// For callers that must bound a *read* as well as charge for it: charging says the expansion
+    /// was too large after the fact, and a decompressor pointed at a corrupt stream has already
+    /// spent the time and memory by then.
+    pub fn remaining(&self) -> Option<u64> {
+        self.limit.map(|limit| limit.saturating_sub(self.used))
+    }
+
     /// Charge `n` decompressed bytes, or fail with a clear error naming the budget.
     pub fn take(&mut self, format_id: &'static str, n: u64) -> Result<(), IngestError> {
         self.used = self.used.saturating_add(n);

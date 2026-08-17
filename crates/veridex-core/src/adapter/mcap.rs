@@ -148,7 +148,21 @@ const OP_CHUNK: u8 = 0x06;
 /// which no valid file does — and the file is refused by name. This walks the record framing
 /// directly rather than through the reader, so the check cannot be skipped by a record the reader
 /// gives up on before reaching.
-fn validate_chunks(bytes: &[u8], format_id: &'static str) -> Result<(), IngestError> {
+///
+/// The budget is charged **here**, per chunk, rather than from the sum `read_records` collects.
+/// That sum came from a reader whose loop stops at the first record it cannot parse, so every chunk
+/// after a malformed one was charged nothing at all while this walk — which reaches them, by
+/// design — went on to drain each up to its own self-declared size. One flipped magic byte in the
+/// demo log took the charge to zero and let the chunks behind it decompress 16 GB over two seconds
+/// before the file was refused; the expansion is linear in a number the attacker writes, so a
+/// 500 MB file buys roughly half an hour of CPU. Charging on this walk closes the gap, and the cap
+/// on each drain is the smaller of what the chunk declared and what the budget has left, so a
+/// corrupt stream is stopped by the bound rather than merely billed for it afterwards.
+fn validate_chunks(
+    bytes: &[u8],
+    format_id: &'static str,
+    budget: &mut super::DecompressionBudget,
+) -> Result<(), IngestError> {
     let refuse = |detail: String| IngestError::Parse {
         format_id,
         message: detail,
@@ -181,7 +195,7 @@ fn validate_chunks(bytes: &[u8], format_id: &'static str) -> Result<(), IngestEr
             return Ok(()); // Truncated: the reader reports it, and stops before this chunk.
         };
         if opcode == OP_CHUNK {
-            validate_one_chunk(payload, &refuse)?;
+            validate_one_chunk(payload, &refuse, format_id, budget)?;
         }
         at = end;
     }
@@ -192,6 +206,8 @@ fn validate_chunks(bytes: &[u8], format_id: &'static str) -> Result<(), IngestEr
 fn validate_one_chunk(
     payload: &[u8],
     refuse: &dyn Fn(String) -> IngestError,
+    format_id: &'static str,
+    budget: &mut super::DecompressionBudget,
 ) -> Result<(), IngestError> {
     // start(8) end(8) uncompressed_size(8) uncompressed_crc(4) compression(4 + n) records_len(8)
     let Some(head) = payload.get(..32) else {
@@ -205,9 +221,19 @@ fn validate_one_chunk(
     let Some(records) = payload.get(32 + name_len + 8..) else {
         return Ok(());
     };
+    // Charged before a byte is decompressed, and charged for every chunk this walk reaches — the
+    // reader's own sum stops at the first record it cannot parse, so chunks behind a malformed one
+    // used to cost nothing.
+    budget.take(format_id, declared)?;
+
     // One byte past the declaration: reading it means the stream produced more than the chunk said
-    // it holds, which is the disagreement being tested for.
-    let cap = declared.saturating_add(1);
+    // it holds, which is the disagreement being tested for. Bounded by what the budget has left as
+    // well, so a corrupt stream is stopped by the cap instead of running to a number the file chose.
+    let cap = declared.saturating_add(1).min(
+        budget
+            .remaining()
+            .map_or(u64::MAX, |left| left.saturating_add(1)),
+    );
 
     let produced = match name {
         b"" => return Ok(()), // Stored uncompressed; its length is bounded by the file itself.
@@ -349,11 +375,12 @@ impl Adapter for McapAdapter {
         // understates its expansion is caught too.
         // The two are charged against separate budgets of the same size rather than one shared
         // total, so an honest file is not charged twice for the same bytes.
-        super::DecompressionBudget::new(options, bytes.len() as u64)
-            .take("mcap", records.declared_uncompressed_bytes)?;
-        // The budget above trusts the chunk record headers. This proves the compressed streams
-        // inside them agree, before the reader is handed a chunk that would not stop unpacking.
-        validate_chunks(&bytes, "mcap")?;
+        //
+        // The declared charge is taken inside `validate_chunks`, per chunk, because that walk reads
+        // the record framing directly and so reaches every chunk — including the ones behind a
+        // record `read_records` gave up on, which is exactly where a hostile file puts them.
+        let mut declared = super::DecompressionBudget::new(options, bytes.len() as u64);
+        validate_chunks(&bytes, "mcap", &mut declared)?;
         let mut arrived = super::DecompressionBudget::new(options, bytes.len() as u64);
 
         // Accumulate streams by topic (BTreeMap keeps a deterministic order before canonicalization).

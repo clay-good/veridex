@@ -1353,6 +1353,89 @@ fn a_corrupt_chunk_stream_is_refused_rather_than_unpacked_forever() {
     }
 }
 
+/// The declared-bytes charge must reach chunks the *reader* never got to.
+///
+/// The charge was the sum `read_records` collected, and that reader's loop stops at the first
+/// record it cannot parse. So a file with one malformed record early on charged the budget nothing
+/// for everything behind it, while `validate_chunks` — which walks the record framing directly and
+/// so does reach those chunks — went on to drain each up to its own self-declared size, unbilled.
+/// Measured at 16 GB over two seconds from a single flipped byte; the expansion is linear in a
+/// number the file chooses, so a 500 MB input buys roughly half an hour of CPU.
+#[test]
+fn a_chunk_behind_a_malformed_record_is_still_charged_to_the_budget() {
+    let dir = tempfile::tempdir().unwrap();
+    let good = dir.path().join("good.mcap");
+    let status = std::process::Command::new(env!("CARGO"))
+        .args([
+            "run",
+            "--quiet",
+            "-p",
+            "veridex-core",
+            "--example",
+            "make_demo_mcap",
+            "--",
+        ])
+        .arg(&good)
+        .arg("av")
+        .status()
+        .expect("run the demo generator");
+    assert!(status.success());
+
+    // Overstate the first chunk's uncompressed size so it exceeds the budget's 64 MB floor, which
+    // otherwise swallows anything a 7.7 KB demo log can declare. Record framing past the 8-byte
+    // magic is `opcode: u8, len: u64le, payload`; a Chunk's payload holds its uncompressed size at
+    // byte 16.
+    let mut bytes = std::fs::read(&good).unwrap();
+    let mut at = 8usize;
+    let mut patched_chunk = false;
+    while at + 9 <= bytes.len() {
+        let len = u64::from_le_bytes(bytes[at + 1..at + 9].try_into().unwrap()) as usize;
+        if bytes[at] == 0x06 {
+            let size_at = at + 9 + 16;
+            bytes[size_at..size_at + 8].copy_from_slice(&(1u64 << 40).to_le_bytes());
+            patched_chunk = true;
+            break;
+        }
+        at += 9 + len;
+    }
+    assert!(
+        patched_chunk,
+        "the demo log is chunked; this test needs that"
+    );
+
+    // With the framing intact the reader reaches the chunk, so this was always refused.
+    let overstated = dir.path().join("overstated.mcap");
+    std::fs::write(&overstated, &bytes).unwrap();
+    let err = default_registry()
+        .ingest(&Source::Local(overstated), &IngestOptions::default())
+        .expect_err("a chunk declaring a terabyte is over the budget");
+    assert!(
+        matches!(err, IngestError::DecompressionBudgetExceeded { format_id, .. } if format_id == "mcap"),
+        "got {err:?}"
+    );
+
+    // Now break the file magic. `LinearReader::new` refuses the file outright, so `read_records`
+    // returns its default and the declared sum it collected is zero — while `validate_chunks`,
+    // which starts at byte 8 and walks the framing itself, still reaches that chunk. (An unknown
+    // *opcode* would not do: the MCAP spec says skip unknown records, and the reader does.)
+    bytes[3] = 0xFE;
+    let hidden = dir.path().join("hidden.mcap");
+    std::fs::write(&hidden, &bytes).unwrap();
+
+    let started = std::time::Instant::now();
+    let err = default_registry()
+        .ingest(&Source::Local(hidden), &IngestOptions::default())
+        .expect_err("a malformed leading record must not buy the chunks behind it a free pass");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(30),
+        "the refusal must come from the bound, not from decompressing to the file's own number"
+    );
+    assert!(
+        matches!(err, IngestError::DecompressionBudgetExceeded { .. }),
+        "the chunk behind the malformed record must still be charged, got {err:?}"
+    );
+}
+
 /// A record declaring `u64::MAX` bytes. `usize::try_from` succeeds on a 64-bit target, so the walk's
 /// `at + 9 + len` overflowed and aborted the process in any debug or CI build. In release it wrapped
 /// to a reversed range and was rejected exactly like a truncated record, so the fix changes only
