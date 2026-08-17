@@ -30,9 +30,9 @@ Veridex Trust Report
 
 ## Why it's useful
 
-- **One command, any format.** LeRobot v3, MCAP, CAN+DBC, and ASAM MDF/MF4 all map into one
-  Canonical Dataset Model, so you check them the same way — no per-format tooling. RLDS/TFDS and
-  HDF5/Zarr are on the roadmap.
+- **One command, any format.** LeRobot v3, RLDS/TFDS (what Open X-Embodiment ships in), MCAP,
+  CAN+DBC, and ASAM MDF/MF4 all map into one Canonical Dataset Model, so you check them the same
+  way — no per-format tooling. HDF5/Zarr is on the roadmap.
 - **Catches the failures that quietly ruin training.** Clock skew across sensors, broken episode
   boundaries, timeline gaps, duplicate frames, a video whose frame count no longer matches the
   actions it is paired with — each reported with the *training risk* it creates and a *remedy*.
@@ -55,7 +55,7 @@ also captures **provenance**.
 
 ```mermaid
 flowchart LR
-    A[Your dataset<br/>LeRobot · MCAP · CAN+DBC · MF4] --> B[Adapter]
+    A[Your dataset<br/>LeRobot · RLDS/TFDS · MCAP · CAN+DBC · MF4] --> B[Adapter]
     B --> C[Canonical Dataset Model<br/>one neutral shape]
     C --> D[Validation engine<br/>structural · temporal · provenance checks]
     D --> E[Trust score<br/>0–100 · A–F grade]
@@ -167,8 +167,8 @@ veridex check my-dataset/ --sample-fraction 0.1 --sample-seed 7   # a determinis
 
 The draw is resolved from the dataset's declared episode set *before* any data is read, so the
 episodes you skipped cost nothing — a sample of a dataset over the frame budget succeeds where the
-full ingest is refused. The same seed always draws the same episodes. Sampling applies to LeRobot;
-MCAP, CAN+DBC, and MF4 ingest a recording as one episode and refuse the request rather than handing
+full ingest is refused. The same seed always draws the same episodes. Sampling applies to LeRobot
+and RLDS/TFDS (which have an episode axis); MCAP, CAN+DBC, and MF4 ingest a recording as one episode and refuse the request rather than handing
 back everything labelled as a sample.
 
 A sampled run is never presented as a whole-dataset one. The verdict carries a `coverage` field
@@ -223,6 +223,32 @@ than once per episode). Veridex reads the container's **headers only** — it ne
 and it compares the codec across the names for one encoder, so a manifest saying `h264` against a
 container stamped `avc1` is not reported as a mismatch.
 
+It works on an **RLDS/TFDS** dataset too — the layout Open X-Embodiment and most TFDS-published
+robot datasets ship in, and the third format behind the same command:
+
+```sh
+# generate a demo RLDS dataset in the TFDS layout; append `truncated`, `desynced`, or `corrupt`
+cargo run -p veridex-core --example make_demo_rlds -- /tmp/demo-rlds
+cargo run -p veridex-cli -- check /tmp/demo-rlds
+```
+
+RLDS stores one episode per TFRecord, with every step's values concatenated into a single
+`tf.train.Example` — so an episode's step count is never written down, it is *derived* by dividing
+each feature's list length by the element size `features.json` declares. Veridex does that division
+for every step feature and requires the answers to agree. The `desynced` variant makes them
+disagree (19 camera images against 20 actions) and is refused by name, rather than mapped into a
+19-step episode that would read as sound. The `truncated` variant declares four episodes in its
+shard lengths and ships three (`STRUCTURAL.EPISODE_COUNT_MISMATCH`), and `corrupt` flips one bit
+inside a record — only the TFRecord CRC-32C notices, and Veridex verifies it on every record rather
+than parsing past it.
+
+One honesty note this format forces: **RLDS records no wall clock.** There is no per-step
+timestamp in it, so Veridex stamps frames with their step index on a clock named
+`rlds-step-index`, never invents a rate, and states the omission in the ingest report — the rate,
+gap, jitter and skew checks then abstain instead of grading a dataset against a period Veridex made
+up. (An `inspect` duration of `0.000s` on such a dataset is that step-index clock, not a zero-length
+episode.)
+
 The certificate binds to the dataset's CDM content hash and is Ed25519-signed: `verify` succeeds
 offline, and rejects a tampered certificate (signature mismatch) or one presented against a
 different dataset (content-hash mismatch). **`verify` requires a trusted issuer key**: a valid
@@ -274,8 +300,8 @@ LiDAR-camera miscalibration a well-formed transform tree hides, where a sensor's
 from the tree or has no chain of transforms to the camera); **video/media checks** that read an
 `.mp4`'s container headers (never a pixel) and catch the missing, unparseable, desynced, or
 re-encoded video behind a camera stream; the v1 trust-score rubric and the `world-model-ready` readiness profile;
-terminal, JSON, SARIF 2.1.0, and self-contained HTML reporting; **LeRobot v3, MCAP (with ROS-message
-decode into an autonomy rig), CAN+DBC, and ASAM MDF/MF4 adapters** with a passing cross-format
+terminal, JSON, SARIF 2.1.0, and self-contained HTML reporting; **LeRobot v3, RLDS/TFDS, MCAP (with
+ROS-message decode into an autonomy rig), CAN+DBC, and ASAM MDF/MF4 adapters** with a passing cross-format
 neutrality gate (the same logical dataset yields equivalent CDMs as LeRobot v3 and as MCAP); descriptive scenario-dimension coverage and **scenario/map/sim
 reference extraction** (OpenSCENARIO / OpenDRIVE / OSI / simulator, with the version read from the
 referenced sidecar's own ASAM header); Croissant + W3C PROV provenance emit; Ed25519 **certificate signing with

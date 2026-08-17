@@ -131,7 +131,8 @@ make an episode a rig.
 ## What the catalog does not check
 
 Two capabilities the [checks-catalog spec](../openspec/specs/checks-catalog/spec.md) describes have
-no implementation, and neither is a gap Veridex intends to close by decoding data.
+no implementation, and neither is a gap Veridex intends to close by decoding data. A third limit is
+not a missing check at all but a property of one source format, recorded here for the same reason.
 
 **Privacy and safety (likely faces, readable text).** Detecting a face in a camera frame requires
 decoding pixels and running a model over them. Veridex's design commitment is the opposite — it
@@ -145,5 +146,16 @@ tool before publishing.
 a trivial perturbation — need a similarity measure over frame payloads, which again means decoding
 them. A dataset can therefore hold two nearly-identical episodes and pass.
 
-Both limits are recorded here rather than left implicit, on the same principle as the rest of the
-catalog: a check that abstains must say so, or its silence reads as a pass.
+**Measured time, on a format that records none.** RLDS/TFDS has no per-step timestamp. Veridex
+stamps those frames with their step index on a clock named `rlds-step-index` and never invents a
+rate, so on an RLDS dataset the checks that need measured time — `TEMPORAL.RATE`, `GAP`, `JITTER`,
+`CLOCK_SKEW`, `START_OFFSET`, `END_OFFSET` — have nothing to grade and stay silent. That silence is
+about the format, not the data: the ingest report states the omission, and the missing clock is
+reported as `PROVENANCE.MISSING_CLOCK`. What still applies there is everything derived from
+structure and content — episode counts, shapes, duplicates, stuck streams, annotation integrity —
+plus RLDS's own integrity gate, which is enforced at ingest rather than as a finding: a record whose
+step features disagree on the episode's length, or whose TFRecord CRC-32C fails, is refused by name
+instead of mapped into a CDM that would read as sound.
+
+All three limits are recorded here rather than left implicit, on the same principle as the rest of
+the catalog: a check that abstains must say so, or its silence reads as a pass.

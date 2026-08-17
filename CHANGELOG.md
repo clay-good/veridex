@@ -10,6 +10,31 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **RLDS / TFDS adapter** — the layout Open X-Embodiment and most TFDS-published robot datasets
+  ship in, read into the CDM as the third first-class format behind `veridex check`. TFRecord
+  framing and `tf.train.Example` are parsed directly (no TensorFlow, no new dependency), and the
+  masked CRC-32C over both the length prefix and the payload is **verified on every record** — a
+  corrupt or truncated shard is refused by name rather than parsed past. `features.json` drives the
+  mapping: each leaf under the `steps` sequence becomes a stream carrying its declared dtype and
+  per-step shape, `language_instruction` becomes `episode.task` (with a mid-episode change surfaced
+  as a timestamped `language` label), `episode_metadata/file_path` becomes `provenance.upstream`,
+  and the split `shardLengths` become the declared episode count the truncation check tests against.
+  Step values are fingerprinted into `frame.value_ref.content_hash`, never decoded.
+
+  Two decisions worth stating, because both are places a quieter adapter would have lied. First,
+  **an episode's step count is never written down in RLDS** — it is derived, per feature, by
+  dividing the serialized list length by the element size `features.json` declares. Veridex does
+  that division for every step feature and requires the answers to agree; a record whose features
+  disagree (19 camera images against 20 actions), or whose tensor is not a whole multiple of its own
+  element size, contradicts the schema it was serialized against and is refused, rather than mapped
+  into a short episode that would read as sound. Second, **RLDS records no wall clock.** Frames are
+  stamped with their step index on a clock named `rlds-step-index`, no rate is invented, and the
+  ingest report states the omission — so the rate, gap, jitter and skew checks abstain instead of
+  grading a dataset against a period Veridex made up, and the missing clock surfaces as
+  `PROVENANCE.MISSING_CLOCK` rather than as silence. Sampling works (RLDS has an episode axis):
+  the draw resolves from `shardLengths` before any shard is read, and an unselected record is framed
+  and checksummed but never parsed. `examples/make_demo_rlds` generates `clean`, `truncated`,
+  `desynced`, and `corrupt` variants for trying it end-to-end.
 - **Canonical Dataset Model (CDM)** — the cross-format neutrality substrate
   (dataset / episode / stream / frame / provenance / label), with deterministic canonicalization
   streamed into SHA-256 and property-tested determinism.

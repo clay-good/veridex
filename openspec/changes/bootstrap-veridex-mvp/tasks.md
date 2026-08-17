@@ -22,13 +22,22 @@ the build plan.
       remains deliberately out of scope.
 - [x] MCAP adapter → CDM (channels→streams, message timestamps, schemas→modalities). Backed by the
       `mcap` crate; tests write real MCAP files and ingest them.
+- [x] RLDS/TFDS adapter → CDM (`features.json` step leaves→streams, one TFRecord per episode, step
+      index→frame ts, `language_instruction`→`episode.task`, `episode_metadata/file_path`→
+      `provenance.upstream`, split `shardLengths`→declared episode count). TFRecord framing and
+      `tf.train.Example` are parsed directly, with the masked CRC-32C verified on every record. An
+      episode's step count is *derived* per feature (list length ÷ declared element size) and the
+      answers must agree — a record contradicting its own schema is refused, never mapped into a
+      short episode. RLDS records no wall clock, so the timeline is the step index on a clock named
+      `rlds-step-index`, no rate is invented, and the ingest report states the omission.
 - [~] Streaming/large-than-memory ingestion; remote (Hub) metadata-only ingestion. **Sampled
       ingestion is in** (`--sample-episodes` / `--sample-fraction` / `--sample-seed`, and the same
       arguments from Python): the LeRobot adapter resolves the draw from the declared episode set
       before reading any Parquet, so a skipped episode is never hashed, never accumulated into the
       statistics, and never charged to the frame budget — the bounded way to check a dataset larger
-      than the budget allows. Single-episode formats (MCAP, CAN+DBC, MF4) refuse a sample rather than
-      returning everything. Coverage rides in the verdict (and its hash), every report states it, and
+      than the budget allows. RLDS/TFDS resolves it the same way from the split `shardLengths`, and
+      an unselected record is framed and checksummed but never parsed. Single-episode formats (MCAP,
+      CAN+DBC, MF4) refuse a sample rather than returning everything. Coverage rides in the verdict (and its hash), every report states it, and
       `certify` refuses a partial run. True streaming (never materializing the whole CDM) and remote
       Hub ingestion remain follow-ups; `metadata_only` and `Source::Remote` are **refused** with
       `IngestError::NotImplemented` rather than silently ignored.
