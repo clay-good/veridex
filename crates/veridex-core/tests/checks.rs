@@ -3365,3 +3365,65 @@ fn a_hashless_stream_disables_the_content_checks_and_the_report_says_which() {
     let d = dataset(vec![episode(0, vec![hashed])]);
     assert!(structural::ContentMeasurability.run(&d).is_empty());
 }
+
+#[test]
+fn a_jittery_but_complete_stream_is_not_accused_of_dropping_frames() {
+    // A frame is counted as dropped when an interval sits near a *multiple* of the median cadence.
+    // With the window at ±0.25 and the abstention gate at CV 0.5, ordinary jitter walked into that
+    // window often enough to accumulate a 6-7% "drop rate" on a stream where nothing was dropped —
+    // both inside the zone the gate declared honest. Deterministic pseudo-jitter here, so the test
+    // measures the check rather than a random draw.
+    let mut ts = Vec::new();
+    let mut t: i64 = 0;
+    let (mut a, mut b) = (12_345u64, 6_789u64);
+    for _ in 0..401 {
+        ts.push(t);
+        // Two counters beating against each other: a stable, reproducible spread around 100 ms with
+        // no drops of any kind.
+        a = a
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        b = b.wrapping_mul(2862933555777941757).wrapping_add(3037000493);
+        let jitter = ((a >> 33) % 90_000_000) as i64 - ((b >> 33) % 90_000_000) as i64;
+        t += (100_000_000 + jitter / 2).max(1_000_000);
+    }
+
+    let mut lidar = stream("lidar", "rig", None, &ts);
+    lidar.modality = Modality::PointCloud;
+    let mut imu = stream("imu", "rig", None, &ts);
+    imu.modality = Modality::Imu;
+    let mut gnss = stream("gnss", "rig", None, &ts);
+    gnss.modality = Modality::Gnss;
+    let d = dataset(vec![episode(0, vec![lidar, imu, gnss])]);
+
+    let f = autonomy::SequenceComplete::default().run(&d);
+    assert!(
+        f.is_empty(),
+        "nothing was dropped, so nothing may be reported: {f:?}"
+    );
+}
+
+#[test]
+fn a_stream_that_really_dropped_frames_is_still_caught() {
+    // The other side of the same tuning: narrowing the window must not blind the check. A steady
+    // 100 ms cadence with every fifth frame removed is a 20% drop rate.
+    let ts: Vec<i64> = (0..400)
+        .filter(|i| i % 5 != 0)
+        .map(|i| i as i64 * 100_000_000)
+        .collect();
+    let mut lidar = stream("lidar", "rig", None, &ts);
+    lidar.modality = Modality::PointCloud;
+    let steady: Vec<i64> = (0..400).map(|i| i as i64 * 100_000_000).collect();
+    let mut imu = stream("imu", "rig", None, &steady);
+    imu.modality = Modality::Imu;
+    let mut gnss = stream("gnss", "rig", None, &steady);
+    gnss.modality = Modality::Gnss;
+    let d = dataset(vec![episode(0, vec![lidar, imu, gnss])]);
+
+    let f = autonomy::SequenceComplete::default().run(&d);
+    assert!(
+        f.iter()
+            .any(|f| f.code == "AUTONOMY.SEQUENCE_COMPLETE" && f.message.contains("lidar")),
+        "a real 20% drop rate must still be reported: {f:?}"
+    );
+}

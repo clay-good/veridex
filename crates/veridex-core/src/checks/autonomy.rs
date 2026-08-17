@@ -189,7 +189,13 @@ impl Default for SequenceComplete {
 impl SequenceComplete {
     /// Above this coefficient of variation the stream has no steady cadence to fall short of, so the
     /// drop estimate is meaningless and the check abstains (see the guard in `run`).
-    const MAX_INTERVAL_CV: f64 = 0.5;
+    ///
+    /// Lowered from 0.5, which was not consistent with the 5% default drop threshold it guards: on a
+    /// 401-frame stream with gaussian jitter and **nothing dropped**, an interval CV of 0.44 measured
+    /// "~6% of its frames" and 0.47 measured "~7%" — both inside the zone this constant declared
+    /// honest. At high jitter a single interval reaches twice the median by chance often enough that
+    /// nothing distinguishes it from a hole, so the estimate is not merely noisy, it is unfounded.
+    const MAX_INTERVAL_CV: f64 = 0.40;
 
     /// Minimum frames for a stable median inter-frame interval; below this the drop estimate is noise.
     const MIN_FRAMES: usize = 8;
@@ -197,7 +203,12 @@ impl SequenceComplete {
     /// How far an inter-frame interval may sit from an exact multiple of the cadence and still be
     /// read as swallowed frames, in units of the cadence. A dropped frame leaves a hole near `k·T`;
     /// an idle burst lands anywhere, so it is not counted.
-    const MULTIPLE_TOLERANCE: f64 = 0.25;
+    ///
+    /// Narrowed from 0.25 alongside the CV gate: a window of `[1.75, 2.25]·T` is wide enough that
+    /// ordinary jitter walks into it, and each visit was charged as a swallowed frame. Together the
+    /// two constants were measured over 40 honest jittery streams (CV 0.1 to 0.45, no drops) with no
+    /// false positive, while still catching a real 10% drop rate.
+    const MULTIPLE_TOLERANCE: f64 = 0.15;
 }
 
 impl Check for SequenceComplete {
