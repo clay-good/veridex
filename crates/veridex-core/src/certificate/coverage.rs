@@ -18,6 +18,7 @@ pub const EXPECTED_PROVENANCE_KEYS: &[&str] = &[
 
 /// Coverage of the expected provenance set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProvenanceCoverage {
     /// Expected keys present as extracted (`known`).
     pub known: u32,

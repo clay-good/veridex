@@ -28,6 +28,7 @@ pub enum RegistryError {
 /// a run can loosen or tighten a threshold (e.g. a rig with a known 80 ms camera latency). Defaults
 /// match each check's built-in default.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Tolerances {
     /// Max tolerated cross-stream duration drift for `TEMPORAL.CLOCK_SKEW`, in nanoseconds.
     pub clock_skew_ns: i64,
@@ -122,6 +123,7 @@ pub struct RunConfig {
 /// The effective configuration, snapshotted into the verdict so a run is reproducible from it.
 /// (Not `Eq`: [`Tolerances`] carries floats.)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EffectiveConfig {
     /// Selected categories, sorted; `None` means all.
     pub categories: Option<Vec<Category>>,
@@ -163,6 +165,7 @@ pub enum Status {
 
 /// Counts of findings by severity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SeverityCounts {
     /// Number of `error` findings.
     pub error: u64,
@@ -174,6 +177,7 @@ pub struct SeverityCounts {
 
 /// A check that was selected to run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExecutedCheck {
     /// Check id.
     pub check_id: String,
@@ -449,6 +453,22 @@ impl Engine {
             }
         }
 
+        // A narrowed run says so as a finding too, for the same reason a partial ingest does. Counted
+        // from what actually happened (checks executed vs. registered) rather than from the config's
+        // wording, so a `only_checks` that names the whole catalog is correctly silent.
+        let overridden = self
+            .checks
+            .iter()
+            .filter(|c| {
+                check_selected(c.as_ref(), config) && config.severity_overrides.contains_key(c.id())
+            })
+            .count();
+        if let Some(finding) =
+            scope_finding(config, executed_checks.len(), self.checks.len(), overridden)
+        {
+            findings.push(finding);
+        }
+
         // Total order over the finding's full content, independent of execution order. Every field is
         // in the key: a sort that ties on non-identical content falls through to `Vec` order, which
         // is execution order — and `result_content_hash` is computed over this sequence, so the same
@@ -551,6 +571,94 @@ fn coverage_finding(coverage: &CoverageNote) -> Option<Finding> {
         )
         .with_risk(risk)
         .with_remedy(remedy),
+    )
+}
+
+/// The check id under which a narrowed run discloses its own scope.
+///
+/// Like [`COVERAGE_CHECK_ID`], deliberately not a registered [`Check`]: it is a statement about the
+/// selection itself, so configuration must not be able to switch off the disclosure that
+/// configuration was narrowed.
+pub const SCOPE_CHECK_ID: &str = "veridex.scope";
+
+/// The finding a narrowed run discloses about itself, or `None` when the full catalog ran at its
+/// declared severities.
+///
+/// Coverage answers "how much of the dataset did we read"; this answers "how much of the catalog did
+/// we run", and until now nothing answered it outside the JSON envelope. A `veridex.toml` carrying
+/// one `only_checks` line turned a 12-finding FAIL into a clean PASS on the terminal, in the HTML
+/// report that is built to travel, in SARIF, and in a signed certificate — and `diff
+/// --fail-on-regression` read the eleven vanished findings as *resolved* and the score's 55-point
+/// climb as an improvement. That is the same failure shape `CoverageNote` exists to prevent, one
+/// axis over, and it takes the same remedy: a finding, because findings are the only channel that
+/// reaches every renderer, the diff, and the certificate's own summary.
+///
+/// Info severity, for the reason coverage is: the run's scope is not a defect in the data, and
+/// saying so must not fail a dataset that is genuinely sound.
+fn scope_finding(
+    config: &RunConfig,
+    executed: usize,
+    registered: usize,
+    overridden: usize,
+) -> Option<Finding> {
+    if executed == registered && overridden == 0 {
+        return None;
+    }
+
+    let mut clauses: Vec<String> = Vec::new();
+    if executed < registered {
+        clauses.push(format!("{executed} of {registered} catalog checks ran"));
+        if let Some(cats) = &config.categories {
+            let mut names: Vec<&str> = cats.iter().map(|c| c.tag()).collect();
+            names.sort_unstable();
+            clauses.push(format!("categories limited to {}", names.join(", ")));
+        }
+        if let Some(only) = &config.only_checks {
+            let mut ids: Vec<&str> = only.iter().map(String::as_str).collect();
+            ids.sort_unstable();
+            clauses.push(format!("only_checks = {}", ids.join(", ")));
+        }
+        if !config.disabled_checks.is_empty() {
+            let mut ids: Vec<&str> = config.disabled_checks.iter().map(String::as_str).collect();
+            ids.sort_unstable();
+            clauses.push(format!("disabled = {}", ids.join(", ")));
+        }
+    }
+    if overridden > 0 {
+        let mut pairs: Vec<String> = config
+            .severity_overrides
+            .iter()
+            .map(|(id, sev)| format!("{id} -> {}", sev.tag()))
+            .collect();
+        pairs.sort();
+        clauses.push(format!("severity overridden: {}", pairs.join(", ")));
+    }
+
+    Some(
+        Finding::new(
+            SCOPE_CHECK_ID,
+            Category::Structural,
+            Severity::Info,
+            crate::check::Location::Dataset,
+            "SCOPE.NARROWED",
+            format!(
+                "this run did not apply the full check catalog as declared ({}), so every result \
+                 below speaks for the narrowed scope alone",
+                clauses.join("; ")
+            ),
+        )
+        .with_risk(
+            "The checks that did not run produced nothing, and a check whose severity was lowered \
+             produced something quieter than its author intended. Neither silence is evidence about \
+             the data. A clean result here is a clean result within this selection, and read as a \
+             verdict on the dataset it waves through everything outside it.",
+        )
+        .with_remedy(
+            "Re-run with the default catalog before treating this as a verdict on the dataset, or \
+             keep the narrowing and read the result as scoped to it. Compare only against runs made \
+             under the same selection — `veridex diff --fail-on-regression` now treats a change in \
+             scope as a regression for this reason.",
+        ),
     )
 }
 

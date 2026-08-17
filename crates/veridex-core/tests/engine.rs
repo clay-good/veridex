@@ -219,11 +219,77 @@ fn category_selection_scopes_the_run() {
 
     assert_eq!(v.executed_checks.len(), 1);
     assert_eq!(v.executed_checks[0].check_id, "temporal.y");
-    assert!(v.findings.iter().all(|f| f.check_id == "temporal.y"));
+    // The structural check did not run, so nothing may be reported under it...
+    assert!(v.findings.iter().all(|f| f.check_id != "structural.x"));
+    // ...and the run must say out loud that it did not apply the whole catalog. Without this, a
+    // category filter turns a failing dataset into a clean PASS on every human-facing surface.
+    let scope: Vec<_> = v
+        .findings
+        .iter()
+        .filter(|f| f.check_id == veridex_core::engine::SCOPE_CHECK_ID)
+        .collect();
+    assert_eq!(scope.len(), 1);
+    assert_eq!(scope[0].code, "SCOPE.NARROWED");
+    assert_eq!(scope[0].severity, Severity::Info);
+    assert!(scope[0].message.contains("1 of 2 catalog checks ran"));
+    assert!(scope[0].message.contains("categories limited to temporal"));
     assert_eq!(
         v.effective_config.categories,
         Some(vec![Category::Temporal])
     );
+}
+
+/// The full catalog at declared severities is the silent case: no scope finding at all, so an
+/// ordinary run's output and its content hash are unchanged by this disclosure existing.
+#[test]
+fn an_unnarrowed_run_says_nothing_about_scope() {
+    let d = ds(1);
+    let engine = Engine::builder()
+        .register(Box::new(FlagEpisodes {
+            id: "structural.x",
+            category: Category::Structural,
+            severity: Severity::Warning,
+        }))
+        .unwrap()
+        .build();
+
+    let v = engine.run(&d, hash(&d), &RunConfig::default());
+    assert!(v
+        .findings
+        .iter()
+        .all(|f| f.check_id != veridex_core::engine::SCOPE_CHECK_ID));
+}
+
+/// A severity override narrows what the run reports without removing a check, so it is disclosed
+/// too — a check downgraded to `info` produces something quieter than its author intended.
+#[test]
+fn a_severity_override_is_disclosed_as_a_narrowed_scope() {
+    let d = ds(1);
+    let engine = Engine::builder()
+        .register(Box::new(FlagEpisodes {
+            id: "structural.x",
+            category: Category::Structural,
+            severity: Severity::Error,
+        }))
+        .unwrap()
+        .build();
+
+    let cfg = RunConfig {
+        severity_overrides: [("structural.x".to_string(), Severity::Info)]
+            .into_iter()
+            .collect(),
+        ..Default::default()
+    };
+    let v = engine.run(&d, hash(&d), &cfg);
+
+    let scope = v
+        .findings
+        .iter()
+        .find(|f| f.check_id == veridex_core::engine::SCOPE_CHECK_ID)
+        .expect("a severity override is a narrowed scope");
+    assert!(scope.message.contains("structural.x -> info"));
+    // Every catalog check still ran, so the count clause must not appear.
+    assert!(!scope.message.contains("catalog checks ran"));
 }
 
 #[test]
@@ -247,7 +313,14 @@ fn severity_override_is_applied_and_recorded() {
     let v = engine.run(&d, hash(&d), &cfg);
 
     assert_eq!(v.status, Status::PassWithWarnings);
-    assert!(v.findings.iter().all(|f| f.severity == Severity::Warning));
+    // The override applies to the overridden check's own findings. The run also discloses that a
+    // severity was overridden at all, which is an `info` finding and deliberately not subject to
+    // the override it is reporting.
+    assert!(v
+        .findings
+        .iter()
+        .filter(|f| f.check_id == "ovr")
+        .all(|f| f.severity == Severity::Warning));
     assert_eq!(
         v.effective_config.severity_overrides.get("ovr"),
         Some(&Severity::Warning)

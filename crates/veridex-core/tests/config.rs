@@ -181,12 +181,16 @@ fn example_config_parses_and_references_only_real_checks() {
 fn category_selection_scopes_the_run() {
     let cfg = CheckConfig::from_toml("categories = [\"temporal\"]").unwrap();
     let v = run(&skewed(), &cfg.to_run_config());
-    // Only temporal checks ran; provenance findings (a different category) are absent.
+    // Only temporal checks ran; provenance findings (a different category) are absent. The one
+    // non-temporal finding permitted is the run disclosing its own narrowed scope, which is emitted
+    // by the engine rather than by a catalog check precisely so config cannot suppress it.
     assert!(v
         .findings
         .iter()
-        .all(|f| f.check_id.starts_with("temporal.")));
+        .all(|f| f.check_id.starts_with("temporal.")
+            || f.check_id == veridex_core::engine::SCOPE_CHECK_ID));
     assert!(v.findings.iter().any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
+    assert!(v.findings.iter().any(|f| f.code == "SCOPE.NARROWED"));
 }
 
 #[test]

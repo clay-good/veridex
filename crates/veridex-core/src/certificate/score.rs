@@ -66,6 +66,7 @@ impl Grade {
 
 /// The computed trust score, with both sub-scores exposed so the certificate can show its work.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TrustScore {
     /// Overall 0–100 score.
     pub score: u8,
