@@ -239,20 +239,48 @@ fn find_parquet(dir: &Path, out: &mut Vec<PathBuf>) {
     let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
     paths.sort();
     for p in paths {
-        // Use `symlink_metadata` (does not follow) so a symlinked directory pointing at an ancestor
-        // can't send this into unbounded recursion — Veridex's job is to survive malformed input.
-        let Ok(meta) = std::fs::symlink_metadata(&p) else {
-            continue;
-        };
-        if meta.file_type().is_symlink() {
-            continue;
-        }
-        if meta.is_dir() {
+        let Some(kind) = walk_entry(&p) else { continue };
+        if kind == EntryKind::Dir {
             find_parquet(&p, out);
         } else if p.extension().and_then(|e| e.to_str()) == Some("parquet") {
             out.push(p);
         }
     }
+}
+
+/// What a directory entry is, for the two dataset walks — or `None` for one they must not descend.
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum EntryKind {
+    Dir,
+    File,
+}
+
+/// Classify one entry, following a symlink to a **file** but never to a directory.
+///
+/// `huggingface_hub`'s `snapshot_download` materializes every file in a repo as a symlink into the
+/// blob cache, so a symlinked `.parquet` or `.mp4` is the ordinary on-disk shape of a downloaded
+/// LeRobot dataset, not a hostile one. Refusing them read a normal download as zero episodes at
+/// `Coverage::Full`, and reported every present video as `VIDEO.MEDIA_MISSING`.
+///
+/// A symlinked *directory* stays refused: one pointing at an ancestor sends the walk into unbounded
+/// recursion, and surviving malformed input is the point. Following a file cannot recurse.
+fn walk_entry(path: &Path) -> Option<EntryKind> {
+    // `symlink_metadata` first, so the link itself is what decides — a link to a directory is
+    // refused on the strength of its target's kind, without ever descending it.
+    let link = std::fs::symlink_metadata(path).ok()?;
+    if !link.file_type().is_symlink() {
+        return if link.is_dir() {
+            Some(EntryKind::Dir)
+        } else if link.is_file() {
+            Some(EntryKind::File)
+        } else {
+            // A fifo, socket, or device is not dataset content; opening one can block forever.
+            None
+        };
+    }
+    // A broken link resolves to nothing and is skipped.
+    let target = std::fs::metadata(path).ok()?;
+    target.is_file().then_some(EntryKind::File)
 }
 
 /// Container extensions Veridex knows how to read headers from (all ISO base media format).
@@ -317,7 +345,7 @@ fn index_videos(dir: &Path, video_features: &BTreeSet<&str>) -> VideoIndex {
 }
 
 /// Recursively collect media files under `dir`, in a deterministic sorted order. Mirrors
-/// [`find_parquet`], including its refusal to follow symlinks.
+/// [`find_parquet`], including its symlink handling.
 fn find_media(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -325,13 +353,8 @@ fn find_media(dir: &Path, out: &mut Vec<PathBuf>) {
     let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
     paths.sort();
     for p in paths {
-        let Ok(meta) = std::fs::symlink_metadata(&p) else {
-            continue;
-        };
-        if meta.file_type().is_symlink() {
-            continue;
-        }
-        if meta.is_dir() {
+        let Some(kind) = walk_entry(&p) else { continue };
+        if kind == EntryKind::Dir {
             find_media(&p, out);
         } else if p
             .extension()
@@ -439,6 +462,40 @@ fn expected_sibling_path(by_episode: &BTreeMap<u64, PathBuf>, episode: u64) -> P
 /// A file the index resolved but that is gone from disk between indexing and reading is
 /// [`MediaStatus::Missing`], the same as one that was never there — either way the dataset claims
 /// imagery it cannot produce.
+/// Whether `expected` really names a file inside the dataset, so Veridex may open it.
+///
+/// The per-episode paths come from walking `videos/`, so they are inside by construction. The two
+/// *fabricated* paths are not. `expected_sibling_path` builds a name, and the no-file-resolved
+/// fallback joins a **feature key read from `meta/info.json`** — an untrusted string — onto the
+/// dataset directory. `Path::join` neither rejects `..` nor resists an absolute argument, which
+/// discards the base entirely: a manifest declaring a feature named `../../../../etc/shadow`, or an
+/// absolute path outright, had Veridex open that file and copy its real headers into the CDM. Since
+/// `Media` is bound into the content hash and the signed certificate, and `MediaStatus` distinguishes
+/// missing from unreadable from read, that is a published existence-and-content oracle over the
+/// whole filesystem of anyone who checks the dataset.
+fn media_path_is_inside(dataset_root: &Path, expected: &Path) -> bool {
+    use std::path::Component;
+    // Lexical first: the path must be the root plus ordinary components only. This is what rejects
+    // both `..` (which `strip_prefix` leaves in place) and an absolute path (which does not carry
+    // the root as a prefix at all).
+    let Ok(rel) = expected.strip_prefix(dataset_root) else {
+        return false;
+    };
+    if !rel
+        .components()
+        .all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
+    {
+        return false;
+    }
+    // The component filter cannot see through a symlink, and `find_media` now follows symlinked
+    // files (the shape `snapshot_download` writes), so re-check containment after resolution. A path
+    // that resolves to nothing is reported `Missing` from the lexical form without being opened.
+    match (dataset_root.canonicalize(), expected.canonicalize()) {
+        (Ok(root), Ok(path)) => path.starts_with(&root),
+        _ => true,
+    }
+}
+
 fn probe_stream_media(dataset_root: &Path, expected: &Path, declared: MediaParams) -> Media {
     // Joined with `/` explicitly rather than through `Path::display`: the uri is bound into the CDM
     // content hash, and a platform separator would make the same dataset hash differently on Windows
@@ -450,6 +507,22 @@ fn probe_stream_media(dataset_root: &Path, expected: &Path, declared: MediaParam
         .filter_map(|c| c.as_os_str().to_str())
         .collect::<Vec<_>>()
         .join("/");
+    if !media_path_is_inside(dataset_root, expected) {
+        // Named rather than quietly treated as absent: the dataset did not merely fail to ship a
+        // video, its manifest asked Veridex to read somewhere it has no business reading, and a
+        // reader deciding whether to trust this dataset should be told that outright.
+        return Media {
+            uri,
+            declared,
+            status: MediaStatus::Unreadable {
+                reason: "the manifest places this path outside the dataset directory, which \
+                         Veridex will not open"
+                    .to_string(),
+            },
+            observed: MediaParams::default(),
+            frame_count: None,
+        };
+    }
     if !expected.is_file() {
         return Media {
             uri,
