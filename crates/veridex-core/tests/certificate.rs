@@ -221,7 +221,7 @@ fn a_certificate_does_not_verify_against_a_dataset_with_a_different_manifest_cou
 }
 
 #[test]
-fn a_signed_certificate_has_exactly_one_byte_form() {
+fn the_algorithm_and_key_fields_must_be_in_their_canonical_spelling() {
     // Uppercasing the hex fields or the algorithm leaves the same semantic document but a different
     // file. Both must not verify, or two distinct files verify identically and a consumer pinning
     // certificates by file digest can be handed either.
@@ -524,4 +524,50 @@ fn verify_prints_the_data_sub_score_not_the_status() {
     );
     // The status is still reported — on its own line, where it is not mistaken for a score.
     assert!(text.contains("status:"), "{text}");
+}
+
+/// What the signature actually pins: the parsed document, not the file.
+///
+/// SECURITY.md claimed "a signed certificate has exactly one byte form … cannot be presented as two
+/// different files that both verify", and the test named
+/// `a_signed_certificate_has_exactly_one_byte_form` checked only the three *outer* fields' casing —
+/// so it did not test its own name. `signing_message` re-serializes the deserialized certificate, so
+/// every encoding that parses to the same struct verifies. Pinned as a fact, since a reader relying
+/// on byte-uniqueness would be relying on something that is not true.
+#[test]
+fn a_reencoded_certificate_still_verifies_because_content_is_what_is_signed() {
+    let d = dataset(vec![stream("s", "c", &[0, 1_000_000])]);
+    let (cert, hash) = issue_cert(&d);
+    let signed = sign(cert, &keypair());
+
+    let pretty = serde_json::to_string_pretty(&signed).unwrap();
+    let minified: serde_json::Value = serde_json::from_str(&pretty).unwrap();
+    let compact = serde_json::to_string(&minified).unwrap();
+    assert_ne!(
+        pretty.len(),
+        compact.len(),
+        "the two encodings differ in bytes"
+    );
+
+    let reparsed: veridex_core::certificate::SignedCertificate =
+        serde_json::from_str(&compact).unwrap();
+    verify(
+        &reparsed,
+        Some(&hash.to_hex()),
+        Some(&keypair().public_hex()),
+    )
+    .expect("a re-encoded certificate verifies: the signature covers content, not bytes");
+
+    // And content is genuinely pinned: change one signed field and it fails.
+    let mut tampered = reparsed;
+    tampered.certificate.trust_score.score = 100;
+    assert!(
+        verify(
+            &tampered,
+            Some(&hash.to_hex()),
+            Some(&keypair().public_hex())
+        )
+        .is_err(),
+        "altering a signed field must break the signature"
+    );
 }

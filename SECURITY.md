@@ -18,11 +18,19 @@ document states what Veridex guarantees, what it does **not**, and how signing k
   streams with a duplicate name — both faults Veridex reports — are ordered by their full content, so
   the hash never depends on the order they arrived in.
 - **Offline verification.** Certificates are Ed25519-signed and verify against the issuer public key
-  with no network dependency. Any change to a signed certificate fails signature verification
-  (tamper rejection), and a signed certificate has exactly one byte form — the hex and algorithm
-  fields must be in the canonical spelling this crate writes, so the same certificate cannot be
-  presented as two different files that both verify. Verification also rejects a certificate signed by an untrusted issuer key, and
-  one that declares a signature algorithm this build cannot verify (rather than assuming Ed25519).
+  with no network dependency. Any change to a signed certificate's **content** fails signature
+  verification (tamper rejection): the bytes signed are the certificate's canonical JSON, re-derived
+  from the parsed document at verification time, so altering any field — the verdict, the score, the
+  content hash, the scope — breaks the signature. What that does *not* pin is presentation. Two
+  byte-distinct files that parse to the same certificate both verify: reordered keys, different
+  whitespace, or a re-added field whose default is omitted. Treat the signature as attesting the
+  parsed document, not the file. One consequence worth knowing: serde rejects a duplicated *struct*
+  field, but a duplicated key inside a map-valued field (such as `findings_summary.by_category`)
+  resolves last-wins, so a hand-read of the raw JSON can disagree with what verification used —
+  read the output of `veridex verify`, not the file. The hex and algorithm fields must still be in
+  the canonical spelling this crate writes. Verification also rejects a certificate signed by an
+  untrusted issuer key, and one that declares a signature algorithm this build cannot verify (rather
+  than assuming Ed25519).
 - **Non-mutation.** Veridex only reads datasets and writes its own outputs to caller-specified
   paths. It never modifies, repairs, or deletes a user's dataset.
 - **No wall-clock in core.** Issuance timestamps are caller-supplied, so signing is reproducible and
