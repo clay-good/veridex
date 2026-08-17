@@ -40,14 +40,41 @@ impl Profile {
     /// none of its business. A field the profile leaves at the default is treated as unnamed, which
     /// is indistinguishable from naming it *as* the default — and in that case both readings give
     /// the same answer anyway, since the config's value is the one with an opinion behind it.
+    ///
+    /// Among the fields it *does* name, the profile can only **tighten**. `docs/profiles.md` sells
+    /// `world-model-ready` as one that "tightens cross-sensor sync … stricter than the 50 ms
+    /// default", but keeping its value unconditionally moved thresholds in both directions: an
+    /// operator asking for `clock_skew_ms = 5.0` had it *loosened* to the profile's 20 ms, so a
+    /// 10 ms drift that failed their run passed once they added the flag that advertises strictness.
+    /// Taking the stricter of the two keeps the profile's guarantee — the operator's threshold is
+    /// tighter than the one the readiness criterion requires, so the criterion still holds — while
+    /// never relaxing a limit the operator set deliberately.
+    ///
+    /// Every tolerance is an upper bound on tolerated deviation, so for all twelve "stricter" is
+    /// simply the smaller value. That includes `saturation_min_samples`, which is the sample count
+    /// below which the check abstains: a smaller one abstains on fewer streams.
     pub fn apply_tolerances(&self, base: Tolerances) -> Tolerances {
         let d = Tolerances::default();
         let p = self.tolerances;
-        // `pick` keeps the profile's value only where the profile departs from the default.
+        /// The stricter of two thresholds. A non-finite configured value yields the other operand
+        /// rather than panicking; `finite_or_default` sanitizes those before they reach a report.
+        fn stricter<T: PartialOrd>(profile: T, base: T) -> T {
+            if profile < base {
+                profile
+            } else {
+                base
+            }
+        }
+        // `pick` consults the profile only where it departs from the default, and even then only to
+        // tighten.
         macro_rules! pick {
             ($($field:ident),+ $(,)?) => {
                 Tolerances {
-                    $($field: if p.$field == d.$field { base.$field } else { p.$field },)+
+                    $($field: if p.$field == d.$field {
+                        base.$field
+                    } else {
+                        stricter(p.$field, base.$field)
+                    },)+
                 }
             };
         }

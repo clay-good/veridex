@@ -596,6 +596,30 @@ fn a_profile_does_not_revert_thresholds_it_never_names() {
     assert_eq!(applied.gap_factor, 1.5);
 }
 
+/// The other direction, which the test above never covered: a threshold the operator set *tighter*
+/// than the profile's.
+///
+/// `docs/profiles.md` sells `world-model-ready` as tightening cross-sensor sync — "stricter than the
+/// 50 ms default" — but keeping the profile's value unconditionally moved thresholds both ways, so
+/// an operator asking for 5 ms had it loosened to the profile's 20 ms. A 10 ms drift that failed
+/// their run passed once they added the flag that advertises strictness. A profile may only tighten.
+#[test]
+fn a_profile_never_loosens_a_threshold_the_operator_set_tighter() {
+    let p = veridex_core::profile::world_model_ready();
+    let configured = veridex_core::Tolerances {
+        // Ten times stricter than the 20 ms the profile requires.
+        clock_skew_ns: 5_000_000,
+        ..Default::default()
+    };
+
+    let applied = p.apply_tolerances(configured);
+
+    assert_eq!(
+        applied.clock_skew_ns, 5_000_000,
+        "the operator's stricter threshold must stand — the profile's guarantee still holds at it"
+    );
+}
+
 /// With no config of its own, a profile still applies its thresholds over the defaults.
 #[test]
 fn a_profile_still_tightens_over_the_defaults() {

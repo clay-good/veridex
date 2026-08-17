@@ -19,7 +19,7 @@ For multi-sensor autonomy rigs. It tightens cross-sensor sync and bundles the au
 world-model training set needs. A dataset is **ready** only when the profile applies *and* every
 criterion's check **ran cleanly and found nothing**.
 
-Two rules keep that honest:
+Three rules keep that honest:
 
 - **Applicability demands the data the criteria are about.** The profile applies to a sensor rig that
   carries a perception sensor (LiDAR or camera) *and* an ego trajectory. A bus-only measurement (a
@@ -29,6 +29,11 @@ Two rules keep that honest:
   that failed internally produces no findings — so each criterion records whether its check actually
   ran, and one that didn't blocks `ready` and prints as `? … [check did not run]`. A dataset cannot
   be certified ready by switching the checks off.
+- **A profile can only tighten.** Where a profile names a threshold and your `veridex.toml` sets the
+  same one, the **stricter** of the two applies; thresholds the profile does not name are left
+  exactly as you configured them. So `--profile world-model-ready` cannot relax a limit you set
+  deliberately — asking for `clock_skew_ms = 5.0` keeps 5 ms rather than being loosened to the
+  profile's 20 ms, and the readiness criterion still holds, since 5 ms is stricter than it requires.
 
 | Criterion | Check | Passes when |
 |---|---|---|
@@ -58,7 +63,8 @@ veridex verify my-rig.mcap --certificate my-rig.veridex.json --key issuer.pub
   issued at:  1700000000
   dataset:    my-rig
   bound to:   4a1b9c2d7e5f0813…
-  trust:      B (82)  [data pass (warnings) · provenance 66%]
+  status:     pass (warnings)
+  trust:      B (82)  [data 92 · provenance 66%]
   world-model-ready profile: NOT READY
     ✓ autonomy.rig-sync — rig sensors within a 20 ms cross-sensor span drift
     ✗ autonomy.sequence-complete — no rig sensor dropping more than 5% of its frames
