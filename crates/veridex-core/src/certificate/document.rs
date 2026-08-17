@@ -144,7 +144,16 @@ impl ReadinessReport {
         verdict: &Verdict,
         dataset: &crate::cdm::Dataset,
     ) -> ReadinessReport {
-        let applicable = (profile.applies_to)(dataset);
+        // A partial run cannot judge readiness. The criteria are per-check pass/fail derived from
+        // "the check ran and found nothing", and `ran` comes from `executed_checks` — which records
+        // that a check was *invoked*, not that it had anything to inspect. Under a metadata-only
+        // ingest all five `world-model-ready` criteria reported `passed: true, ran: true,
+        // findings: 0` over a dataset with no frames at all. `certify` refuses such a run today, so
+        // this is not reachable through a certificate — but readiness is evaluated before that
+        // refusal and is printed by other callers, and the guard belongs where the judgement is
+        // made rather than at one of the places it is used.
+        let applicable =
+            verdict.coverage == crate::engine::CoverageNote::Full && (profile.applies_to)(dataset);
         let criteria: Vec<CriterionResult> = profile
             .criteria
             .iter()

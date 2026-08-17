@@ -263,6 +263,12 @@ fn certify(
         &run_config,
     )
     .map_err(to_py_err)?;
+    // The same refusal the CLI makes, made here too. `Certificate::certifiable` documents that both
+    // front-ends call it; only the CLI did. Satisfied today because this function exposes no
+    // sampling or metadata-only argument, so the ingest is always full — but the guard being absent
+    // rather than satisfied is one added parameter away from issuing a certificate over a run that
+    // never read the data it attests.
+    veridex_core::Certificate::certifiable(&out.verdict).map_err(PyValueError::new_err)?;
     let mut cert = veridex_core::Certificate::build(
         out.ingested.dataset.id.clone(),
         &out.verdict,

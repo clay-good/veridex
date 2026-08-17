@@ -31,6 +31,7 @@ pub fn standard_checks_with(t: &Tolerances) -> Vec<Box<dyn Check>> {
         Box::new(structural::DeclaredFrameCount),
         Box::new(structural::ShapeConsistency),
         Box::new(structural::StreamPresence),
+        Box::new(structural::ContentMeasurability),
         Box::new(structural::DuplicateEpisode),
         Box::new(structural::StuckStream),
         Box::new(temporal::ClockMeasurability),
@@ -70,6 +71,7 @@ pub fn standard_checks_with(t: &Tolerances) -> Vec<Box<dyn Check>> {
         }),
         Box::new(autonomy::CalibrationCompleteness),
         Box::new(autonomy::SensorFrameResolution),
+        Box::new(statistical::ValueMeasurability),
         Box::new(statistical::RangeSanity),
         Box::new(statistical::StoredVsObserved),
         Box::new(statistical::Saturation {

@@ -1106,7 +1106,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 36);
+    assert_eq!(verdict.executed_checks.len(), 38);
 }
 
 #[test]
@@ -3289,4 +3289,79 @@ fn ego_pose(ts: i64, translation: [f64; 3]) -> veridex_core::cdm::EgoPose {
             rotation: [0.0, 0.0, 0.0, 1.0],
         },
     }
+}
+
+#[test]
+fn a_family_that_could_not_measure_anything_says_so() {
+    // The failure this guards: MCAP, CAN+DBC, MF4 and RLDS fingerprint payload bytes without
+    // interpreting them, so every statistical check hit its `let Some(..) else { continue }` and
+    // produced nothing — and a CAN log with a wheel speed pinned at its rail for 70% of the
+    // recording reported `data 100`, with the certificate listing all five statistical checks under
+    // `checks_run` and no categories skipped.
+    let d = dataset(vec![episode(0, vec![stream("speed", "c", None, &[0, 1])])]);
+    let f = statistical::ValueMeasurability.run(&d);
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "STATISTICAL.UNMEASURED_VALUES");
+    assert_eq!(f[0].severity, Severity::Info);
+    assert!(f[0].message.contains("speed"), "{}", f[0].message);
+
+    // A stream whose values *were* summarized is not accused of anything...
+    let d = dataset(vec![episode(
+        0,
+        vec![stream_with_stats("s", stats(0.0, 1.0, 0.5, 0.1))],
+    )]);
+    assert!(statistical::ValueMeasurability.run(&d).is_empty());
+}
+
+#[test]
+fn recomputed_without_stored_is_reported_as_a_narrower_gap() {
+    // HDF5 and Zarr recompute statistics but publish none of their own, so the two checks that
+    // compare the source's summary against its data can never fire on them. The recomputed checks
+    // still ran, so this is a different — and smaller — statement than "nothing was measured".
+    let mut s = stream("s", "c", None, &[0, 1]);
+    s.observed_stats = Some(veridex_core::cdm::StreamStats {
+        min: 0.0,
+        max: 1.0,
+        mean: 0.5,
+        std: 0.1,
+    });
+    let d = dataset(vec![episode(0, vec![s])]);
+    let f = statistical::ValueMeasurability.run(&d);
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "STATISTICAL.NO_STORED_STATS");
+}
+
+#[test]
+fn a_hashless_stream_disables_the_content_checks_and_the_report_says_which() {
+    // A LeRobot video feature's pixels live outside the Parquet, so its frames carry no hash — and
+    // `duplicate-episode` aborts the whole episode signature if any frame of any stream lacks one.
+    // One video feature, the ordinary layout of a real dataset, made two byte-identical episodes
+    // undetectable, and `stuck-stream` (which only looks at Video streams) never ran at all.
+    let mut cam = stream("observation.images.top", "c", None, &[0, 1]);
+    cam.modality = Modality::Video;
+    for f in &mut cam.frames {
+        f.value_ref.content_hash = None;
+    }
+    let d = dataset(vec![episode(0, vec![cam])]);
+
+    // The content checks are silent, as designed — and that silence is now stated.
+    assert!(structural::DuplicateEpisode.run(&d).is_empty());
+    assert!(structural::StuckStream.run(&d).is_empty());
+    let f = structural::ContentMeasurability.run(&d);
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "STRUCTURAL.UNFINGERPRINTED_CONTENT");
+    assert_eq!(f[0].severity, Severity::Info);
+    assert!(
+        f[0].message.contains("no episode was fully fingerprinted"),
+        "the dataset-wide consequence must be stated, not inferred: {}",
+        f[0].message
+    );
+
+    // A fully fingerprinted dataset is not accused of anything.
+    let mut hashed = stream("a", "c", None, &[0, 1]);
+    for (i, f) in hashed.frames.iter_mut().enumerate() {
+        f.value_ref.content_hash = Some([i as u8; 32]);
+    }
+    let d = dataset(vec![episode(0, vec![hashed])]);
+    assert!(structural::ContentMeasurability.run(&d).is_empty());
 }

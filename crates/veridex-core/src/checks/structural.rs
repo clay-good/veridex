@@ -1020,3 +1020,111 @@ impl Check for StuckStream {
         findings
     }
 }
+
+/// Streams whose frames carry no content fingerprint — and therefore what the content-based checks
+/// could not compare.
+///
+/// The third of the family that
+/// [`ClockMeasurability`](crate::checks::temporal::ClockMeasurability) started. Two checks in this
+/// module prove things about frame *content*: `structural.duplicate-episode` (two episodes holding
+/// byte-identical frames — a re-upload or a bad merge) and `structural.stuck-stream` (a camera
+/// repeating a byte-identical frame while timestamps advance — a freeze no timestamp check can see).
+/// Both are sound-only by design: they compare `content_hash`, and abstain on any frame without one.
+///
+/// That abstention was silent, and it is not a rare corner. A LeRobot video feature's pixels live in
+/// `.mp4` files outside the Parquet, so its frames carry no hash — and `duplicate-episode` aborts the
+/// whole episode signature if *any* frame of *any* stream lacks one, so a single video feature makes
+/// two byte-identical episodes undetectable. That is the ordinary layout of a real LeRobot dataset.
+/// `stuck-stream` only ever looks at `Video` streams, which on LeRobot are exactly the hashless ones,
+/// so the frozen-camera check never ran there at all. Both reported nothing, and nothing read as
+/// clean.
+///
+/// Informational: the dataset is not worse for storing its pixels beside its table. What changes is
+/// that "no duplicate episodes found" and "no stuck camera found" were not findings about the data.
+pub struct ContentMeasurability;
+
+impl Check for ContentMeasurability {
+    fn id(&self) -> &'static str {
+        "structural.content-measurability"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["STRUCTURAL.UNFINGERPRINTED_CONTENT"]
+    }
+    fn title(&self) -> &'static str {
+        "Frame content was fingerprinted"
+    }
+    fn category(&self) -> Category {
+        Category::Structural
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Info
+    }
+    fn scope(&self) -> Scope {
+        Scope::Dataset
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        // Reported once for the dataset: whether a stream's payload is hashable is a property of the
+        // source layout, so one finding per episode would repeat the same fact for every episode.
+        let mut unhashed: BTreeSet<&str> = BTreeSet::new();
+        // Whether any episode was fingerprintable at all — the duplicate check needs a whole episode.
+        let mut any_episode_complete = false;
+        let mut any_frames = false;
+        for ep in &dataset.episodes {
+            let mut complete = !ep.streams.is_empty();
+            for s in &ep.streams {
+                if s.frames.is_empty() {
+                    continue;
+                }
+                any_frames = true;
+                if s.frames.iter().any(|f| f.value_ref.content_hash.is_none()) {
+                    unhashed.insert(s.name.as_str());
+                    complete = false;
+                }
+            }
+            any_episode_complete |= complete;
+        }
+        if unhashed.is_empty() || !any_frames {
+            return Vec::new();
+        }
+
+        let names: Vec<&str> = unhashed.into_iter().collect();
+        let shown = names.iter().take(4).copied().collect::<Vec<_>>().join(", ");
+        let listed = match names.len().saturating_sub(4) {
+            0 => shown,
+            rest => format!("{shown} and {rest} more"),
+        };
+        // The duplicate check needs *every* stream of an episode hashed, so one hashless feature
+        // disables it for the whole dataset — a much larger consequence than the per-stream one, and
+        // worth stating separately rather than leaving the reader to infer it.
+        let duplicate_note = if any_episode_complete {
+            "the duplicate-episode check still applies to the episodes that were fully fingerprinted"
+        } else {
+            "no episode was fully fingerprinted, so the duplicate-episode check could not run on \
+             this dataset at all"
+        };
+        vec![Finding::new(
+            self.id(),
+            Category::Structural,
+            Severity::Info,
+            Location::Dataset,
+            "STRUCTURAL.UNFINGERPRINTED_CONTENT",
+            format!(
+                "{} stream(s) carry frames with no content fingerprint, so the stuck-stream check \
+                 could not inspect them ({listed}); {duplicate_note}",
+                names.len(),
+            ),
+        )
+        .with_risk(
+            "The content-based checks prove things by comparing frame bytes. Where there are no \
+             bytes to compare, they produce nothing — so a re-uploaded episode or a frozen camera \
+             in these streams is not absent from this report, it was never looked for.",
+        )
+        .with_remedy(
+            "Treat duplicate-episode and stuck-stream as unverified for these streams. For a \
+             LeRobot dataset this is the video features, whose pixels live outside the Parquet.",
+        )]
+    }
+}

@@ -19,6 +19,10 @@ pub struct ReportDiff {
     pub old_score: Option<i64>,
     /// The new trust score, if present.
     pub new_score: Option<i64>,
+    /// The two reports' coverage kinds (`full`, `sample`, `metadata_only`), when recorded.
+    pub old_coverage: Option<String>,
+    /// See [`ReportDiff::old_coverage`].
+    pub new_coverage: Option<String>,
 }
 
 impl ReportDiff {
@@ -29,6 +33,32 @@ impl ReportDiff {
             _ => None,
         }
     }
+
+    /// Whether the two reports cover different amounts of their dataset.
+    ///
+    /// A diff assumes the two runs looked at the same thing. When they did not, every comparison it
+    /// makes is meaningless in the flattering direction: substituting a metadata-only or sampled
+    /// report for a full one silences most of the catalog, and the result reads as findings
+    /// *resolved* and a trust score that went up. Callers gating on a diff must treat this as a
+    /// regression, not an improvement.
+    pub fn coverage_differs(&self) -> bool {
+        match (&self.old_coverage, &self.new_coverage) {
+            (Some(o), Some(n)) => o != n,
+            // One report predating the coverage field is not evidence of a change.
+            _ => false,
+        }
+    }
+}
+
+/// The coverage kind a report records (`full`, `sample`, `metadata_only`), if it carries one.
+fn coverage_kind(report: &Value) -> Option<String> {
+    report
+        .get("verdict")
+        .unwrap_or(report)
+        .get("coverage")
+        .and_then(|c| c.get("kind"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 /// Whether a JSON value is shaped like a Veridex report at all: it must carry a findings array,
@@ -92,6 +122,8 @@ pub fn diff_reports(old: &Value, new: &Value) -> ReportDiff {
         unchanged,
         old_score: trust_score(old),
         new_score: trust_score(new),
+        old_coverage: coverage_kind(old),
+        new_coverage: coverage_kind(new),
     }
 }
 
@@ -101,6 +133,16 @@ pub fn render_diff(diff: &ReportDiff) -> String {
     let mut out = String::new();
 
     let _ = writeln!(out, "Veridex diff");
+    // Stated before anything else, because it invalidates everything after it.
+    if diff.coverage_differs() {
+        let _ = writeln!(
+            out,
+            "  Coverage: CHANGED — {} -> {}. The two runs did not look at the same thing, so \
+             every comparison below is between unlike reports.",
+            diff.old_coverage.as_deref().unwrap_or("unknown"),
+            diff.new_coverage.as_deref().unwrap_or("unknown"),
+        );
+    }
     if let (Some(o), Some(n)) = (diff.old_score, diff.new_score) {
         let delta = n - o;
         let sign = if delta > 0 { "+" } else { "" };

@@ -1245,7 +1245,13 @@ fn cmd_provenance(rest: &[String]) -> ExitCode {
 
 /// A diff is a regression when the new report introduced any finding or its trust score dropped.
 fn is_regression(diff: &veridex_core::ReportDiff) -> bool {
-    !diff.introduced.is_empty() || diff.score_delta().is_some_and(|d| d < 0)
+    // A coverage change is a regression on its own, whichever direction the numbers moved.
+    // Substituting a metadata-only or sampled report for a full one silences most of the catalog,
+    // so the diff reads as findings *resolved* and a trust score that went up — a gate that passes
+    // precisely because the new run stopped looking.
+    diff.coverage_differs()
+        || !diff.introduced.is_empty()
+        || diff.score_delta().is_some_and(|d| d < 0)
 }
 
 fn cmd_diff(rest: &[String]) -> ExitCode {
@@ -1321,6 +1327,15 @@ fn cmd_diff(rest: &[String]) -> ExitCode {
     // For CI: optionally fail when the new report regressed — any finding introduced, or a lower
     // trust score. Without the flag, diff is purely informational and always exits 0.
     if fail_on_regression && is_regression(&diff) {
+        if diff.coverage_differs() {
+            eprintln!(
+                "veridex: regression — the two reports cover different amounts of their dataset \
+                 ({} -> {}), so the comparison is between unlike runs",
+                diff.old_coverage.as_deref().unwrap_or("unknown"),
+                diff.new_coverage.as_deref().unwrap_or("unknown"),
+            );
+            return ExitCode::from(EXIT_FAIL);
+        }
         eprintln!(
             "veridex: regression — {} finding(s) introduced, score delta {}",
             diff.introduced.len(),
@@ -1446,9 +1461,18 @@ mod tests {
             unchanged: vec![],
             old_score: Some(80),
             new_score: Some(80),
+            old_coverage: Some("full".into()),
+            new_coverage: Some("full".into()),
         };
         // No change → not a regression.
         assert!(!super::is_regression(&base));
+        // A coverage change is a regression on its own: the new run may report fewer findings and a
+        // higher score precisely because it stopped looking.
+        let narrowed = veridex_core::ReportDiff {
+            new_coverage: Some("metadata_only".into()),
+            ..base.clone()
+        };
+        assert!(super::is_regression(&narrowed));
         // An introduced finding → regression, even at an unchanged score.
         let mut with_finding = base.clone();
         with_finding.introduced = vec![json!({"code": "X"})];

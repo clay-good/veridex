@@ -61,3 +61,44 @@ fn render_diff_summarizes_scores_and_counts() {
     assert!(text.contains("1 introduced"), "unexpected: {text}");
     assert!(text.contains("TEMPORAL.CLOCK_SKEW"));
 }
+
+#[test]
+fn a_partial_report_swapped_for_a_full_one_is_a_regression_not_a_fix() {
+    // A diff assumes the two runs looked at the same thing. When they did not, every comparison it
+    // makes is wrong in the flattering direction: substituting a metadata-only report for a full one
+    // silences most of the catalog, so the findings the full run reported read as *resolved* and the
+    // trust score goes up. A `--fail-on-regression` gate then passes precisely because the new run
+    // stopped looking.
+    let full = serde_json::json!({
+        "verdict": {
+            "coverage": { "kind": "full" },
+            "findings": [{ "code": "STATISTICAL.RANGE_INVERTED", "severity": "error" }],
+        },
+        "trust_score": { "score": 70 },
+    });
+    let partial = serde_json::json!({
+        "verdict": { "coverage": { "kind": "metadata_only" }, "findings": [] },
+        "trust_score": { "score": 80 },
+    });
+
+    let diff = veridex_core::diff_reports(&full, &partial);
+    assert_eq!(diff.resolved.len(), 1, "the finding does read as resolved");
+    assert_eq!(
+        diff.score_delta(),
+        Some(10),
+        "and the score does read as up"
+    );
+    assert!(
+        diff.coverage_differs(),
+        "so the coverage change is what has to carry the truth"
+    );
+    let rendered = veridex_core::render_diff(&diff);
+    assert!(rendered.contains("Coverage: CHANGED"), "{rendered}");
+
+    // Two runs of the same coverage compare normally.
+    let same = veridex_core::diff_reports(&full, &full);
+    assert!(!same.coverage_differs());
+    // And a report predating the coverage field is not evidence of a change.
+    let old_style = serde_json::json!({ "verdict": { "findings": [] } });
+    assert!(!veridex_core::diff_reports(&old_style, &full).coverage_differs());
+}

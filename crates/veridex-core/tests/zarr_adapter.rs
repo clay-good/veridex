@@ -404,6 +404,10 @@ fn a_zarr_store_flows_through_the_whole_pipeline() {
         .map(|f| f.code.as_str())
         .filter(|c| !c.starts_with("PROVENANCE."))
         .filter(|c| *c != "TEMPORAL.UNMEASURED_CLOCK")
+        // A Zarr store recomputes statistics but publishes none of its own, so the two checks that
+        // compare the source's summary against its data had nothing to compare. Disclosed, not
+        // accused: the recomputed checks did run.
+        .filter(|c| *c != "STATISTICAL.NO_STORED_STATS")
         .collect();
     assert!(
         noise.is_empty(),

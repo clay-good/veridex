@@ -772,3 +772,144 @@ impl Check for ExtremeOutlier {
         findings
     }
 }
+
+/// Streams whose values this run never read — and therefore what the rest of this family could not
+/// measure.
+///
+/// The same reasoning as [`ClockMeasurability`](crate::checks::temporal::ClockMeasurability), one
+/// family over. Every statistical check reads either the source's *stored* summary statistics or the
+/// ones the adapter recomputed while fingerprinting the data. Four adapters populate neither: MCAP,
+/// CAN+DBC, ASAM MF4, and RLDS/TFDS fingerprint payload bytes without interpreting them, so
+/// `stats`, `observed_stats`, `observed_saturation`, and `observed_non_finite` are all `None`. Every
+/// check in the family then hits its `let Some(...) else { continue }` and produces nothing.
+///
+/// What that looked like: a CAN log with a wheel-speed signal pinned exactly at 655.35 km/h for 70%
+/// of its frames, and a constant throttle beside it, reported `pass-with-warnings`, `data 100`, and
+/// findings from the provenance family alone — while the certificate listed all five statistical
+/// checks under `checks_run` with `categories_skipped: []`. A saturated actuator, a NaN buried in a
+/// signal, and a stale stored statistic all sign as checked-and-clean.
+///
+/// HDF5 and Zarr are a narrower case of the same thing: they recompute statistics but carry no
+/// stored ones, so the two checks that compare the source's own summary against the data — the
+/// stored-vs-observed comparison and the stored-range sanity rules — can never fire on them either.
+/// Both are reported, because the difference between "checked and clean" and "never looked" is the
+/// whole value of the result.
+///
+/// Informational, not a defect: a dataset is not worse for the container it was published in. What
+/// it changes is what a passing verdict is evidence of.
+pub struct ValueMeasurability;
+
+impl Check for ValueMeasurability {
+    fn id(&self) -> &'static str {
+        "statistical.value-measurability"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &[
+            "STATISTICAL.UNMEASURED_VALUES",
+            "STATISTICAL.NO_STORED_STATS",
+        ]
+    }
+    fn title(&self) -> &'static str {
+        "Values were read at all"
+    }
+    fn category(&self) -> Category {
+        Category::Statistical
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Info
+    }
+    fn scope(&self) -> Scope {
+        Scope::Dataset
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        // Reported once for the dataset: whether values are read is a property of the source format,
+        // so one finding per episode would repeat the same fact for every episode.
+        let mut unread: std::collections::BTreeSet<&str> = Default::default();
+        let mut no_stored: std::collections::BTreeSet<&str> = Default::default();
+        for ep in &dataset.episodes {
+            for s in &ep.streams {
+                let recomputed = s.observed_stats.is_some()
+                    || s.observed_saturation.is_some()
+                    || s.observed_non_finite.is_some()
+                    || s.observed_dim_stats.is_some();
+                if !recomputed && s.stats.is_none() && s.dim_stats.is_none() {
+                    unread.insert(s.name.as_str());
+                } else if recomputed && s.stats.is_none() && s.dim_stats.is_none() {
+                    no_stored.insert(s.name.as_str());
+                }
+            }
+        }
+
+        let mut findings = Vec::new();
+        if !unread.is_empty() {
+            let names: Vec<&str> = unread.into_iter().collect();
+            findings.push(
+                Finding::new(
+                    self.id(),
+                    Category::Statistical,
+                    Severity::Info,
+                    Location::Dataset,
+                    "STATISTICAL.UNMEASURED_VALUES",
+                    format!(
+                        "{} stream(s) carry neither stored nor recomputed statistics, so the \
+                         saturation, outlier, non-finite, stored-vs-observed and range-sanity \
+                         checks had nothing to measure on them ({})",
+                        names.len(),
+                        list_a_few(&names),
+                    ),
+                )
+                .with_risk(
+                    "Nothing in this run can tell you whether these streams hold a saturated \
+                     actuator, a NaN, a stuck sensor, or a unit error. A clean statistical result \
+                     here is the absence of a measurement, not evidence of good values.",
+                )
+                .with_remedy(
+                    "Treat the statistical result as unverified for these streams. If value \
+                     integrity matters, check them in a format whose values Veridex reads \
+                     (LeRobot, HDF5, Zarr).",
+                ),
+            );
+        }
+        if !no_stored.is_empty() {
+            let names: Vec<&str> = no_stored.into_iter().collect();
+            findings.push(
+                Finding::new(
+                    self.id(),
+                    Category::Statistical,
+                    Severity::Info,
+                    Location::Dataset,
+                    "STATISTICAL.NO_STORED_STATS",
+                    format!(
+                        "{} stream(s) carry recomputed statistics but none stored by the source, \
+                         so the stored-vs-observed comparison and the stored-range sanity rules had \
+                         nothing to compare against ({})",
+                        names.len(),
+                        list_a_few(&names),
+                    ),
+                )
+                .with_risk(
+                    "The recomputed statistics still catch bad values, but nothing here can tell \
+                     you whether the summary statistics the source publishes agree with its own \
+                     data — the mismatch that silently mis-normalizes training.",
+                )
+                .with_remedy(
+                    "Export the source's summary statistics alongside the data if downstream \
+                     tooling relies on them.",
+                ),
+            );
+        }
+        findings
+    }
+}
+
+/// Name a few of a list and count the rest. Naming four is useful; naming four hundred is not.
+fn list_a_few(names: &[&str]) -> String {
+    let shown = names.iter().take(4).copied().collect::<Vec<_>>().join(", ");
+    match names.len().saturating_sub(4) {
+        0 => shown,
+        rest => format!("{shown} and {rest} more"),
+    }
+}

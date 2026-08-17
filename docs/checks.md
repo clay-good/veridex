@@ -25,6 +25,7 @@ exclusive.
 | `structural.shape-consistency` | `STRUCTURAL.SHAPE_MISMATCH` | error | A stream keeps a different declared dtype/shape across episodes (un-batchable). |
 | `structural.stream-presence` | `STRUCTURAL.STREAM_PRESENCE_INCONSISTENT` | warning | A stream key is present in some episodes but missing from others — a heterogeneous feature set (a sensor that dropped out, or two exports pooled together). |
 | `structural.stuck-stream` | `STRUCTURAL.STUCK_STREAM` | warning | A `Video` stream repeats a byte-identical frame (same `content_hash`) for ≥5 consecutive frames while timestamps advance — a frozen/stuck camera the timestamp-based temporal checks can't see. Real camera frames are never byte-identical, so this is unambiguous. Only frames carrying a `content_hash` are compared (MCAP images are fingerprinted; LeRobot video lives outside the Parquet, so the check abstains there). Constant *scalar* streams are `STATISTICAL.DEGENERATE`'s concern, not this. |
+| `structural.content-measurability` | `STRUCTURAL.UNFINGERPRINTED_CONTENT` | info | A stream's frames carry no content fingerprint, so the two checks that prove things by comparing frame bytes — `structural.duplicate-episode` and `structural.stuck-stream` — could not inspect it. The abstention is not a corner case: a LeRobot video feature's pixels live in `.mp4` files outside the Parquet, and the duplicate check aborts the whole episode signature if *any* frame of *any* stream lacks a hash — so one video feature, the ordinary layout of a real LeRobot dataset, made two byte-identical episodes undetectable. `stuck-stream` only looks at `Video` streams, which on LeRobot are exactly the hashless ones, so the frozen-camera check never ran there at all. The finding states separately whether *no* episode was fully fingerprinted, since that disables the duplicate check dataset-wide. |
 | `structural.duplicate-episode` | `STRUCTURAL.DUPLICATE_EPISODE` | warning | Two or more episodes have identical frame **content** (same schema, timestamps, and per-frame `content_hash`) — a re-upload or a bad merge that over-weights the repeated trajectories. Sound-only: an episode is compared solely when every frame carries a `content_hash`, so it never mis-flags two different same-length episodes that merely share a time base and dataset-global stats. Fires once adapters populate per-frame content hashes; near-duplicate detection needs frame payloads and is out of MVP scope. |
 
 ## Temporal — is the time base sound?
@@ -57,6 +58,8 @@ signed certificate on the strength of a timeline nobody measured, so those strea
 
 | Check id | Finding code | Severity | Fires when |
 |---|---|---|---|
+| `statistical.value-measurability` | `STATISTICAL.UNMEASURED_VALUES` | info | A stream carries neither stored nor recomputed statistics, so every check in this family had nothing to measure on it. Reported for the same reason `TEMPORAL.UNMEASURED_CLOCK` is: MCAP, CAN+DBC, MF4 and RLDS fingerprint payload bytes without interpreting them, so a CAN log with a wheel speed pinned at its rail for 70% of the recording reported `data 100` with no statistical findings — while the certificate listed all five statistical checks as run with no categories skipped. A saturated actuator, a buried NaN, and a stale stored statistic all signed as checked-and-clean. Informational: a dataset is not worse for the container it was published in; what changes is what a passing verdict is evidence of. |
+| `statistical.value-measurability` | `STATISTICAL.NO_STORED_STATS` | info | A stream's values *were* read and summarized, but the source published no summary statistics of its own — so `statistical.stored-vs-observed` and the stored-range rules of `statistical.range-sanity` had nothing to compare against. This is HDF5 and Zarr, which recompute but carry no stored stats. The recomputed checks still apply; the source-agreement ones did not run. |
 | `statistical.range-sanity` | `STATISTICAL.NON_FINITE` | error | A stored min/max/mean/std is NaN or infinite. |
 | `statistical.range-sanity` | `STATISTICAL.RANGE_INVERTED` | error | Stored `min > max`. |
 | `statistical.range-sanity` | `STATISTICAL.NEGATIVE_STD` | error | Stored standard deviation is negative. |
@@ -219,6 +222,23 @@ is an independent second assertion and the check runs.
 The verdict carries `coverage: {"kind": "metadata_only", …}` — bound into its hash, printed in every
 report — and `certify` refuses to issue a certificate from it. A dataset whose manifest is sound has
 been told nothing about its data.
+
+## When a check could not measure anything
+
+Three checks in the catalog exist only to report what the rest of their family could *not* do, and
+they are all built the same way — as findings, because a finding is the one disclosure that reaches
+the terminal report, the JSON, the SARIF, the HTML, and the certificate's own summary:
+
+| Check | Says |
+|---|---|
+| `temporal.clock-measurability` | the source records no wall clock, so the timing checks graded a step index or nothing at all |
+| `statistical.value-measurability` | the adapter never read values (MCAP, CAN+DBC, MF4, RLDS), or read them but had no stored statistics to compare against (HDF5, Zarr) |
+| `structural.content-measurability` | frames carry no content fingerprint, so the duplicate-episode and stuck-stream checks had no bytes to compare |
+
+All three are **informational**: a dataset is not worse for the container it was published in. What
+they change is what a passing verdict is evidence *of*. Without them, a CAN log with a wheel speed
+pinned at its rail for 70% of the recording reported `data 100` with no statistical findings — and
+the certificate listed all five statistical checks under `checks_run` with `categories_skipped: []`.
 
 ## Coverage disclosure
 

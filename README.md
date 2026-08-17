@@ -116,8 +116,8 @@ CLI, an import never picks one up from the working directory.
 ```sh
 cargo build
 
-# generate a demo MCAP with a synthetic cross-stream clock skew (append `clean`,
-# `late-start`, or `stuck` for a clean recording, a late sensor, or a frozen camera)
+# generate a demo MCAP with a synthetic cross-stream clock skew (append `clean`, `late-start`,
+# `stuck`, `av`, or `av-miscalibrated`; an unknown variant is refused, never silently substituted)
 cargo run -p veridex-core --example make_demo_mcap -- /tmp/demo.mcap
 
 # validate it — prints a report and exits non-zero on failure
@@ -396,6 +396,14 @@ What Veridex does **not** tell you, stated plainly because silence would read as
 decodes a pixel or a point, so it says nothing about the *content* of your imagery — no PII or face
 detection, and no near-duplicate detection beyond exact content matches. Both limits, and every
 check's own abstention rules, are recorded in [docs/checks.md](docs/checks.md).
+
+And where a check *could not run at all*, the report says so rather than staying quiet. A source that
+records no wall clock, one whose values Veridex never interprets, one whose frames carry no content
+fingerprint — each produces an informational finding naming the checks that had nothing to measure,
+and it travels into the JSON, the SARIF, the HTML, and the certificate. The alternative is what this
+tool exists to prevent: a CAN log with a wheel speed pinned at its rail for 70% of the recording
+scoring `data 100` with no statistical findings, over a certificate listing all five statistical
+checks as run with nothing skipped.
 
 Start with [openspec/project.md](openspec/project.md) for the design, or track progress in
 [openspec/changes/bootstrap-veridex-mvp/tasks.md](openspec/changes/bootstrap-veridex-mvp/tasks.md).

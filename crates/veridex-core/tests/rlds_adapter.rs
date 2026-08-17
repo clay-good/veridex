@@ -845,6 +845,9 @@ fn a_clean_rlds_dataset_passes_the_standard_checks_without_false_findings() {
         .map(|f| f.code.as_str())
         .filter(|code| !code.starts_with("PROVENANCE."))
         .filter(|code| *code != "TEMPORAL.UNMEASURED_CLOCK")
+        // The other half of the same disclosure: RLDS fingerprints payload bytes without
+        // interpreting them, so the statistical family had nothing to measure and says so.
+        .filter(|code| *code != "STATISTICAL.UNMEASURED_VALUES")
         .collect();
     assert!(
         noise.is_empty(),
