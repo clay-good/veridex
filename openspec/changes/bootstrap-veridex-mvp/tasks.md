@@ -55,9 +55,23 @@ the build plan.
       payload being read — so drawing a few episodes from a 900 MB shard costs a few episodes of I/O,
       at the stated cost that a sampled run does not attest what it skipped. Single-episode formats (MCAP,
       CAN+DBC, MF4) refuse a sample rather than returning everything. Coverage rides in the verdict (and its hash), every report states it, and
-      `certify` refuses a partial run. True streaming (never materializing the whole CDM) and remote
-      Hub ingestion remain follow-ups; `metadata_only` and `Source::Remote` are **refused** with
-      `IngestError::NotImplemented` rather than silently ignored.
+      `certify` refuses a partial run.
+      **Metadata-only ingestion is in too** (`--metadata-only`, `veridex.check(..., metadata_only=True)`):
+      the LeRobot adapter builds the CDM from `meta/` alone — the declared episode set and per-episode
+      lengths, every feature's dtype/shape/rate, `meta/stats.json`, the dataset card's license — and
+      opens no Parquet or video file. Every episode therefore carries zero frames *by request*, so the
+      engine hands each check a `CheckContext { frames_read: false }` and the frame-dependent arms
+      abstain instead of reading that absence as a defect (`FRAME_COUNT_MISMATCH`, the declared-length
+      arm of `EPISODE_BOUNDARY`, and `EMPTY_STREAM`/`SINGLE_FRAME_STREAM` would otherwise fire on every
+      sound dataset). What remains live is the whole stored-statistics family, the provenance family,
+      shape/stream-presence consistency, and — only when `meta/episodes.jsonl` makes it an independent
+      second assertion — the declared episode count; derived from `total_episodes` alone the comparison
+      could not fail, so it is **withheld and reported as omitted** rather than passed. Coverage rides
+      in the verdict as `metadata_only` (and in its hash), every report prints it, and `certify` refuses
+      it. An adapter must claim `Adapter::supports_metadata_only()` to be handed the option, so the six
+      formats that keep their structure inside the container are refused by name, not silently degraded.
+      True streaming (never materializing the whole CDM) and remote Hub ingestion remain follow-ups;
+      `Source::Remote` is **refused** with `IngestError::NotImplemented` rather than silently ignored.
 - [x] **Gate test:** the same logical dataset as LeRobot v3 and MCAP yields equivalent CDMs
       (`tests/lerobot_adapter.rs::same_logical_dataset_yields_equivalent_cdms_across_formats`).
 

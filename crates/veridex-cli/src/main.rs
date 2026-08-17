@@ -77,6 +77,7 @@ struct Args {
     sample_episodes: Option<String>,
     sample_fraction: Option<String>,
     sample_seed: Option<String>,
+    metadata_only: bool,
     profile: Option<String>,
     fail_on_regression: bool,
     /// Every positional argument, in order. `path` is the first; `diff` takes two.
@@ -96,7 +97,7 @@ impl Args {
     /// The single source of truth for [`reject_flags_except`]. Adding a flag to the parser without
     /// adding it here means it is never checked, so the two lists are kept adjacent, and a test
     /// asserts this covers the parser's whole flag set.
-    fn given_flags(&self) -> [(&'static str, bool); 21] {
+    fn given_flags(&self) -> [(&'static str, bool); 22] {
         [
             ("--json", self.json),
             ("--sarif", self.sarif),
@@ -122,6 +123,7 @@ impl Args {
             ("--sample-episodes", self.sample_episodes.is_some()),
             ("--sample-fraction", self.sample_fraction.is_some()),
             ("--sample-seed", self.sample_seed.is_some()),
+            ("--metadata-only", self.metadata_only),
         ]
     }
 }
@@ -131,6 +133,11 @@ const INGEST_FLAGS: &[&str] = &["--format", "--max-frames", "--max-decompression
 
 /// The sampling flags, honored only where a partial verdict is meaningful (`check`, `inspect`).
 const SAMPLING_FLAGS: &[&str] = &["--sample-episodes", "--sample-fraction", "--sample-seed"];
+
+/// The metadata-only flag, honored alongside sampling wherever a partial verdict is meaningful
+/// (`check`, `inspect`). Separate from [`SAMPLING_FLAGS`] because it is a different kind of partial:
+/// every episode, none of the data — rather than some episodes, all of their data.
+const METADATA_ONLY_FLAG: &[&str] = &["--metadata-only"];
 
 /// Parse the shared flag set. Rejects unknown `--`-flags and value-flags whose value is missing or
 /// looks like another flag, so a typo can never silently disable a gate (e.g. `--min-scor 90` would
@@ -155,6 +162,7 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
     let mut sample_episodes = None;
     let mut sample_fraction = None;
     let mut sample_seed = None;
+    let mut metadata_only = false;
     let mut profile = None;
     let mut fail_on_regression = false;
     let mut positionals: Vec<String> = Vec::new();
@@ -175,6 +183,7 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
             "--force" => force = true,
             "--allow-any-issuer" => allow_any_issuer = true,
             "--fail-on-regression" => fail_on_regression = true,
+            "--metadata-only" => metadata_only = true,
             "--config" => config = Some(value("--config")?),
             "--format" => format = Some(value("--format")?),
             "--key" => key = Some(value("--key")?),
@@ -218,6 +227,7 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
         sample_episodes,
         sample_fraction,
         sample_seed,
+        metadata_only,
         profile,
         fail_on_regression,
         positionals,
@@ -344,6 +354,7 @@ fn ingest_options(args: &Args) -> Result<IngestOptions, String> {
     }
     let defaults = IngestOptions::default();
     Ok(IngestOptions {
+        metadata_only: args.metadata_only,
         sample: sample_from(args)?,
         max_frames: budget(
             "--max-frames",
@@ -355,7 +366,6 @@ fn ingest_options(args: &Args) -> Result<IngestOptions, String> {
             args.max_decompression_ratio.as_deref(),
             defaults.max_decompression_ratio,
         )?,
-        ..defaults
     })
 }
 
@@ -416,6 +426,7 @@ fn cmd_check(rest: &[String]) -> ExitCode {
             ],
             INGEST_FLAGS,
             SAMPLING_FLAGS,
+            METADATA_ONLY_FLAG,
         ],
     ) {
         return code;
@@ -662,7 +673,12 @@ fn cmd_inspect(rest: &[String]) -> ExitCode {
     if let Err(code) = reject_flags_except(
         "inspect",
         &args,
-        &[&["--json"], INGEST_FLAGS, SAMPLING_FLAGS],
+        &[
+            &["--json"],
+            INGEST_FLAGS,
+            SAMPLING_FLAGS,
+            METADATA_ONLY_FLAG,
+        ],
     ) {
         return code;
     }
@@ -805,6 +821,15 @@ fn cmd_certify(rest: &[String]) -> ExitCode {
         eprintln!(
             "veridex: certify does not support sampling — a certificate speaks for the whole \
              dataset, so issue it from a full check"
+        );
+        return ExitCode::from(EXIT_TOOL_ERROR);
+    }
+    // Same reasoning, different omission: a metadata-only run never opened the data a certificate
+    // would be attesting.
+    if args.metadata_only {
+        eprintln!(
+            "veridex: certify does not support --metadata-only — a certificate speaks for a \
+             dataset's data, and a metadata-only run checks only its manifest"
         );
         return ExitCode::from(EXIT_TOOL_ERROR);
     }
@@ -1348,7 +1373,9 @@ fn print_help() {
                          check only the first n episodes (check, inspect; LeRobot, RLDS, HDF5, Zarr)
     --sample-fraction <f>
                          check a deterministic fraction of episodes, f in (0, 1]
-    --sample-seed <n>    fix the --sample-fraction draw (default 0)"
+    --sample-seed <n>    fix the --sample-fraction draw (default 0)
+    --metadata-only      check the manifest, stored stats, and provenance without reading any
+                         stream payload (check, inspect; LeRobot)"
     );
     println!("    --allow-any-issuer   verify without pinning an issuer key — accepts ANY signer (verify)");
     println!("    --force              overwrite existing key files (keygen)");

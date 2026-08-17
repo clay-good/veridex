@@ -70,6 +70,9 @@ pub fn run_check_with(
             request: sample.describe(),
             episodes_ingested: *episodes_ingested,
         },
+        Coverage::MetadataOnly { episodes_declared } => CoverageNote::MetadataOnly {
+            episodes_declared: *episodes_declared,
+        },
     };
     let verdict = engine.run_over(&ingested.dataset, hash, &run_config, coverage);
     let trust = score(&verdict, &ProvenanceCoverage::of(&ingested.dataset));

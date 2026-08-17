@@ -181,3 +181,37 @@ or `total` does get that check.
 
 All three limits are recorded here rather than left implicit, on the same principle as the rest of
 the catalog: a check that abstains must say so, or its silence reads as a pass.
+
+## What a metadata-only run checks
+
+`veridex check --metadata-only <dataset>` (LeRobot only, today) answers a narrower question — *does
+the manifest hold together?* — without opening a single Parquet or video file. It is the fast CI
+gate for a dataset too large to read on every commit, and the shape a remote Hub check will take.
+
+What still applies, because it is all manifest content:
+
+| Family | Still checked |
+|---|---|
+| Structural | declared vs. actual episode count, duplicate episode indices, cross-episode dtype/shape consistency, stream-presence consistency, episode-index gaps |
+| Statistical | every stored-statistics check over `meta/stats.json` — inverted ranges, non-finite values, a mean outside its own min/max, an impossible standard deviation |
+| Provenance | the whole family: license, sensor, source format, and every completeness/consistency rule |
+
+What abstains, and why it must:
+
+| Check | Why it cannot run |
+|---|---|
+| `structural.declared-frame-count` | The declared total is a claim about frames, and no frame was read. |
+| `structural.episode-boundary` (declared-length arm) | Same: "declares 120, ingested 0" is true of every sound dataset checked this way. Its duplicate-index and inverted-bounds arms still run. |
+| `structural.degenerate-episode` (per-stream arms) | Every stream carries no frames *by request*, so `EMPTY_STREAM` would fire on all of them. `EMPTY_DATASET` and `EMPTY_EPISODE` still run. |
+| every temporal check | There are no timestamps to grade. |
+| every recomputed statistical check, `structural.stuck-stream`, `structural.duplicate-episode`, every video check | All read values, per-frame content hashes, or media headers. |
+
+And one refusal worth naming: when the episode set comes from `info.json`'s `total_episodes` alone
+(no `meta/episodes.jsonl`), the declared-episode-count check is **withheld** rather than run, because
+the episode set *is* that number and the comparison could not fail. A check that cannot fail passing
+is exactly the silence this catalog exists to prevent. With `meta/episodes.jsonl` present, the total
+is an independent second assertion and the check runs.
+
+The verdict carries `coverage: {"kind": "metadata_only", …}` — bound into its hash, printed in every
+report — and `certify` refuses to issue a certificate from it. A dataset whose manifest is sound has
+been told nothing about its data.

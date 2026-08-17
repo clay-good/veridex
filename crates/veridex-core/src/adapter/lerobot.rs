@@ -779,6 +779,211 @@ fn load_episode_lengths(dir: &Path) -> BTreeMap<u64, u64> {
     out
 }
 
+/// Ingest a LeRobot dataset from its `meta/` manifest alone, without opening a Parquet or video file.
+///
+/// What this covers, honestly: the declared episode set and its per-episode lengths, every feature's
+/// name/dtype/shape/modality and declared rate, the stored summary statistics, and the provenance the
+/// dataset card and `info.json` record. What it does not cover is everything the data itself would
+/// answer — no timestamps, no values, no content hashes, no media. Every episode therefore carries
+/// zero frames *by request*, which is why the run is labelled [`Coverage::MetadataOnly`]: the checks
+/// that reason about frames are told to abstain rather than reading that absence as a defect, and a
+/// certificate cannot be issued from it.
+fn ingest_metadata_only(
+    dir: &Path,
+    info: &InfoJson,
+    features: &[FeatureSpec],
+    fps: f64,
+    declared_lengths: &BTreeMap<u64, u64>,
+) -> Result<Ingested, IngestError> {
+    // The episode set has to come from the manifest, since reading the data is exactly what this
+    // mode does not do. `meta/episodes.jsonl` is the good source: it names each episode and its
+    // declared length. Failing that, `info.json`'s `total_episodes` implies indices `0..total` —
+    // bounded by the same ceiling the sampled path uses, because the number is a handful of bytes in
+    // a file that may be lying. With neither, there is no episode set at all, and inventing one (or
+    // returning an empty dataset that reads as a clean pass) is refused.
+    let episode_indices: BTreeSet<u64> = if !declared_lengths.is_empty() {
+        declared_lengths.keys().copied().collect()
+    } else if let Some(total) = info.total_episodes.filter(|t| *t > 0) {
+        if total > MAX_DECLARED_EPISODES_FOR_SAMPLING {
+            return Err(IngestError::Parse {
+                format_id: "lerobot",
+                message: format!(
+                    "meta/info.json declares {total} episodes, over the \
+                     {MAX_DECLARED_EPISODES_FOR_SAMPLING} ceiling for deriving the episode set from \
+                     a declared total alone — ship meta/episodes.jsonl to check a dataset this \
+                     large with --metadata-only"
+                ),
+            });
+        }
+        (0..total).collect()
+    } else {
+        return Err(IngestError::Parse {
+            format_id: "lerobot",
+            message: "the dataset declares no episode set (no meta/episodes.jsonl and no \
+                      total_episodes in meta/info.json), so a metadata-only check has nothing to \
+                      check — run a full check instead"
+                .into(),
+        });
+    };
+
+    let stats = load_stats(dir);
+    let card_license = load_card_license(dir);
+
+    let episodes: Vec<Episode> = episode_indices
+        .iter()
+        .map(|&index| Episode {
+            index,
+            // No frame was read, so there is no measured window. Left `None` rather than derived
+            // from the declared length and fps, which would be a timeline Veridex made up.
+            start_ts: None,
+            end_ts: None,
+            streams: features
+                .iter()
+                .map(|(name, modality, dtype, shape)| Stream {
+                    name: name.clone(),
+                    modality: *modality,
+                    declared_rate_hz: if fps > 0.0 { Some(fps) } else { None },
+                    clock_id: CLOCK_ID.to_string(),
+                    // The clock is still the measured LeRobot clock; this run simply did not read
+                    // it. `ClockKind::Measured` describes the source, not the ingest, and the
+                    // temporal checks abstain here for want of frames rather than for want of a
+                    // clock — which the coverage note, not the clock kind, is what states.
+                    clock_kind: ClockKind::Measured,
+                    dtype: dtype.clone(),
+                    shape: shape.clone(),
+                    frames: Vec::new(),
+                    // Stored statistics are manifest content, so they are covered: the stats
+                    // sanity checks (inverted range, non-finite, mean outside range) run here.
+                    stats: stats.scalar.get(name).copied(),
+                    dim_stats: stats.per_dim.get(name).cloned(),
+                    // Everything below is recomputed from values, and no value was read.
+                    observed_stats: None,
+                    observed_saturation: None,
+                    observed_non_finite: None,
+                    observed_dim_stats: None,
+                    media: None,
+                    point_fields: None,
+                    frame_id: None,
+                })
+                .collect(),
+            // Task strings are resolved from a per-row `task_index` in the Parquet, which this mode
+            // does not read. Left absent rather than guessed; the task checks abstain on `None`.
+            task: None,
+            labels: Vec::new(),
+            ego_poses: None,
+            declared_frame_count: declared_lengths.get(&index).copied(),
+        })
+        .collect();
+
+    let mut elements = vec![ProvenanceElement {
+        key: "source_format".into(),
+        value: Some("lerobot".into()),
+        class: ProvenanceClass::Known,
+    }];
+    if let Some(robot) = &info.robot_type {
+        elements.push(ProvenanceElement {
+            key: "sensor".into(),
+            value: Some(robot.clone()),
+            class: ProvenanceClass::Known,
+        });
+    }
+    if let Some(license) = &card_license {
+        elements.push(ProvenanceElement {
+            key: "license".into(),
+            value: Some(license.clone()),
+            class: ProvenanceClass::Known,
+        });
+    }
+
+    // Whether the declared episode total is worth recording as a claim to check against depends on
+    // where the episode set came from. When `meta/episodes.jsonl` supplied it, `total_episodes` is an
+    // *independent* second assertion, and the two disagreeing is a real manifest inconsistency —
+    // exactly what this mode exists to catch. When `total_episodes` supplied the set itself, the
+    // comparison is `n == n`: a check that cannot fail, whose pass would then be reported as if
+    // something had been verified.
+    let declared_total_is_independent = !declared_lengths.is_empty();
+    let mut metadata = vec![
+        ("source_format".into(), "lerobot".into()),
+        (
+            "codebase_version".into(),
+            info.codebase_version.clone().unwrap_or_default(),
+        ),
+    ];
+    if declared_total_is_independent {
+        if let Some(total) = info.total_episodes {
+            metadata.push((
+                crate::cdm::META_DECLARED_EPISODES.to_string(),
+                total.to_string(),
+            ));
+        }
+    }
+
+    let dataset = Dataset {
+        id: dir
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("lerobot")
+            .to_string(),
+        metadata,
+        provenance: vec![Provenance {
+            scope: ProvenanceScope::Dataset,
+            elements,
+        }],
+        episodes,
+        calibration: None,
+    };
+
+    let mut mapped_fields = vec![
+        "features -> streams".into(),
+        "fps -> stream.declared_rate_hz".into(),
+        "feature.dtype -> stream.dtype".into(),
+        "feature.shape -> stream.shape".into(),
+        "robot_type -> provenance.sensor".into(),
+        "meta/stats.json -> stream.stats".into(),
+    ];
+    if !declared_lengths.is_empty() {
+        mapped_fields.push("meta/episodes.jsonl -> episodes + declared_frame_count".into());
+    } else {
+        mapped_fields.push("total_episodes -> episode set (0..total)".into());
+    }
+    if declared_total_is_independent && info.total_episodes.is_some() {
+        mapped_fields.push("total_episodes -> declared episode-count check".into());
+    }
+    if card_license.is_some() {
+        mapped_fields.push("README.md license -> provenance.license".into());
+    }
+
+    let mut omitted_fields = vec![
+        "frame timestamps, feature values, and content hashes (no Parquet was read)".into(),
+        "video container headers (no media file was opened)".into(),
+        "task strings (task_index lives in the Parquet data)".into(),
+        "total_frames (a claim about frames, and no frame was read)".into(),
+    ];
+    if !declared_total_is_independent && info.total_episodes.is_some() {
+        omitted_fields.push(
+            "total_episodes -> declared episode-count check (the episode set was derived from that \
+             same number, so the comparison could not fail)"
+                .into(),
+        );
+    }
+
+    let report = IngestReport {
+        format_id: "lerobot",
+        source_version: info.codebase_version.clone(),
+        coverage: Coverage::MetadataOnly {
+            episodes_declared: dataset.episodes.len() as u64,
+        },
+        mapped_fields,
+        unmapped_fields: vec![UnmappedField {
+            source_path: "data/**.parquet".into(),
+            note: "stream payloads were not read: this is a metadata-only ingest".into(),
+        }],
+        omitted_fields,
+    };
+
+    Ok(Ingested { dataset, report })
+}
+
 /// Read the SPDX license from a Hugging Face dataset card's YAML frontmatter (`README.md`), the place
 /// LeRobot datasets actually record it (`meta/info.json` carries none). Only the leading `---`-fenced
 /// block is inspected, and only the `license:` key — either a scalar (`license: apache-2.0`) or the
@@ -851,6 +1056,14 @@ impl Adapter for LeRobotAdapter {
             }
             _ => Detection::No,
         }
+    }
+
+    /// LeRobot writes its structure down beside the data, in `meta/`: the features and their
+    /// dtypes/shapes in `info.json`, the episode set and per-episode lengths in `episodes.jsonl`,
+    /// the summary statistics in `stats.json`, the license in the dataset card. All of it can be
+    /// checked without opening a Parquet file.
+    fn supports_metadata_only(&self) -> bool {
+        true
     }
 
     fn ingest(&self, source: &Source, options: &IngestOptions) -> Result<Ingested, IngestError> {
@@ -928,6 +1141,12 @@ impl Adapter for LeRobotAdapter {
         // assertion the boundary check tests against the frames actually ingested (lerobot#4143), and
         // the episode index set a sampled ingest draws from.
         let declared_lengths = load_episode_lengths(dir);
+
+        // A metadata-only ingest answers a different question — "does the manifest hold together?" —
+        // and answers it without opening a single Parquet or video file. It returns here.
+        if options.metadata_only {
+            return ingest_metadata_only(dir, &info, &features, fps, &declared_lengths);
+        }
 
         // Resolve a sampling request into the concrete episode indices to keep, *before* reading any
         // Parquet, so the unselected episodes cost nothing. The draw is made over the manifest's

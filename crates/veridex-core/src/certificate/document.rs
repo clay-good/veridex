@@ -192,6 +192,11 @@ impl Certificate {
                 "cannot certify a sampled run ({request}; {episodes_ingested} episode(s) ingested) \
                  — a certificate speaks for the whole dataset, so issue it from a full check"
             )),
+            crate::engine::CoverageNote::MetadataOnly { episodes_declared } => Err(format!(
+                "cannot certify a metadata-only run ({episodes_declared} episode(s) declared, no \
+                 stream payloads read) — a certificate speaks for a dataset's data, and this run \
+                 checked only its manifest; issue it from a full check"
+            )),
         }
     }
 

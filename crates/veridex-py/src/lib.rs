@@ -41,6 +41,7 @@ fn ingest_options_from(
     sample_episodes: Option<u64>,
     sample_fraction: Option<f64>,
     sample_seed: u64,
+    metadata_only: bool,
 ) -> PyResult<IngestOptions> {
     let value_error = |m: String| pyo3::exceptions::PyValueError::new_err(m);
     let sample = match (sample_episodes, sample_fraction) {
@@ -74,12 +75,13 @@ fn ingest_options_from(
     sample.validate().map_err(|e| value_error(e.to_string()))?;
     Ok(IngestOptions {
         sample,
+        metadata_only,
         ..IngestOptions::default()
     })
 }
 
 /// `veridex.check(path, format=None, config=None, sample_episodes=None, sample_fraction=None,
-/// sample_seed=0) -> str`
+/// sample_seed=0, metadata_only=False) -> str`
 ///
 /// Validate a dataset and return the report as a JSON string, byte-identical to
 /// `veridex check --json`.
@@ -92,8 +94,12 @@ fn ingest_options_from(
 /// The sampling arguments mirror `--sample-episodes` / `--sample-fraction` / `--sample-seed`. A
 /// sampled report carries `"coverage": {"kind": "sample", …}`; it is a verdict over those episodes
 /// alone, and cannot be certified.
+///
+/// `metadata_only=True` mirrors `--metadata-only`: the manifest, the stored statistics, and the
+/// provenance are checked without reading any stream payload. The report carries
+/// `"coverage": {"kind": "metadata_only", …}`, and it cannot be certified either.
 #[pyfunction]
-#[pyo3(signature = (path, format=None, config=None, sample_episodes=None, sample_fraction=None, sample_seed=0))]
+#[pyo3(signature = (path, format=None, config=None, sample_episodes=None, sample_fraction=None, sample_seed=0, metadata_only=false))]
 fn check(
     path: &str,
     format: Option<&str>,
@@ -101,10 +107,11 @@ fn check(
     sample_episodes: Option<u64>,
     sample_fraction: Option<f64>,
     sample_seed: u64,
+    metadata_only: bool,
 ) -> PyResult<String> {
     let registry = veridex_core::default_registry();
     let run_config = run_config_from(config)?;
-    let opts = ingest_options_from(sample_episodes, sample_fraction, sample_seed)?;
+    let opts = ingest_options_from(sample_episodes, sample_fraction, sample_seed, metadata_only)?;
     let out =
         veridex_core::run_check_with(&registry, &source_for(path), format, &opts, &run_config)
             .map_err(to_py_err)?;
@@ -143,24 +150,25 @@ fn content_hash(path: &str, format: Option<&str>) -> PyResult<String> {
     Ok(veridex_core::content_hash(&out.ingested.dataset).to_hex())
 }
 
-/// `veridex.inspect(path, format=None, sample_episodes=None, sample_fraction=None, sample_seed=0)
-/// -> str`
+/// `veridex.inspect(path, format=None, sample_episodes=None, sample_fraction=None, sample_seed=0,
+/// metadata_only=False) -> str`
 ///
 /// Ingest a dataset and return its Canonical Dataset Model as a JSON string, identical to
 /// `veridex inspect --json`. Runs no checks. The sampling arguments behave as in
 /// [`check`](fn.check.html).
 #[pyfunction]
-#[pyo3(signature = (path, format=None, sample_episodes=None, sample_fraction=None, sample_seed=0))]
+#[pyo3(signature = (path, format=None, sample_episodes=None, sample_fraction=None, sample_seed=0, metadata_only=false))]
 fn inspect(
     path: &str,
     format: Option<&str>,
     sample_episodes: Option<u64>,
     sample_fraction: Option<f64>,
     sample_seed: u64,
+    metadata_only: bool,
 ) -> PyResult<String> {
     let registry = veridex_core::default_registry();
     let source = source_for(path);
-    let opts = ingest_options_from(sample_episodes, sample_fraction, sample_seed)?;
+    let opts = ingest_options_from(sample_episodes, sample_fraction, sample_seed, metadata_only)?;
     let ingested = match format {
         Some(fmt) => registry.ingest_as(fmt, &source, &opts),
         None => registry.ingest(&source, &opts),

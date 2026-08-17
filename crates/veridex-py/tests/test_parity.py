@@ -291,3 +291,40 @@ def test_python_rejects_the_same_sampling_mistakes_the_cli_does(tmp_path):
         except ValueError:
             continue
         raise AssertionError(f"{kwargs} must be refused, not silently ignored")
+
+
+def test_cli_and_python_metadata_only_checks_agree(tmp_path):
+    """A metadata-only run must be identical across the front-ends, coverage note included."""
+    dataset = _demo_lerobot(tmp_path)
+    binary = os.environ.get("VERIDEX_BIN", "target/debug/veridex")
+
+    py = json.loads(veridex.check(str(dataset), metadata_only=True))
+    result = subprocess.run(
+        [binary, "check", "--json", str(dataset), "--metadata-only"],
+        capture_output=True,
+        text=True,
+    )
+    cli = json.loads(result.stdout)
+    assert py == cli, "metadata-only reports must agree across the front-ends"
+    assert py["verdict"]["coverage"]["kind"] == "metadata_only"
+
+    # inspect too: the same manifest-derived CDM, with no frames in it.
+    py_cdm = json.loads(veridex.inspect(str(dataset), metadata_only=True))
+    result = subprocess.run(
+        [binary, "inspect", "--json", str(dataset), "--metadata-only"],
+        capture_output=True,
+        text=True,
+    )
+    assert py_cdm == json.loads(result.stdout)
+    assert py_cdm["episodes"], "the declared episodes are still present"
+    assert py_cdm["episodes"][0]["streams"][0]["frames"] == []
+
+
+def test_python_refuses_a_metadata_only_sample(tmp_path):
+    """The two partial coverages cannot both ride in one verdict, so asking for both is an error."""
+    dataset = _demo_lerobot(tmp_path)
+    try:
+        veridex.check(str(dataset), metadata_only=True, sample_episodes=1)
+    except ValueError:
+        return
+    raise AssertionError("a metadata-only sample must be refused, not silently resolved")

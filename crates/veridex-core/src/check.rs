@@ -255,4 +255,33 @@ pub trait Check: Send + Sync {
     /// Inspect the dataset and emit findings. Findings should use [`Check::default_severity`]
     /// unless the check intentionally varies severity by finding.
     fn run(&self, dataset: &Dataset) -> Vec<Finding>;
+
+    /// Like [`Check::run`], but told what the ingest actually covered.
+    ///
+    /// The default ignores the context, which is right for every check whose conclusions depend only
+    /// on what is in the CDM. Override it in a check that would otherwise read *absence* as a
+    /// defect — under a metadata-only ingest an episode legitimately carries no frames, and a check
+    /// that compares a declared frame count against the frames present would fail every sound
+    /// dataset. The engine always calls this.
+    fn run_in(&self, dataset: &Dataset, _context: &CheckContext) -> Vec<Finding> {
+        self.run(dataset)
+    }
+}
+
+/// What a check needs to know about the run beyond the CDM itself.
+///
+/// Deliberately minimal: a check reads the dataset, not the environment. The one thing the CDM
+/// cannot express is the difference between "this stream has no frames" and "this run did not read
+/// any frames," and those must not produce the same findings.
+#[derive(Debug, Clone, Copy)]
+pub struct CheckContext {
+    /// Whether the ingest read stream payloads at all. `false` under a metadata-only ingest.
+    pub frames_read: bool,
+}
+
+impl Default for CheckContext {
+    /// A full ingest: frames were read.
+    fn default() -> Self {
+        CheckContext { frames_read: true }
+    }
 }

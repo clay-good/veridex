@@ -289,6 +289,13 @@ pub enum Coverage {
         /// Number of episodes actually ingested.
         episodes_ingested: u64,
     },
+    /// Only the source's manifest was read: every episode is present, but no stream payload was
+    /// touched, so no episode has frames. Structure, declared types, stored statistics, and
+    /// provenance are covered; anything that needs the data itself is not.
+    MetadataOnly {
+        /// Number of episodes the manifest declared and the CDM carries.
+        episodes_declared: u64,
+    },
 }
 
 /// A source field that existed but the CDM cannot represent.
@@ -434,15 +441,17 @@ pub enum IngestError {
 
 /// Reject an ingest whose options this implementation cannot honor, before any adapter runs.
 ///
-/// `metadata_only` and [`Source::Remote`] are part of the ingestion spec but not yet built. Accepting
-/// them and quietly reading the whole local file instead would hand back a verdict the caller would
-/// read as something it is not.
+/// [`Source::Remote`] is part of the ingestion spec but not yet built. Accepting it and quietly
+/// reading a local file instead would hand back a verdict the caller would read as something it is
+/// not. A metadata-only *sample* is refused for a different reason: the two requests describe
+/// different partial coverages, and one verdict cannot carry both without one of them being lost.
 fn check_options_supported(source: &Source, options: &IngestOptions) -> Result<(), IngestError> {
-    if options.metadata_only {
-        return Err(IngestError::NotImplemented {
-            what: "metadata-only ingestion",
-            hint: "no adapter can populate the CDM without reading stream payloads yet; \
-                   drop --metadata-only, or sample the dataset instead",
+    if options.metadata_only && options.sample.is_partial() {
+        return Err(IngestError::InvalidSample {
+            reason: "a metadata-only ingest already reads no stream payloads; combining it with a \
+                     sample would report one partial coverage and hide the other — ask for one or \
+                     the other"
+                .into(),
         });
     }
     if matches!(source, Source::Remote(_)) {
@@ -486,6 +495,17 @@ pub trait Adapter: Send + Sync {
 
     /// Cheaply decide whether this adapter handles `source`, without a full parse.
     fn detect(&self, source: &Source) -> Detection;
+
+    /// Whether this adapter can populate the CDM from the source's manifest alone, without reading
+    /// any stream payload ([`IngestOptions::metadata_only`]).
+    ///
+    /// Defaults to `false`, and the registry refuses the request on that answer — so a format whose
+    /// structure lives *inside* its container (MCAP, HDF5, Zarr, RLDS, CAN, MF4) is refused by name
+    /// rather than reading everything anyway and labelling it metadata-only. A new adapter is
+    /// therefore safe by default: it has to claim the capability to be handed the option.
+    fn supports_metadata_only(&self) -> bool {
+        false
+    }
 
     /// Ingest `source` into the CDM, honoring `options` and recording fidelity.
     ///
@@ -540,7 +560,10 @@ impl AdapterRegistry {
             [] => Err(IngestError::UnsupportedFormat {
                 supported: self.supported_formats(),
             }),
-            [only] => only.ingest(source, options),
+            [only] => {
+                check_adapter_supports_options(*only, options)?;
+                only.ingest(source, options)
+            }
             many => Err(IngestError::AmbiguousFormat {
                 candidates: many.iter().map(|a| a.format_id()).collect(),
             }),
@@ -559,12 +582,34 @@ impl AdapterRegistry {
         check_source_exists(source)?;
         check_options_supported(source, options)?;
         match self.adapters.iter().find(|a| a.format_id() == format) {
-            Some(adapter) => adapter.ingest(source, options),
+            Some(adapter) => {
+                check_adapter_supports_options(adapter.as_ref(), options)?;
+                adapter.ingest(source, options)
+            }
             None => Err(IngestError::UnsupportedFormat {
                 supported: self.supported_formats(),
             }),
         }
     }
+}
+
+/// Refuse an option the *recognizing* adapter cannot honor, before it is handed the source.
+///
+/// Enforced here rather than inside each adapter so the refusal cannot be forgotten: an adapter that
+/// does not claim [`Adapter::supports_metadata_only`] never sees the option set.
+fn check_adapter_supports_options(
+    adapter: &dyn Adapter,
+    options: &IngestOptions,
+) -> Result<(), IngestError> {
+    if options.metadata_only && !adapter.supports_metadata_only() {
+        return Err(IngestError::NotImplemented {
+            what: "metadata-only ingestion for this format",
+            hint:
+                "this format keeps its structure inside the container, so there is no manifest to \
+                   read on its own — drop --metadata-only, or sample the dataset instead",
+        });
+    }
+    Ok(())
 }
 
 /// Reject a local source whose path does not exist before format detection, so a mistyped path

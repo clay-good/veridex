@@ -453,18 +453,21 @@ fn a_single_episode_format_refuses_a_sample_rather_than_returning_everything() {
 
 #[test]
 fn options_the_implementation_does_not_honor_are_refused() {
-    // `metadata_only` and a remote source are spec'd but unbuilt. Accepting either and reading the
-    // whole local file instead would hand back a verdict the caller would read as something else.
+    // A remote source is spec'd but unbuilt. Accepting it and reading a local file instead would
+    // hand back a verdict the caller would read as something else.
     let dir = tempfile::tempdir().unwrap();
     write_dataset(dir.path(), 2, 2);
     let registry = veridex_core::default_registry();
 
-    let metadata_only = IngestOptions {
+    // A metadata-only *sample* asks for two different partial coverages at once, and one verdict
+    // carries only one — so the combination is refused rather than silently resolved.
+    let both = IngestOptions {
         metadata_only: true,
+        sample: veridex_core::adapter::Sample::FirstEpisodes(1),
         ..IngestOptions::default()
     };
-    match registry.ingest(&Source::Local(dir.path().to_path_buf()), &metadata_only) {
-        Err(IngestError::NotImplemented { what, .. }) => assert!(what.contains("metadata-only")),
+    match registry.ingest(&Source::Local(dir.path().to_path_buf()), &both) {
+        Err(IngestError::InvalidSample { reason }) => assert!(reason.contains("metadata-only")),
         other => panic!("expected a refusal, got ok={}", other.is_ok()),
     }
 

@@ -96,7 +96,7 @@ sequenceDiagram
 ## Commands
 
 ```sh
-veridex check      <dataset> [--sample-episodes <n> | --sample-fraction <f>]  # validate + report
+veridex check      <dataset> [--sample-episodes <n> | --sample-fraction <f> | --metadata-only]  # validate + report
 veridex certify    <dataset> --key issuer.key [--profile world-model-ready]  # issue a signed trust certificate
 veridex verify     <dataset> --certificate c.json --key pub.key   # verify offline (issuer required)
 veridex provenance <dataset> --emit croissant                     # extract + emit provenance
@@ -176,6 +176,25 @@ A sampled run is never presented as a whole-dataset one. The verdict carries a `
 (bound into its hash), every report states the sample and the episode count, and **`certify` refuses
 to issue a certificate from a partial run** — a certificate speaks for a dataset, and the episodes a
 sample never read are exactly where the problem would be.
+
+For a dataset too large to read on every commit at all, `check` and `inspect` can also skip the data
+entirely and check what the dataset *says about itself*:
+
+```sh
+veridex check my-dataset/ --metadata-only     # LeRobot; reads meta/, opens no Parquet or video
+```
+
+This is a real check, not a smoke test: the declared episode set and per-episode lengths, every
+feature's dtype/shape/rate, the stored statistics in `meta/stats.json` (an inverted range or a mean
+outside its own bounds is caught here), and the whole provenance family. What it cannot see — every
+timestamp, value, content hash, and media header — it says it cannot see. The frame-dependent checks
+**abstain rather than firing**: "declares 120 frames, ingested 0" is true of every sound dataset read
+this way, and reporting it would fail them all. The verdict carries
+`coverage: {"kind": "metadata_only"}`, every report prints a `METADATA-ONLY` banner, and `certify`
+refuses it — a sound manifest says nothing about the data. One nice detail: when the episode set is
+derived from `info.json`'s `total_episodes` alone, the declared-episode-count check is *withheld*
+rather than run, because comparing that number against a set built from it could not fail, and a
+check that cannot fail must not be reported as having passed.
 
 The same command works on a LeRobot v3 dataset — proof of the cross-format claim. Generate a demo
 one (its second episode carries an out-of-order timestamp) and check it the same way:
@@ -328,6 +347,10 @@ print(report["trust_score"]["grade"], report["verdict"]["status"])
 # the same sampling the CLI offers; the report carries coverage: {"kind": "sample", ...}
 sampled = json.loads(veridex.check("my-dataset/", sample_fraction=0.1, sample_seed=7))
 print(sampled["verdict"]["coverage"])
+
+# and the same manifest-only check; coverage: {"kind": "metadata_only", ...}
+manifest = json.loads(veridex.check("my-dataset/", metadata_only=True))
+print(manifest["verdict"]["coverage"])
 ```
 
 Build the extension locally with [maturin](https://github.com/PyO3/maturin):
@@ -363,8 +386,11 @@ offline verification** (tamper + transplant rejection); a working CLI (`check`, 
 bindings** (`import veridex`, exposing `check`/`check_sarif`/`check_html`/`inspect`/`content_hash`/`catalog`/`provenance`/`diff`/`keygen`/`certify`/`verify`/`version`) that call the same
 core pipeline, with a CLI⇄Python parity test run in CI; and **sampled ingestion** (`--sample-episodes`
 / `--sample-fraction`), resolved before any data is read and reported as partial coverage everywhere
-it could otherwise be mistaken for a full check. Next up: streaming/remote ingestion — until then
-`metadata_only` and a remote source are refused with a clear error, never silently ignored.
+it could otherwise be mistaken for a full check; and **metadata-only ingestion** (`--metadata-only`,
+LeRobot), which checks the manifest, the stored statistics, and the provenance without opening a
+data file, with the frame-dependent checks abstaining rather than misfiring. Next up: remote (Hub)
+ingestion — until then a remote source is refused with a clear error, never silently ignored, and
+`--metadata-only` on a format that keeps its structure inside the container is refused by name.
 
 What Veridex does **not** tell you, stated plainly because silence would read as a pass: it never
 decodes a pixel or a point, so it says nothing about the *content* of your imagery — no PII or face

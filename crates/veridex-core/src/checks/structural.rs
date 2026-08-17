@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::cdm::{Dataset, Modality};
-use crate::check::{Category, Check, Finding, Location, Scope, Severity};
+use crate::check::{Category, Check, CheckContext, Finding, Location, Scope, Severity};
 
 /// Episode-boundary integrity, covering the corrupted-cumulative-length class from
 /// [lerobot#4143](https://github.com/huggingface/lerobot/issues/4143): when episode-length metadata
@@ -36,6 +36,29 @@ impl Check for EpisodeBoundary {
         "1"
     }
     fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        self.run_with(dataset, true)
+    }
+    fn run_in(&self, dataset: &Dataset, context: &CheckContext) -> Vec<Finding> {
+        self.run_with(dataset, context.frames_read)
+    }
+}
+
+impl EpisodeBoundary {
+    /// `frames_read` is false under a metadata-only ingest, where no episode has frames by request.
+    /// The duplicate-index and inverted-boundary arms still apply — both read the manifest — but
+    /// declared-vs-actual length cannot: "declares 120, ingested 0" would be true of every sound
+    /// dataset checked that way, turning the lerobot#4143 detector into a detector of the request.
+    fn run_with(&self, dataset: &Dataset, frames_read: bool) -> Vec<Finding> {
+        let mut findings = self.run_manifest_arms(dataset);
+        if frames_read {
+            findings.extend(self.run_declared_length_arm(dataset));
+        }
+        findings
+    }
+
+    /// The arms that read only the manifest: duplicate episode indices and inverted bounds. Both
+    /// apply whether or not any frame was read.
+    fn run_manifest_arms(&self, dataset: &Dataset) -> Vec<Finding> {
         let mut findings = Vec::new();
 
         // Duplicate episode indices: the direct CDM signature of corrupted cumulative boundaries.
@@ -69,12 +92,42 @@ impl Check for EpisodeBoundary {
             }
         }
 
-        // Declared-vs-actual per-episode length: the direct lerobot#4143 signature. When the source
-        // manifest records a frame count for an episode (LeRobot `meta/episodes.jsonl` `length`) that
-        // disagrees with the frames actually ingested, the cumulative boundaries LeRobot derives from
-        // those lengths are wrong, and frames load under the wrong episode during training. The actual
-        // count is the largest per-stream frame count (streams are frame-aligned; the max is robust to
-        // a stream that abstains from frames).
+        // Inverted boundaries.
+        for ep in &dataset.episodes {
+            if let (Some(start), Some(end)) = (ep.start_ts, ep.end_ts) {
+                if start > end {
+                    findings.push(
+                        Finding::new(
+                            self.id(),
+                            Category::Structural,
+                            Severity::Error,
+                            Location::Episode { episode: ep.index },
+                            "STRUCTURAL.EPISODE_BOUNDARY",
+                            format!(
+                                "episode {} has inverted bounds: start_ts {start} > end_ts {end}",
+                                ep.index
+                            ),
+                        )
+                        .with_risk("An inverted time window indicates corrupted episode metadata.")
+                        .with_remedy("Re-derive episode start/end from the underlying frames."),
+                    );
+                }
+            }
+        }
+
+        findings
+    }
+
+    /// Declared-vs-actual per-episode length: the direct lerobot#4143 signature. When the source
+    /// manifest records a frame count for an episode (LeRobot `meta/episodes.jsonl` `length`) that
+    /// disagrees with the frames actually ingested, the cumulative boundaries LeRobot derives from
+    /// those lengths are wrong, and frames load under the wrong episode during training. The actual
+    /// count is the largest per-stream frame count (streams are frame-aligned; the max is robust to
+    /// a stream that abstains from frames).
+    ///
+    /// Only meaningful when frames were read — see [`EpisodeBoundary::run_with`].
+    fn run_declared_length_arm(&self, dataset: &Dataset) -> Vec<Finding> {
+        let mut findings = Vec::new();
         for ep in &dataset.episodes {
             if let Some(declared) = ep.declared_frame_count {
                 let actual = ep
@@ -110,30 +163,6 @@ impl Check for EpisodeBoundary {
                 }
             }
         }
-
-        // Inverted boundaries.
-        for ep in &dataset.episodes {
-            if let (Some(start), Some(end)) = (ep.start_ts, ep.end_ts) {
-                if start > end {
-                    findings.push(
-                        Finding::new(
-                            self.id(),
-                            Category::Structural,
-                            Severity::Error,
-                            Location::Episode { episode: ep.index },
-                            "STRUCTURAL.EPISODE_BOUNDARY",
-                            format!(
-                                "episode {} has inverted bounds: start_ts {start} > end_ts {end}",
-                                ep.index
-                            ),
-                        )
-                        .with_risk("An inverted time window indicates corrupted episode metadata.")
-                        .with_remedy("Re-derive episode start/end from the underlying frames."),
-                    );
-                }
-            }
-        }
-
         findings
     }
 }
@@ -265,6 +294,14 @@ impl Check for DeclaredFrameCount {
         .with_remedy(
             "Re-download or re-export the dataset, or fix the manifest's total_frames to match.",
         )]
+    }
+    /// Abstains entirely under a metadata-only ingest: the declared total is a claim about frames,
+    /// and no frame was read to compare it against.
+    fn run_in(&self, dataset: &Dataset, context: &CheckContext) -> Vec<Finding> {
+        if !context.frames_read {
+            return Vec::new();
+        }
+        self.run(dataset)
     }
 }
 
@@ -539,6 +576,18 @@ impl Check for DegenerateEpisode {
         "1"
     }
     fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        self.run_with(dataset, true)
+    }
+    /// Under a metadata-only ingest the frame-count arms abstain: every stream carries no frames by
+    /// request, so `EMPTY_STREAM` would fire on every stream of every sound dataset. The
+    /// empty-dataset and empty-stream*set* arms still hold — both are manifest facts.
+    fn run_in(&self, dataset: &Dataset, context: &CheckContext) -> Vec<Finding> {
+        self.run_with(dataset, context.frames_read)
+    }
+}
+
+impl DegenerateEpisode {
+    fn run_with(&self, dataset: &Dataset, frames_read: bool) -> Vec<Finding> {
         let mut findings = Vec::new();
         // A dataset with no episodes at all is degenerate: nothing to train on. Without this guard
         // the per-episode loop below is empty and the dataset would silently pass every check.
@@ -573,6 +622,9 @@ impl Check for DegenerateEpisode {
                     .with_risk("An episode with no data contributes nothing and skews counts.")
                     .with_remedy("Drop the empty episode or fix the export that produced it."),
                 );
+                continue;
+            }
+            if !frames_read {
                 continue;
             }
             for stream in &ep.streams {

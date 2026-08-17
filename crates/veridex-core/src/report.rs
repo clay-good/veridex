@@ -209,16 +209,26 @@ pub fn render_terminal(
 
     // A partial run is stated before anything else is read, so "no findings" is never mistaken for
     // "no findings anywhere in the dataset".
-    if let crate::engine::CoverageNote::Sample {
-        request,
-        episodes_ingested,
-    } = &verdict.coverage
-    {
-        let _ = writeln!(
-            out,
-            "  Coverage: SAMPLE — {request}; {episodes_ingested} episode(s) ingested. This verdict \
-             covers only those episodes."
-        );
+    match &verdict.coverage {
+        crate::engine::CoverageNote::Full => {}
+        crate::engine::CoverageNote::Sample {
+            request,
+            episodes_ingested,
+        } => {
+            let _ = writeln!(
+                out,
+                "  Coverage: SAMPLE — {request}; {episodes_ingested} episode(s) ingested. This \
+                 verdict covers only those episodes."
+            );
+        }
+        crate::engine::CoverageNote::MetadataOnly { episodes_declared } => {
+            let _ = writeln!(
+                out,
+                "  Coverage: METADATA-ONLY — {episodes_declared} episode(s) declared; no stream \
+                 payload was read. This verdict covers the manifest, the stored statistics, and \
+                 the provenance — not the data."
+            );
+        }
     }
 
     // Surface any tolerance that was loosened/tightened from its default, so a reader knows a
@@ -324,18 +334,28 @@ pub fn render_html(verdict: &Verdict, trust_score: Option<TrustScore>) -> String
 
     // A shared HTML artifact travels further than the command that produced it, so it has to carry
     // the fact that the run only looked at part of the dataset.
-    if let crate::engine::CoverageNote::Sample {
-        request,
-        episodes_ingested,
-    } = &verdict.coverage
-    {
-        let _ = write!(
-            body,
-            "<p class=\"status warn\">Coverage: SAMPLE — {}; {} episode(s) ingested. \
-             This report covers only those episodes.</p>",
-            esc(request),
-            episodes_ingested
-        );
+    match &verdict.coverage {
+        crate::engine::CoverageNote::Full => {}
+        crate::engine::CoverageNote::Sample {
+            request,
+            episodes_ingested,
+        } => {
+            let _ = write!(
+                body,
+                "<p class=\"status warn\">Coverage: SAMPLE — {}; {} episode(s) ingested. \
+                 This report covers only those episodes.</p>",
+                esc(request),
+                episodes_ingested
+            );
+        }
+        crate::engine::CoverageNote::MetadataOnly { episodes_declared } => {
+            let _ = write!(
+                body,
+                "<p class=\"status warn\">Coverage: METADATA-ONLY — {episodes_declared} episode(s) \
+                 declared; no stream payload was read. This report covers the manifest, the stored \
+                 statistics, and the provenance — not the data.</p>"
+            );
+        }
     }
 
     let rollups = worst_episodes(verdict);

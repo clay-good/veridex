@@ -213,12 +213,29 @@ pub enum CoverageNote {
         /// Number of episodes actually ingested.
         episodes_ingested: u64,
     },
+    /// Only the source's manifest was read: every episode is present but none has frames. The
+    /// verdict speaks for the declared structure, the stored statistics, and the provenance — and
+    /// for nothing that requires the data itself.
+    MetadataOnly {
+        /// Number of episodes the manifest declared.
+        episodes_declared: u64,
+    },
 }
 
 impl CoverageNote {
     /// Whether the run saw less than the whole dataset.
     pub fn is_partial(&self) -> bool {
         !matches!(self, CoverageNote::Full)
+    }
+
+    /// Whether stream payloads were read at all.
+    ///
+    /// `false` only under [`CoverageNote::MetadataOnly`]. The checks that reason about frames read
+    /// this and abstain: with no frames read, "0 frames ingested" is not a finding about the
+    /// dataset, it is a description of the request — and reporting it as a defect would fail every
+    /// sound dataset checked this way.
+    pub fn frames_read(&self) -> bool {
+        !matches!(self, CoverageNote::MetadataOnly { .. })
     }
 }
 
@@ -371,6 +388,11 @@ impl Engine {
         let mut errored_checks: Vec<ErroredCheck> = Vec::new();
         let mut executed_checks: Vec<ExecutedCheck> = Vec::new();
 
+        // What the checks are allowed to conclude from absence, derived from what the ingest read.
+        let context = crate::check::CheckContext {
+            frames_read: coverage.frames_read(),
+        };
+
         for check in &self.checks {
             if !check_selected(check.as_ref(), config) {
                 continue;
@@ -382,7 +404,7 @@ impl Engine {
             });
 
             // Fault isolation: a panicking check is recorded, not fatal.
-            let result = catch_unwind(AssertUnwindSafe(|| check.run(dataset)));
+            let result = catch_unwind(AssertUnwindSafe(|| check.run_in(dataset, &context)));
             match result {
                 Ok(mut produced) => {
                     let override_sev = config.severity_overrides.get(check.id()).copied();

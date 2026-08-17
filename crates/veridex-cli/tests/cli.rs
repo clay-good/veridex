@@ -723,3 +723,64 @@ fn every_command_still_accepts_the_flags_it_does_act_on() {
         );
     }
 }
+
+#[test]
+fn a_metadata_only_check_reports_its_coverage_and_cannot_be_certified() {
+    let dir = make_lerobot("metadata-only-coverage");
+    let path = dir.to_str().unwrap();
+
+    // A manifest-only run says so, in the terminal report and in the JSON.
+    let (code, stdout, stderr) = run(&["check", path, "--metadata-only"]);
+    assert!(
+        code == 0 || code == 10 || code == 20,
+        "unexpected exit {code}: {stderr}"
+    );
+    assert!(
+        stdout.contains("Coverage: METADATA-ONLY") && stdout.contains("no stream payload"),
+        "the terminal report must state what was not read: {stdout}"
+    );
+
+    let (_, stdout, _) = run(&["check", path, "--metadata-only", "--json"]);
+    let report: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON report");
+    assert_eq!(report["verdict"]["coverage"]["kind"], "metadata_only");
+
+    // `inspect` honors it too — the same partial CDM, rendered rather than checked.
+    let (code, stdout, _) = run(&["inspect", path, "--metadata-only", "--json"]);
+    assert_eq!(code, 0);
+    let cdm: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON CDM");
+    assert!(cdm["episodes"].as_array().is_some_and(|e| !e.is_empty()));
+    assert_eq!(
+        cdm["episodes"][0]["streams"][0]["frames"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+
+    // And it cannot be laundered into a portable certificate.
+    let keydir = temp_dir("metadata-only-cert");
+    let key = keydir.join("issuer");
+    let (code, _, _) = run(&["keygen", key.to_str().unwrap(), "--force"]);
+    assert_eq!(code, 0);
+    let (code, _, stderr) = run(&[
+        "certify",
+        path,
+        "--key",
+        key.to_str().unwrap(),
+        "--out",
+        keydir.join("c.json").to_str().unwrap(),
+        "--metadata-only",
+    ]);
+    assert_eq!(
+        code, 2,
+        "certifying a metadata-only run must be a tool error"
+    );
+    assert!(
+        stderr.contains("certify does not support --metadata-only"),
+        "the refusal must say why: {stderr}"
+    );
+    assert!(
+        !keydir.join("c.json").exists(),
+        "no certificate may be written for a metadata-only run"
+    );
+}

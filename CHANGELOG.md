@@ -10,6 +10,35 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **Metadata-only ingestion** (`veridex check --metadata-only`, `veridex.check(..., metadata_only=True)`),
+  the last unbuilt option in the ingestion spec, for LeRobot. The CDM is built from `meta/` alone: the
+  declared episode set and per-episode lengths, every feature's dtype/shape/rate, `meta/stats.json`,
+  and the dataset card's license. No Parquet or video file is opened — with the `data/` directory
+  deleted the result is byte-identical, which is the test.
+
+  The hard part is not reading the manifest, it is not lying about what that means. Every episode
+  carries zero frames *by request*, and three structural findings are true of every sound dataset read
+  this way: "declares 120 frames but 0 were ingested", "stream has no frames", "manifest declares 2400
+  frames but 0 were ingested". Emitted, they would fail every dataset checked this mode. So the engine
+  now hands each check a `CheckContext` saying whether frames were read, and those arms abstain — while
+  the arms that read the manifest (duplicate episode indices, inverted bounds, empty dataset/episode)
+  keep running.
+
+  What stays live is more than it sounds: the whole stored-statistics family (an inverted range, a
+  non-finite value, a mean outside its own bounds — caught without reading the data it summarizes), the
+  whole provenance family, and cross-episode shape and stream-presence consistency. One check is
+  deliberately *withheld*: when the episode set is derived from `info.json`'s `total_episodes` alone,
+  comparing that number against a set built from it could not fail, so it is reported as omitted rather
+  than passed. With `meta/episodes.jsonl` present the total is an independent second assertion, and the
+  check runs — a manifest whose two episode counts disagree is caught here.
+
+  Coverage rides in the verdict as `metadata_only`, bound into its hash, printed in the terminal, JSON,
+  and HTML reports, and `certify` refuses to issue from it. An adapter has to claim
+  `Adapter::supports_metadata_only()` to be handed the option at all, so the six formats that keep their
+  structure inside the container are refused by name rather than silently reading everything; and
+  `--metadata-only` combined with a sample is refused, because one verdict cannot carry two different
+  partial coverages without losing one.
+
 - **Zarr hardening, from a two-agent audit.** Fifteen confirmed defects, including two that returned
   wrong data with no error at all. What changed:
 
