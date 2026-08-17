@@ -64,6 +64,15 @@ const STEPS_PREFIX: &str = "steps/";
 /// RLDS conversion scripts carry through.
 const EPISODE_SOURCE_FILE_KEY: &str = "episode_metadata/file_path";
 
+/// The ceiling on how large an episode set this adapter will materialize to resolve a sample.
+///
+/// Resolving a draw means building the set of candidate episode indices, and that set's size comes
+/// from `dataset_info.json` — a few hundred bytes of attacker-controllable JSON, read before any
+/// ingest budget exists. A manifest declaring 16 million episodes measured 75 seconds and about a
+/// gigabyte; `u64::MAX` is a hang. Chosen far above any real dataset: the largest Open X-Embodiment
+/// datasets are in the hundreds of thousands of episodes.
+const MAX_EPISODE_SET_FOR_SAMPLING: u64 = 1_000_000;
+
 /// Leaf names RLDS uses for the natural-language instruction. Matched on the final path segment, so
 /// both the top-level (`steps/language_instruction`) and observation-nested
 /// (`steps/observation/natural_language_instruction`) conventions resolve.
@@ -269,7 +278,10 @@ impl<'a> Buf<'a> {
 #[derive(Debug)]
 enum FeatureValues<'a> {
     Bytes(Vec<&'a [u8]>),
-    Floats(Vec<f32>),
+    /// Float values kept as their **raw wire bits**, never as `f32`. A fingerprint must depend only
+    /// on the bytes the file holds: loading a signaling NaN into a float register and storing it
+    /// back can quiet it on some targets, which would make the same dataset hash differently there.
+    Floats(Vec<u32>),
     Ints(Vec<i64>),
 }
 
@@ -375,6 +387,22 @@ fn parse_map_entry(entry: &[u8]) -> Option<(String, FeatureValues<'_>)> {
     Some((key?, values?))
 }
 
+/// Fill `slot`, or fail if it already held a list.
+///
+/// `tf.train.Feature` is a `oneof`: exactly one of `bytes_list` / `float_list` / `int64_list`. A
+/// record carrying two of them has no single meaning, and letting the last one win would hand an
+/// attacker a way to make the same bytes yield a different step count depending on which list a
+/// reader honors. Refused for the same reason a duplicate map key is.
+fn set_once<'a>(slot: &mut Option<FeatureValues<'a>>, values: FeatureValues<'a>) -> Option<()> {
+    match slot {
+        Some(_) => None,
+        None => {
+            *slot = Some(values);
+            Some(())
+        }
+    }
+}
+
 fn parse_feature(feature: &[u8]) -> Option<FeatureValues<'_>> {
     let mut buf = Buf::new(feature);
     let mut out: Option<FeatureValues<'_>> = None;
@@ -393,7 +421,7 @@ fn parse_feature(feature: &[u8]) -> Option<FeatureValues<'_>> {
                         _ => list.skip(wire)?,
                     }
                 }
-                out = Some(FeatureValues::Bytes(entries));
+                set_once(&mut out, FeatureValues::Bytes(entries))?;
             }
             // Feature.float_list
             (2, 2) => {
@@ -411,18 +439,18 @@ fn parse_feature(feature: &[u8]) -> Option<FeatureValues<'_>> {
                             }
                             for chunk in packed.chunks_exact(4) {
                                 entries
-                                    .push(f32::from_le_bytes(chunk.try_into().expect("4 bytes")));
+                                    .push(u32::from_le_bytes(chunk.try_into().expect("4 bytes")));
                             }
                         }
                         // … and unpacked, which the wire format still permits.
                         (1, 5) => {
                             let raw = list.take(4)?;
-                            entries.push(f32::from_le_bytes(raw.try_into().expect("4 bytes")));
+                            entries.push(u32::from_le_bytes(raw.try_into().expect("4 bytes")));
                         }
                         _ => list.skip(wire)?,
                     }
                 }
-                out = Some(FeatureValues::Floats(entries));
+                set_once(&mut out, FeatureValues::Floats(entries))?;
             }
             // Feature.int64_list
             (3, 2) => {
@@ -443,7 +471,7 @@ fn parse_feature(feature: &[u8]) -> Option<FeatureValues<'_>> {
                         _ => list.skip(wire)?,
                     }
                 }
-                out = Some(FeatureValues::Ints(entries));
+                set_once(&mut out, FeatureValues::Ints(entries))?;
             }
             _ => buf.skip(wire)?,
         }
@@ -468,6 +496,8 @@ struct DatasetInfoJson {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SplitJson {
+    /// The split's name (`train`, `test`, …), used to say which split a manifest gap belongs to.
+    name: Option<String>,
     /// Episodes per shard. Proto3 JSON writes int64 as a string, so these arrive as strings.
     shard_lengths: Option<Vec<serde_json::Value>>,
 }
@@ -559,19 +589,31 @@ fn walk_features(
     leaves: &mut Vec<Leaf>,
     unmapped: &mut Vec<UnmappedField>,
 ) {
-    if let Some(dict) = node.get("featuresDict").and_then(|d| d.get("features")) {
-        if let Some(map) = dict.as_object() {
-            // `serde_json`'s default map is ordered, so the walk is deterministic.
-            for (name, child) in map {
-                walk_features(child, &join_path(path, name), in_sequence, leaves, unmapped);
+    if let Some(dict) = node.get("featuresDict") {
+        match dict.get("features") {
+            Some(serde_json::Value::Object(map)) => {
+                // `serde_json`'s default map is ordered, so the walk is deterministic.
+                for (name, child) in map {
+                    walk_features(child, &join_path(path, name), in_sequence, leaves, unmapped);
+                }
             }
+            // Proto3 JSON omits an empty map, so `{"featuresDict": {}}` is a real (and legal)
+            // shape — an empty group, not a malformed one.
+            None => {}
+            Some(_) => unmapped.push(UnmappedField {
+                source_path: path.to_string(),
+                note: "`featuresDict.features` is not an object, so this group's leaves cannot be \
+                       walked; no stream is built from it"
+                    .into(),
+            }),
         }
         return;
     }
     if let Some(sequence) = node.get("sequence") {
         if in_sequence {
-            // A sequence inside a sequence is ragged: TFDS serializes it with side tables this
-            // parser does not read, so nothing under it is claimed.
+            // A sequence inside a sequence is ragged: TFDS serializes it with `ragged_flat_values`
+            // and `ragged_row_lengths_N` side tables this parser does not read, so nothing under it
+            // is claimed. (TFDS emits those only at sequence rank >= 2, which is exactly here.)
             unmapped.push(UnmappedField {
                 source_path: path.to_string(),
                 note: "a nested (ragged) sequence is serialized with row-length side tables that \
@@ -580,8 +622,14 @@ fn walk_features(
             });
             return;
         }
-        if let Some(inner) = sequence.get("feature") {
-            walk_features(inner, path, true, leaves, unmapped);
+        match sequence.get("feature") {
+            Some(inner) => walk_features(inner, path, true, leaves, unmapped),
+            None => unmapped.push(UnmappedField {
+                source_path: path.to_string(),
+                note: "a sequence with no inner `feature` declares nothing to read; no stream is \
+                       built from it"
+                    .into(),
+            }),
         }
         return;
     }
@@ -610,16 +658,31 @@ fn walk_features(
     }
     if let Some(tensor) = node.get("tensor") {
         let shape = shape_dims(tensor.get("shape"));
-        let elem_len = shape
-            .as_ref()
-            .map(|dims| dims.iter().product::<u64>())
-            .filter(|n| *n > 0);
+        // An *encoded* tensor is not serialized as its declared shape. When `encoding` is anything
+        // but `none`, TFDS replaces the serialized spec with a single opaque blob per step
+        // (`TensorInfo(shape=(), dtype=object)`), whatever the declared dimensions say — this is how
+        // `kuka`, one of the largest Open X-Embodiment datasets, stores several of its observations.
+        // Dividing by the declared shape's product there would refuse a sound dataset and blame the
+        // data for the adapter's mistake.
+        let encoded = tensor
+            .get("encoding")
+            .and_then(|e| e.as_str())
+            .map(|e| !matches!(e.trim().to_ascii_lowercase().as_str(), "" | "none"))
+            .unwrap_or(false);
+        let elem_len = if encoded {
+            Some(1)
+        } else {
+            match shape.as_ref().map(|dims| checked_product(dims)) {
+                Some(Some(n)) if n > 0 => Some(n),
+                _ => None,
+            }
+        };
         if elem_len.is_none() {
             unmapped.push(UnmappedField {
                 source_path: path.to_string(),
                 note:
-                    "the declared shape has an unknown or zero dimension, so the values per step \
-                       cannot be derived; no stream is built from it"
+                    "the declared shape has an unknown, zero, or unrepresentably large dimension, \
+                       so the values per step cannot be derived; no stream is built from it"
                         .into(),
             });
             return;
@@ -634,34 +697,34 @@ fn walk_features(
         });
         return;
     }
-    if let Some(class_label) = node.get("classLabel") {
+    if node.get("classLabel").is_some() {
         leaves.push(Leaf {
             path: path.to_string(),
             per_step: in_sequence,
-            dtype: normalize_dtype(class_label.get("dtype")).or(Some("int64".into())),
+            // `ClassLabel` carries only `num_classes`; TFDS serializes it as an int64.
+            dtype: Some("int64".into()),
             shape: None,
             elem_len: Some(1),
             modality: Modality::ScalarState,
         });
         return;
     }
-    if let Some(scalar) = node.get("scalar") {
-        leaves.push(Leaf {
-            path: path.to_string(),
-            per_step: in_sequence,
-            dtype: normalize_dtype(scalar.get("dtype")),
-            shape: None,
-            elem_len: Some(1),
-            modality: modality_for(path, Modality::ScalarState),
-        });
-        return;
-    }
     unmapped.push(UnmappedField {
         source_path: path.to_string(),
-        note: "feature class is not one the CDM represents (not a tensor, image, text, scalar, or \
-               class label); no stream is built from it"
+        note: "feature class is not one the CDM represents (not a tensor, image, text, or class \
+               label); no stream is built from it"
             .into(),
     });
+}
+
+/// The product of a declared shape's dimensions, or `None` when it overflows.
+///
+/// Both factors come straight from `features.json`, so `["4294967296", "4294967296"]` — 200 bytes of
+/// manifest — otherwise panics in a checked build and, worse, *wraps silently* in a release one:
+/// a wrapped element size divides the serialized list into a step count that was never in the file,
+/// and that fabricated timeline is what gets signed into the CDM content hash.
+fn checked_product(dims: &[u64]) -> Option<u64> {
+    dims.iter().try_fold(1u64, |acc, dim| acc.checked_mul(*dim))
 }
 
 /// The modality a leaf's own name implies. Only `action` is inferred — every other leaf keeps the
@@ -674,6 +737,40 @@ fn modality_for(path: &str, default: Modality) -> Modality {
     }
 }
 
+/// Whether a filename is a TFRecord data shard, as TFDS's default template names one:
+/// `{dataset}-{split}.tfrecord-XXXXX-of-YYYYY`.
+///
+/// Matched on the real shape rather than on "contains `.tfrecord`", because TFDS also writes
+/// `<shard>_index.json` siblings next to the shards it indexes. Those contain `.tfrecord` in their
+/// names, and feeding one to the record reader would report a perfectly healthy dataset as a
+/// corrupt shard.
+fn is_shard_name(name: &str) -> bool {
+    let Some((_, tail)) = name.split_once(".tfrecord") else {
+        return false;
+    };
+    // What follows is `-XXXXX-of-YYYYY` and nothing else.
+    let Some(rest) = tail.strip_prefix('-') else {
+        return false;
+    };
+    match rest.split_once("-of-") {
+        Some((index, total)) => {
+            !index.is_empty()
+                && !total.is_empty()
+                && index.bytes().all(|b| b.is_ascii_digit())
+                && total.bytes().all(|b| b.is_ascii_digit())
+        }
+        None => false,
+    }
+}
+
+/// The split a shard belongs to, from TFDS's default filename template
+/// (`{dataset}-{split}.tfrecord-…`). `None` when the name does not follow it.
+fn shard_split(name: &str) -> Option<String> {
+    let stem = name.split_once(".tfrecord")?.0;
+    let (_, split) = stem.rsplit_once('-')?;
+    (!split.is_empty()).then(|| split.to_string())
+}
+
 /// The shard files of a TFDS directory, in filename order (which is shard order).
 fn find_shards(dir: &Path) -> Vec<PathBuf> {
     let mut shards: Vec<PathBuf> = match std::fs::read_dir(dir) {
@@ -684,7 +781,7 @@ fn find_shards(dir: &Path) -> Vec<PathBuf> {
             .filter(|p| {
                 p.file_name()
                     .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.contains(".tfrecord"))
+                    .is_some_and(is_shard_name)
             })
             .collect(),
         Err(_) => Vec::new(),
@@ -695,12 +792,17 @@ fn find_shards(dir: &Path) -> Vec<PathBuf> {
 
 /// A path relative to the dataset root, with forward slashes on every platform — it is bound into
 /// the content hash, so it must not vary with the host.
-fn relative_uri(root: &Path, path: &Path) -> String {
+///
+/// `None` for a path that is not valid UTF-8. A lossy conversion would map every undecodable byte to
+/// the same replacement character, so two shards whose names differ only in such a byte would
+/// produce byte-identical value references and therefore an identical content hash.
+fn relative_uri(root: &Path, path: &Path) -> Option<String> {
     let rel = path.strip_prefix(root).unwrap_or(path);
-    rel.components()
-        .map(|c| c.as_os_str().to_string_lossy().into_owned())
-        .collect::<Vec<_>>()
-        .join("/")
+    let mut parts = Vec::new();
+    for component in rel.components() {
+        parts.push(component.as_os_str().to_str()?.to_string());
+    }
+    Some(parts.join("/"))
 }
 
 fn parse_error(message: String) -> IngestError {
@@ -720,6 +822,9 @@ struct EpisodeBuild {
     /// The `episode_metadata/file_path` this episode was converted from, when the dataset records
     /// one — the single lineage fact RLDS carries.
     source_file: Option<String>,
+    /// The TFDS split this episode's shard belongs to (`train`, `test`, …), when the shard's name
+    /// follows TFDS's default template. A TFDS directory holds every split side by side.
+    split: Option<String>,
 }
 
 impl Adapter for RldsAdapter {
@@ -807,19 +912,27 @@ impl Adapter for RldsAdapter {
             }
         }
 
-        // The declared episode total, from the per-split shard lengths. Present in every TFDS
-        // manifest this adapter has a reason to trust; absent only in a hand-built directory.
+        // The declared episode total, from the per-split shard lengths — but only when *every*
+        // split declares them. A total that silently omits a split would be compared against the
+        // episodes of all of them, reporting a complete dataset as truncated. Which splits fell
+        // short is recorded so the report can say why the count check is not running.
+        let mut splits_without_lengths: Vec<String> = Vec::new();
         let declared_episodes: Option<u64> = info.splits.as_ref().and_then(|splits| {
             let mut total = 0u64;
             let mut saw_any = false;
-            for split in splits {
-                let lengths = split.shard_lengths.as_ref()?;
-                for length in lengths {
-                    total = total.saturating_add(json_u64(length)?);
-                    saw_any = true;
+            for (n, split) in splits.iter().enumerate() {
+                match split.shard_lengths.as_ref() {
+                    Some(lengths) => {
+                        for length in lengths {
+                            total = total.saturating_add(json_u64(length)?);
+                            saw_any = true;
+                        }
+                    }
+                    None => splits_without_lengths
+                        .push(split.name.clone().unwrap_or_else(|| format!("split #{n}"))),
                 }
             }
-            saw_any.then_some(total)
+            (saw_any && splits_without_lengths.is_empty()).then_some(total)
         });
 
         // Resolve the sampling request into concrete episode ordinals before any shard is read.
@@ -827,16 +940,57 @@ impl Adapter for RldsAdapter {
         // random draw has to rank the whole episode set, which only the declared shard lengths give.
         let selected: Option<BTreeSet<u64>> = if options.sample.is_partial() {
             match &options.sample {
-                Sample::FirstEpisodes(n) => Some((0..*n).collect()),
+                // Clamped to the episodes the manifest says exist. Unclamped, `--sample-episodes 10`
+                // over a 3-episode dataset would record a *declared* total of 10 — a claim the
+                // manifest never made — and the declared-count check would then fail a sound
+                // dataset for the size of the user's own flag.
+                Sample::FirstEpisodes(n) => {
+                    let want = declared_episodes.map_or(*n, |total| (*n).min(total));
+                    // Bounded before it is materialized: `n` is an operator's number, and
+                    // `--sample-episodes 18446744073709551615` must not become an allocation.
+                    if want > MAX_EPISODE_SET_FOR_SAMPLING {
+                        return Err(IngestError::SamplingUnsupported {
+                            format_id: FORMAT_ID,
+                            reason: format!(
+                                "a sample of {want} episodes is over the \
+                                 {MAX_EPISODE_SET_FOR_SAMPLING} ceiling for resolving an episode \
+                                 set; ask for fewer, or run the full dataset"
+                            ),
+                        });
+                    }
+                    Some((0..want).collect())
+                }
                 _ => {
                     let Some(total) = declared_episodes.filter(|t| *t > 0) else {
                         return Err(IngestError::SamplingUnsupported {
                             format_id: FORMAT_ID,
-                            reason: "dataset_info.json declares no split shard lengths, so which \
-                                     episodes exist is not known without reading every shard"
-                                .into(),
+                            reason: if splits_without_lengths.is_empty() {
+                                "dataset_info.json declares no split shard lengths, so which \
+                                 episodes exist is not known without reading every shard"
+                                    .into()
+                            } else {
+                                format!(
+                                    "dataset_info.json omits shard lengths for split(s) {}, so \
+                                     which episodes exist is not known without reading every shard",
+                                    splits_without_lengths.join(", ")
+                                )
+                            },
                         });
                     };
+                    // The random draw ranks the whole set, so it is the arm that must materialize
+                    // it — and `total` is a number in a few-hundred-byte manifest that nothing else
+                    // bounds. `"shardLengths": ["18446744073709551615"]` is a 92-byte file, and
+                    // without this ceiling it is a permanent hang and a certain OOM.
+                    if total > MAX_EPISODE_SET_FOR_SAMPLING {
+                        return Err(IngestError::SamplingUnsupported {
+                            format_id: FORMAT_ID,
+                            reason: format!(
+                                "dataset_info.json declares {total} episodes, over the \
+                                 {MAX_EPISODE_SET_FOR_SAMPLING} ceiling for ranking an episode set \
+                                 to draw from — use --sample-episodes, or run the full dataset"
+                            ),
+                        });
+                    }
                     Some(options.sample.select(&(0..total).collect()))
                 }
             }
@@ -860,11 +1014,28 @@ impl Adapter for RldsAdapter {
         // reconciled in both directions so neither is dropped silently.
         let mut seen_keys: BTreeSet<String> = BTreeSet::new();
         let mut absent_leaves: BTreeSet<String> = BTreeSet::new();
+        // Instructions whose bytes are not decodable text, by episode. Dropping one silently would
+        // leave an episode with no task and nothing saying why.
+        let mut undecodable_instructions: BTreeSet<String> = BTreeSet::new();
+        // Which splits the ingested episodes came from. A TFDS directory holds every split side by
+        // side, and this adapter reads all of them into one episode-index space — so which split an
+        // episode came from is recorded per episode rather than lost.
+        let mut splits_seen: BTreeSet<String> = BTreeSet::new();
         let mut episode_ordinal: u64 = 0;
 
         'shards: for shard in &shards {
+            let shard_uri = relative_uri(dir, shard).ok_or_else(|| {
+                parse_error(format!(
+                    "shard name {} is not valid UTF-8; it is bound into the content hash, so it \
+                     cannot be read losslessly",
+                    shard.display()
+                ))
+            })?;
+            let split = shard
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(shard_split);
             let bytes = std::fs::read(shard).map_err(|e| IngestError::Io(e.to_string()))?;
-            let shard_uri = relative_uri(dir, shard);
             let mut reader = RecordReader::new(&bytes);
             while let Some(record) = reader.next_record() {
                 let record = record.map_err(|e| parse_error(format!("{shard_uri}: {e}")))?;
@@ -884,11 +1055,16 @@ impl Adapter for RldsAdapter {
                     index,
                     &record,
                     &shard_uri,
+                    split.clone(),
                     &step_leaves,
                     &mut seen_keys,
                     &mut absent_leaves,
+                    &mut undecodable_instructions,
                     &mut budget,
                 )?;
+                if let Some(split) = &build.split {
+                    splits_seen.insert(split.clone());
+                }
                 builds.push(build);
                 if last_selected.is_some_and(|last| index >= last) {
                     break 'shards;
@@ -901,14 +1077,29 @@ impl Adapter for RldsAdapter {
         let episodes: Vec<Episode> = builds
             .iter()
             .map(|b| {
+                // Episode-scoped facts: the raw file it was converted from, and the split its shard
+                // belongs to. The split matters because a TFDS directory holds every split side by
+                // side and this adapter reads them into one episode-index space — without this,
+                // "the first 2 episodes" of an OXE dataset can silently be eval data.
+                let mut elements = Vec::new();
                 if let Some(file) = &b.source_file {
+                    elements.push(ProvenanceElement {
+                        key: "upstream".into(),
+                        value: Some(file.clone()),
+                        class: ProvenanceClass::Known,
+                    });
+                }
+                if let Some(split) = &b.split {
+                    elements.push(ProvenanceElement {
+                        key: "tfds_split".into(),
+                        value: Some(split.clone()),
+                        class: ProvenanceClass::Known,
+                    });
+                }
+                if !elements.is_empty() {
                     provenance.push(Provenance {
                         scope: ProvenanceScope::Episode(b.index),
-                        elements: vec![ProvenanceElement {
-                            key: "upstream".into(),
-                            value: Some(file.clone()),
-                            class: ProvenanceClass::Known,
-                        }],
+                        elements,
                     });
                 }
                 Episode {
@@ -965,6 +1156,12 @@ impl Adapter for RldsAdapter {
         }
         if let Some(citation) = &info.citation {
             metadata.push(("citation".into(), citation.clone()));
+        }
+        if !splits_seen.is_empty() {
+            metadata.push((
+                "tfds_splits_ingested".into(),
+                splits_seen.iter().cloned().collect::<Vec<_>>().join(","),
+            ));
         }
         // The declared episode total is an assertion about the whole dataset, so it is only
         // comparable against a full ingest. Under a sample, what is comparable is the count the
@@ -1039,9 +1236,23 @@ impl Adapter for RldsAdapter {
             (None, Some(_)) => {
                 mapped_fields.push("split shardLengths -> declared episode-count check".into())
             }
+            // Say which of the two it is. Reporting "declares none" when it declares some for one
+            // split and not another sends a reader looking for the wrong thing.
+            (None, None) if !splits_without_lengths.is_empty() => omitted_fields.push(format!(
+                "shard lengths for split(s) {} (so the declared episode-count check cannot run: a \
+                 partial total would report a complete dataset as truncated)",
+                splits_without_lengths.join(", ")
+            )),
             (None, None) => {
                 omitted_fields.push("split shard lengths (dataset_info.json declares none)".into())
             }
+        }
+        if !splits_seen.is_empty() {
+            mapped_fields.push(
+                "shard filename split -> provenance.tfds_split (per episode; every split in the \
+                 directory is read into one episode-index space)"
+                    .into(),
+            );
         }
         unmapped_fields.push(UnmappedField {
             source_path: "tf.train.Example feature values".into(),
@@ -1051,8 +1262,10 @@ impl Adapter for RldsAdapter {
         });
         // Reconcile declared features against the keys the records actually carried.
         let declared: BTreeSet<&str> = step_leaves.iter().map(|l| l.path.as_str()).collect();
+        // Every key the records carried, not just the `steps/` ones — an undeclared
+        // `episode_metadata/*` key is information the CDM does not hold either.
         for key in &seen_keys {
-            if !declared.contains(key.as_str()) && key.starts_with(STEPS_PREFIX) {
+            if !declared.contains(key.as_str()) && key.as_str() != EPISODE_SOURCE_FILE_KEY {
                 unmapped_fields.push(UnmappedField {
                     source_path: format!("tf.train.Example key `{key}`"),
                     note: "present in the records but not declared in features.json; not \
@@ -1062,9 +1275,19 @@ impl Adapter for RldsAdapter {
             }
         }
         for path in &absent_leaves {
+            // "At least one" rather than "the records": this is a per-episode observation, and a
+            // feature missing from one episode of a thousand must not read as missing everywhere.
+            // Each such episode carries the feature as an empty stream, which is what the verdict
+            // grades.
             omitted_fields.push(format!(
-                "feature `{path}` declared in features.json but absent from the records (no frames \
-                 ingested)"
+                "feature `{path}` is declared in features.json but absent from at least one record; \
+                 those episodes carry it as an empty stream"
+            ));
+        }
+        for path in &undecodable_instructions {
+            omitted_fields.push(format!(
+                "instruction text in `{path}` for at least one step (the bytes are not decodable \
+                 UTF-8, so no task or language label was taken from them)"
             ));
         }
 
@@ -1094,9 +1317,11 @@ fn build_episode(
     index: u64,
     record: &Record<'_>,
     shard_uri: &str,
+    split: Option<String>,
     step_leaves: &[&Leaf],
     seen_keys: &mut BTreeSet<String>,
     absent_leaves: &mut BTreeSet<String>,
+    undecodable_instructions: &mut BTreeSet<String>,
     budget: &mut FrameBudget,
 ) -> Result<EpisodeBuild, IngestError> {
     let values = parse_example(record.payload).ok_or_else(|| {
@@ -1112,9 +1337,17 @@ fn build_episode(
     // Derive each step feature's step count. RLDS serializes every step of a feature into one list,
     // so the count is the list length divided by the values one step holds.
     let mut counts: Vec<(&Leaf, u64)> = Vec::new();
+    // Features the manifest declares but this record does not carry. They still become streams —
+    // empty ones — because a feature that vanished from the data is a defect, and a stream that is
+    // simply absent from the CDM is invisible to both the content hash and every check: a dataset
+    // that lost a whole camera during export would otherwise hash and certify exactly like one that
+    // never had it. As an empty stream it is bound into the hash and reported as
+    // `STRUCTURAL.EMPTY_STREAM`.
+    let mut absent: Vec<&Leaf> = Vec::new();
     for leaf in step_leaves {
         let Some(feature) = values.get(&leaf.path) else {
             absent_leaves.insert(leaf.path.clone());
+            absent.push(leaf);
             continue;
         };
         let elem = leaf
@@ -1150,17 +1383,20 @@ fn build_episode(
     // Charge the budget on the frames this record is about to materialize, before allocating them.
     budget.take(FORMAT_ID, (counts.len() as u64).saturating_mul(steps))?;
 
-    let mut streams = Vec::with_capacity(counts.len());
+    let mut streams = Vec::with_capacity(counts.len() + absent.len());
     let mut task = None;
     let mut labels = Vec::new();
     for (leaf, _) in &counts {
         let feature = &values[&leaf.path];
         let elem = leaf.elem_len.expect("checked above") as usize;
+        // One `uri` per stream, shared by its frames: it is identical for every step, and a separate
+        // heap string per frame turned a 2 MB shard into hundreds of megabytes.
+        let uri = format!("{shard_uri}#{}/{}", record.ordinal, leaf.path);
         let frames = (0..steps as usize)
             .map(|step| Frame {
                 ts: step as i64,
                 value_ref: ValueRef {
-                    uri: format!("{shard_uri}#{}/{}", record.ordinal, leaf.path),
+                    uri: uri.clone(),
                     byte_offset: None,
                     byte_len: None,
                     content_hash: Some(feature.hash_range(step * elem, (step + 1) * elem)),
@@ -1169,7 +1405,7 @@ fn build_episode(
             .collect();
         // The natural-language instruction is both a stream (it has a per-step value) and the
         // episode's task. Only text that actually decodes becomes a task — Veridex never invents an
-        // instruction out of bytes it cannot read.
+        // instruction out of bytes it cannot read, and records when it could not read them.
         if leaf.is_instruction() {
             let mut previous: Option<String> = None;
             for step in 0..steps as usize {
@@ -1179,6 +1415,7 @@ fn build_episode(
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
                 else {
+                    undecodable_instructions.insert(leaf.path.clone());
                     continue;
                 };
                 if task.is_none() {
@@ -1222,6 +1459,32 @@ fn build_episode(
             frame_id: None,
         });
     }
+    // A declared feature this record does not carry, as an empty stream — present in the CDM, bound
+    // into the content hash, and reported as `STRUCTURAL.EMPTY_STREAM` rather than silently absent.
+    for leaf in &absent {
+        streams.push(Stream {
+            name: leaf
+                .path
+                .strip_prefix(STEPS_PREFIX)
+                .unwrap_or(&leaf.path)
+                .to_string(),
+            modality: leaf.modality,
+            declared_rate_hz: None,
+            clock_id: CLOCK_ID.into(),
+            dtype: leaf.dtype.clone(),
+            shape: leaf.shape.clone(),
+            frames: Vec::new(),
+            stats: None,
+            dim_stats: None,
+            observed_stats: None,
+            observed_saturation: None,
+            observed_non_finite: None,
+            observed_dim_stats: None,
+            point_fields: None,
+            media: None,
+            frame_id: None,
+        });
+    }
 
     // The one lineage fact RLDS carries: the raw file each episode was converted from.
     let source_file = values
@@ -1238,6 +1501,7 @@ fn build_episode(
         labels,
         steps,
         source_file,
+        split,
     })
 }
 

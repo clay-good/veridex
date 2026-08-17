@@ -894,3 +894,472 @@ fn a_shard_short_of_its_declared_episode_count_is_caught_end_to_end() {
             .collect::<Vec<_>>()
     );
 }
+
+// ---- Regressions from the multi-agent audit ----
+
+/// A features.json holding exactly the given `steps` leaves, as raw JSON values.
+fn features_with(steps: serde_json::Value) -> String {
+    serde_json::json!({
+        "featuresDict": {"features": {
+            "steps": {"sequence": {"feature": {"featuresDict": {"features": steps}}}}
+        }}
+    })
+    .to_string()
+}
+
+#[test]
+fn a_shape_whose_product_overflows_is_disclosed_rather_than_wrapped() {
+    // Two 2^32 dimensions overflow u64. Unchecked, this panics in a checked build and — far worse —
+    // wraps silently in a release one, dividing the serialized list by an element size that was
+    // never in the file and signing the fabricated step count into the content hash.
+    let tmp = tempfile::tempdir().unwrap();
+    write_dataset(tmp.path(), 1, 2);
+    std::fs::write(
+        tmp.path().join("features.json"),
+        features_with(serde_json::json!({
+            "action": {"tensor": {"shape": {"dimensions": ["7"]}, "dtype": "float32"}},
+            "huge": {"tensor": {"shape": {"dimensions": ["4294967296", "4294967296"]},
+                                "dtype": "float32"}}
+        })),
+    )
+    .unwrap();
+    let record = example(&[
+        ("steps/action", Value::Floats(vec![0.0; 14])),
+        ("steps/huge", Value::Floats(vec![0.0; 4])),
+    ]);
+    std::fs::write(
+        tmp.path().join("demo_rlds-train.tfrecord-00000-of-00001"),
+        shard(&[record]),
+    )
+    .unwrap();
+
+    let ingested = ingest(tmp.path()).unwrap();
+    assert_eq!(
+        ingested.dataset.episodes[0].streams.len(),
+        1,
+        "an unsizable leaf builds no stream"
+    );
+    assert!(
+        ingested
+            .report
+            .unmapped_fields
+            .iter()
+            .any(|f| f.source_path.contains("huge")),
+        "the overflow must be disclosed: {:?}",
+        ingested.report.unmapped_fields
+    );
+}
+
+#[test]
+fn an_encoded_tensor_is_one_blob_per_step_whatever_its_declared_shape() {
+    // TFDS replaces an encoded tensor's serialized spec with a single opaque blob per step, so its
+    // declared shape says nothing about how many values a step holds. `kuka` — one of the largest
+    // Open X-Embodiment datasets — does exactly this, and dividing by the declared product refuses
+    // the whole dataset while blaming the data.
+    let tmp = tempfile::tempdir().unwrap();
+    write_dataset(tmp.path(), 1, 9);
+    std::fs::write(
+        tmp.path().join("features.json"),
+        features_with(serde_json::json!({
+            "action": {"tensor": {"shape": {"dimensions": ["3"]}, "dtype": "float32",
+                                  "encoding": "none"}},
+            "base_pose_tool_reached": {"tensor": {"shape": {"dimensions": ["7"]},
+                                                  "dtype": "float32", "encoding": "zlib"}}
+        })),
+    )
+    .unwrap();
+    let record = example(&[
+        ("steps/action", Value::Floats(vec![0.0; 27])),
+        // 9 steps, 9 blobs — not a multiple of the declared 7.
+        (
+            "steps/base_pose_tool_reached",
+            Value::Bytes((0..9).map(|s| format!("zlib-{s}").into_bytes()).collect()),
+        ),
+    ]);
+    std::fs::write(
+        tmp.path().join("demo_rlds-train.tfrecord-00000-of-00001"),
+        shard(&[record]),
+    )
+    .unwrap();
+
+    let ingested = ingest(tmp.path()).expect("an encoded tensor must not be refused");
+    let ep = &ingested.dataset.episodes[0];
+    assert_eq!(ep.streams.len(), 2);
+    for stream in &ep.streams {
+        assert_eq!(stream.frames.len(), 9, "stream `{}`", stream.name);
+    }
+}
+
+#[test]
+fn a_manifest_declaring_an_absurd_episode_total_is_refused_not_materialized() {
+    // The episode set is built from a number in a few-hundred-byte manifest, before any ingest
+    // budget exists. Unbounded, `u64::MAX` is a hang and a certain OOM.
+    let tmp = tempfile::tempdir().unwrap();
+    write_dataset(tmp.path(), 2, 2);
+    std::fs::write(
+        tmp.path().join("dataset_info.json"),
+        dataset_info_json(Some(vec![18_446_744_073_709_551_615]), "tfrecord"),
+    )
+    .unwrap();
+    match RldsAdapter.ingest(
+        &Source::Local(tmp.path().to_path_buf()),
+        &IngestOptions {
+            sample: Sample::Fraction {
+                fraction: 0.5,
+                seed: 1,
+            },
+            ..IngestOptions::default()
+        },
+    ) {
+        Err(IngestError::SamplingUnsupported { reason, .. }) => {
+            assert!(reason.contains("ceiling"), "reason: {reason}");
+        }
+        other => panic!("an absurd declared total must be refused, got {other:?}"),
+    }
+}
+
+#[test]
+fn asking_for_more_episodes_than_exist_does_not_forge_a_manifest_claim() {
+    // The sample count is the user's flag, not an assertion the manifest made. Recording it as the
+    // declared total makes the declared-count check fail a sound dataset — and blame "the manifest"
+    // for a number the manifest never stated.
+    let tmp = tempfile::tempdir().unwrap();
+    write_dataset(tmp.path(), 3, 4);
+    let out = veridex_core::pipeline::run_check(
+        &default_registry(),
+        &Source::Local(tmp.path().to_path_buf()),
+        None,
+        &IngestOptions {
+            sample: Sample::FirstEpisodes(10),
+            ..IngestOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(
+        !out.verdict
+            .findings
+            .iter()
+            .any(|f| f.code == "STRUCTURAL.EPISODE_COUNT_MISMATCH"),
+        "a sound dataset must not fail because the sample flag was larger than it: {:?}",
+        out.verdict
+            .findings
+            .iter()
+            .map(|f| &f.code)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(out.ingested.dataset.episodes.len(), 3);
+}
+
+#[test]
+fn a_declared_feature_absent_from_a_record_is_bound_into_the_hash() {
+    // A dataset that lost a camera during export must not hash and certify exactly like one that
+    // never declared that camera. The absent feature becomes an empty stream, which is in the CDM,
+    // in the hash, and gradeable by a check.
+    let with_camera = tempfile::tempdir().unwrap();
+    let without = tempfile::tempdir().unwrap();
+    let record = example(&[
+        ("steps/action", Value::Floats(vec![0.0; 14])),
+        (
+            "steps/observation/image",
+            Value::Bytes(vec![b"a".to_vec(), b"b".to_vec()]),
+        ),
+    ]);
+    for dir in [with_camera.path(), without.path()] {
+        std::fs::write(
+            dir.join("dataset_info.json"),
+            dataset_info_json(Some(vec![1]), "tfrecord"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("demo_rlds-train.tfrecord-00000-of-00001"),
+            shard(std::slice::from_ref(&record)),
+        )
+        .unwrap();
+    }
+    let leaves = serde_json::json!({
+        "action": {"tensor": {"shape": {"dimensions": ["7"]}, "dtype": "float32"}},
+        "observation": {"featuresDict": {"features": {
+            "image": {"image": {"shape": {"dimensions": ["8", "8", "3"]}, "dtype": "uint8"}}
+        }}}
+    });
+    std::fs::write(
+        without.path().join("features.json"),
+        features_with(leaves.clone()),
+    )
+    .unwrap();
+    let mut declared_more = leaves;
+    declared_more["observation"]["featuresDict"]["features"]["wrist_image"] = serde_json::json!(
+        {"image": {"shape": {"dimensions": ["8", "8", "3"]}, "dtype": "uint8"}}
+    );
+    std::fs::write(
+        with_camera.path().join("features.json"),
+        features_with(declared_more),
+    )
+    .unwrap();
+
+    let mut lost = ingest(with_camera.path()).unwrap().dataset;
+    let mut never_had = ingest(without.path()).unwrap().dataset;
+    lost.canonicalize_order();
+    never_had.canonicalize_order();
+    assert_ne!(
+        content_hash(&lost),
+        content_hash(&never_had),
+        "a dataset that lost a declared camera must not hash like one that never had it"
+    );
+    let empty: Vec<&str> = lost.episodes[0]
+        .streams
+        .iter()
+        .filter(|s| s.frames.is_empty())
+        .map(|s| s.name.as_str())
+        .collect();
+    assert_eq!(empty, vec!["observation/wrist_image"]);
+
+    // And it reaches the verdict, not just the CDM.
+    let out = veridex_core::pipeline::run_check(
+        &default_registry(),
+        &Source::Local(with_camera.path().to_path_buf()),
+        None,
+        &IngestOptions::default(),
+    )
+    .unwrap();
+    assert!(
+        out.verdict
+            .findings
+            .iter()
+            .any(|f| f.code == "STRUCTURAL.EMPTY_STREAM"),
+        "the lost camera must produce a finding: {:?}",
+        out.verdict
+            .findings
+            .iter()
+            .map(|f| &f.code)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn a_feature_carrying_two_value_lists_is_refused_as_ambiguous() {
+    // `tf.train.Feature` is a oneof. Two lists have no single meaning, and letting the last win
+    // lets the same bytes yield a different step count depending on which a reader honors — the
+    // very ambiguity a duplicate map key is refused for.
+    let tmp = tempfile::tempdir().unwrap();
+    write_dataset(tmp.path(), 1, 2);
+    let mut feature = Vec::new();
+    let mut bytes_list = Vec::new();
+    for entry in [b"a".as_slice(), b"b", b"c", b"d", b"e"] {
+        delimited(1, entry, &mut bytes_list);
+    }
+    delimited(1, &bytes_list, &mut feature);
+    let mut int_list = Vec::new();
+    delimited(1, &[0u8, 1u8], &mut int_list);
+    delimited(3, &int_list, &mut feature);
+
+    let mut entry = Vec::new();
+    delimited(1, b"steps/action", &mut entry);
+    delimited(2, &feature, &mut entry);
+    let mut map = Vec::new();
+    delimited(1, &entry, &mut map);
+    let mut record = Vec::new();
+    delimited(1, &map, &mut record);
+
+    std::fs::write(
+        tmp.path().join("demo_rlds-train.tfrecord-00000-of-00001"),
+        shard(&[record]),
+    )
+    .unwrap();
+    match ingest(tmp.path()) {
+        Err(IngestError::Parse { message, .. }) => {
+            assert!(message.contains("decodable"), "{message}");
+        }
+        other => panic!("an ambiguous feature must be refused, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_tfrecord_index_sibling_is_not_mistaken_for_a_shard() {
+    // TFDS writes `<shard>_index.json` next to the shards it indexes. Those names contain
+    // `.tfrecord`, and feeding one to the record reader reports a healthy dataset as corrupt.
+    let tmp = tempfile::tempdir().unwrap();
+    write_dataset(tmp.path(), 2, 3);
+    std::fs::write(
+        tmp.path()
+            .join("demo_rlds-train.tfrecord-00000-of-00001_index.json"),
+        r#"{"index":[]}"#,
+    )
+    .unwrap();
+    let ingested = ingest(tmp.path()).expect("an index sibling must not be read as a shard");
+    assert_eq!(ingested.dataset.episodes.len(), 2);
+}
+
+#[test]
+fn every_split_in_the_directory_is_read_and_each_episode_says_which() {
+    // A TFDS directory holds every split side by side, and this adapter reads them into one
+    // episode-index space. `test` sorts before `train`, so episode 0 is eval data — which a user
+    // must be able to see.
+    let tmp = tempfile::tempdir().unwrap();
+    write_dataset(tmp.path(), 2, 3);
+    std::fs::write(
+        tmp.path().join("demo_rlds-test.tfrecord-00000-of-00001"),
+        shard(&[episode_record(3, &["evaluate"], "/raw/eval.h5", 900.0)]),
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("dataset_info.json"),
+        dataset_info_json(Some(vec![3]), "tfrecord"),
+    )
+    .unwrap();
+
+    let ingested = ingest(tmp.path()).unwrap();
+    assert_eq!(ingested.dataset.episodes.len(), 3);
+    let split_of = |index: u64| -> Option<String> {
+        ingested
+            .dataset
+            .provenance
+            .iter()
+            .find(|p| p.scope == ProvenanceScope::Episode(index))?
+            .elements
+            .iter()
+            .find(|e| e.key == "tfds_split")?
+            .value
+            .clone()
+    };
+    assert_eq!(
+        split_of(0).as_deref(),
+        Some("test"),
+        "episode 0 is the test split, and the CDM has to say so"
+    );
+    assert_eq!(split_of(1).as_deref(), Some("train"));
+    assert_eq!(
+        ingested
+            .dataset
+            .metadata
+            .iter()
+            .find(|(k, _)| k == "tfds_splits_ingested")
+            .map(|(_, v)| v.as_str()),
+        Some("test,train")
+    );
+}
+
+#[test]
+fn one_split_without_shard_lengths_disables_the_count_check_and_says_which() {
+    // Summing only the splits that declare lengths would compare a partial total against every
+    // split's episodes, reporting a complete dataset as truncated.
+    let tmp = tempfile::tempdir().unwrap();
+    write_dataset(tmp.path(), 2, 2);
+    let mut info: serde_json::Value =
+        serde_json::from_str(&dataset_info_json(Some(vec![2]), "tfrecord")).unwrap();
+    info["splits"] = serde_json::json!([
+        {"name": "train", "shardLengths": ["2"]},
+        {"name": "test"},
+    ]);
+    std::fs::write(tmp.path().join("dataset_info.json"), info.to_string()).unwrap();
+
+    let ingested = ingest(tmp.path()).unwrap();
+    assert!(
+        !ingested
+            .dataset
+            .metadata
+            .iter()
+            .any(|(k, _)| k == veridex_core::cdm::META_DECLARED_EPISODES),
+        "a partial total must not be recorded as the dataset's declared count"
+    );
+    assert!(
+        ingested
+            .report
+            .omitted_fields
+            .iter()
+            .any(|f| f.contains("test")),
+        "the report must name the split that omitted its lengths: {:?}",
+        ingested.report.omitted_fields
+    );
+}
+
+#[test]
+fn an_instruction_that_is_not_decodable_text_is_disclosed() {
+    // Dropping it silently leaves an episode with no task and nothing saying why.
+    let tmp = tempfile::tempdir().unwrap();
+    write_dataset(tmp.path(), 1, 2);
+    let record = example(&[
+        ("steps/action", Value::Floats(vec![0.0; 14])),
+        (
+            "steps/language_instruction",
+            Value::Bytes(vec![vec![0xff, 0xfe], vec![0xff, 0xfe]]),
+        ),
+    ]);
+    std::fs::write(
+        tmp.path().join("demo_rlds-train.tfrecord-00000-of-00001"),
+        shard(&[record]),
+    )
+    .unwrap();
+    let ingested = ingest(tmp.path()).unwrap();
+    assert_eq!(ingested.dataset.episodes[0].task, None);
+    assert!(
+        ingested
+            .report
+            .omitted_fields
+            .iter()
+            .any(|f| f.contains("not decodable UTF-8")),
+        "unreadable instruction bytes must be disclosed: {:?}",
+        ingested.report.omitted_fields
+    );
+}
+
+#[test]
+fn a_float_payload_is_fingerprinted_from_its_wire_bits() {
+    // Two distinct NaN bit patterns are different bytes on disk. Round-tripping through f32 can
+    // quiet a signaling NaN on some targets, which would make the same dataset hash differently
+    // there — so the fingerprint is taken from the wire bits, never from a float.
+    let quiet = f32::from_bits(0x7FC0_0001);
+    let signaling = f32::from_bits(0x7F80_0001);
+    let dirs: Vec<_> = (0..2).map(|_| tempfile::tempdir().unwrap()).collect();
+    for (dir, value) in dirs.iter().zip([quiet, signaling]) {
+        write_dataset(dir.path(), 1, 1);
+        let record = example(&[("steps/action", Value::Floats(vec![value; 7]))]);
+        std::fs::write(
+            dir.path().join("demo_rlds-train.tfrecord-00000-of-00001"),
+            shard(&[record]),
+        )
+        .unwrap();
+    }
+    let mut a = ingest(dirs[0].path()).unwrap().dataset;
+    let mut b = ingest(dirs[1].path()).unwrap().dataset;
+    a.canonicalize_order();
+    b.canonicalize_order();
+    assert_ne!(
+        content_hash(&a),
+        content_hash(&b),
+        "two different NaN payloads are two different files"
+    );
+}
+
+#[test]
+fn a_shard_whose_records_carry_no_declared_feature_is_not_a_clean_pass() {
+    // Every declared feature missing from every record used to yield episodes with zero streams and
+    // a clean verdict over a dataset holding no data.
+    let tmp = tempfile::tempdir().unwrap();
+    write_dataset(tmp.path(), 1, 2);
+    let record = example(&[("steps/unrelated", Value::Floats(vec![0.0, 1.0]))]);
+    std::fs::write(
+        tmp.path().join("demo_rlds-train.tfrecord-00000-of-00001"),
+        shard(&[record]),
+    )
+    .unwrap();
+    let out = veridex_core::pipeline::run_check(
+        &default_registry(),
+        &Source::Local(tmp.path().to_path_buf()),
+        None,
+        &IngestOptions::default(),
+    )
+    .unwrap();
+    assert!(
+        out.verdict
+            .findings
+            .iter()
+            .any(|f| f.code == "STRUCTURAL.EMPTY_STREAM"),
+        "an episode holding none of its declared data must not read as clean: {:?}",
+        out.verdict
+            .findings
+            .iter()
+            .map(|f| &f.code)
+            .collect::<Vec<_>>()
+    );
+}
