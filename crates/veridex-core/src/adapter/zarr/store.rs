@@ -50,6 +50,8 @@ struct ZarrayJson {
     filters: Option<Vec<Codec>>,
     #[serde(default)]
     dimension_separator: Option<String>,
+    #[serde(default)]
+    fill_value: Option<serde_json::Value>,
 }
 
 /// A codec entry from `.zarray` (`compressor` or one of `filters`).
@@ -156,6 +158,52 @@ fn parse_dtype(value: &serde_json::Value) -> Result<Dtype, IngestError> {
     })
 }
 
+/// One element of an array's fill value, as the bytes a chunk would have held.
+///
+/// `null` (and an absent field) means the store declares no fill value, which reads as zero bytes.
+/// A float fill may be the JSON strings `"NaN"`, `"Infinity"`, or `"-Infinity"`, which is how Zarr
+/// writes values JSON has no literal for — and `"NaN"` is what an unwritten float array gets by
+/// default, so it is the case that matters most.
+fn fill_element(dtype: &Dtype, value: Option<&serde_json::Value>) -> Result<Vec<u8>, IngestError> {
+    let size = dtype.size as usize;
+    let zeros = vec![0u8; size];
+    let Some(value) = value else {
+        return Ok(zeros);
+    };
+    let number = match value {
+        serde_json::Value::Null => return Ok(zeros),
+        serde_json::Value::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
+        serde_json::Value::Number(n) => n.as_f64(),
+        serde_json::Value::String(s) => match s.as_str() {
+            "NaN" => Some(f64::NAN),
+            "Infinity" => Some(f64::INFINITY),
+            "-Infinity" => Some(f64::NEG_INFINITY),
+            // A base64 fill value belongs to a dtype this reader does not decode anyway; the bytes
+            // it would produce are not something to guess at.
+            _ => None,
+        },
+        _ => None,
+    };
+    let Some(number) = number.filter(|_| dtype.numeric) else {
+        // Not a numeric fill this reader can encode. Zero bytes are what an unwritten chunk of a
+        // non-numeric array reads as here, and the array's values are not decoded either way.
+        return Ok(zeros);
+    };
+    let bytes = match (dtype.float, size) {
+        (true, 4) => (number as f32).to_le_bytes().to_vec(),
+        (true, 8) => number.to_le_bytes().to_vec(),
+        (true, _) => return Ok(zeros),
+        (false, _) if dtype.signed => (number as i64).to_le_bytes()[..size.min(8)].to_vec(),
+        (false, _) => (number as u64).to_le_bytes()[..size.min(8)].to_vec(),
+    };
+    let mut bytes = bytes;
+    bytes.resize(size, 0);
+    if !dtype.little_endian {
+        bytes.reverse();
+    }
+    Ok(bytes)
+}
+
 /// Compressors this reader applies. Anything else is refused by name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Compressor {
@@ -216,6 +264,11 @@ pub(crate) struct ZarrArray {
     /// What separates chunk coordinates in a chunk's filename (`.` by default, `/` for a nested
     /// store).
     pub separator: String,
+    /// One element's worth of the array's fill value, as stored bytes. A chunk that was never written
+    /// is not in the store at all and reads as this repeated — which is emphatically not zero: Zarr
+    /// writes `"NaN"` for an unwritten float array by default, and reading those rows as zeros would
+    /// turn missing data into plausible data.
+    pub fill_element: Vec<u8>,
 }
 
 impl ZarrArray {
@@ -280,9 +333,12 @@ impl ZarrArray {
                 )))
             }
         };
+        let dtype = parse_dtype(&meta.dtype)?;
+        let fill_element = fill_element(&dtype, meta.fill_value.as_ref())?;
         Ok(ZarrArray {
             dir: dir.to_path_buf(),
-            dtype: parse_dtype(&meta.dtype)?,
+            fill_element,
+            dtype,
             compressor: parse_compressor(meta.compressor.as_ref())?,
             shape: meta.shape,
             chunks: meta.chunks,
@@ -406,6 +462,20 @@ impl<'a> RowReader<'a> {
         Ok(row)
     }
 
+    /// A whole chunk of the array's fill value — what an unwritten chunk reads as.
+    fn fill_chunk(&self) -> Vec<u8> {
+        let element = &self.array.fill_element;
+        if element.iter().all(|b| *b == 0) {
+            return vec![0u8; self.chunk_bytes as usize];
+        }
+        let mut out = Vec::with_capacity(self.chunk_bytes as usize);
+        while out.len() + element.len() <= self.chunk_bytes as usize {
+            out.extend_from_slice(element);
+        }
+        out.resize(self.chunk_bytes as usize, 0);
+        out
+    }
+
     /// Make `self.cached` hold the decoded bytes of the chunk at grid position `grid`.
     fn load_chunk(&mut self, grid: &[u64]) -> Result<(), IngestError> {
         if self
@@ -420,9 +490,7 @@ impl<'a> RowReader<'a> {
             // A chunk that was never written is not in the store at all, and reads as the fill
             // value. That is Zarr's own semantics, not a guess: the array's shape says the row
             // exists, and a sparse write is ordinary.
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                vec![0u8; self.chunk_bytes as usize]
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => self.fill_chunk(),
             Err(e) => return Err(IngestError::Io(e.to_string())),
             Ok(raw) => {
                 self.budget.take(FORMAT_ID, self.chunk_bytes)?;

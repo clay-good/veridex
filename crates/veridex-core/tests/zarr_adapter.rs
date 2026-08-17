@@ -439,3 +439,42 @@ fn a_v3_store_is_refused_by_version_not_reported_as_unknown() {
         other => panic!("expected an unsupported-version error, got {other:?}"),
     }
 }
+
+#[test]
+fn an_unwritten_chunk_reads_as_the_declared_fill_value() {
+    // `sparse_fill.zarr` writes rows 0..2 and 4..6 of a float array whose `fill_value` is `"NaN"`,
+    // and rows 0..2 of an int array whose fill is `-1`. The chunks covering the gaps are not in the
+    // store at all. Reading them as zeros would turn missing data into plausible data — and would
+    // hide the NaNs that `STATISTICAL.NON_FINITE_OBSERVED` exists to catch.
+    let ingested = ingest("sparse_fill.zarr", IngestOptions::default());
+    assert_eq!(
+        row_hashes(stream_of(&ingested, 0, "state")),
+        [
+            "dc91ce9a50ddc828740aa26743716897fdb2bb64f1db662fe263a59be56145ae",
+            "bed9efba025f2da91e4ece76e380f86ca1cd1765aea7f5bb87f607b547061efa",
+            "241808cce19b49683d2308412efef71f1f4c7dcf2627039cba044bf44f6e3533",
+            "241808cce19b49683d2308412efef71f1f4c7dcf2627039cba044bf44f6e3533",
+            "9bb4833ece80484c0fb4bcbd256d3ad2a68476fdbce3a92298484932837041c7",
+            "ac6a48691a9269689d056bda012b4cbbfb30c82b85662b4aef6bee596167613d",
+        ],
+        "every row matches what Python reads back, fill included"
+    );
+    assert_eq!(
+        row_hashes(stream_of(&ingested, 0, "count")),
+        [
+            "e8613f5a5bc9f9feeda32a8e7c80b69dd4878e47b6a91723fb15eb84236b6a2b",
+            "dc765660b06ee03dd16fd7ca5b957e8c805161ac2c4af28c5a100ab2ab432ca1",
+            "ad95131bc0b799c0b1af477fb14fcf26a6a9f76079e48bf090acb7e8367bfd0e",
+            "ad95131bc0b799c0b1af477fb14fcf26a6a9f76079e48bf090acb7e8367bfd0e",
+            "ad95131bc0b799c0b1af477fb14fcf26a6a9f76079e48bf090acb7e8367bfd0e",
+            "ad95131bc0b799c0b1af477fb14fcf26a6a9f76079e48bf090acb7e8367bfd0e",
+        ],
+        "a non-zero integer fill is the value the store declared, not zero"
+    );
+    // And the fill is not merely bytes: the NaNs it introduces are counted as what they are.
+    assert_eq!(
+        stream_of(&ingested, 0, "state").observed_non_finite,
+        Some(4),
+        "four NaN values across the two unwritten rows"
+    );
+}

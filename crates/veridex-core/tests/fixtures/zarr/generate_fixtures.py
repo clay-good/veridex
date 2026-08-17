@@ -21,6 +21,7 @@ write a v3 store and the only thing the test needs is for it to be recognized an
 | `ends_backwards.zarr`, `ends_past_rows.zarr` | Episode boundaries that contradict the arrays they index |
 | `ends_short.zarr` | Rows past the last boundary, which belong to no episode |
 | `timed.zarr`, `untimed.zarr` | A timeline with declared `units`, and one without |
+| `sparse_fill.zarr` | An array only partly written, so unwritten chunks must read as the declared `fill_value` (`"NaN"`, and `-1`) rather than as zeros |
 | `v3_store.zarr` | A Zarr v3 store (hand-written), refused by version |
 """
 
@@ -115,5 +116,22 @@ for name, units in [("timed.zarr", "s"), ("untimed.zarr", None)]:
     if units:
         stamps.attrs["units"] = units
     meta.create_dataset("episode_ends", data=np.array([3, 6], dtype=np.int64), chunks=(2,))
+
+# An array written only in part: the chunks covering the gap are not in the store at all, and read as
+# the declared fill value. Zarr writes `"NaN"` for an unwritten float array by default, so reading a
+# missing chunk as zeros would turn missing data into plausible data.
+root = fresh("sparse_fill.zarr")
+data, meta = root.create_group("data"), root.create_group("meta")
+state = data.create_dataset(
+    "state", shape=(6, 2), chunks=(2, 2), dtype="<f8",
+    fill_value=float("nan"), compressor=numcodecs.Zstd(level=3),
+)
+state[0:2] = np.array([[1.0, 2.0], [3.0, 4.0]])
+state[4:6] = np.array([[5.0, 6.0], [7.0, 8.0]])
+count = data.create_dataset("count", shape=(6,), chunks=(2,), dtype="<i4", fill_value=-1)
+count[0:2] = np.array([7, 8], dtype=np.int32)
+meta.create_dataset("episode_ends", data=np.array([6], dtype=np.int64), chunks=(1,))
+for name, array in [("sparse state", state[:]), ("sparse count", count[:])]:
+    print(name, [hashlib.sha256(array[i].tobytes()).hexdigest() for i in range(array.shape[0])])
 
 print(sorted(n for n in os.listdir(".") if n.endswith(".zarr")))

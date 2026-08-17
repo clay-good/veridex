@@ -30,9 +30,14 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   to re-save it as. Values are summarized as they are read, so the statistical checks are live, and
   the timeline is the step index unless a `timestamp` array declares its `units`.
 
+  An array's `fill_value` is honored, which matters more than it sounds: a chunk that was never
+  written is not in the store at all, and Zarr's default fill for a float array is `"NaN"`. Reading
+  those rows as zeros would turn missing data into plausible data — and would hide exactly the NaNs
+  `STATISTICAL.NON_FINITE_OBSERVED` exists to catch.
+
   Tested against real `zarr` + `numcodecs` stores committed as fixtures, with per-row SHA-256 values
   taken from Python — including one array per codec over identical values, which must all decode to
-  the same bytes. The chunk-to-row assembly is now shared with the HDF5 adapter rather than written
+  the same bytes, and a half-written array whose gaps must hash to what Python reads back. The chunk-to-row assembly is now shared with the HDF5 adapter rather than written
   twice: the same logical array must not hash differently depending on the container it arrived in.
 
 - **The refusal messages are now asserted, and one of them was lying.** An HDF5 attribute this reader
