@@ -883,3 +883,194 @@ fn a_score_gate_cannot_be_satisfied_by_reading_nothing() {
     ]);
     assert_eq!(code, 20, "a sampled run still answers to --min-score");
 }
+
+/// The flag allow-list is only a guard if it knows every flag.
+///
+/// `given_flags()` is the single source of truth for `reject_flags_except`, and its doc comment
+/// claimed "a test asserts this covers the parser's whole flag set". No such test existed: the array
+/// is a fixed `[(&str, bool); N]`, which forces nothing, so a flag added to `parse_args` without a
+/// matching entry would be silently accepted by *every* command — precisely the failure the
+/// allow-list exists to prevent. Both lists live in one file, so comparing them is a textual fact.
+#[test]
+fn every_parser_flag_appears_in_the_allow_list() {
+    let source = include_str!("../src/main.rs");
+
+    /// The `"--flag"` literals inside a brace-delimited block that starts at `from`.
+    fn flags_in_block(source: &str, from: usize) -> Vec<String> {
+        let rest = &source[from..];
+        let open = rest.find('{').expect("block opens");
+        let mut depth = 0usize;
+        let mut end = rest.len();
+        for (i, c) in rest[open..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = open + i;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let block = &rest[open..end];
+        let mut out: Vec<String> = block
+            .match_indices("\"--")
+            .filter_map(|(i, _)| {
+                let tail = &block[i + 1..];
+                tail.find('"').map(|q| tail[..q].to_string())
+            })
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    let parser = flags_in_block(
+        source,
+        source
+            .find("match arg.as_str() {")
+            .expect("parser dispatch"),
+    );
+    let allow_list = flags_in_block(
+        source,
+        source.find("fn given_flags(&self)").expect("given_flags"),
+    );
+
+    let missing: Vec<&String> = parser.iter().filter(|f| !allow_list.contains(f)).collect();
+    assert!(
+        missing.is_empty(),
+        "these flags are parsed but absent from given_flags(), so no command rejects them: \
+         {missing:?}"
+    );
+
+    // The converse: an entry naming a flag the parser does not know is dead weight that reads as
+    // coverage.
+    let stale: Vec<&String> = allow_list.iter().filter(|f| !parser.contains(f)).collect();
+    assert!(
+        stale.is_empty(),
+        "these entries name flags the parser does not accept: {stale:?}"
+    );
+}
+
+/// One run writes one report. The dispatch is an if/else chain, so the losing flag used to be
+/// dropped without a word — a CI job doing `check --json --sarif > report.json` silently got SARIF,
+/// which `veridex diff` then refused as not a Veridex report.
+#[test]
+fn conflicting_output_formats_are_refused() {
+    for pair in [
+        ["--json", "--sarif"],
+        ["--json", "--html"],
+        ["--sarif", "--html"],
+    ] {
+        let (code, stdout, stderr) = run(&["check", pair[0], pair[1], "."]);
+        assert_eq!(
+            code, 2,
+            "{pair:?} should be a usage error: {stdout}{stderr}"
+        );
+        assert!(stderr.contains("cannot be combined"), "{pair:?}: {stderr}");
+    }
+}
+
+/// "Veridex only reads and reports. It never mutates your dataset" is a README promise the adoption
+/// guide repeats. The default certificate name is relative, so it landed in the working directory —
+/// which *is* the dataset when the user ran `cd my-dataset && veridex certify .`, the most natural
+/// way to do it. Nothing is corrupted (the CDM hash is unaffected), but a promise that holds except
+/// when it is inconvenient is not one anyone can build a policy on.
+#[test]
+fn certify_refuses_to_default_its_output_into_the_dataset() {
+    let dataset = make_lerobot("certify-into-dataset");
+    let keydir = temp_dir("certify-into-dataset-key");
+    let key = keydir.join("issuer");
+    let (code, _, stderr) = run(&["keygen", key.to_str().unwrap()]);
+    assert_eq!(code, 0, "{stderr}");
+
+    let before: Vec<_> = std::fs::read_dir(&dataset)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_veridex"))
+        .current_dir(&dataset)
+        .args(["certify", ".", "--key", key.to_str().unwrap()])
+        .output()
+        .expect("spawn veridex");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains("never writes into a dataset") && stderr.contains("--out"),
+        "the refusal must name the promise and the fix: {stderr}"
+    );
+
+    let after: Vec<_> = std::fs::read_dir(&dataset)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(before.len(), after.len(), "the dataset gained a file");
+
+    // With `--out` elsewhere it certifies as normal — the refusal is about the destination, not the
+    // working directory.
+    let cert = keydir.join("cert.json");
+    let out = Command::new(env!("CARGO_BIN_EXE_veridex"))
+        .current_dir(&dataset)
+        .args([
+            "certify",
+            ".",
+            "--key",
+            key.to_str().unwrap(),
+            "--out",
+            cert.to_str().unwrap(),
+        ])
+        .output()
+        .expect("spawn veridex");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(cert.is_file());
+}
+
+/// The dataset id is part of the CDM content hash, so every way of naming one directory has to hash
+/// alike — otherwise a certificate issued from outside the dataset is rejected from inside it, on
+/// identical bytes.
+#[test]
+fn a_certificate_verifies_from_inside_the_dataset_it_was_issued_for() {
+    let dataset = make_lerobot("verify-from-inside");
+    let keydir = temp_dir("verify-from-inside-key");
+    let key = keydir.join("issuer");
+    assert_eq!(run(&["keygen", key.to_str().unwrap()]).0, 0);
+    let cert = keydir.join("cert.json");
+
+    let (code, _, stderr) = run(&[
+        "certify",
+        dataset.to_str().unwrap(),
+        "--key",
+        key.to_str().unwrap(),
+        "--out",
+        cert.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+
+    let pubkey = format!("{}.pub", key.to_str().unwrap());
+    let out = Command::new(env!("CARGO_BIN_EXE_veridex"))
+        .current_dir(&dataset)
+        .args([
+            "verify",
+            ".",
+            "--certificate",
+            cert.to_str().unwrap(),
+            "--key",
+            &pubkey,
+        ])
+        .output()
+        .expect("spawn veridex");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a certificate must verify from inside the dataset it was issued for: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

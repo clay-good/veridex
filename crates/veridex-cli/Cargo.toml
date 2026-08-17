@@ -15,5 +15,10 @@ path = "src/main.rs"
 veridex-core = { path = "../veridex-core" }
 serde_json.workspace = true
 
+# Only to put SIGPIPE back to its default disposition, which Rust's runtime turns off. Already in
+# the tree transitively.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 serde_json.workspace = true

@@ -344,12 +344,26 @@ fn verify(
 /// `veridex.diff(old_report_json, new_report_json) -> str`
 ///
 /// Diff two `veridex check --json` reports and return the machine-readable summary
-/// (`{introduced, resolved, unchanged_count, score_delta}`) as a JSON string, byte-identical to
-/// `veridex diff --json`. Inputs are the report JSON strings, not file paths.
+/// (`{coverage, introduced, resolved, unchanged_count, score_delta}`) as a JSON string,
+/// byte-identical to `veridex diff --json`. Inputs are the report JSON strings, not file paths.
+///
+/// Raises `ValueError` for anything that is not a Veridex report. The CLI has always refused those;
+/// this binding did not, so a truncated or wrong-shaped artifact -- a `{"schema": ...}` stub from an
+/// interrupted write, say -- diffed as "every finding resolved, no regression". Silence from a file
+/// that was never a report is the worst possible clean bill of health.
 #[pyfunction]
 fn diff(old_report_json: &str, new_report_json: &str) -> PyResult<String> {
     let old: serde_json::Value = serde_json::from_str(old_report_json).map_err(to_py_err)?;
     let new: serde_json::Value = serde_json::from_str(new_report_json).map_err(to_py_err)?;
+    for (label, value) in [("old", &old), ("new", &new)] {
+        if !veridex_core::is_report_shaped(value) {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "the {label} report is not a Veridex report: expected the JSON written by \
+                 `veridex check --json` (a `verdict.findings` array). Diffing it would read every \
+                 finding as resolved."
+            )));
+        }
+    }
     Ok(veridex_core::render_diff_json(&old, &new))
 }
 

@@ -175,11 +175,23 @@ pub fn render_diff(diff: &ReportDiff) -> String {
 }
 
 /// Diff two report JSON values and render the machine-readable summary as a pretty JSON string:
-/// `{introduced, resolved, unchanged_count, score_delta}`. Shared by the CLI's `veridex diff --json`
-/// and the Python `veridex.diff` binding, so both emit byte-identical output.
+/// `{coverage, introduced, resolved, unchanged_count, score_delta}`. Shared by the CLI's
+/// `veridex diff --json` and the Python `veridex.diff` binding, so both emit byte-identical output.
+///
+/// Coverage leads the document because it qualifies everything after it. Substituting a
+/// metadata-only report for a full one silences most of the catalog, so the full run's findings
+/// appear under `resolved` and the score goes up -- the terminal render says
+/// `Coverage: CHANGED` before anything else, and `--fail-on-regression` treats it as the top
+/// regression signal, but this document carried no coverage field at all. A machine consumer, which
+/// is the only consumer this document has, read a benign diff across a run that stopped looking.
 pub fn render_diff_json(old: &Value, new: &Value) -> String {
     let diff = diff_reports(old, new);
     let doc = serde_json::json!({
+        "coverage": {
+            "old": diff.old_coverage,
+            "new": diff.new_coverage,
+            "changed": diff.coverage_differs(),
+        },
         "introduced": diff.introduced,
         "resolved": diff.resolved,
         "unchanged_count": diff.unchanged.len(),
@@ -192,6 +204,41 @@ pub fn render_diff_json(old: &Value, new: &Value) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Substituting a metadata-only report for a full one silences most of the catalog, so the full
+    /// run's findings read as *resolved* and the score goes up. The terminal render leads with
+    /// `Coverage: CHANGED` and `--fail-on-regression` gates on it, but the JSON document — the only
+    /// one a machine consumer reads — carried no coverage field at all.
+    #[test]
+    fn the_json_diff_carries_the_coverage_the_terminal_render_leads_with() {
+        let full = json!({
+            "schema": "veridex.report/1",
+            "verdict": { "coverage": { "kind": "full" }, "findings": [] },
+            "trust_score": { "score": 90 }
+        });
+        let partial = json!({
+            "schema": "veridex.report/1",
+            "verdict": { "coverage": { "kind": "metadata_only" }, "findings": [] },
+            "trust_score": { "score": 99 }
+        });
+
+        let doc: Value = serde_json::from_str(&render_diff_json(&full, &partial)).unwrap();
+        assert_eq!(doc["coverage"]["old"], "full");
+        assert_eq!(doc["coverage"]["new"], "metadata_only");
+        assert_eq!(doc["coverage"]["changed"], true);
+    }
+
+    /// Two full runs report no coverage change, so the field cannot be read as noise.
+    #[test]
+    fn an_unchanged_coverage_is_reported_as_unchanged() {
+        let full = json!({
+            "schema": "veridex.report/1",
+            "verdict": { "coverage": { "kind": "full" }, "findings": [] },
+            "trust_score": { "score": 90 }
+        });
+        let doc: Value = serde_json::from_str(&render_diff_json(&full, &full)).unwrap();
+        assert_eq!(doc["coverage"]["changed"], false);
+    }
 
     fn report(findings: Value, score: i64) -> Value {
         json!({

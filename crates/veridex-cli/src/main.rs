@@ -272,7 +272,27 @@ fn parse_args_or_exit(rest: &[String]) -> Result<Args, ExitCode> {
     })
 }
 
+/// Put `SIGPIPE` back to the default disposition Rust's runtime turns off.
+///
+/// Rust ignores `SIGPIPE` so a write to a closed pipe returns `EPIPE`, and `println!` turns that
+/// into a panic -- so `veridex checks | head -5`, or quitting `less` partway through a report,
+/// aborted with a Rust backtrace and exit 101. Neither is in the documented `0`/`10`/`20`/`2`
+/// contract, and both are ordinary usage. With the default restored the process dies silently on
+/// the signal, the way every other command-line tool does.
+#[cfg(unix)]
+fn restore_default_sigpipe() {
+    // SAFETY: `signal` with `SIG_DFL` on `SIGPIPE` is async-signal-safe and is called once, before
+    // any thread is spawned or any output is written.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
+#[cfg(not(unix))]
+fn restore_default_sigpipe() {}
+
 fn main() -> ExitCode {
+    restore_default_sigpipe();
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         None | Some("-h") | Some("--help") | Some("help") => {
@@ -438,6 +458,26 @@ fn cmd_check(rest: &[String]) -> ExitCode {
         ],
     ) {
         return code;
+    }
+    // One run writes one report. The dispatch below is an if/else chain, so `--json --sarif` emitted
+    // SARIF and dropped `--json` without a word -- a CI job doing `check --json --sarif > report.json`
+    // silently got the wrong document, and `veridex diff` then rejected it as not a Veridex report.
+    // Silently ignoring a flag is exactly what `reject_flags_except` exists to prevent.
+    let formats: Vec<&str> = [
+        ("--json", args.json),
+        ("--sarif", args.sarif),
+        ("--html", args.html),
+    ]
+    .into_iter()
+    .filter(|(_, given)| *given)
+    .map(|(name, _)| name)
+    .collect();
+    if formats.len() > 1 {
+        eprintln!(
+            "veridex: {} cannot be combined; one run writes one report",
+            formats.join(" and ")
+        );
+        return ExitCode::from(EXIT_TOOL_ERROR);
     }
     let Some(path) = &args.path else {
         eprintln!("veridex: missing dataset path");
@@ -851,6 +891,27 @@ fn provenance_summary(d: &veridex_core::cdm::Dataset) -> String {
     out
 }
 
+/// Where `out_path` would land, if that is inside the dataset directory `source` names.
+///
+/// `None` when the dataset is a single file (writing beside it is not writing into it), when either
+/// path cannot be resolved, or when the output is somewhere else entirely.
+fn writes_inside_dataset(source: &str, out_path: &str) -> Option<String> {
+    let root = std::path::Path::new(source).canonicalize().ok()?;
+    if !root.is_dir() {
+        return None;
+    }
+    let out = std::path::Path::new(out_path);
+    // The file does not exist yet, so resolve its parent and rejoin the name.
+    let parent = out.parent().filter(|p| !p.as_os_str().is_empty());
+    let resolved = match parent {
+        Some(p) => p.canonicalize().ok()?,
+        None => std::env::current_dir().ok()?,
+    };
+    resolved
+        .starts_with(&root)
+        .then(|| resolved.display().to_string())
+}
+
 fn cmd_certify(rest: &[String]) -> ExitCode {
     let args = match parse_args_or_exit(rest) {
         Ok(a) => a,
@@ -1002,6 +1063,23 @@ fn cmd_certify(rest: &[String]) -> ExitCode {
         .out
         .clone()
         .unwrap_or_else(|| format!("{}.veridex.json", out.ingested.dataset.id));
+    // The default output name is relative, so it lands in the working directory -- which is *inside
+    // the dataset* when the user ran `cd my-dataset && veridex certify .`, the most natural way to
+    // do it. "Veridex only reads and reports. It never mutates your dataset" is a promise the README
+    // makes and the adoption guide repeats, and writing a certificate into the tree breaks it. The
+    // CDM hash is unaffected, so nothing is corrupted -- but a promise that holds except when it is
+    // inconvenient is not one a user can rely on, so this is refused with the one-flag fix rather
+    // than warned about.
+    if args.out.is_none() {
+        if let Some(inside) = writes_inside_dataset(path, &out_path) {
+            eprintln!(
+                "veridex: the default certificate path `{out_path}` would be written inside the \
+                 dataset at `{inside}`, and Veridex never writes into a dataset. Pass `--out \
+                 <path>` to choose somewhere else."
+            );
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
+    }
     let json = match serde_json::to_string_pretty(&signed) {
         Ok(s) => s,
         Err(e) => {

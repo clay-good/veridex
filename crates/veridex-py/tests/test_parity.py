@@ -230,16 +230,6 @@ def test_python_keygen_certify_verify_roundtrip(tmp_path):
     assert result["key_id"] == public
 
 
-if __name__ == "__main__":
-    # Minimal runner when pytest is unavailable.
-    import tempfile
-    from pathlib import Path
-
-    with tempfile.TemporaryDirectory() as d:
-        test_cli_and_python_agree(Path(d))
-    print("parity OK")
-    sys.exit(0)
-
 
 def _demo_lerobot(tmp_path):
     """Generate a demo LeRobot v3 dataset — the format with an episode axis to sample along."""
@@ -328,3 +318,36 @@ def test_python_refuses_a_metadata_only_sample(tmp_path):
     except ValueError:
         return
     raise AssertionError("a metadata-only sample must be refused, not silently resolved")
+
+
+def test_diff_refuses_a_file_that_is_not_a_report():
+    """The CLI has always refused a non-report; this binding did not, so a truncated artifact
+    diffed as "every finding resolved, no regression" -- silence from a file that was never a
+    report, read as a clean bill of health."""
+    full = json.dumps({
+        "schema": "veridex.report/1",
+        "verdict": {"findings": [{"code": "X", "severity": "error"}]},
+        "trust_score": {"score": 50},
+    })
+    truncated = json.dumps({"schema": "veridex.report/1"})
+
+    try:
+        veridex.diff(full, truncated)
+    except ValueError as e:
+        assert "not a Veridex report" in str(e), str(e)
+    else:
+        raise AssertionError("a truncated artifact must not diff as findings resolved")
+
+    # And a real pair still diffs.
+    assert json.loads(veridex.diff(full, full))["unchanged_count"] == 1
+
+
+if __name__ == "__main__":
+    # Minimal runner when pytest is unavailable. Defined last, so every test above it exists.
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as d:
+        test_cli_and_python_agree(Path(d))
+    print("parity OK")
+    sys.exit(0)
