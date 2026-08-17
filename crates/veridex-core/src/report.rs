@@ -79,6 +79,41 @@ fn severity_label(sev: Severity) -> &'static str {
     }
 }
 
+/// Escape control characters for terminal output, keeping the text visible.
+///
+/// Every string a finding carries can originate in the dataset — a stream name copied verbatim from
+/// `info.json`, a directory name, a license string — and the terminal report writes them to a TTY
+/// that interprets escape sequences. A stream named with a `\x1b[2J\x1b[1;1H` prefix clears the
+/// screen and repaints its own text over the real report, so an untrusted dataset could print a
+/// forged `Status: PASS` banner over its own failing verdict. A bare newline is milder but still
+/// breaks the report's line structure into something that reads as separate findings.
+///
+/// So control characters are rendered as visible `\xNN` / `\u{..}` escapes rather than executed. The
+/// text stays readable and is obviously not doing anything. Printable characters, including every
+/// non-ASCII one, pass through untouched — this is not an ASCII filter.
+fn tty_safe(s: &str) -> String {
+    if !s.contains(|c: char| c.is_control()) {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            // Tab is the one control character a report line can carry harmlessly.
+            '\t' => out.push('\t'),
+            c if c.is_control() => {
+                let n = c as u32;
+                if n <= 0xff {
+                    out.push_str(&format!("\\x{n:02x}"));
+                } else {
+                    out.push_str(&format!("\\u{{{n:x}}}"));
+                }
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 fn location_label(loc: &Location) -> String {
     match loc {
         Location::Dataset => "dataset".to_string(),
@@ -129,22 +164,47 @@ fn worst_episodes(verdict: &Verdict) -> Vec<EpisodeRollup> {
     rollups
 }
 
+/// Format a tolerance for display without lying about it.
+///
+/// This line exists to tell a reader the threshold a verdict was produced under, so rounding it is
+/// not a cosmetic choice. Integer-dividing nanoseconds by 1e6 printed a `clock_skew_ms = 0.5` run as
+/// `clock-skew 0ms`, and `{:.0}%` printed a `rate_deviation = 0.004` run as `rate 0%` — a threshold
+/// the operator deliberately tightened, disclosed as zero. Worse in the other direction: 50.9 ms
+/// printed as `50ms`, which is exactly the default, so a *loosened* threshold read as untouched and
+/// the line would have been better off absent.
+///
+/// Six decimals then trimmed: enough to render any threshold a human would write, and it absorbs the
+/// float noise in `0.004 * 100.0` rather than printing `0.4000000000000001`.
+fn trim_num(v: f64) -> String {
+    if !v.is_finite() {
+        return v.to_string();
+    }
+    let s = format!("{v:.6}");
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    if s.is_empty() || s == "-" {
+        "0".to_string()
+    } else {
+        s.to_string()
+    }
+}
+
 /// The tolerances that differ from the built-in defaults, as short human labels. Empty when the run
 /// used every default.
 fn non_default_tolerances(t: &crate::Tolerances) -> Vec<String> {
     let d = crate::Tolerances::default();
+    let ms = |ns: i64| trim_num(ns as f64 / 1_000_000.0);
     let mut out = Vec::new();
     if t.clock_skew_ns != d.clock_skew_ns {
-        out.push(format!("clock-skew {}ms", t.clock_skew_ns / 1_000_000));
+        out.push(format!("clock-skew {}ms", ms(t.clock_skew_ns)));
     }
     if t.start_offset_ns != d.start_offset_ns {
-        out.push(format!("start-offset {}ms", t.start_offset_ns / 1_000_000));
+        out.push(format!("start-offset {}ms", ms(t.start_offset_ns)));
     }
     if t.end_offset_ns != d.end_offset_ns {
-        out.push(format!("end-offset {}ms", t.end_offset_ns / 1_000_000));
+        out.push(format!("end-offset {}ms", ms(t.end_offset_ns)));
     }
     if t.rate_deviation != d.rate_deviation {
-        out.push(format!("rate {:.0}%", t.rate_deviation * 100.0));
+        out.push(format!("rate {}%", trim_num(t.rate_deviation * 100.0)));
     }
     if t.gap_factor != d.gap_factor {
         out.push(format!("gap {}x", t.gap_factor));
@@ -156,7 +216,10 @@ fn non_default_tolerances(t: &crate::Tolerances) -> Vec<String> {
         out.push(format!("episode-duration {}x", t.episode_duration_factor));
     }
     if t.saturation_fraction != d.saturation_fraction {
-        out.push(format!("saturation {:.0}%", t.saturation_fraction * 100.0));
+        out.push(format!(
+            "saturation {}%",
+            trim_num(t.saturation_fraction * 100.0)
+        ));
     }
     if t.saturation_min_samples != d.saturation_min_samples {
         out.push(format!(
@@ -169,8 +232,8 @@ fn non_default_tolerances(t: &crate::Tolerances) -> Vec<String> {
     }
     if t.sequence_drop_fraction != d.sequence_drop_fraction {
         out.push(format!(
-            "sequence drop {:.0}%",
-            t.sequence_drop_fraction * 100.0
+            "sequence drop {}%",
+            trim_num(t.sequence_drop_fraction * 100.0)
         ));
     }
     if t.ego_max_speed_mps != d.ego_max_speed_mps {
@@ -264,14 +327,14 @@ pub fn render_terminal(
                 "  [{}] {}  {}",
                 severity_label(f.severity),
                 f.code,
-                location_label(&f.location)
+                tty_safe(&location_label(&f.location))
             );
-            let _ = writeln!(out, "      {}", f.message);
+            let _ = writeln!(out, "      {}", tty_safe(&f.message));
             if !f.risk.is_empty() {
-                let _ = writeln!(out, "      risk:   {}", f.risk);
+                let _ = writeln!(out, "      risk:   {}", tty_safe(&f.risk));
             }
             if !f.remedy.is_empty() {
-                let _ = writeln!(out, "      remedy: {}", f.remedy);
+                let _ = writeln!(out, "      remedy: {}", tty_safe(&f.remedy));
             }
         }
     }
@@ -280,7 +343,13 @@ pub fn render_terminal(
     if !verdict.errored_checks.is_empty() {
         let _ = writeln!(out, "\nErrored checks (failed to run):");
         for e in &verdict.errored_checks {
-            let _ = writeln!(out, "  {} (v{}): {}", e.check_id, e.version, e.message);
+            let _ = writeln!(
+                out,
+                "  {} (v{}): {}",
+                e.check_id,
+                e.version,
+                tty_safe(&e.message)
+            );
         }
     }
 

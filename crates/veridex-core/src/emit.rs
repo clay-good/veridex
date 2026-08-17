@@ -139,18 +139,44 @@ const PROV_ENTITY_PROPERTIES: &[&str] = &[
     "simulator",
 ];
 
+/// Percent-encode one segment of a compact IRI.
+///
+/// Every value interpolated into an `@id` here is free text: `dataset.id` is derived from a
+/// directory name, and the agent labels are lifted verbatim from source metadata. A space is all it
+/// takes — `veridex:dataset/my robot data` is not a well-formed IRI, and a JSON-LD processor drops
+/// the node *and every triple about it* rather than erroring. The document still looks like valid
+/// JSON and the CLI still reports success, so `veridex provenance --emit prov` silently produced an
+/// unattributed or entirely empty graph for the ordinary case of a dataset folder with a space in
+/// its name, or an annotator recorded as "Jane Doe".
+///
+/// Conservative allow-list: unreserved characters per RFC 3986 pass through, everything else is
+/// percent-encoded. The human-readable form is preserved separately in `veridex:label`, so nothing
+/// is lost to the reader by encoding the identifier.
+fn iri_segment(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(b as char);
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 /// Emit a minimal W3C PROV document: the dataset as a `prov:Entity`, attributed to each known agent
 /// (recorder / annotator / sensor) and derived from a known upstream dataset. Agents and the
 /// upstream appear as nodes in the graph so the attributions resolve; nothing is fabricated.
 pub fn to_prov(dataset: &Dataset) -> Value {
-    let entity_id = format!("veridex:dataset/{}", dataset.id);
+    let entity_id = format!("veridex:dataset/{}", iri_segment(&dataset.id));
 
     // Build agent nodes and the entity's attribution references from known provenance.
     let mut agent_nodes: Vec<Value> = Vec::new();
     let mut attributed: Vec<Value> = Vec::new();
     for (key, prov_type) in PROV_AGENTS {
         if let Some(value) = known_value(dataset, key) {
-            let id = format!("veridex:agent/{key}/{value}");
+            let id = format!("veridex:agent/{key}/{}", iri_segment(value));
             agent_nodes.push(json!({
                 "@id": id,
                 "@type": prov_type,
@@ -174,7 +200,7 @@ pub fn to_prov(dataset: &Dataset) -> Value {
         }
     }
     if let Some(upstream) = known_value(dataset, "upstream") {
-        let upstream_id = format!("veridex:dataset/{upstream}");
+        let upstream_id = format!("veridex:dataset/{}", iri_segment(upstream));
         entity.insert("prov:wasDerivedFrom".into(), json!({ "@id": upstream_id }));
         agent_nodes.push(json!({ "@id": upstream_id, "@type": "prov:Entity" }));
     }

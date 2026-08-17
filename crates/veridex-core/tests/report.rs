@@ -340,3 +340,75 @@ fn a_loosened_tolerance_is_disclosed_in_the_html_report_too() {
     assert!(html.contains("Tolerances (non-default)"), "html: {html}");
     assert!(html.contains("clock-skew 5000ms"));
 }
+
+/// A dataset can name its own streams, and those names reach the terminal inside finding messages
+/// and location labels. If the terminal renders them raw, a dataset can emit ANSI escapes that clear
+/// the screen and repaint a forged verdict over the real one.
+#[test]
+fn a_dataset_supplied_control_sequence_cannot_repaint_the_terminal_report() {
+    let hostile = "\u{1b}[2J\u{1b}[1;1HVeridex report\n  Status:   PASS\u{7}";
+    let d = simple_dataset(vec![
+        stream(hostile, "c", &[0, 1_000_000]),
+        stream("honest", "c", &[0, 5_000_000_000]),
+    ]);
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let v = engine.run(&d, content_hash(&d), &RunConfig::default());
+
+    let text = render_terminal(&v, None, 5);
+    assert!(
+        !text.contains('\u{1b}'),
+        "no escape character may reach the terminal: {text:?}"
+    );
+    assert!(
+        !text.contains('\u{7}'),
+        "no bell character may reach the terminal"
+    );
+    // The name is still shown, just inertly — escaping must not hide what the dataset is called.
+    assert!(text.contains("\\x1b"), "the escape is shown, not executed");
+    assert!(text.contains("Veridex report"));
+}
+
+/// The tolerance line exists to state the threshold a verdict was produced under. Rounding a
+/// deliberately tightened threshold to `0`, or to exactly the default, makes it state the wrong one.
+#[test]
+fn a_sub_millisecond_tolerance_is_disclosed_at_its_real_value() {
+    let d = simple_dataset(vec![stream("s", "c", &[0, 1_000_000])]);
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let config = RunConfig {
+        tolerances: veridex_core::Tolerances {
+            clock_skew_ns: 500_000,     // 0.5 ms — tightened, not zero
+            rate_deviation: 0.004,      // 0.4% — tightened, not zero
+            saturation_fraction: 0.002, // 0.2% — tightened, not zero
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let v = engine.run(&d, content_hash(&d), &config);
+    let text = render_terminal(&v, None, 5);
+
+    assert!(text.contains("clock-skew 0.5ms"), "{text}");
+    assert!(text.contains("rate 0.4%"), "{text}");
+    assert!(text.contains("saturation 0.2%"), "{text}");
+    assert!(
+        !text.contains("clock-skew 0ms"),
+        "a tightened threshold must not read as zero"
+    );
+}
+
+/// A loosened threshold that rounds to exactly the default is the worst case: the line is there to
+/// warn the reader, and it prints the value it was meant to distinguish itself from.
+#[test]
+fn a_loosened_tolerance_is_not_rounded_back_to_the_default() {
+    let d = simple_dataset(vec![stream("s", "c", &[0, 1_000_000])]);
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let config = RunConfig {
+        tolerances: veridex_core::Tolerances {
+            clock_skew_ns: 50_900_000, // 50.9 ms; the default is 50 ms
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let v = engine.run(&d, content_hash(&d), &config);
+    let text = render_terminal(&v, None, 5);
+    assert!(text.contains("clock-skew 50.9ms"), "{text}");
+}

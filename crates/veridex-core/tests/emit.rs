@@ -199,3 +199,51 @@ fn autonomy_lineage_appears_in_both_emits() {
         .collect();
     assert!(keys.contains(&"platform") && keys.contains(&"region") && keys.contains(&"consent"));
 }
+
+/// Every `@id` here is built by interpolating free text — a dataset id derived from a directory
+/// name, an annotator lifted from source metadata. A space is enough to make the IRI ill-formed, and
+/// a JSON-LD processor drops an ill-formed node together with every triple about it. The document
+/// still parses as JSON and the CLI still reports success, so the failure is silent: an
+/// unattributed, or entirely empty, provenance graph for a folder named `my robot data`.
+#[test]
+fn a_space_in_a_name_cannot_dissolve_the_prov_graph() {
+    let mut d = dataset_with(vec![
+        el("annotator", Some("Jane Doe & Co"), ProvenanceClass::Known),
+        el("upstream", Some("open x/v2 (2026)"), ProvenanceClass::Known),
+    ]);
+    d.id = "my robot data <2026>".into();
+
+    let doc = to_prov(&d);
+    let graph = doc["@graph"].as_array().unwrap();
+
+    // No @id anywhere may contain a character that is not legal in an IRI.
+    for node in graph {
+        let id = node["@id"].as_str().expect("every node is identified");
+        assert!(
+            !id.contains(|c: char| c.is_whitespace()),
+            "ill-formed IRI, node will be dropped by a JSON-LD processor: {id:?}"
+        );
+        for bad in ['<', '>', '"', '{', '}', '|', '\\', '^', '`'] {
+            assert!(!id.contains(bad), "illegal IRI character {bad:?} in {id:?}");
+        }
+    }
+
+    // The attribution and derivation edges must still resolve to nodes that are present, which is
+    // the property that was actually being lost.
+    let entity = &graph[0];
+    let attributed = entity["prov:wasAttributedTo"].as_array().unwrap();
+    let agent_id = attributed[0]["@id"].as_str().unwrap();
+    assert!(
+        graph.iter().any(|n| n["@id"] == *agent_id),
+        "attribution points at a node that is not in the graph"
+    );
+    let upstream_id = entity["prov:wasDerivedFrom"]["@id"].as_str().unwrap();
+    assert!(
+        graph.iter().any(|n| n["@id"] == *upstream_id),
+        "derivation points at a node that is not in the graph"
+    );
+
+    // Encoding the identifier must not cost the reader the human-readable name.
+    let agent = graph.iter().find(|n| n["@id"] == *agent_id).unwrap();
+    assert_eq!(agent["veridex:label"], "Jane Doe & Co");
+}
