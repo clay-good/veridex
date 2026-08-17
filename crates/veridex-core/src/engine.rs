@@ -265,9 +265,18 @@ pub struct Verdict {
 }
 
 impl Verdict {
-    /// The distinct categories of the checks that ran (from `executed_checks`).
+    /// The distinct categories of the checks that ran **and finished**.
+    ///
+    /// `executed_checks` records invocation, not success, so a category whose every check crashed
+    /// used to count as covered — and the certificate derives `categories_skipped` from this, so
+    /// nothing anywhere said the category went unmeasured.
     pub fn checks_categories(&self) -> Vec<Category> {
-        let mut cats: Vec<Category> = self.executed_checks.iter().map(|c| c.category).collect();
+        let mut cats: Vec<Category> = self
+            .executed_checks
+            .iter()
+            .filter(|c| !self.errored_checks.iter().any(|e| e.check_id == c.check_id))
+            .map(|c| c.category)
+            .collect();
         cats.sort();
         cats.dedup();
         cats
@@ -459,7 +468,7 @@ impl Engine {
         errored_checks.sort_by(|a, b| a.check_id.cmp(b.check_id));
 
         let counts = count_severities(&findings);
-        let status = status_from(&counts);
+        let status = status_from(&counts, &errored_checks);
         let effective_config = EffectiveConfig::from(config);
 
         let digest = DigestView {
@@ -572,10 +581,18 @@ fn count_severities(findings: &[Finding]) -> SeverityCounts {
     c
 }
 
-fn status_from(counts: &SeverityCounts) -> Status {
+/// The run's overall status.
+///
+/// `errored` is not decoration. A check that panicked produced no findings, and reading no findings
+/// as a pass is the failure mode this project names most often — here at its worst, because the
+/// silence comes from a crash rather than from clean data. With every check crashing, the verdict
+/// read `Pass`, `veridex check` exited 0, and CI went green over a dataset on which nothing was
+/// measured at all. A crash is not evidence the data is bad, so it is not `Fail`; it is evidence the
+/// verdict is incomplete, which is exactly what `PassWithWarnings` is for.
+fn status_from(counts: &SeverityCounts, errored: &[ErroredCheck]) -> Status {
     if counts.error > 0 {
         Status::Fail
-    } else if counts.warning > 0 {
+    } else if counts.warning > 0 || !errored.is_empty() {
         Status::PassWithWarnings
     } else {
         Status::Pass

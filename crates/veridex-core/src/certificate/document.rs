@@ -64,9 +64,19 @@ pub struct Certificate {
     pub status: Status,
     /// Effective configuration used for the run.
     pub effective_config: EffectiveConfig,
-    /// Checks executed, with versions.
+    /// Checks executed, with versions. A check that crashed is **not** here — see `checks_errored`.
     pub checks_run: Vec<ExecutedCheck>,
-    /// Check categories that did not run (so a reader knows the coverage limits).
+    /// Checks that were invoked but raised instead of producing findings.
+    ///
+    /// The offline reader is the whole point of this document, and they cannot re-run Veridex to
+    /// find out. Without this, a crashed check sat under `checks_run` (which records *invocation*,
+    /// not success) beside an all-zero `by_severity`, and the certificate read as a clean, complete
+    /// verdict over a check that measured nothing. Empty for the ordinary run, so an existing
+    /// certificate's bytes are unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checks_errored: Vec<String>,
+    /// Check categories that did not run, or whose checks all crashed (so a reader knows the
+    /// coverage limits).
     pub categories_skipped: Vec<Category>,
     /// Findings rolled up.
     pub findings_summary: FindingsSummary,
@@ -248,7 +258,22 @@ impl Certificate {
             veridex_version: verdict.veridex_version.clone(),
             status: verdict.status,
             effective_config: verdict.effective_config.clone(),
-            checks_run: verdict.executed_checks.clone(),
+            checks_run: verdict
+                .executed_checks
+                .iter()
+                .filter(|c| {
+                    !verdict
+                        .errored_checks
+                        .iter()
+                        .any(|e| e.check_id == c.check_id)
+                })
+                .cloned()
+                .collect(),
+            checks_errored: verdict
+                .errored_checks
+                .iter()
+                .map(|e| e.check_id.to_string())
+                .collect(),
             categories_skipped,
             findings_summary: FindingsSummary {
                 by_severity: verdict.counts,

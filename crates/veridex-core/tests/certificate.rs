@@ -276,3 +276,105 @@ fn the_issuer_secret_key_is_named_rather_than_called_an_untrusted_issuer() {
         .expect_err("a different issuer is refused");
     assert!(err.to_string().contains("untrusted issuer"), "{err}");
 }
+
+/// The offline reader is the point of this document and cannot re-run Veridex. A check that crashed
+/// used to sit under `checks_run` — which records invocation, not success — beside an all-zero
+/// severity summary, so the certificate read as a clean, complete verdict over a check that measured
+/// nothing at all.
+#[test]
+fn a_crashed_check_is_named_in_the_certificate_not_listed_as_run() {
+    use veridex_core::check::{Category, Check, Finding, Scope, Severity};
+
+    struct Crasher;
+    impl Check for Crasher {
+        fn id(&self) -> &'static str {
+            "test.crasher"
+        }
+        fn title(&self) -> &'static str {
+            "always panics"
+        }
+        fn category(&self) -> Category {
+            Category::Video
+        }
+        fn default_severity(&self) -> Severity {
+            Severity::Error
+        }
+        fn scope(&self) -> Scope {
+            Scope::Dataset
+        }
+        fn version(&self) -> &'static str {
+            "1"
+        }
+        fn finding_codes(&self) -> &'static [&'static str] {
+            &["TEST.CRASH"]
+        }
+        fn run(&self, _dataset: &Dataset) -> Vec<Finding> {
+            panic!("boom");
+        }
+    }
+
+    let d = dataset(vec![stream("s", "c", &[0, 1_000_000])]);
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let engine = veridex_core::engine::Engine::builder()
+        .register(Box::new(Crasher))
+        .unwrap()
+        .build();
+    let hash = content_hash(&d);
+    let verdict = engine.run(&d, hash, &RunConfig::default());
+    std::panic::set_hook(prev);
+
+    let cert = Certificate::build(
+        d.id.clone(),
+        &verdict,
+        score(&verdict, &ProvenanceCoverage::of(&d)),
+        ProvenanceCoverage::of(&d),
+        Issuance {
+            key_id: "issuer-1".into(),
+            timestamp: "2026-08-07T00:00:00Z".into(),
+        },
+    );
+
+    assert_eq!(
+        cert.checks_errored,
+        vec!["test.crasher".to_string()],
+        "the crash must be on the face of the document"
+    );
+    assert!(
+        cert.checks_run.is_empty(),
+        "a check that crashed did not run: {:?}",
+        cert.checks_run
+    );
+    assert!(
+        cert.categories_skipped
+            .contains(&veridex_core::Category::Video),
+        "the category its only check crashed in was not covered: {:?}",
+        cert.categories_skipped
+    );
+    // And it survives the signature round trip, since it is a signed field like any other.
+    let signed = sign(cert, &keypair());
+    let json = serde_json::to_string(&signed).unwrap();
+    let back: veridex_core::certificate::SignedCertificate = serde_json::from_str(&json).unwrap();
+    verify(&back, Some(&hash.to_hex()), Some(&keypair().public_hex())).expect("verifies");
+    assert_eq!(back.certificate.checks_errored, vec!["test.crasher"]);
+}
+
+/// Every other version mismatch in `verify` fails closed; the schema did not. A document declaring a
+/// future schema whose fields happen to parse under today's struct was verified as though it were
+/// today's — the signature makes it unforgeable, not intelligible.
+#[test]
+fn a_certificate_from_a_future_schema_is_refused() {
+    let d = dataset(vec![stream("s", "c", &[0, 1_000_000])]);
+    let (mut cert, hash) = issue_cert(&d);
+    cert.schema = "veridex.certificate/999-from-the-future".into();
+    // Signed *after* the edit, so the signature is genuine and the schema is the only objection.
+    let signed = sign(cert, &keypair());
+
+    match verify(&signed, Some(&hash.to_hex()), Some(&keypair().public_hex())) {
+        Err(CertError::UnsupportedSchema { found, expected }) => {
+            assert_eq!(found, "veridex.certificate/999-from-the-future");
+            assert_eq!(expected, "veridex.certificate/1");
+        }
+        other => panic!("a schema this build cannot read must be refused, got {other:?}"),
+    }
+}

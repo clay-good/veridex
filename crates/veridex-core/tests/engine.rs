@@ -284,6 +284,62 @@ fn crashing_check_is_isolated_and_reported_separately() {
     assert!(!v.veridex_version.is_empty());
 }
 
+/// A crash produces no findings, and no findings used to read as a pass — here at its worst, since
+/// the silence comes from a check that did not run rather than from clean data. With every check
+/// crashing the verdict said `Pass` and the CLI exited 0.
+#[test]
+fn a_run_in_which_every_check_crashed_is_not_a_pass() {
+    let d = ds(1);
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let engine = Engine::builder()
+        .register(Box::new(Crasher))
+        .unwrap()
+        .build();
+    let v = engine.run(&d, hash(&d), &RunConfig::default());
+    std::panic::set_hook(prev);
+
+    assert!(v.findings.is_empty(), "a crash produces no findings");
+    assert_eq!(v.counts.error + v.counts.warning + v.counts.info, 0);
+    assert_eq!(
+        v.status,
+        Status::PassWithWarnings,
+        "nothing was measured; that is an incomplete verdict, not a clean one"
+    );
+}
+
+/// `executed_checks` records invocation, not success, so a category whose only check crashed used to
+/// count as covered — and the certificate derives `categories_skipped` from exactly this.
+#[test]
+fn a_category_whose_check_crashed_does_not_count_as_covered() {
+    let d = ds(1);
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let engine = Engine::builder()
+        .register(Box::new(Crasher))
+        .unwrap()
+        // A different category, so `Structural` is represented only by the check that crashed.
+        .register(Box::new(FlagEpisodes {
+            id: "ok",
+            category: Category::Temporal,
+            severity: Severity::Warning,
+        }))
+        .unwrap()
+        .build();
+    let v = engine.run(&d, hash(&d), &RunConfig::default());
+    std::panic::set_hook(prev);
+
+    let covered = v.checks_categories();
+    assert!(
+        covered.contains(&Category::Temporal),
+        "the check that finished still counts"
+    );
+    assert!(
+        !covered.contains(&Category::Structural),
+        "a category is not covered by a check that crashed in it: {covered:?}"
+    );
+}
+
 #[test]
 fn findings_are_sorted_deterministically_regardless_of_registration_order() {
     let d = ds(3);

@@ -59,6 +59,14 @@ pub enum CertError {
         /// The algorithm named in the certificate.
         found: String,
     },
+    /// The certificate declares a schema this build does not know how to read.
+    #[error("unsupported certificate schema {found}: this Veridex issues and verifies {expected}")]
+    UnsupportedSchema {
+        /// The schema named in the certificate.
+        found: String,
+        /// The schema this build knows.
+        expected: &'static str,
+    },
 }
 
 /// The only signature algorithm v0.1 issues and verifies.
@@ -171,6 +179,17 @@ pub fn verify(
     if signed.algorithm != ALGORITHM {
         return Err(CertError::UnsupportedAlgorithm {
             found: signed.algorithm.clone(),
+        });
+    }
+    // Every other version mismatch in this file fails closed; this one did not. A document
+    // declaring a future schema whose fields happen to parse under today's struct was verified as
+    // though it were today's, so a field this build cannot see -- one a later schema gives meaning
+    // to -- would be signed, present, and silently ignored. The signature makes it unforgeable, not
+    // intelligible.
+    if signed.certificate.schema != crate::certificate::CERTIFICATE_SCHEMA_VERSION {
+        return Err(CertError::UnsupportedSchema {
+            found: signed.certificate.schema.clone(),
+            expected: crate::certificate::CERTIFICATE_SCHEMA_VERSION,
         });
     }
     if !is_canonical_hex(&signed.signature) {
