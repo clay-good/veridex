@@ -24,7 +24,7 @@ pub(crate) mod stats;
 pub mod zarr;
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use sha2::Digest;
 use thiserror::Error;
@@ -647,6 +647,29 @@ fn check_source_exists(source: &Source) -> Result<(), IngestError> {
         }
     }
     Ok(())
+}
+
+/// The dataset id to take from a source path: the name of the directory or file it really names.
+///
+/// [`Path::file_name`] answers about the path *as written*, and returns `None` for one ending in a
+/// `.` or `..` component. So `veridex check .` run from inside a dataset fell through to the
+/// adapter's fallback string — `"lerobot"`, `"zarr"` — while `veridex check /path/to/that/dataset`
+/// took the directory name. The id is bound into the CDM content hash, so the same bytes hashed two
+/// different ways depending on how the user spelled the path, and a `verify` run from inside the
+/// dataset failed a genuine certificate with a content-hash mismatch. Resolving the path first makes
+/// the id a property of what is on disk rather than of what was typed, which is what the
+/// determinism contract promises.
+pub(crate) fn dataset_id_from_path(path: &Path, fallback: &str) -> String {
+    let resolved = path.canonicalize().ok();
+    resolved
+        .as_deref()
+        .and_then(Path::file_name)
+        // A path that cannot be resolved (it was deleted between detection and ingest, or the
+        // process cannot traverse to it) still answers for itself where it can.
+        .or_else(|| path.file_name())
+        .and_then(|s| s.to_str())
+        .map(str::to_owned)
+        .unwrap_or_else(|| fallback.to_owned())
 }
 
 /// Whether a source string names somewhere other than this filesystem.

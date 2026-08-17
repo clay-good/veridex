@@ -26,6 +26,7 @@ use arrow::array::{
     Array, BooleanArray, FixedSizeListArray, Float32Array, Float64Array, Int16Array, Int32Array,
     Int64Array, ListArray, UInt16Array, UInt32Array, UInt64Array,
 };
+use arrow::datatypes::DataType;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -160,6 +161,24 @@ fn number_list(v: &serde_json::Value) -> Option<Vec<f64>> {
 struct StoredStats {
     scalar: BTreeMap<String, StreamStats>,
     per_dim: BTreeMap<String, Vec<DimStats>>,
+    /// Why the maps are as full or as empty as they are. The ingest report claimed
+    /// `meta/stats.json -> stream.stats` unconditionally, so a dataset with no stats file at all —
+    /// or a corrupt one, which silently disables every stored-vs-observed comparison — was told it
+    /// had been read. The fidelity report is the artifact whose whole job is disclosing what the
+    /// run did and did not cover; an unearned claim in it is worse than a missing one.
+    source: StatsSource,
+}
+
+/// What `meta/stats.json` turned out to be.
+#[derive(Default, PartialEq, Eq, Clone, Copy)]
+enum StatsSource {
+    /// Parsed, and at least one feature yielded a usable summary.
+    Read,
+    /// No `meta/stats.json` on disk.
+    #[default]
+    Absent,
+    /// The file exists but is not a JSON object.
+    Unparseable,
 }
 
 /// Load per-feature stored statistics from `meta/stats.json`, if present. Missing or unparseable
@@ -168,10 +187,12 @@ struct StoredStats {
 fn load_stats(dir: &Path) -> StoredStats {
     let mut out = StoredStats::default();
     let Ok(bytes) = std::fs::read(dir.join("meta").join("stats.json")) else {
+        out.source = StatsSource::Absent;
         return out;
     };
     let Ok(serde_json::Value::Object(map)) = serde_json::from_slice::<serde_json::Value>(&bytes)
     else {
+        out.source = StatsSource::Unparseable;
         return out;
     };
     for (feature, stats) in map {
@@ -215,7 +236,37 @@ fn load_stats(dir: &Path) -> StoredStats {
             out.per_dim.insert(feature, dims);
         }
     }
+    // A file that parsed but named no feature Veridex could summarize is, for every purpose
+    // downstream, the same as one that would not parse: nothing to compare against.
+    out.source = if out.scalar.is_empty() {
+        StatsSource::Unparseable
+    } else {
+        StatsSource::Read
+    };
     out
+}
+
+/// What the ingest report should say about `meta/stats.json`, as `(mapped, omitted)`.
+fn stats_fidelity(stats: &StoredStats) -> (Option<String>, Option<String>) {
+    match stats.source {
+        StatsSource::Read => (Some("meta/stats.json -> stream.stats".into()), None),
+        StatsSource::Absent => (
+            None,
+            Some(
+                "stored summary statistics (no meta/stats.json; the stored-vs-observed checks \
+                 have nothing to compare against)"
+                    .into(),
+            ),
+        ),
+        StatsSource::Unparseable => (
+            None,
+            Some(
+                "stored summary statistics (meta/stats.json could not be read as per-feature \
+                 min/max/mean/std; the stored-vs-observed checks have nothing to compare against)"
+                    .into(),
+            ),
+        ),
+    }
 }
 
 /// Whether a declared LeRobot `codebase_version` is one this adapter supports. Normalizes an optional
@@ -727,6 +778,27 @@ fn read_rows(
                 message: format!("{}: missing `episode_index` column", path.display()),
             })?;
         let ts_col = batch.column_by_name("timestamp");
+        // A `timestamp` column Veridex cannot read is refused here rather than per row, because per
+        // row it is indistinguishable from a null cell — and a null cell legitimately falls back to
+        // `frame_index / fps`. Applied to a whole column of the wrong type, that fallback threw the
+        // recorded clock away and substituted a mathematically perfect 1/fps ladder, still labelled
+        // `ClockKind::Measured`. Every temporal check then ran against a synthetic timeline and
+        // passed unconditionally: a five-second mid-episode gap certified clean. The fallback is for
+        // a column that is *absent*, not one that is present and unreadable.
+        if let Some(col) = ts_col {
+            if !matches!(col.data_type(), DataType::Float64 | DataType::Float32) {
+                return Err(IngestError::Parse {
+                    format_id: "lerobot",
+                    message: format!(
+                        "{}: `timestamp` is a {} column; Veridex reads LeRobot timestamps as \
+                         float seconds and will not substitute frame_index/fps for a clock the \
+                         dataset actually recorded",
+                        path.display(),
+                        col.data_type()
+                    ),
+                });
+            }
+        }
         let frame_col = batch.column_by_name("frame_index");
         let task_col = batch.column_by_name("task_index");
 
@@ -749,7 +821,19 @@ fn read_rows(
             let ep = column_i64(ep_col.as_ref(), row).ok_or_else(|| IngestError::Parse {
                 format_id: "lerobot",
                 message: format!("{}: episode_index is not an integer column", path.display()),
-            })? as u64;
+            })?;
+            // `as u64` turned a negative index — `-1` is a sentinel some exporters write for an
+            // unassigned row — into 18446744073709551615, and those frames were attributed to a
+            // phantom episode that no declared length is ever compared against, so the corrupt
+            // manifest class this adapter exists to catch walked straight past. Two different
+            // sentinels also merged into one episode.
+            let ep = u64::try_from(ep).map_err(|_| IngestError::Parse {
+                format_id: "lerobot",
+                message: format!(
+                    "{}: episode_index is {ep}; an episode index cannot be negative",
+                    path.display()
+                ),
+            })?;
             if selected.map_or(true, |s| s.contains(&ep)) {
                 kept.push((row, ep));
             }
@@ -840,12 +924,24 @@ fn load_episode_lengths(dir: &Path) -> Result<BTreeMap<u64, u64>, IngestError> {
     let Ok(contents) = std::fs::read_to_string(dir.join("meta").join("episodes.jsonl")) else {
         return Ok(out);
     };
-    for line in contents.lines() {
+    for (number, line) in contents.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
-        if let Ok(row) = serde_json::from_str::<EpisodeRow>(line) {
+        // A line that will not parse used to be skipped without a word, which shrinks the declared
+        // episode set — and under `--metadata-only` this file *is* the episode set, so a truncated
+        // or partly-corrupt manifest read as a smaller, perfectly clean dataset. That is the same
+        // corruption the duplicate-index arm below refuses, arriving by a quieter route.
+        let row = serde_json::from_str::<EpisodeRow>(line).map_err(|e| IngestError::Parse {
+            format_id: "lerobot",
+            message: format!(
+                "meta/episodes.jsonl line {}: {e}; every line must declare an `episode_index` and \
+                 a `length`, and a line that does not is an episode this manifest silently drops",
+                number + 1
+            ),
+        })?;
+        {
             // A repeated `episode_index` is refused rather than collapsed. Keying a map on it made
             // the second line silently overwrite the first, so a manifest declaring episode 1 with
             // both length 10 and length 99 produced a CDM carrying 99 and no complaint — while the
@@ -1021,11 +1117,7 @@ fn ingest_metadata_only(
     }
 
     let dataset = Dataset {
-        id: dir
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("lerobot")
-            .to_string(),
+        id: crate::adapter::dataset_id_from_path(dir, "lerobot"),
         metadata,
         provenance: vec![Provenance {
             scope: ProvenanceScope::Dataset,
@@ -1041,8 +1133,9 @@ fn ingest_metadata_only(
         "feature.dtype -> stream.dtype".into(),
         "feature.shape -> stream.shape".into(),
         "robot_type -> provenance.sensor".into(),
-        "meta/stats.json -> stream.stats".into(),
     ];
+    let (stats_mapped, stats_omitted) = stats_fidelity(&stats);
+    mapped_fields.extend(stats_mapped);
     if !declared_lengths.is_empty() {
         mapped_fields.push("meta/episodes.jsonl -> episodes + declared_frame_count".into());
     } else {
@@ -1061,6 +1154,7 @@ fn ingest_metadata_only(
         "task strings (task_index lives in the Parquet data)".into(),
         "total_frames (a claim about frames, and no frame was read)".into(),
     ];
+    omitted_fields.extend(stats_omitted);
     if !declared_total_is_independent && info.total_episodes.is_some() {
         omitted_fields.push(
             "total_episodes -> declared episode-count check (the episode set was derived from that \
@@ -1550,11 +1644,7 @@ impl Adapter for LeRobotAdapter {
         }
 
         let dataset = Dataset {
-            id: dir
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("lerobot")
-                .to_string(),
+            id: crate::adapter::dataset_id_from_path(dir, "lerobot"),
             metadata: {
                 let mut m = vec![
                     ("source_format".into(), "lerobot".into()),
@@ -1608,11 +1698,13 @@ impl Adapter for LeRobotAdapter {
             "feature.dtype -> stream.dtype".into(),
             "feature.shape -> stream.shape".into(),
             "robot_type -> provenance.sensor".into(),
-            "meta/stats.json -> stream.stats".into(),
             "feature cell bytes -> frame.value_ref.content_hash (SHA-256)".into(),
         ];
         let mut omitted_fields =
             vec!["video frame decoding (frames are timestamps, not pixels)".into()];
+        let (stats_mapped, stats_omitted) = stats_fidelity(&stats);
+        mapped_fields.extend(stats_mapped);
+        omitted_fields.extend(stats_omitted);
         if !media.is_empty() {
             mapped_fields.push(
                 "videos/**.mp4 container headers -> stream.media (frame count, resolution, codec, \

@@ -284,11 +284,7 @@ impl Adapter for ZarrAdapter {
             let timeline = read_timeline(&owned, &mut decompression, &mut notes)?;
             timelines.insert(slice.index, timeline);
         }
-        let store_name = root
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(FORMAT_ID)
-            .to_string();
+        let store_name = crate::adapter::dataset_id_from_path(root, FORMAT_ID);
 
         let mut episodes: Vec<Episode> = Vec::new();
         let mut provenance: Vec<Provenance> = Vec::new();
