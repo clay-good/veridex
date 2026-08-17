@@ -22,7 +22,7 @@ exclusive.
 | `structural.episode-continuity` | `STRUCTURAL.EPISODE_INDEX_GAP` | warning | Episode indices are non-contiguous (e.g. `0, 1, 3`) — an episode was dropped between export and ingest. Needs no manifest, unlike the declared-count check. |
 | `structural.declared-episode-count` | `STRUCTURAL.EPISODE_COUNT_MISMATCH` | error | The manifest's declared episode count (e.g. LeRobot `total_episodes`) differs from the episodes ingested (a truncated export). |
 | `structural.declared-frame-count` | `STRUCTURAL.FRAME_COUNT_MISMATCH` | error | The manifest's declared frame count (e.g. LeRobot `total_frames`) differs from the frames ingested (episodes present but cut short). |
-| `structural.shape-consistency` | `STRUCTURAL.SHAPE_MISMATCH` | error | A stream keeps a different declared dtype/shape across episodes (un-batchable). |
+| `structural.shape-consistency` | `STRUCTURAL.SHAPE_MISMATCH` | error | A stream keeps a different declared dtype/shape across episodes (un-batchable). dtype and shape carry **independent** baselines, each taken from the first episode that declared *that* axis — a stream declaring a dtype in one episode and a shape only in a later one is still compared on both. (HDF5 and Zarr write no `shape` for a 1-D dataset, so a single such episode used to disable shape-drift detection for that stream permanently.) |
 | `structural.stream-presence` | `STRUCTURAL.STREAM_PRESENCE_INCONSISTENT` | warning | A stream key is present in some episodes but missing from others — a heterogeneous feature set (a sensor that dropped out, or two exports pooled together). |
 | `structural.stuck-stream` | `STRUCTURAL.STUCK_STREAM` | warning | A `Video` stream repeats a byte-identical frame (same `content_hash`) for ≥5 consecutive frames while timestamps advance — a frozen/stuck camera the timestamp-based temporal checks can't see. Real camera frames are never byte-identical, so this is unambiguous. Only frames carrying a `content_hash` are compared (MCAP images are fingerprinted; LeRobot video lives outside the Parquet, so the check abstains there). Constant *scalar* streams are `STATISTICAL.DEGENERATE`'s concern, not this. |
 | `structural.content-measurability` | `STRUCTURAL.UNFINGERPRINTED_CONTENT` | info | A stream's frames carry no content fingerprint, so the two checks that prove things by comparing frame bytes — `structural.duplicate-episode` and `structural.stuck-stream` — could not inspect it. The abstention is not a corner case: a LeRobot video feature's pixels live in `.mp4` files outside the Parquet, and the duplicate check aborts the whole episode signature if *any* frame of *any* stream lacks a hash — so one video feature, the ordinary layout of a real LeRobot dataset, made two byte-identical episodes undetectable. `stuck-stream` only looks at `Video` streams, which on LeRobot are exactly the hashless ones, so the frozen-camera check never ran there at all. The finding states separately whether *no* episode was fully fingerprinted, since that disables the duplicate check dataset-wide. |
@@ -48,7 +48,7 @@ signed certificate on the strength of a timeline nobody measured, so those strea
 | `temporal.rate-conformance` | `TEMPORAL.RATE` | warning | The observed mean rate deviates from the declared rate beyond tolerance. |
 | `temporal.gap` | `TEMPORAL.GAP` | warning | An inter-frame interval is far larger than expected (dropped frames). |
 | `temporal.jitter` | `TEMPORAL.JITTER` | warning | A stream's inter-frame intervals are badly irregular (coefficient of variation above tolerance) even though the mean rate can look correct — a jittery timeline that `RATE` and `GAP` both miss. |
-| `temporal.clock-skew` | `TEMPORAL.CLOCK_SKEW` | error | Two streams in an episode span materially different durations — the headline cross-stream drift check. The tolerance (`clock_skew_ms`, default 50 ms) is widened by the larger of the two streams' own sampling periods: a stream observing a window at period `T` spans a whole number of `T`s, so two synchronized sensors at different rates differ by up to one period with no drift at all. |
+| `temporal.clock-skew` | `TEMPORAL.CLOCK_SKEW` | error | Two streams in an episode span materially different durations — the headline cross-stream drift check. The tolerance (`clock_skew_ms`, default 50 ms) is widened by the larger of the two streams' own sampling periods: a stream observing a window at period `T` spans a whole number of `T`s, so two synchronized sensors at different rates differ by up to one period with no drift at all. A stream with too few intervals to take a median — a slow sensor catching two samples in a short episode — takes its period from `declared_rate_hz`, bounded by the one interval observed, so it is neither charged for its own sampling quantum nor able to buy a huge allowance out of a single gap. |
 | `temporal.start-offset` | `TEMPORAL.START_OFFSET` | warning | Two streams sharing a `clock_id` start at materially different absolute times (a sensor that came online late) — a misalignment `CLOCK_SKEW`'s duration comparison can miss. |
 | `temporal.end-offset` | `TEMPORAL.END_OFFSET` | warning | Two streams sharing a `clock_id` end at materially different absolute times (a sensor that dropped out early, or a truncated tail) — the mirror of `START_OFFSET`; because `end = start + duration`, a tail misalignment can slip past both `START_OFFSET` and `CLOCK_SKEW`. |
 | `temporal.rate-consistency` | `TEMPORAL.RATE_INCONSISTENT` | warning | A stream declares one sampling rate in some episodes and a materially different one in others — differently-configured sources pooled under one key, or wrong rate metadata. Every per-episode check passes, but a global fixed-rate assumption is wrong for part of the data. The temporal sibling of `STRUCTURAL.SHAPE_MISMATCH`. |
@@ -246,13 +246,18 @@ the certificate listed all five statistical checks under `checks_run` with `cate
 A run that read less than the whole dataset emits **`COVERAGE.SAMPLE`** or **`COVERAGE.METADATA_ONLY`**
 (info, check id `veridex.coverage`) alongside its findings.
 
-This is deliberately a *finding* and not only the verdict's `coverage` field. The field is rendered
-by the terminal report, the JSON, and the HTML — and by nothing else. SARIF carries no coverage
-marker, so a CI job gating on a code-scanning upload would see a partial run as a clean scan of the
-whole dataset; `diff` never reads coverage either, so substituting a partial report for a full one
-would read as findings *resolved*. Findings are the one channel that reaches every renderer and the
-certificate's own summary — the same reasoning behind `temporal.clock-measurability`, and behind
-SARIF synthesizing a result for a check that errored rather than letting its silence pass.
+This is deliberately a *finding* and not only the verdict's `coverage` field. The field itself is
+rendered by the terminal report, the JSON, the HTML, and the `diff` — but **not** by SARIF, so a CI
+job gating on a code-scanning upload would see a partial run as a clean scan of the whole dataset.
+Findings are the one channel that reaches every renderer and the certificate's own summary — the
+same reasoning behind `temporal.clock-measurability`, and behind SARIF synthesizing a result for a
+check that errored rather than letting its silence pass.
+
+`diff` reads coverage directly as well as through the finding: `render_diff` states a coverage
+change before anything else, `diff --json` carries a `coverage` object, and `--fail-on-regression`
+treats a change as the top regression signal. Without that, substituting a metadata-only report for
+a full one silences most of the catalog, so the full run's findings read as *resolved* and the trust
+score goes **up** — a regression gate passing precisely because the new run stopped looking.
 
 `veridex.coverage` is not a registered check: coverage is a property of the ingest, which no check
 can read from the CDM. It is emitted by the engine directly, so `veridex checks` still lists exactly

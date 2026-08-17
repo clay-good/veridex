@@ -590,6 +590,155 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+*The entries below through "Two refusals named the nearest thing to the mistake" close a
+five-agent audit of the adapters, the canonical encoder and certificate, the check families, and
+both front-ends. The encoder came back clean: all 62 CDM leaf fields are bound into the content
+hash, with one documented exception (a `MediaStatus` reason string, derived from OS error text and
+excluded for cross-platform hash stability). Everything else is below.*
+
+- **A dataset's identity depended on how its path was typed.** `Path::file_name` returns `None` for
+  a path ending in `.`, so `veridex check .` run from inside a dataset fell through to the adapter's
+  fallback string — `"lerobot"`, `"zarr"` — while the same directory named absolutely took its real
+  name. The id is bound into the CDM content hash, so identical bytes hashed two different ways and
+  `veridex verify .` rejected a **genuine** certificate with a content-hash mismatch: the exact
+  determinism the README promises, and the whole offline-verification story. The source path is now
+  resolved before the name is taken, at all three sites. RLDS (id from `dataset_info.json`) and HDF5
+  (a file always has a name) were never affected.
+
+- **A LeRobot manifest could make Veridex read outside the dataset.** A feature key in
+  `meta/info.json` is a JSON object key an attacker chooses, and it was joined onto the dataset
+  directory to locate that feature's video. `Path::join` neither rejects `..` nor resists an absolute
+  argument — an absolute one discards the base entirely — so a published dataset declaring a feature
+  named `../../../../etc/shadow` had Veridex open that file and copy its real container headers into
+  the CDM. `Media` is bound into the content hash and the signed certificate, and `MediaStatus`
+  separates missing from unreadable from read, so the verdict was an existence-and-content oracle
+  over the filesystem of everyone who checked the dataset. Containment is enforced at the single
+  probe choke point — lexically, then again after resolution, since the component filter cannot see
+  through a symlink — and a path that escapes is named rather than quietly called absent.
+
+- **A normal Hugging Face download ingested as an empty dataset.** Both tree walks refused every
+  symlink, to stop a link pointing at an ancestor recursing forever. But `snapshot_download`
+  materializes every file in a repo as a symlink into the blob cache, so that is the ordinary
+  on-disk shape of a downloaded LeRobot dataset: zero episodes at `Coverage::Full`, and every video
+  it did have reported `VIDEO.MEDIA_MISSING`. Symlinked *files* are now followed; symlinked
+  directories are still refused, which is where the recursion was.
+
+- **A `timestamp` column of the wrong type was replaced with a clock Veridex invented.** Per row, a
+  column Veridex cannot read is indistinguishable from a null cell — and a null cell legitimately
+  falls back to `frame_index / fps`. Applied to a whole int64 column (nanoseconds, which several
+  exporters write), that fallback discarded the recorded clock and substituted a mathematically
+  perfect 1/fps ladder, still labelled `ClockKind::Measured`. Every temporal check then ran against
+  a synthetic timeline and passed unconditionally: a five-second mid-episode gap certified clean. The
+  column's type is checked once, up front, so the fallback stays what it was for. Alongside it, a
+  negative `episode_index` (`-1` is a sentinel some exporters write) wrapped through `as u64` into
+  18446744073709551615 and put those frames in a phantom episode no declared length is compared
+  against.
+
+- **The LeRobot fidelity report claimed files it had not read.**
+  `meta/stats.json -> stream.stats` was pushed unconditionally although `load_stats` returns empty
+  on a missing *or corrupt* file — and a corrupt one silently disables every stored-vs-observed
+  comparison. An unparseable line in `meta/episodes.jsonl` was skipped without a word, which under
+  `--metadata-only`, where that file *is* the episode set, reads as a smaller and perfectly clean
+  dataset. Stats now report absent and unparseable as distinct omissions, and a malformed manifest
+  line is refused the way a duplicate index already was.
+
+- **Multiplexed CAN signals were decoded from every frame.** A multiplexed message reuses the same
+  payload bytes for different signals, and one signal — the multiplexor, marked `M` — says which set
+  the current frame carries. The indicator was never parsed: it stayed glued onto the signal's name
+  (`"ValueB m1"`) and every multiplexed signal was decoded from every frame of its id. A frame whose
+  selector said `m0` still produced a `ValueB` sample, reading `m0`'s bytes through `m1`'s layout and
+  scaling — a plausible number that was never on the bus, given a CDM stream of its own,
+  fingerprinted into the content hash, and graded by every check. Multiplexing is common in
+  production DBCs. With no decodable multiplexor, nothing is known about which set is present, so
+  none is decoded: an absent sample is a gap the temporal checks can see, where a fabricated one is
+  not.
+
+- **candump timestamps carried about a microsecond of invented jitter.** Epoch-scale seconds times
+  1e9 needs 61 bits of mantissa against `f64`'s 53, so two lines exactly 1 µs apart came out 1024 ns
+  apart — and `clock_kind: Measured` hands that to the temporal checks as though the bus had produced
+  it. Composed from the integer seconds and fractional digits separately. Immaterial at a 10 ms
+  raster, material at 1 kHz.
+
+- **A file that parsed to nothing ingested as a clean, complete dataset.** A candump log every line
+  of which failed — a CAN-FD capture (`##`), RTR frames, a text file that is not a candump at all —
+  produced a successful, zero-finding, `Coverage::Full` dataset with an empty `unmapped`: a signable
+  clean bill of health over a file that yielded nothing. Lines are counted now rather than skipped,
+  and a partial failure is reported as the coverage gap it is. Two MDF4 walks did the same against
+  this module's own doc promise: a `##DG` whose `cg_first` link points at a malformed block lost its
+  entire data group, and a channel whose `##TX` name is missing vanished though it was real and
+  decodable.
+
+- **A check that crashed rendered as a check that passed.** `catch_unwind` isolates a panicking
+  check so one crash cannot take the run down; what it must not do is make the crash disappear.
+  `status_from` read only the severity counts, so a run in which *every* check panicked came back
+  `Pass`, `veridex check` exited 0, and CI went green over a dataset on which nothing was measured.
+  The certificate was worse, its reader being offline and unable to re-run anything: `checks_run` was
+  `executed_checks` verbatim, and that field records *invocation*, not success, so the crashed check
+  appeared among the checks that ran, beside an all-zero severity summary, and `categories_skipped`
+  did not mention the category whose only check had died. The document now carries `checks_errored`
+  (omitted when empty, so ordinary certificates are byte-unchanged), and the status is
+  `PassWithWarnings` — a crash is not evidence the data is bad, it is evidence the verdict is
+  incomplete.
+
+- **`verify` never read the certificate's schema.** Every other version mismatch in that function
+  fails closed; this one accepted a document declaring a future schema whose fields happened to parse
+  under today's struct. A signature makes a certificate unforgeable, not intelligible.
+
+- **Stored per-dimension statistics were never sanity-checked.** A LeRobot `meta/stats.json` for a
+  7-DoF `action` stores min/max/mean/std as arrays, and the adapter carries the whole thing.
+  `statistical.range-sanity` read element 0 and nothing else, so an inverted range, a NaN, a negative
+  standard deviation or a dead joint on any axis above the first passed clean — and
+  `value-measurability` counts `dim_stats` as "stats present", so nothing abstained either and the
+  certificate listed the check as executed with no categories skipped. On a 7-DoF arm that is six
+  unexamined joints. Each dimension is evaluated now, and the finding names which one.
+
+- **A shape baseline could be frozen in a state it could never leave.**
+  `structural.shape-consistency` captured one baseline from the first episode declaring either a
+  dtype or a shape, and never enriched it — and the comparison requires both sides declared. So a
+  stream whose first episode stated a dtype but no shape had `shape: None` fixed as its baseline
+  permanently, and shape drift for it could never be reported however many later episodes conflicted.
+  HDF5 and Zarr both write no shape for a 1-D dataset, making this the ordinary case: an `/action`
+  that is `(N,)` in one episode file and `(N,7)` in another is precisely the un-collatable drift the
+  check exists for.
+
+- **A slow sensor with exactly two samples was graded as skewed.** The span comparison widens its
+  tolerance by each stream's sampling quantum, because a stream observing a window at period `T`
+  understates it by up to one full period with a perfect clock. That quantum was 0 below two
+  intervals — exactly where a slow sensor lands in a short episode. A 1 Hz LiDAR beside a 100 Hz IMU,
+  perfectly synchronized, drew a headline `TEMPORAL.CLOCK_SKEW` **error** for a 990 ms "drift" that is
+  one LiDAR period, and flipped to clean the moment it caught a third sample. The quantum now falls
+  back to the *declared* rate, which is a statement rather than a guess, bounded by the single
+  observed interval so a sensor that fired twice and stopped cannot widen its way out of a real
+  defect.
+
+- **`--json --sarif` silently emitted SARIF.** The renderer dispatch is an if/else chain, so the
+  losing flag was dropped without a word: a CI job doing `check --json --sarif > report.json` got the
+  wrong document, which `veridex diff` then refused as not a Veridex report. Silently ignoring a flag
+  is what `reject_flags_except` exists to prevent. Relatedly, `given_flags()`'s doc claimed "a test
+  asserts this covers the parser's whole flag set" and no such test existed — the array is a fixed
+  `[(&str, bool); N]`, which forces nothing, so a flag added to the parser without an entry would be
+  accepted by every command. The two lists live in one file and are now compared as the textual fact
+  they are.
+
+- **A closed stdout panicked.** Rust's runtime ignores `SIGPIPE`, so a write to a closed pipe becomes
+  `EPIPE`, which `println!` turns into a panic: `veridex checks | head -5`, or quitting `less` partway
+  through a report, aborted with a backtrace and exit 101 — neither in the documented 0/10/20/2
+  contract, and both ordinary usage.
+
+- **`certify` wrote into the dataset.** The default certificate name is relative, so it landed in the
+  working directory — which *is* the dataset after `cd my-dataset && veridex certify .`, the most
+  natural way to do it. "It never mutates your dataset" is a README promise the adoption guide
+  repeats. Nothing was corrupted and the CDM hash is unaffected, but a promise that holds except when
+  inconvenient is not one a policy can rest on. Refused, with the one-flag fix in the message.
+
+- **Python `diff` accepted what the CLI refuses, and the JSON diff dropped coverage.** The
+  `is_report_shaped` guard was CLI-only, so a truncated artifact diffed as "every finding resolved,
+  no regression" — silence from a file that was never a report, read as a clean bill of health. And
+  `render_diff_json` carried no coverage at all, though `render_diff` leads with `Coverage: CHANGED`
+  and `--fail-on-regression` gates on it: substituting a metadata-only report for a full one silences
+  most of the catalog, so the machine consumer — the only consumer that document has — saw findings
+  resolved and the score go up because the new run stopped looking.
+
 - **Whole check families abstained without saying so.** The project's own principle is that a check
   which cannot measure must report that, or its silence reads as a pass. Two families did not.
   `statistical.value-measurability`: MCAP, CAN+DBC, MF4 and RLDS fingerprint payload bytes without
@@ -1116,6 +1265,23 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   of the declared bounds and the actual frame extent; a genuinely out-of-range annotation still fires.
 
 ### Security
+
+- **A dataset manifest could name any file on the host.** A LeRobot feature key — an untrusted JSON
+  object key — was joined onto the dataset directory to locate that feature's video, and neither `..`
+  nor an absolute path was rejected. Veridex opened the named file and copied its container headers
+  into the CDM, which is bound into the content hash and the signed certificate; `MediaStatus`
+  separates missing from unreadable from read, so a published dataset turned every verdict issued
+  over it into an existence-and-content oracle over the checker's filesystem. Containment is now
+  enforced at the probe, lexically and again after symlink resolution. See the Fixed section for
+  detail.
+
+- **Two untrusted-input overflows aborted the process.** A DBC declaring a 63-bit signed signal hit
+  `1i64 << 63` == `i64::MIN` and panicked in any debug or CI build (the existing width coverage
+  tested 64 and 65 and stepped over 63). And an MCAP record declaring `u64::MAX` bytes overflowed
+  the framing walk — where testing it end to end found the deeper problem: the vendored `mcap`
+  reader overflows on the same input, so a **17-byte** hostile file killed the run before any
+  Veridex guard was reached. A record claiming more bytes than the whole file is now refused by
+  name; a merely truncated one is still left to the reader, which describes it better.
 
 - Certificate verification now uses Ed25519 `verify_strict`, rejecting non-canonical signatures and
   small-order keys so a given certificate has exactly one valid signature (no malleability).

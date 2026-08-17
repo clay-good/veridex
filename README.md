@@ -41,9 +41,12 @@ Veridex Trust Report
   upstream dataset produced each segment — surfaced, scored, and emitted as a signed certificate
   (Croissant + W3C PROV underneath).
 - **A number you can trust and share.** A deterministic 0–100 trust score and A–F grade. Same
-  dataset and the same Veridex version always yield the same result, and the signed certificate
+  dataset and the same Veridex version always yield the same result — including from inside the
+  dataset directory, so a certificate issued anywhere verifies anywhere — and the signed certificate
   verifies **offline**.
-- **Never touches your data.** Veridex only reads and reports. It never mutates your dataset.
+- **Never touches your data.** Veridex only reads and reports. It never mutates your dataset: if
+  `certify` would default its output into the dataset directory (running it from *inside* one), it
+  refuses and asks for `--out` rather than writing there.
 
 ## Why it's different
 
@@ -96,7 +99,7 @@ sequenceDiagram
 ## Commands
 
 ```sh
-veridex check      <dataset> [--sample-episodes <n> | --sample-fraction <f> | --metadata-only]  # validate + report
+veridex check      <dataset> [--json | --sarif | --html] [--sample-episodes <n> | --sample-fraction <f> | --metadata-only]  # validate + report
 veridex certify    <dataset> --key issuer.key [--profile world-model-ready]  # issue a signed trust certificate
 veridex verify     <dataset> --certificate c.json --key pub.key   # verify offline (issuer required)
 veridex provenance <dataset> --emit croissant                     # extract + emit provenance
