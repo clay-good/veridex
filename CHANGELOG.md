@@ -590,7 +590,131 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
-*The entries below through "Two refusals named the nearest thing to the mistake" close a
+*The entries below through "A narrowed check set is not a clean run" close a **six-agent audit** of
+the HDF5 and RLDS adapters, the certificate and canonical encoder, scoring/diff/profiles, the two
+output layers, and the Python/CLI front-ends. Three of the six agents independently converged on the
+same hole from three directions, which is why it earned a root fix rather than three patches. The
+certificate's field-coverage enumeration came back clean: all 22 certificate and verdict fields, and
+their nested sub-fields, are covered by the signature — every single-field mutation produced a
+signature mismatch, and the `skip_serializing_if` optional fields create no deletion hole. So did
+determinism: 200 pseudo-random permutations of every order-insensitive collection produced a
+byte-identical CDM hash, result hash, and trust score, and every encoder sort key was confirmed
+total. The v1 rubric in `docs/rubric-v1.md` matches `certificate/score.rs` numerically, term for
+term. The HDF5 chunk decode path was likewise cleared against `h5py` output — multi-level chunk
+B-trees, per-chunk filter masks, big-endian shuffle+fletcher32 at non-8-byte strides, rank-4 chunking
+and extendible datasets all round-trip exactly. Those results are worth recording as plainly as the
+defects.*
+
+- **A narrowed check set is not a clean run.** A `veridex.toml` carrying one line — `only_checks`,
+  `categories`, `disabled_checks`, or a `severity_overrides` entry — silently rewrote the verdict
+  everywhere a human or a machine would read it. On `demo.mcap`,
+  `only_checks = ["structural.episode-boundary"]` turned `FAIL / 76 / 5 findings` into
+  `PASS / 89 / 0 findings`, with 1 of 38 checks run and no trace of that in the terminal report, the
+  HTML report built to travel, the SARIF a CI code-scanning job reads, or a signed certificate.
+  `diff --fail-on-regression` read the eleven vanished findings — including a real 210 ms clock
+  skew — as *resolved*, saw the trust score climb 55 points, and exited 0.
+
+  `effective_config` had carried the facts all along, in the JSON envelope and in the certificate,
+  but only for a reader who thought to look. This is the same failure shape `CoverageNote` exists to
+  prevent, one axis over: coverage answers "how much of the dataset did we read", and nothing
+  answered "how much of the catalog did we run". So it takes the same remedy — a finding, because
+  findings are the only channel that reaches every renderer, the diff, and the certificate's own
+  summary. The engine now emits `SCOPE.NARROWED` under `veridex.scope`, which like `veridex.coverage`
+  is deliberately not a catalog check, so configuration cannot switch off the disclosure that
+  configuration narrowed the run. It is measured from what happened (checks executed vs. registered)
+  rather than the config's wording, so a full run emits nothing and ordinary hashes are unchanged.
+  `veridex verify` names the same limit beside the score.
+
+- **Unknown fields were rejected only on the outermost certificate structs.** `SignedCertificate`,
+  `Certificate`, `Issuance`, `FindingsSummary`, `CriterionResult` and `ReadinessReport` carried
+  `deny_unknown_fields`; none of the types nested inside them did. Attacker-authored text added
+  inside `trust_score`, `checks_run[i]`, `by_severity`, `provenance_coverage` or `effective_config`
+  was dropped by serde, re-serialized to the originally signed bytes, and verified — so
+  `veridex verify` printed "✓ certificate verified" over a document carrying, say, an
+  `"auditor_note": "independently audited, safe for training"` that any consumer reading the JSON
+  would see as authenticated. That is precisely what the comment at `signing.rs:115` says must be
+  impossible. The existing test only injected at the top level, which is how the gap survived.
+
+- **`verify` with no dataset path reported success identically to a bound verification.** Without a
+  path the transplant check never runs, yet the output was byte-identical and the `bound to:` line
+  read as a confirmation when it only echoed the certificate's own claim — so a certificate issued
+  for one dataset, presented beside another, was accepted by every invocation that omitted the path,
+  and `"verified": true` had no counterpart to `issuer_verified`. Now a `⚠ dataset NOT checked`
+  banner and a `dataset_checked` field, matching how a missing trusted issuer is already handled.
+
+- **HDF5 fabricated unwritten data as zeros.** A chunked dataset that is only partly written has no
+  index entry for the unwritten chunks; HDF5 defines those regions as the declared fill value, and
+  that is what `h5py` returns. The reader never parsed the Fill Value message (`0x0005`) at all and
+  zero-initialized the row. The written chunks decoded correctly, so only the invented part was
+  wrong — silently, with `coverage: Full` and an empty `unmapped_fields`. The fabricated values were
+  hashed into `frame.value_ref.content_hash`, so a certificate bound a dataset to bytes `h5py` never
+  read there, and were fed to the statistics as if measured. Worst instance: with `fillvalue=nan` and
+  a partial write, `h5py` sees NaNs and Veridex reported `observed_non_finite = Some(0)` — which
+  means "every value was read and every one was finite", so `STATISTICAL.NON_FINITE_OBSERVED`
+  returned a confident clean answer over data it never looked at. The same root cause had the
+  opposite symptom one branch over: a row covered by *no* chunk was refused outright as "the
+  dataset's chunk index is incomplete", blaming a file that was complete and correct — and that shape
+  is the most common thing a robot logger produces, pre-allocating N steps and writing fewer.
+
+- **RLDS read a shard differently than TensorFlow reads it, five ways.** A map entry carrying its
+  `value` submessage twice had the first silently discarded; protobuf merges repeated embedded
+  messages, so TensorFlow concatenates the two lists and reads three steps where Veridex read two —
+  the same bytes yielding a different episode length depending on who reads them, with Veridex
+  signing its own answer. `--sample-episodes 10` over a 3-episode dataset whose manifest declares no
+  shard lengths recorded a *declared* total of 10 and then raised
+  `STRUCTURAL.EPISODE_COUNT_MISMATCH` (Error) against a sound dataset, for the size of the user's own
+  flag. The ingest report claimed "masked CRC-32C → verified on every record" under a sample, where
+  only the length prefix of a skipped record is checked. A `shape` present but not an object was read
+  as a scalar, inflating a 2-step episode to 14 frames. An unparseable `shardLengths` entry was
+  reported as "declares none".
+
+- **Terminal output executed dataset-supplied ANSI escapes.** Every string a finding carries can come
+  from the dataset — a stream name copied verbatim out of `info.json`, a directory name — and
+  `render_terminal` wrote them straight to the TTY. A stream named
+  `"\x1b[2J\x1b[1;1HVeridex report\n  Status:   PASS\x07"` clears the screen and repaints a forged
+  PASS banner over the failing verdict about to be printed, and that name is embedded in ordinary
+  `TEMPORAL.CLOCK_SKEW` messages. Control characters now render as visible `\xNN` escapes. The HTML
+  and SARIF renderers were already safe.
+
+- **PROV graphs dissolved in silence.** Every `@id` in `to_prov` interpolated free text — a dataset
+  id from a directory name, an annotator lifted from source metadata — with no encoding. A space is
+  enough: `veridex:dataset/my robot data` is not a well-formed IRI, and a JSON-LD processor drops the
+  node and every triple about it rather than erroring. Measured with rdflib: a control dataset parsed
+  to 7 triples, an annotator of `Jane Doe & Co` to 3 (the agent node and its attribution edge gone),
+  a dataset id of `my robot data <2026>` to 0. The document still looked like valid JSON and
+  `veridex provenance --emit prov` still reported success.
+
+- **Surplus positional arguments were dropped without a word.** The parser refused unknown flags,
+  unsupported flags and flags missing their value, then took `positionals.first()` and discarded the
+  rest. `veridex check datasets/*.mcap` checked the first file, exited 0 on it, and never opened the
+  others — a CI job reads that as "all my datasets passed".
+
+- **`--profile` silently reverted thresholds the operator had tightened.** A profile is built as
+  `Tolerances { clock_skew_ns: 20ms, ..default() }`, so every field it does not name holds a
+  *default*, not an absence of opinion. Assigning the whole struct made `--profile` *loosen* the run:
+  a config setting `ego_max_speed_mps = 1.0`, `outlier_z = 2.0` and `gap_factor = 1.5` had all three
+  reset to 100.0 / 10.0 / 3.0 — and the "Tolerances (non-default)" line then said nothing, because
+  the reverted values were once again exactly the defaults.
+
+- **Python accepted a CI gate and threw it away.** `min_score` and `fail_on` live on `CheckConfig`
+  and are read by the CLI directly; `to_run_config()` does not carry them, so
+  `veridex.check(path, config=open("veridex.toml").read())` — the migration path the README
+  prescribes — parsed the gate, validated it (a `min_score = 200` was even rejected), and discarded
+  it. A config whose entire purpose was to fail CI returned a clean result. Now refused with an error
+  naming the fields in the returned report that carry what it would have decided.
+
+- **A profile's verdict never reached a machine consumer.** `--json`, `--sarif` and `--html` applied
+  the profile's tolerances and reported none of its criterion verdicts, so the consumer most likely
+  to gate on readiness could not see it. Also: a certificate's `rubric_version` was signed but never
+  validated and never rendered, so a score produced under a different rubric printed with no version
+  beside it — and scores are only comparable within one.
+
+- **Two disclosure lines misstated their own numbers.** The tolerance line integer-divided
+  nanoseconds, printing a deliberately tightened `clock_skew_ms = 0.5` as `clock-skew 0ms` and
+  `rate_deviation = 0.004` as `rate 0%`; and 50.9 ms printed as `50ms`, which is exactly the default,
+  so a *loosened* threshold read as untouched and the warning argued against itself.
+
+*The entries below through "Two refusals named the nearest thing to the mistake" close an earlier
 five-agent audit of the adapters, the canonical encoder and certificate, the check families, and
 both front-ends. The encoder came back clean: all 62 CDM leaf fields are bound into the content
 hash, with one documented exception (a `MediaStatus` reason string, derived from OS error text and

@@ -262,3 +262,31 @@ score goes **up** — a regression gate passing precisely because the new run st
 `veridex.coverage` is not a registered check: coverage is a property of the ingest, which no check
 can read from the CDM. It is emitted by the engine directly, so `veridex checks` still lists exactly
 the checks that run, and no configuration can disable the disclosure.
+
+## Scope disclosure
+
+Coverage answers *how much of the dataset did we read*. **`SCOPE.NARROWED`** (info, check id
+`veridex.scope`) answers the other half: *how much of the catalog did we run*.
+
+It is emitted whenever fewer checks ran than are registered — `categories`, `only_checks` or
+`disabled_checks` — or a severity was overridden on a check that did run. Until it existed, a
+`veridex.toml` carrying one line rewrote the verdict everywhere it mattered. On the demo MCAP,
+`only_checks = ["structural.episode-boundary"]` turned `FAIL / 76 / 5 findings` into
+`PASS / 89 / 0 findings`, with no trace of the narrowing in the terminal report, the HTML report,
+the SARIF upload, or a signed certificate — and `diff --fail-on-regression` read the eleven vanished
+findings, including a real 210 ms clock skew, as *resolved*, saw the score climb 55 points, and
+exited 0.
+
+The remedy is the one coverage already uses, for the same reason: findings are the only channel that
+reaches every renderer, the `diff`, and the certificate's own summary. `effective_config` had
+carried the facts all along, in the JSON envelope and the certificate — but only for a reader who
+thought to look, and never for the two human-facing renderers or the regression gate.
+
+Like `veridex.coverage`, `veridex.scope` is not a registered check, so configuration cannot switch
+off the disclosure *that* configuration narrowed the run. It is measured from what actually happened
+— checks executed versus registered — rather than from the config's wording, so an `only_checks` that
+names the whole catalog is correctly silent, and a full run at declared severities emits nothing at
+all (leaving ordinary output and content hashes unchanged).
+
+`veridex verify` names the same limit beside the score, because a certificate issued from a narrowed
+run is genuine, correctly bound, and still not a verdict on the dataset.
