@@ -24,7 +24,7 @@ Introduces the first working slice of Veridex:
 - **Provenance, minimally but really:** extract whatever lineage the source encodes, classify
   known/asserted/unknown, and emit **Croissant**.
 - **The flagship artifact:** a signed, offline-verifiable **trust certificate** bound to the CDM
-  content hash, with a documented v1 scoring rubric, reusing Invariant's COSE/JWS substrate.
+  content hash, with a documented v1 scoring rubric, following Invariant's signed-verdict pattern.
 - **CLI:** `veridex check | certify | verify | provenance | inspect`, terminal + JSON output,
   CI-friendly exit codes, plus a Python binding with verdict parity.
 
@@ -44,7 +44,8 @@ Introduces the first working slice of Veridex:
   `trust-certificate`, `reporting`, `cli` (all at MVP depth).
 - New repo scaffolding: `veridex-core` (Rust), Python bindings (`veridex-data` on PyPI, import
   `veridex`), `veridex` CLI.
-- Dependency on Invariant's attestation approach (shared or mirrored COSE/JWS signing + audit).
+- Dependency on Invariant's attestation *approach*. Settled in D6a: mirrored module, not a shared
+  crate, and a raw Ed25519 detached signature rather than a COSE or JWS envelope.
 - Success criteria: runs end-to-end on a real LeRobot v3 Hub dataset **and** an MCAP recording;
   detects a synthetic cross-stream skew and a corrupted episode boundary; emits a certificate that
   `veridex verify` validates offline; produces valid Croissant.

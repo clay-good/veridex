@@ -7,7 +7,10 @@ the build plan.
 - [x] Create the Rust workspace: `veridex-core`, `veridex-cli`. (`veridex-py` pyo3/maturin: deferred to M8.)
 - [x] Wire CI: build, test, clippy/fmt gates (`.github/workflows/ci.yml`, `-D warnings`);
       `#![forbid(unsafe_code)]` on `veridex-core`.
-- [ ] Decide crypto substrate sharing with Invariant (shared crate vs. mirrored module); record it.
+- [x] Decide crypto substrate sharing with Invariant (shared crate vs. mirrored module); record it.
+      Decided: **mirrored module**, and a raw domain-separated Ed25519 detached signature rather than
+      a COSE or JWS envelope. Recorded as design D6a with the consequences accepted; the specs,
+      `project.md`, and the README now describe what ships instead of claiming COSE/JWS.
 
 ## M1 — Canonical Dataset Model
 - [x] Define CDM types (Dataset/Episode/Stream/Frame/Provenance/Label) per design D2.
@@ -123,8 +126,10 @@ the build plan.
 - [x] v1 scoring rubric (D7): deterministic score + grade; ship rubric doc (docs/rubric-v1.md).
       Provenance coverage (known/asserted/unknown) is a separate 30% axis so a clean check score
       can't mask missing provenance.
-- [x] Ed25519 signing (JWS-style detached signature over canonical bytes, D6); offline `verify`;
-      tamper + transplant + wrong-issuer rejection tests. (COSE envelope is a later refinement.)
+- [x] Ed25519 signing (detached signature over domain-separated canonical bytes, D6/D6a); offline
+      `verify`; tamper + transplant + wrong-issuer rejection tests. Not a JWS or COSE envelope —
+      an envelope format stays a possible later refinement, and would be a new `algorithm` value
+      plus a schema bump rather than a rewrite.
 
 ## M7 — Reporting (MVP)
 - [x] Terminal report + rollup summaries (dataset/episode/stream, worst episodes first).

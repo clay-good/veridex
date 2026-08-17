@@ -1,7 +1,8 @@
 # trust-certificate — MVP delta
 
 Scopes the north-star `trust-certificate` to v0.1: content, content-hash binding, deterministic v1
-rubric, COSE/JWS signing reusing Invariant, and offline verification with tamper/transplant
+rubric, Ed25519 signing over domain-separated canonical bytes, and offline verification with
+tamper/transplant
 rejection.
 
 ## ADDED Requirements
@@ -19,7 +20,7 @@ metadata; and SHALL bind to the exact CDM content hash.
 - **AND** it reports provenance coverage split into known/asserted/unknown
 
 ### Requirement: MVP signing and offline verification
-A certificate SHALL be COSE/JWS-signed (reusing Invariant's substrate) and verifiable offline
+A certificate SHALL be Ed25519-signed over domain-separated canonical bytes and verifiable offline
 against the issuer public key, rejecting both tampering and presentation against a different
 dataset.
 

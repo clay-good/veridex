@@ -6,8 +6,9 @@ The trust certificate is Veridex's flagship artifact — the thing papers cite, 
 buyers demand. It is a portable, signed statement about a specific dataset: what was checked, what
 was found, its trust score and grade, and its provenance coverage (known / asserted / unknown). It
 binds to the dataset's CDM content hash so it cannot be silently transplanted onto different data,
-and it verifies **offline** against a public key. Signing reuses Invariant's COSE/JWS attestation
-substrate.
+and it verifies **offline** against a public key. Signing follows Invariant's signed-verdict pattern
+in Veridex's own module: a detached Ed25519 signature over domain-separated canonical bytes (design
+D6a). It is not a COSE or JWS document.
 
 The certificate is a *nutrition label*, not a seal of approval: it states facts (checks run,
 findings, score, provenance coverage) rather than blessing a dataset as "good."
@@ -38,8 +39,9 @@ differs.
 
 ### Requirement: Signing and offline verification
 A certificate SHALL be cryptographically signed by the issuer and SHALL be verifiable offline
-against the issuer's public key, with no network dependency. Signing SHALL reuse the
-COSE/JWS-based attestation approach shared with Invariant.
+against the issuer's public key, with no network dependency. Signing SHALL use a detached Ed25519
+signature over domain-separated canonical bytes, so that a verifier can reimplement verification
+without a COSE, JOSE, or Veridex dependency.
 
 #### Scenario: A certificate verifies offline
 - **WHEN** a signed certificate and the issuer's public key are provided with no network access

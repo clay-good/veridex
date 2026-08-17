@@ -65,10 +65,12 @@ the ratified target.
 
 Veridex is a **separate** repo and product from [Invariant](../invariant) (a runtime
 command-validation firewall). Different lifecycle stage (training-time vs. runtime), different
-users, different data model. Veridex **reuses Invariant's proven substrate** for signed verdicts
-and tamper-evident audit logs (COSE/JWS signing, append-only log, key management) rather than
-reinventing it. Where practical, the certificate-signing and attestation code is shared with or
-modeled on `invariant-core`.
+users, different data model. Veridex **follows Invariant's proven pattern** for signed verdicts —
+sign canonical bytes, bind to a content hash, verify offline, no wall-clock in core — rather than
+inventing one. It does **not** share a crate: the two repos ship separately and their payloads are
+unrelated, so Veridex mirrors the pattern in its own module and shares only the underlying
+`ed25519-dalek` dependency. Invariant wraps its attestations in COSE (`coset`); Veridex does not.
+The decision and its consequences are recorded as design D6a.
 
 ## Technical decisions
 
@@ -78,7 +80,7 @@ modeled on `invariant-core`.
 | Ecosystem bindings | **Python** (`veridex-data` on PyPI, via pyo3/maturin) | The entire robot-data world (LeRobot, HF `datasets`) is Python-first. `pip install veridex-data`, `import veridex`. The PyPI *distribution* name is `veridex-data` (bare `veridex` is taken); the import module and CLI stay `veridex`. |
 | CLI | single binary `veridex` | `veridex check`, `veridex certify`, `veridex verify`, `veridex provenance`, `veridex inspect`. |
 | Internal model | **Canonical Dataset Model (CDM)** | The neutrality substrate: every format adapter maps into it; every check and the certificate operate on it. See `design.md` in the bootstrap change. |
-| Certificate | signed JSON (COSE/JWS), `<dataset>.veridex.json` | Portable, offline-verifiable, cites the CDM content hashes. Mirrors Invariant's signed-verdict pattern. |
+| Certificate | signed JSON (detached **Ed25519** over domain-separated canonical bytes), `<dataset>.veridex.json` | Portable, offline-verifiable, cites the CDM content hashes. Mirrors Invariant's signed-verdict pattern without a COSE/JOSE stack, so verification is reimplementable anywhere (design D6a). |
 | Metadata emit | **MLCommons Croissant** + **W3C PROV** | Ride existing standards for distribution; do not invent a rival metadata format. |
 | License | **MIT** | Ubiquity for the open core; trust infrastructure is the eventual commercial layer. |
 

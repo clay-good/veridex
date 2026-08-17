@@ -1295,6 +1295,29 @@ excluded for cross-platform hash stability). Everything else is below.*
   the `PyString::from_object` buffer-overflow risk). The bindings' API surface was already on the
   `Bound` API, so the bump is source-compatible.
 
+### Decided
+
+- **The certificate's crypto substrate: a mirrored module, not a shared crate — and not COSE or
+  JWS.** This was the last open question from M0, and until now the docs answered it wrongly. Six
+  places across the specs, `project.md`, and the README asserted that Veridex signs with COSE/JWS
+  "reusing Invariant's substrate," one of them normatively (`SHALL`). Neither half was true:
+  Veridex has never depended on a COSE or JOSE crate, and it shares no code with Invariant — which
+  *does* depend on `coset`. A reader following the README would have reached for a JOSE library and
+  found nothing to point it at.
+
+  What actually ships, now recorded as design D6a and described consistently everywhere: a detached
+  **Ed25519** signature over `b"veridex.certificate.sig.v1\0"` concatenated with the certificate's
+  JSON. The algorithm is fixed rather than read from the document, so `verify` rejects any other
+  `algorithm` value instead of dispatching on it — the `alg`-confusion class does not exist here.
+
+  The decision is recorded with the limitation it carries rather than as a clean win. The
+  `.veridex.json` file is written pretty-printed while the signature covers the *compact*
+  serialization of the nested certificate, so a third-party verifier cannot sign over a substring of
+  the file — it must re-serialize the parsed object with serde's field order and Rust's float
+  formatting. Exact and tested inside Veridex; fiddly outside it. Adopting RFC 8785 canonical JSON,
+  or signing the file bytes as written, is the natural v2 and would be a new `algorithm` value plus
+  a schema bump rather than a rewrite.
+
 ### Not yet included
 
 Streaming / large-than-memory and remote Hub ingestion (both are *refused* with a clear error rather

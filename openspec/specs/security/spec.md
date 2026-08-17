@@ -20,9 +20,12 @@ appear in a certificate, report, verdict, or log.
 - **AND** no private key material appears in the certificate or any Veridex output
 
 ### Requirement: Signing trust model
-Certificate signing SHALL use COSE/JWS with the issuer's private key, binding the signature to the
-CDM content hash. Verification SHALL confirm the signature and the binding offline, and SHALL report
-the issuer key ID so a verifier can decide whether they trust that issuer.
+Certificate signing SHALL use Ed25519 with the issuer's private key over domain-separated canonical
+bytes, binding the signature to the CDM content hash. The signature algorithm SHALL be fixed, not
+selected from a field inside the document: verification SHALL reject any certificate declaring an
+algorithm other than the one this build signs with, rather than dispatching on it. Verification SHALL
+confirm the signature and the binding offline, and SHALL report the issuer key ID so a verifier can
+decide whether they trust that issuer.
 
 #### Scenario: Verification reports the issuer for trust decisions
 - **WHEN** a certificate is verified

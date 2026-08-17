@@ -419,8 +419,11 @@ Start with [openspec/project.md](openspec/project.md) for the design, or track p
 
 Veridex is a separate product from [Invariant](https://github.com/clay-good/invariant), a runtime
 command-validation firewall — different lifecycle stage (training-time vs. runtime), different
-users. Veridex reuses Invariant's COSE/JWS signed-verdict and audit substrate rather than
-reinventing it.
+users. Veridex follows Invariant's signed-verdict pattern rather than reinventing one, but keeps its
+own signing module and does not share a crate: a Veridex certificate is a detached **Ed25519**
+signature over domain-separated JSON, deliberately not a COSE or JWS envelope. The decision, and the
+one limitation it carries, are recorded as design
+[D6a](openspec/changes/bootstrap-veridex-mvp/design.md).
 
 ## License
 
