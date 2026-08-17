@@ -14,12 +14,14 @@
 
 pub mod candbc;
 pub(crate) mod cdr;
+pub(crate) mod chunks;
 pub mod hdf5;
 pub mod lerobot;
 pub mod mcap;
 pub mod mdf4;
 pub mod rlds;
 pub(crate) mod stats;
+pub mod zarr;
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -578,7 +580,7 @@ fn check_source_exists(source: &Source) -> Result<(), IngestError> {
 }
 
 /// A registry preloaded with the standard adapters: LeRobot v3, MCAP, CAN+DBC, ASAM MF4, RLDS/TFDS,
-/// and HDF5.
+/// HDF5, and Zarr.
 pub fn default_registry() -> AdapterRegistry {
     let mut reg = AdapterRegistry::new();
     reg.register(Box::new(lerobot::LeRobotAdapter));
@@ -587,6 +589,7 @@ pub fn default_registry() -> AdapterRegistry {
     reg.register(Box::new(mdf4::Mdf4Adapter));
     reg.register(Box::new(rlds::RldsAdapter));
     reg.register(Box::new(hdf5::Hdf5Adapter));
+    reg.register(Box::new(zarr::ZarrAdapter));
     reg
 }
 

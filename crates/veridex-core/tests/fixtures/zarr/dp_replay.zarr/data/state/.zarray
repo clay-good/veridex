@@ -1,0 +1,19 @@
+{
+    "chunks": [
+        4,
+        5
+    ],
+    "compressor": {
+        "id": "zstd",
+        "level": 3
+    },
+    "dtype": "<f8",
+    "fill_value": 0.0,
+    "filters": null,
+    "order": "C",
+    "shape": [
+        10,
+        5
+    ],
+    "zarr_format": 2
+}

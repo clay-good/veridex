@@ -27,6 +27,7 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
+use crate::adapter::chunks::{copy_chunk_into_row, RowCopy};
 use crate::adapter::{DecompressionBudget, IngestError};
 
 use super::FORMAT_ID;
@@ -1506,12 +1507,15 @@ impl<'a> RowReader<'a> {
             self.load_chunk(&origin, chunk_dims, elem)?;
             let (_, chunk) = self.cached.as_ref().expect("just loaded");
             copy_chunk_into_row(
+                &RowCopy {
+                    format_id: FORMAT_ID,
+                    origin: &origin,
+                    chunk_dims,
+                    dims: &self.info.dims,
+                    index,
+                    elem,
+                },
                 chunk,
-                &origin,
-                chunk_dims,
-                &self.info.dims,
-                index,
-                elem,
                 &mut row,
             )?;
         }
@@ -1551,101 +1555,6 @@ impl<'a> RowReader<'a> {
         }
         self.cached = Some((origin.to_vec(), decoded));
         Ok(())
-    }
-}
-
-/// Copy the part of `chunk` that belongs to row `index` into `row`.
-///
-/// Both buffers are C-ordered (the last dimension varies fastest), so the copy walks the dimensions
-/// between the first and the last with an odometer, moving one contiguous run per position.
-fn copy_chunk_into_row(
-    chunk: &[u8],
-    origin: &[u64],
-    chunk_dims: &[u64],
-    dims: &[u64],
-    index: u64,
-    elem: u64,
-    row: &mut [u8],
-) -> H5Result<()> {
-    let rank = dims.len();
-    let within = index
-        .checked_sub(origin[0])
-        .ok_or_else(|| parse_error("a chunk origin sits after the row it indexes"))?;
-    if rank == 1 {
-        // A 1-D dataset's "row" is a single element.
-        let src = (within * elem) as usize;
-        if src + elem as usize > chunk.len() || elem as usize > row.len() {
-            return Err(parse_error("a chunk is too small for the row it indexes"));
-        }
-        row[..elem as usize].copy_from_slice(&chunk[src..src + elem as usize]);
-        return Ok(());
-    }
-    let last = rank - 1;
-    // How many elements of the last dimension this chunk contributes.
-    let run = chunk_dims[last].min(dims[last].saturating_sub(origin[last]));
-    if run == 0 {
-        return Ok(());
-    }
-    // Per-dimension extents inside this chunk, clipped where the dataset's edge cuts it short.
-    let extents: Vec<u64> = (0..rank)
-        .map(|d| {
-            if d == 0 {
-                1
-            } else {
-                chunk_dims[d].min(dims[d].saturating_sub(origin[d]))
-            }
-        })
-        .collect();
-    if extents.contains(&0) {
-        return Ok(());
-    }
-    let mut counters = vec![0u64; rank];
-    counters[0] = within;
-    loop {
-        // The source offset inside the chunk, and the destination offset inside the row.
-        let mut src = 0u64;
-        let mut dst = 0u64;
-        for d in 0..rank {
-            src = src
-                .checked_mul(chunk_dims[d])
-                .and_then(|s| s.checked_add(counters[d]))
-                .ok_or_else(|| parse_error("a chunk offset overflows"))?;
-            if d > 0 {
-                dst = dst
-                    .checked_mul(dims[d])
-                    .and_then(|s| s.checked_add(origin[d] + counters[d]))
-                    .ok_or_else(|| parse_error("a row offset overflows"))?;
-            }
-        }
-        let src_bytes = (src * elem) as usize;
-        let dst_bytes = (dst * elem) as usize;
-        let run_bytes = (run * elem) as usize;
-        if src_bytes + run_bytes > chunk.len() {
-            return Err(parse_error("a chunk is too small for the row it indexes"));
-        }
-        if dst_bytes + run_bytes > row.len() {
-            return Err(parse_error(
-                "a chunk claims more of a row than the dataset's shape holds",
-            ));
-        }
-        row[dst_bytes..dst_bytes + run_bytes]
-            .copy_from_slice(&chunk[src_bytes..src_bytes + run_bytes]);
-
-        // Advance the odometer over the dimensions between the first and the last.
-        let mut d = last;
-        let mut carried = true;
-        while d > 1 {
-            d -= 1;
-            counters[d] += 1;
-            if counters[d] < extents[d] {
-                carried = false;
-                break;
-            }
-            counters[d] = 0;
-        }
-        if carried {
-            return Ok(());
-        }
     }
 }
 

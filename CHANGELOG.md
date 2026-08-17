@@ -10,6 +10,31 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **Zarr adapter** — the replay-buffer layout Diffusion Policy, UMI, and the tooling around them ship
+  in, read into the CDM as the fifth first-class format behind `veridex check`, and the last format on
+  the roadmap.
+
+  A replay buffer is one flat array per key with every episode concatenated end to end, and the
+  boundaries kept beside it in `meta/episode_ends`. Those boundaries *are* the episode structure, so
+  Veridex slices every `data/` array at them — and treats them as data to be checked rather than
+  trusted: a boundary that runs backwards, or past the end of the arrays it indexes, is refused, and
+  rows past the last boundary belong to no episode and are disclosed instead of being attached to the
+  last one. An off-by-one in a replay buffer is exactly the corruption this tool exists to catch. A
+  store that is not a replay buffer still reads, under the same group rules as HDF5.
+
+  Zarr's chunks are plain files, so there is no index to walk — but there is a codec to get right, and
+  a compressed array read through the wrong one does not fail: it yields plausible numbers. This
+  reader implements `zlib`, `gzip`, `zstd`, `lz4`, and `blosc` — the container `numcodecs` reaches for
+  by default — including its per-block split streams and byte shuffle. Everything else (`blosclz`,
+  `snappy`, the bit shuffle, Fortran order, a filter chain, a v3 store) is refused by name with what
+  to re-save it as. Values are summarized as they are read, so the statistical checks are live, and
+  the timeline is the step index unless a `timestamp` array declares its `units`.
+
+  Tested against real `zarr` + `numcodecs` stores committed as fixtures, with per-row SHA-256 values
+  taken from Python — including one array per codec over identical values, which must all decode to
+  the same bytes. The chunk-to-row assembly is now shared with the HDF5 adapter rather than written
+  twice: the same logical array must not hash differently depending on the container it arrived in.
+
 - **The refusal messages are now asserted, and one of them was lying.** An HDF5 attribute this reader
   *failed to read* (a variable-length string whose global-heap object is corrupt) was reported as "an
   array or a compound value, which the CDM cannot hold" — telling the user to change their data when

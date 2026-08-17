@@ -38,7 +38,7 @@ tracks at dataset, episode, and stream scope.
 Veridex SHALL support ingestion through pluggable adapters, one per source format. Each adapter
 SHALL translate its format into the CDM without loss of any field the CDM can represent, and SHALL
 declare which format versions it supports. The set SHALL include, over time, LeRobot
-(v2.0/2.1/3.0), MCAP, RLDS/TFDS, and HDF5/Zarr.
+(v2.0/2.1/3.0), MCAP, RLDS/TFDS, HDF5, and Zarr.
 
 #### Scenario: The same dataset in two formats yields equivalent CDMs
 - **WHEN** the identical logical dataset is provided once as LeRobot v3 and once as MCAP

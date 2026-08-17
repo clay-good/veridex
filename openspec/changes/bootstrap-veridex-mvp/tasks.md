@@ -38,6 +38,13 @@ the build plan.
       clock, so the timeline is the step index on `hdf5-step-index` unless the file both stores a
       timestamp array and declares its `units`; a structure the reader does not implement is refused
       by name rather than read as absent. Tested against real `h5py` output committed as fixtures.
+- [x] Zarr v2 adapter → CDM (the Diffusion Policy / UMI replay buffer: `data/*` arrays sliced at
+      `meta/episode_ends`, plus the group-of-arrays layouts). Chunk files are read directly with the
+      zlib, gzip, zstd, lz4, and blosc (lz4/zstd/zlib + byte shuffle) codecs; an encoding this reader
+      cannot apply — blosclz, snappy, the bit shuffle, Fortran order, a filter, a v3 store — is
+      refused by name rather than mis-decoded, because a wrongly-decoded array is plausible numbers
+      rather than an error. Boundaries that run backwards or past the arrays they index are refused;
+      rows past the last boundary are disclosed. Tested against real `zarr`/`numcodecs` stores.
 - [~] Streaming/large-than-memory ingestion; remote (Hub) metadata-only ingestion. **Sampled
       ingestion is in** (`--sample-episodes` / `--sample-fraction` / `--sample-seed`, and the same
       arguments from Python): the LeRobot adapter resolves the draw from the declared episode set

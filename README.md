@@ -31,9 +31,9 @@ Veridex Trust Report
 ## Why it's useful
 
 - **One command, any format.** LeRobot v3, RLDS/TFDS (what Open X-Embodiment ships in), HDF5 (what
-  robomimic and most lab collectors write), MCAP, CAN+DBC, and ASAM MDF/MF4 all map into one
-  Canonical Dataset Model, so you check them the same way — no per-format tooling. Zarr is on the
-  roadmap.
+  robomimic and most lab collectors write), Zarr (what Diffusion Policy and UMI ship in), MCAP,
+  CAN+DBC, and ASAM MDF/MF4 all map into one Canonical Dataset Model, so you check them the same
+  way — no per-format tooling.
 - **Catches the failures that quietly ruin training.** Clock skew across sensors, broken episode
   boundaries, timeline gaps, duplicate frames, a video whose frame count no longer matches the
   actions it is paired with — each reported with the *training risk* it creates and a *remedy*.
@@ -56,7 +56,7 @@ also captures **provenance**.
 
 ```mermaid
 flowchart LR
-    A[Your dataset<br/>LeRobot · RLDS/TFDS · HDF5 · MCAP · CAN+DBC · MF4] --> B[Adapter]
+    A[Your dataset<br/>LeRobot · RLDS/TFDS · HDF5 · Zarr · MCAP · CAN+DBC · MF4] --> B[Adapter]
     B --> C[Canonical Dataset Model<br/>one neutral shape]
     C --> D[Validation engine<br/>structural · temporal · provenance checks]
     D --> E[Trust score<br/>0–100 · A–F grade]
@@ -169,7 +169,7 @@ veridex check my-dataset/ --sample-fraction 0.1 --sample-seed 7   # a determinis
 The draw is resolved from the dataset's declared episode set *before* any data is read, so the
 episodes you skipped cost nothing — a sample of a dataset over the frame budget succeeds where the
 full ingest is refused. The same seed always draws the same episodes. Sampling applies to LeRobot,
-RLDS/TFDS, and HDF5 (which have an episode axis); MCAP, CAN+DBC, and MF4 ingest a recording as one episode and refuse the request rather than handing
+RLDS/TFDS, HDF5, and Zarr (which have an episode axis); MCAP, CAN+DBC, and MF4 ingest a recording as one episode and refuse the request rather than handing
 back everything labelled as a sample.
 
 A sampled run is never presented as a whole-dataset one. The verdict carries a `coverage` field
@@ -281,6 +281,27 @@ it also declares its units (a `units` attribute on the timestamp array). Whether
 column is seconds or nanoseconds is not something Veridex will guess: guess wrong and every rate,
 duration, and skew verdict derived from it is fiction.
 
+And on a **Zarr** store — the replay-buffer layout Diffusion Policy, UMI, and the tooling around them
+ship in, and the fifth format behind the same command:
+
+```sh
+cargo run -p veridex-cli -- check crates/veridex-core/tests/fixtures/zarr/dp_replay.zarr
+```
+
+A replay buffer is one flat array per key with every episode concatenated end to end, and the episode
+boundaries kept beside it in `meta/episode_ends`. Those boundaries *are* the episode structure:
+`[4, 10]` means episode 0 is rows 0..4 and episode 1 is rows 4..10, and Veridex slices every `data/`
+array accordingly. Rows past the last boundary belong to no episode, and the report says so rather
+than attaching them to the last one — an off-by-one in a replay buffer is exactly the corruption this
+tool exists to catch, and a boundary that runs backwards or past the end of the arrays it indexes is
+refused outright.
+
+Zarr's chunks are plain files, so there is no index to trust — but there is a codec to get right, and
+a compressed array read through the wrong one does not fail, it yields plausible numbers. Veridex
+reads `zlib`, `gzip`, `zstd`, `lz4`, and `blosc` (with `lz4`, `zstd`, or `zlib` inside it, byte
+shuffle included), and refuses anything else by name with what to re-save it as. Every codec is tested
+by decoding the same values through all of them and requiring identical bytes.
+
 The certificate binds to the dataset's CDM content hash and is Ed25519-signed: `verify` succeeds
 offline, and rejects a tampered certificate (signature mismatch) or one presented against a
 different dataset (content-hash mismatch). **`verify` requires a trusted issuer key**: a valid
@@ -332,7 +353,7 @@ LiDAR-camera miscalibration a well-formed transform tree hides, where a sensor's
 from the tree or has no chain of transforms to the camera); **video/media checks** that read an
 `.mp4`'s container headers (never a pixel) and catch the missing, unparseable, desynced, or
 re-encoded video behind a camera stream; the v1 trust-score rubric and the `world-model-ready` readiness profile;
-terminal, JSON, SARIF 2.1.0, and self-contained HTML reporting; **LeRobot v3, RLDS/TFDS, HDF5, MCAP (with
+terminal, JSON, SARIF 2.1.0, and self-contained HTML reporting; **LeRobot v3, RLDS/TFDS, HDF5, Zarr, MCAP (with
 ROS-message decode into an autonomy rig), CAN+DBC, and ASAM MDF/MF4 adapters** with a passing cross-format
 neutrality gate (the same logical dataset yields equivalent CDMs as LeRobot v3 and as MCAP); descriptive scenario-dimension coverage and **scenario/map/sim
 reference extraction** (OpenSCENARIO / OpenDRIVE / OSI / simulator, with the version read from the

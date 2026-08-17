@@ -1345,7 +1345,7 @@ fn print_help() {
     );
     println!(
         "    --sample-episodes <n>
-                         check only the first n episodes (check, inspect; LeRobot, RLDS/TFDS, HDF5)
+                         check only the first n episodes (check, inspect; LeRobot, RLDS, HDF5, Zarr)
     --sample-fraction <f>
                          check a deterministic fraction of episodes, f in (0, 1]
     --sample-seed <n>    fix the --sample-fraction draw (default 0)"
