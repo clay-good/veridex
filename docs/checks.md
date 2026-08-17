@@ -127,3 +127,23 @@ make an episode a rig.
 | `autonomy.calibration-completeness` | `AUTONOMY.CALIBRATION_INCOMPLETE` | warning | A rig with spatial sensors (point-cloud or camera) is missing the calibration needed to fuse them: no transform (TF) tree at all, a TF tree split into disconnected components (sensors that can't be related), or cameras with no intrinsics (CameraInfo). The principle-respecting form of the LiDAR-camera reprojection check — Veridex never decodes the bulk point/pixel payload, so it verifies the calibration is *present and coherent* rather than reprojecting actual points. The disconnected-tree case is left to `autonomy.sensor-frame-resolution` only when that check can actually name the stranded sensors — every spatial sensor declares a frame and a camera names one the tree knows. Otherwise this reports it, so a broken tree is never silent. |
 | `autonomy.sensor-frame-resolution` | `AUTONOMY.SENSOR_FRAME_UNKNOWN` | error | A spatial sensor (point-cloud, camera, IMU, GNSS) stamps its data with a coordinate frame (`header.frame_id`) that the transform tree never mentions, so that sensor has no extrinsics. Reported once per stream however many episodes it spans — the calibration is dataset-level, so it is one defect. Invisible to any check on the tree itself: a rig can carry a perfectly connected TF tree recorded for `lidar_top` while the LiDAR publishes `lidar_top_v2`, and every geometric operation involving it silently has no transform. |
 | `autonomy.sensor-frame-resolution` | `AUTONOMY.SENSOR_FRAME_UNRELATED` | error | A rig sensor's frame is in the transform tree, but no chain of transforms connects it to any camera frame — the extrinsics exist for part of the rig and the link to the image frame is missing, so the sensor's observations cannot be projected into the image. This is the LiDAR-camera miscalibration class, verified as "is the reprojection *defined*"; Veridex never decodes point coordinates or pixels, so it does not compute a reprojection error. Abstains when no camera names a frame the tree knows (nothing to measure against) — in which case `autonomy.calibration-completeness` reports the break instead. Bus signals and ego-pose streams are out of scope: a CAN scalar is never projected into an image, and an ego frame is joined to the body dynamically rather than by static TF. |
+
+## What the catalog does not check
+
+Two capabilities the [checks-catalog spec](../openspec/specs/checks-catalog/spec.md) describes have
+no implementation, and neither is a gap Veridex intends to close by decoding data.
+
+**Privacy and safety (likely faces, readable text).** Detecting a face in a camera frame requires
+decoding pixels and running a model over them. Veridex's design commitment is the opposite — it
+reads structure and metadata and fingerprints bytes, never interprets them — so it says nothing
+about the content of your imagery. Treat a Veridex pass as evidence that a dataset is *structurally*
+sound and traceable, never as a review for personally identifiable information. Run a dedicated PII
+tool before publishing.
+
+**Near-duplicate episodes.** Exact duplicates are detected by content
+(`STRUCTURAL.DUPLICATE_EPISODE`, from per-frame content hashes). *Near*-duplicates — a re-upload with
+a trivial perturbation — need a similarity measure over frame payloads, which again means decoding
+them. A dataset can therefore hold two nearly-identical episodes and pass.
+
+Both limits are recorded here rather than left implicit, on the same principle as the rest of the
+catalog: a check that abstains must say so, or its silence reads as a pass.

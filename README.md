@@ -287,6 +287,11 @@ core pipeline, with a CLI⇄Python parity test run in CI; and **sampled ingestio
 it could otherwise be mistaken for a full check. Next up: streaming/remote ingestion — until then
 `metadata_only` and a remote source are refused with a clear error, never silently ignored.
 
+What Veridex does **not** tell you, stated plainly because silence would read as a pass: it never
+decodes a pixel or a point, so it says nothing about the *content* of your imagery — no PII or face
+detection, and no near-duplicate detection beyond exact content matches. Both limits, and every
+check's own abstention rules, are recorded in [docs/checks.md](docs/checks.md).
+
 Start with [openspec/project.md](openspec/project.md) for the design, or track progress in
 [openspec/changes/bootstrap-veridex-mvp/tasks.md](openspec/changes/bootstrap-veridex-mvp/tasks.md).
 
