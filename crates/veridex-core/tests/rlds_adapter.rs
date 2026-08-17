@@ -1497,3 +1497,176 @@ fn a_shard_that_ends_mid_payload_is_refused() {
         other => panic!("a shard cut mid-payload must be refused, got {other:?}"),
     }
 }
+
+/// A `float_list` written **unpacked** — one wire-type-5 field per value. Real writers emit packed,
+/// but the wire format permits this and a reader that only handled packed would silently see zero
+/// values, which divides into a zero-step episode.
+fn unpacked_floats(values: &[f32]) -> Vec<u8> {
+    let mut list = Vec::new();
+    for v in values {
+        tag(1, 5, &mut list);
+        list.extend_from_slice(&v.to_le_bytes());
+    }
+    let mut feature = Vec::new();
+    delimited(2, &list, &mut feature);
+    feature
+}
+
+/// An `int64_list` written **unpacked** — one wire-type-0 varint per value.
+fn unpacked_ints(values: &[i64]) -> Vec<u8> {
+    let mut list = Vec::new();
+    for v in values {
+        tag(1, 0, &mut list);
+        varint(*v as u64, &mut list);
+    }
+    let mut feature = Vec::new();
+    delimited(3, &list, &mut feature);
+    feature
+}
+
+/// A record built from pre-encoded `tf.train.Feature` bodies, for the wire shapes the normal
+/// fixture writer cannot produce.
+fn record_from_features(features: &[(&str, Vec<u8>)]) -> Vec<u8> {
+    let mut map = Vec::new();
+    for (key, feature) in features {
+        let mut entry = Vec::new();
+        delimited(1, key.as_bytes(), &mut entry);
+        delimited(2, feature, &mut entry);
+        delimited(1, &entry, &mut map);
+    }
+    let mut out = Vec::new();
+    delimited(1, &map, &mut out);
+    out
+}
+
+#[test]
+fn unpacked_value_lists_are_read_the_same_as_packed_ones() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_dataset(tmp.path(), 1, 2);
+    std::fs::write(
+        tmp.path().join("features.json"),
+        features_with(serde_json::json!({
+            "action": {"tensor": {"shape": {"dimensions": ["7"]}, "dtype": "float32"}},
+            "is_first": {"tensor": {"shape": {}, "dtype": "bool"}}
+        })),
+    )
+    .unwrap();
+    let record = record_from_features(&[
+        ("steps/action", unpacked_floats(&[0.5f32; 21])),
+        ("steps/is_first", unpacked_ints(&[1, 0, 0])),
+    ]);
+    std::fs::write(
+        tmp.path().join("demo_rlds-train.tfrecord-00000-of-00001"),
+        shard(&[record]),
+    )
+    .unwrap();
+
+    let ingested = ingest(tmp.path()).unwrap();
+    let ep = &ingested.dataset.episodes[0];
+    assert_eq!(ep.streams.len(), 2);
+    for stream in &ep.streams {
+        assert_eq!(
+            stream.frames.len(),
+            3,
+            "unpacked `{}` must yield the same step count as packed would",
+            stream.name
+        );
+    }
+}
+
+#[test]
+fn a_record_repeating_a_feature_key_is_refused_as_ambiguous() {
+    // Two entries for one key have no single meaning; picking a winner would let the same bytes
+    // produce two different step counts depending on which a reader honors.
+    let tmp = tempfile::tempdir().unwrap();
+    write_dataset(tmp.path(), 1, 2);
+    let mut a = Vec::new();
+    delimited(1, b"steps/action", &mut a);
+    delimited(2, &Value::Floats(vec![0.0; 14]).encode(), &mut a);
+    let mut b = Vec::new();
+    delimited(1, b"steps/action", &mut b);
+    delimited(2, &Value::Floats(vec![0.0; 7]).encode(), &mut b);
+    let mut map = Vec::new();
+    delimited(1, &a, &mut map);
+    delimited(1, &b, &mut map);
+    let mut record = Vec::new();
+    delimited(1, &map, &mut record);
+
+    std::fs::write(
+        tmp.path().join("demo_rlds-train.tfrecord-00000-of-00001"),
+        shard(&[record]),
+    )
+    .unwrap();
+    match ingest(tmp.path()) {
+        Err(IngestError::Parse { message, .. }) => {
+            assert!(message.contains("decodable"), "{message}");
+        }
+        other => panic!("a repeated feature key must be refused, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_class_label_leaf_becomes_an_int64_stream() {
+    // `ClassLabel` carries only `num_classes` in the proto — no dtype — so the adapter must supply
+    // the int64 TFDS actually serializes rather than reading a field that is not there.
+    let tmp = tempfile::tempdir().unwrap();
+    write_dataset(tmp.path(), 1, 2);
+    std::fs::write(
+        tmp.path().join("features.json"),
+        features_with(serde_json::json!({
+            "action": {"tensor": {"shape": {"dimensions": ["7"]}, "dtype": "float32"}},
+            "outcome": {"classLabel": {"numClasses": "3"}}
+        })),
+    )
+    .unwrap();
+    let record = example(&[
+        ("steps/action", Value::Floats(vec![0.0; 21])),
+        ("steps/outcome", Value::Ints(vec![0, 1, 2])),
+    ]);
+    std::fs::write(
+        tmp.path().join("demo_rlds-train.tfrecord-00000-of-00001"),
+        shard(&[record]),
+    )
+    .unwrap();
+
+    let ingested = ingest(tmp.path()).unwrap();
+    let outcome = ingested.dataset.episodes[0]
+        .streams
+        .iter()
+        .find(|s| s.name == "outcome")
+        .expect("the class-label leaf becomes a stream");
+    assert_eq!(outcome.dtype.as_deref(), Some("int64"));
+    assert_eq!(outcome.frames.len(), 3);
+}
+
+#[test]
+fn a_sampled_run_reads_only_the_records_it_selected() {
+    // Not just "returns 2 episodes" — the earlier version of this assertion would have passed if the
+    // adapter parsed all five records and threw three away. What proves it read only two is that a
+    // record it did not select can be unreadable without affecting the run.
+    let tmp = tempfile::tempdir().unwrap();
+    write_dataset(tmp.path(), 5, 3);
+    let path = tmp.path().join("demo_rlds-train.tfrecord-00000-of-00001");
+    let mut bytes = std::fs::read(&path).unwrap();
+    let at = bytes.len() - 30;
+    bytes[at] ^= 0x01;
+    std::fs::write(&path, &bytes).unwrap();
+
+    let ingested = RldsAdapter
+        .ingest(
+            &Source::Local(tmp.path().to_path_buf()),
+            &IngestOptions {
+                sample: Sample::FirstEpisodes(2),
+                ..IngestOptions::default()
+            },
+        )
+        .expect("records past the sample must never be read");
+    assert_eq!(ingested.dataset.episodes.len(), 2);
+    assert_eq!(
+        ingested.report.coverage,
+        Coverage::Sample {
+            sample: Sample::FirstEpisodes(2),
+            episodes_ingested: 2,
+        }
+    );
+}
