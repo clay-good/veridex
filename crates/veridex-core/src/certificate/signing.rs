@@ -47,6 +47,12 @@ pub enum CertError {
         /// The public key embedded in the certificate.
         found: String,
     },
+    /// The key supplied as the trusted issuer is the issuer's *secret* key, not its public one.
+    #[error(
+        "the key given to --key is this certificate's issuer secret key, not its public key — \
+         pass the `.pub` file `veridex keygen` wrote beside it"
+    )]
+    SecretKeyGiven,
     /// The certificate declares a signature algorithm this build cannot verify.
     #[error("unsupported signature algorithm `{found}` (expected `ed25519`)")]
     UnsupportedAlgorithm {
@@ -183,6 +189,15 @@ pub fn verify(
     // Issuer identity, if a trusted key was supplied.
     if let Some(expected) = expected_issuer {
         if !expected.eq_ignore_ascii_case(&signed.public_key) {
+            // `keygen` writes `issuer` and `issuer.pub` one letter apart, and a secret key is also
+            // 64 hex characters — so pointing `--key` at the secret file parses, and the answer was
+            // "untrusted issuer", which reads as an accusation about the certificate rather than a
+            // mistyped path. Checked by deriving the public key the secret would produce.
+            if crate::certificate::SigningKeypair::from_secret_hex(expected)
+                .is_some_and(|kp| kp.public_hex().eq_ignore_ascii_case(&signed.public_key))
+            {
+                return Err(CertError::SecretKeyGiven);
+            }
             return Err(CertError::UntrustedIssuer {
                 found: signed.public_key.clone(),
             });

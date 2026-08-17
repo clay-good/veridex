@@ -245,3 +245,34 @@ fn a_signed_certificate_has_exactly_one_byte_form() {
         Err(CertError::UnsupportedAlgorithm { .. })
     ));
 }
+
+#[test]
+fn the_issuer_secret_key_is_named_rather_than_called_an_untrusted_issuer() {
+    // `keygen` writes `issuer` and `issuer.pub` one letter apart, and a secret key is also 64 hex
+    // characters — so pointing `--key` at the secret file parses as a public key, and the answer was
+    // "untrusted issuer: certificate key ... does not match", which reads as an accusation about the
+    // certificate rather than the mistyped path it is.
+    let secret = "07".repeat(32);
+    let kp = SigningKeypair::from_secret_hex(&secret).expect("key");
+    let d = dataset(vec![stream("a", "c", &[0, 1_000_000])]);
+    let (cert, hash) = issue_cert(&d);
+    let signed = sign(cert, &kp);
+
+    // The right file verifies.
+    verify(&signed, Some(&hash.to_hex()), Some(&kp.public_hex())).expect("the public key verifies");
+
+    // The wrong-but-adjacent one is named for what it is.
+    let err = verify(&signed, Some(&hash.to_hex()), Some(&secret))
+        .expect_err("the secret key must not verify as an issuer");
+    let text = err.to_string();
+    assert!(
+        text.contains("secret key") && text.contains(".pub"),
+        "the message must point at the file, not accuse the certificate: {text}"
+    );
+
+    // A genuinely different issuer is still an untrusted issuer.
+    let other = SigningKeypair::from_secret_hex(&"09".repeat(32)).expect("key");
+    let err = verify(&signed, Some(&hash.to_hex()), Some(&other.public_hex()))
+        .expect_err("a different issuer is refused");
+    assert!(err.to_string().contains("untrusted issuer"), "{err}");
+}

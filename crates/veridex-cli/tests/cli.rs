@@ -563,8 +563,11 @@ fn sampling_flags_are_validated_before_anything_is_read() {
             "invalid --sample-fraction",
         ),
         (
+            // A negative number is a value the user meant, not the next flag swallowed, so it is
+            // rejected by the parser that knows what the flag accepts rather than reported as
+            // missing.
             vec!["check", "x", "--sample-episodes", "-1"],
-            "requires a value",
+            "invalid --sample-episodes `-1`",
         ),
     ] {
         let (code, _, stderr) = run(&args);

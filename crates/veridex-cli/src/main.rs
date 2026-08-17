@@ -173,6 +173,14 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
         let mut value = |flag: &str| -> Result<String, String> {
             match it.next() {
                 Some(v) if !v.starts_with('-') => Ok(v.clone()),
+                // A negative number is a value the user meant, not the next flag swallowed — and
+                // "--max-frames requires a value" pointed at the wrong problem for `--max-frames -5`.
+                // It is still rejected, by the parser that knows what the flag accepts.
+                Some(v)
+                    if v.len() > 1 && v[1..].chars().all(|c| c.is_ascii_digit() || c == '.') =>
+                {
+                    Ok(v.clone())
+                }
                 _ => Err(format!("{flag} requires a value")),
             }
         };
