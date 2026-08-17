@@ -158,16 +158,32 @@ fn validate_chunks(bytes: &[u8], format_id: &'static str) -> Result<(), IngestEr
     while at + 9 <= bytes.len() {
         let opcode = bytes[at];
         let len = u64::from_le_bytes(bytes[at + 1..at + 9].try_into().expect("9 bytes read"));
-        let Ok(len) = usize::try_from(len) else {
-            return Ok(()); // A length past `usize` is malformed framing; the reader will say so.
+        // A record claiming more bytes than the whole file holds cannot be read by anything, and
+        // deferring it is not safe: the `mcap` reader's own framing arithmetic overflows on a
+        // `u64::MAX` length and aborts the process, so a 17-byte hostile file killed the run before
+        // any of Veridex's own guards were reached. Refused here, by name, while a merely truncated
+        // record -- one whose length is plausible but runs off the end -- is still left to the
+        // reader, which describes it better than this walk can.
+        if len > bytes.len() as u64 {
+            return Err(refuse(format!(
+                "a record at byte {at} declares a {len}-byte payload, but the whole file is {} \
+                 bytes; its framing is corrupt",
+                bytes.len()
+            )));
+        }
+        let len = len as usize;
+        // Checked, not `+`: `usize::try_from` always succeeds on a 64-bit target, so an absurd
+        // length overflowed the addition rather than being caught by the `get` below.
+        let Some(end) = at.checked_add(9).and_then(|start| start.checked_add(len)) else {
+            return Ok(());
         };
-        let Some(payload) = bytes.get(at + 9..at + 9 + len) else {
+        let Some(payload) = bytes.get(at + 9..end) else {
             return Ok(()); // Truncated: the reader reports it, and stops before this chunk.
         };
         if opcode == OP_CHUNK {
             validate_one_chunk(payload, &refuse)?;
         }
-        at += 9 + len;
+        at = end;
     }
     Ok(())
 }

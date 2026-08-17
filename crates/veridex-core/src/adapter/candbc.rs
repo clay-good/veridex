@@ -39,6 +39,28 @@ struct DbcSignal {
     signed: bool,
     factor: f64,
     offset: f64,
+    /// The signal's role in a multiplexed message, from the `M` / `m<N>` indicator after its name.
+    mux: Mux,
+}
+
+/// Whether a signal is present in a given frame of a multiplexed message.
+///
+/// A multiplexed message reuses the same payload bytes for different signals from frame to frame,
+/// and one signal — the multiplexor, marked `M` — says which set the current frame carries. The
+/// indicator was not parsed at all: it stayed glued onto the signal's name (`"ValueB m1"`) and every
+/// multiplexed signal was decoded from *every* frame of its id. So a frame whose selector said `m0`
+/// still produced a `ValueB` sample, reading `m0`'s bytes through `m1`'s layout — a plausible number
+/// that was never on the bus, given a CDM stream of its own, fingerprinted into the content hash,
+/// and graded by every temporal and statistical check. Multiplexing is common in production DBCs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Mux {
+    /// An ordinary signal, present in every frame.
+    #[default]
+    Plain,
+    /// The multiplexor itself (`M`): present in every frame, and it selects the rest.
+    Selector,
+    /// Present only when the multiplexor decodes to this value (`m<N>`).
+    On(u64),
 }
 
 /// One CAN message definition (id → its signals).
@@ -86,7 +108,21 @@ fn parse_dbc(text: &str) -> BTreeMap<u32, DbcMessage> {
 /// Parse a `SG_` body: `<Name> : <start>|<len>@<order><sign> (<factor>,<offset>) [min|max] "unit" recv`.
 fn parse_sg(rest: &str) -> Option<DbcSignal> {
     let (name, after) = rest.split_once(':')?;
-    let name = name.trim().to_string();
+    // `<Name>` may be followed by a multiplexer indicator: `M` for the multiplexor, `m<N>` for a
+    // signal carried only when the multiplexor reads `N`.
+    let mut name_parts = name.split_whitespace();
+    let name = name_parts.next()?.to_string();
+    let mux = match name_parts.next() {
+        None => Mux::Plain,
+        Some("M") => Mux::Selector,
+        Some(tag) => match tag.strip_prefix('m').and_then(|n| n.parse::<u64>().ok()) {
+            Some(n) => Mux::On(n),
+            // An indicator this parser does not understand is not treated as "present always" --
+            // that is the assumption that fabricated values. Refuse the signal so it is absent from
+            // the CDM rather than wrong in it.
+            None => return None,
+        },
+    };
     let after = after.trim();
     // `<start>|<len>@<order><sign>` then a space then `(factor,offset)`.
     let mut parts = after.split_whitespace();
@@ -116,6 +152,7 @@ fn parse_sg(rest: &str) -> Option<DbcSignal> {
         signed,
         factor,
         offset,
+        mux,
     })
 }
 
@@ -131,9 +168,12 @@ struct CanFrame {
 fn parse_candump_line(line: &str) -> Option<CanFrame> {
     let line = line.trim();
     let (ts_part, rest) = line.strip_prefix('(')?.split_once(')')?;
-    let seconds: f64 = ts_part.trim().parse().ok()?;
-    // saturating conversion to ns; real timestamps are far below i64::MAX.
-    let ts_ns = (seconds * 1e9).clamp(i64::MIN as f64, i64::MAX as f64) as i64;
+    // Composed from the integer seconds and the fractional digits separately. Parsing the whole
+    // thing as `f64` and multiplying by 1e9 needs 61 bits of mantissa at epoch scale and has 53, so
+    // two lines exactly 1 us apart came out 1024 ns apart -- and `clock_kind: Measured` hands that
+    // synthetic jitter to the temporal checks as though the bus had really produced it. Immaterial
+    // at a 10 ms raster, material at 1 kHz.
+    let ts_ns = candump_ts_ns(ts_part.trim())?;
     // `<iface> <hexid>#<hexdata>`
     let mut it = rest.split_whitespace();
     let _iface = it.next()?;
@@ -142,6 +182,35 @@ fn parse_candump_line(line: &str) -> Option<CanFrame> {
     let id = u32::from_str_radix(id_hex.trim(), 16).ok()? & 0x1FFF_FFFF;
     let data = parse_hex_bytes(data_hex.trim())?;
     Some(CanFrame { ts_ns, id, data })
+}
+
+/// A candump `<seconds>.<fraction>` timestamp in nanoseconds, composed from integer parts.
+///
+/// The fraction is read as nanoseconds: padded to 9 digits when shorter, truncated when longer (a
+/// candump writes 6, and no CAN log carries sub-nanosecond truth).
+fn candump_ts_ns(text: &str) -> Option<i64> {
+    let (negative, digits) = match text.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, text.trim_start_matches('+')),
+    };
+    let (secs_text, frac_text) = digits.split_once('.').unwrap_or((digits, ""));
+    if secs_text.is_empty() || !secs_text.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    if !frac_text.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let secs: i64 = secs_text.parse().ok()?;
+    let mut frac_ns: i64 = 0;
+    for i in 0..9 {
+        let digit = frac_text
+            .as_bytes()
+            .get(i)
+            .map_or(0, |b| i64::from(b - b'0'));
+        frac_ns = frac_ns * 10 + digit;
+    }
+    let ns = secs.checked_mul(1_000_000_000)?.checked_add(frac_ns)?;
+    Some(if negative { -ns } else { ns })
 }
 
 /// Parse an even-length hex string into bytes (up to 8 for a classic CAN frame).
@@ -176,8 +245,10 @@ fn decode_signal(sig: &DbcSignal, data: &[u8]) -> Option<f64> {
         // Unsigned: direct u64 -> f64 (correct across the full 64-bit range).
         bits as f64
     } else if sig.length < 64 && (bits >> (sig.length - 1)) & 1 == 1 {
-        // Signed with the top bit set: sign-extend into a negative value.
-        ((bits as i64) - (1i64 << sig.length)) as f64
+        // Signed with the top bit set: sign-extend into a negative value. Computed in `i128`: at
+        // `length == 63`, `1i64 << 63` is `i64::MIN`, so the subtraction overflowed and aborted the
+        // process in a debug or CI build. A DBC is untrusted input and may declare any width.
+        ((bits as i128) - (1i128 << sig.length)) as f64
     } else {
         // Non-negative, or a full 64-bit signal already in two's-complement form.
         bits as i64 as f64
@@ -300,7 +371,24 @@ impl Adapter for CanDbcAdapter {
                 *unknown_ids.entry(frame.id).or_insert(0) += 1;
                 continue;
             };
+            // Which multiplexed set this frame carries, if the message is multiplexed at all.
+            let selector = message
+                .signals
+                .iter()
+                .find(|s| s.mux == Mux::Selector)
+                .and_then(|s| decode_signal(s, &frame.data))
+                .filter(|v| v.is_finite() && *v >= 0.0)
+                .map(|v| v as u64);
             for sig in &message.signals {
+                // A multiplexed signal is only in this frame when the multiplexor says so. Without
+                // the selector -- an undecodable or absent multiplexor -- nothing is known about
+                // which set is present, so no multiplexed signal is decoded: an absent sample is a
+                // gap the temporal checks can see, where a fabricated one is not.
+                if let Mux::On(n) = sig.mux {
+                    if selector != Some(n) {
+                        continue;
+                    }
+                }
                 let stream_name = format!("{}.{}", message.name, sig.name);
                 let Some(value) = decode_signal(sig, &frame.data) else {
                     continue; // frame too short for this signal — skip this sample
@@ -498,6 +586,7 @@ BO_ 256 EngineData: 8 ECU
             signed: true,
             factor: 1.0,
             offset: 0.0,
+            mux: Mux::Plain,
         };
         // 0xFF as signed 8-bit = -1.
         assert_eq!(decode_signal(&sig, &[0xFF]), Some(-1.0));
@@ -519,6 +608,7 @@ BO_ 256 EngineData: 8 ECU
             signed,
             factor: 1.0,
             offset: 0.0,
+            mux: Mux::Plain,
         }
     }
 

@@ -1352,3 +1352,49 @@ fn a_corrupt_chunk_stream_is_refused_rather_than_unpacked_forever() {
         other => panic!("expected a named parse error, got {other:?}"),
     }
 }
+
+/// A record declaring `u64::MAX` bytes. `usize::try_from` succeeds on a 64-bit target, so the walk's
+/// `at + 9 + len` overflowed and aborted the process in any debug or CI build. In release it wrapped
+/// to a reversed range and was rejected exactly like a truncated record, so the fix changes only
+/// which of those two a debug build does.
+#[test]
+fn a_record_declaring_an_absurd_length_does_not_abort_the_run() {
+    let mut bytes = b"\x89MCAP0\r\n".to_vec();
+    bytes.push(0x01); // some record opcode
+    bytes.extend_from_slice(&u64::MAX.to_le_bytes());
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("absurd.mcap");
+    std::fs::write(&path, &bytes).unwrap();
+
+    // Returning at all is the point; naming the corruption is the improvement.
+    let err = McapAdapter
+        .ingest(
+            &Source::Local(path),
+            &veridex_core::adapter::IngestOptions::default(),
+        )
+        .expect_err("a record longer than the file is corrupt framing");
+    assert!(
+        err.to_string().contains("framing is corrupt"),
+        "the refusal must say what is wrong: {err}"
+    );
+}
+
+/// The same, one byte below the wrap, which already worked — kept so a later refactor cannot fix one
+/// and lose the other.
+#[test]
+fn a_record_declaring_a_merely_huge_length_does_not_abort_the_run() {
+    let mut bytes = b"\x89MCAP0\r\n".to_vec();
+    bytes.push(0x01);
+    bytes.extend_from_slice(&(u64::MAX - 20).to_le_bytes());
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("huge.mcap");
+    std::fs::write(&path, &bytes).unwrap();
+    assert!(McapAdapter
+        .ingest(
+            &Source::Local(path),
+            &veridex_core::adapter::IngestOptions::default(),
+        )
+        .is_err());
+}
