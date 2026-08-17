@@ -42,6 +42,7 @@ impl Check for MediaReadable {
             "VIDEO.MEDIA_ABSENT",
             "VIDEO.MEDIA_MISSING",
             "VIDEO.MEDIA_UNREADABLE",
+            "VIDEO.MEDIA_UNATTRIBUTED",
         ]
     }
     fn title(&self) -> &'static str {
@@ -86,6 +87,40 @@ impl Check for MediaReadable {
                 .is_some_and(|(episodes, missing, _)| episodes == missing && *episodes > 0);
             match &media.status {
                 MediaStatus::Read => {}
+                // The manifest says this stream's pixels are in video files, and they may well all
+                // be there — just not laid out one file per episode, so no container can be paired
+                // with the rows it belongs to. Reported once for the stream, informational: nothing
+                // is wrong with the dataset, and nothing about its video was verified either. Before
+                // this, such a stream carried no `media` at all, so the whole video family iterated
+                // past it and emitted nothing — even for a file holding no container.
+                MediaStatus::Unattributable { reason } => {
+                    if absent_reported.insert(stream, ()).is_some() {
+                        continue;
+                    }
+                    findings.push(
+                        Finding::new(
+                            self.id(),
+                            Category::Video,
+                            Severity::Info,
+                            location,
+                            "VIDEO.MEDIA_UNATTRIBUTED",
+                            format!(
+                                "stream `{stream}`: {reason}, so no container could be paired with \
+                                 the rows it belongs to and the video checks did not run on it"
+                            ),
+                        )
+                        .with_risk(
+                            "A desynced, re-encoded, or unreadable video in this stream is not \
+                             absent from this report — it was never looked for. The pairing these \
+                             checks verify is between a container and the episode whose actions it \
+                             accompanies, and that pairing is what the layout does not express.",
+                        )
+                        .with_remedy(
+                            "Re-export with one media file per episode (`episode_<n>.<ext>`) if you \
+                             want the video checked against the data it is paired with.",
+                        ),
+                    );
+                }
                 MediaStatus::Missing if wholly_absent => {
                     if absent_reported.insert(stream, ()).is_some() {
                         continue;

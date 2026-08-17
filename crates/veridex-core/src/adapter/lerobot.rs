@@ -1330,7 +1330,29 @@ impl Adapter for LeRobotAdapter {
                 // This feature has media Veridex cannot attribute to an episode (a v3 layout that
                 // concatenates episodes into one file). Nothing is asserted about it — including
                 // about the episodes that *did* resolve, since the rest of its frames plainly live
-                // in the file that could not be split. Reported as an unmapped field instead.
+                // in the file that could not be split.
+                //
+                // Skipping outright left `media: None`, which is exactly what a non-video feature
+                // carries — so the whole video family iterated past these streams and emitted
+                // nothing at all, for a stream whose files might hold no container. The abstention
+                // is now recorded on the stream, where a check can see it and say so. It only
+                // reached the ingest report before, which `veridex check` never prints.
+                for episode in episode_rows.keys() {
+                    media.insert(
+                        (feature.clone(), *episode),
+                        Media {
+                            uri: format!("videos/**/{feature}/"),
+                            declared: declared.clone(),
+                            status: MediaStatus::Unattributable {
+                                reason: "media files are not laid out one per episode \
+                                         (episode_<n>.<ext>)"
+                                    .into(),
+                            },
+                            observed: MediaParams::default(),
+                            frame_count: None,
+                        },
+                    );
+                }
                 continue;
             }
             let by_episode = video_index.per_episode.get(feature);

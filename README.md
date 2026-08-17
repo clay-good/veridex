@@ -402,7 +402,8 @@ check's own abstention rules, are recorded in [docs/checks.md](docs/checks.md).
 
 And where a check *could not run at all*, the report says so rather than staying quiet. A source that
 records no wall clock, one whose values Veridex never interprets, one whose frames carry no content
-fingerprint — each produces an informational finding naming the checks that had nothing to measure,
+fingerprint, one whose video is not laid out per episode — each produces an informational finding
+naming the checks that had nothing to measure,
 and it travels into the JSON, the SARIF, the HTML, and the certificate. The alternative is what this
 tool exists to prevent: a CAN log with a wheel speed pinned at its rail for 70% of the recording
 scoring `data 100` with no statistical findings, over a certificate listing all five statistical

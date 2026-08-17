@@ -358,6 +358,9 @@ impl Stream {
                 MediaStatus::Read => e.u8(0),
                 MediaStatus::Missing => e.u8(1),
                 MediaStatus::Unreadable { .. } => e.u8(2),
+                // A new tag rather than a renumbering, so every dataset that hashed before this
+                // variant existed still hashes identically.
+                MediaStatus::Unattributable { .. } => e.u8(3),
             }
             e.media_params(&m.observed);
             e.opt(&m.frame_count, |e, n| e.u64(*n));

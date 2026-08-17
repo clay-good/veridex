@@ -441,6 +441,18 @@ pub enum MediaStatus {
         /// What went wrong, in the container parser's words.
         reason: String,
     },
+    /// The manifest declares this stream's pixels live in video files, but no file can be attributed
+    /// to an episode — a layout that concatenates episodes into shared files rather than writing one
+    /// per episode. Nothing about the container is asserted, and the conformance checks abstain.
+    ///
+    /// Recorded rather than left absent, because `media: None` is indistinguishable from "this is not
+    /// a video feature": with nothing attached, the whole video family iterated past these streams
+    /// and emitted nothing at all — not even for a file holding no container. A status the checks can
+    /// see is what turns that silence into a statement.
+    Unattributable {
+        /// Why no file could be attributed, in the adapter's words.
+        reason: String,
+    },
 }
 
 /// Video encoding parameters, either as declared by the manifest or as read from the container.

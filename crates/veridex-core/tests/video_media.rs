@@ -419,15 +419,37 @@ fn a_layout_that_names_no_episode_is_reported_as_unmapped_rather_than_guessed_at
         )
         .expect("ingest");
 
-    // No media is attributed to any episode — attributing a shared file's frames to one episode
-    // would invent the very number the checks compare.
+    // Nothing is *observed* for any episode — attributing a shared file's frames to one episode
+    // would invent the very number the checks compare. But the abstention is recorded on the stream
+    // rather than left as an absent `media`, which is what a non-video feature carries: with nothing
+    // attached, the whole video family iterated past these streams and emitted nothing at all.
+    let statuses: Vec<&veridex_core::cdm::MediaStatus> = ingested
+        .dataset
+        .episodes
+        .iter()
+        .flat_map(|e| &e.streams)
+        .filter_map(|s| s.media.as_ref().map(|m| &m.status))
+        .collect();
+    assert!(
+        !statuses.is_empty()
+            && statuses
+                .iter()
+                .all(|st| matches!(st, veridex_core::cdm::MediaStatus::Unattributable { .. })),
+        "{statuses:?}"
+    );
     assert!(ingested
         .dataset
         .episodes
         .iter()
         .flat_map(|e| &e.streams)
-        .all(|s| s.media.is_none()));
-    assert!(video_findings(&ingested.dataset).is_empty());
+        .filter_map(|s| s.media.as_ref())
+        .all(
+            |m| m.frame_count.is_none() && m.observed == veridex_core::cdm::MediaParams::default()
+        ));
+    // Nothing is *accused*; the one finding is the disclosure that nothing was checked.
+    let found = video_findings(&ingested.dataset);
+    let codes: Vec<&str> = found.iter().map(|f| f.code.as_str()).collect();
+    assert_eq!(codes, vec!["VIDEO.MEDIA_UNATTRIBUTED"], "{codes:?}");
     // And the limit is disclosed rather than passed over in silence.
     assert!(
         ingested
@@ -796,10 +818,13 @@ fn a_feature_with_both_a_per_episode_and_an_aggregated_file_is_not_called_incomp
             &IngestOptions::default(),
         )
         .expect("ingest");
+    // Nothing is accused. The only finding is the informational disclosure that the layout puts
+    // this stream's video beyond what the checks can pair with its rows.
+    let found = video_findings(&ingested.dataset);
+    let codes: Vec<&str> = found.iter().map(|f| f.code.as_str()).collect();
     assert!(
-        video_findings(&ingested.dataset).is_empty(),
-        "{:#?}",
-        video_findings(&ingested.dataset)
+        codes.iter().all(|c| *c == "VIDEO.MEDIA_UNATTRIBUTED"),
+        "{found:#?}"
     );
     assert!(ingested
         .report
