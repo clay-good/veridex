@@ -35,6 +35,26 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   the draw resolves from `shardLengths` before any shard is read, and an unselected record is framed
   and checksummed but never parsed. `examples/make_demo_rlds` generates `clean`, `truncated`,
   `desynced`, and `corrupt` variants for trying it end-to-end.
+- **A clock the source never recorded is no longer graded as if it were.** The CDM now records, per
+  stream, whether its timestamps are *measured time* or a positional step index (`clock_kind`, bound
+  into the content hash at `CANONICAL_VERSION` 7). Every temporal check that compares timestamps
+  reads only measured streams; the two that grade a *declared* rate still apply everywhere.
+
+  This closes a false assurance the RLDS adapter exposed. A step index is flawlessly monotonic,
+  perfectly regular, and identical across every stream of an episode, so each temporal check ran,
+  compared, and **passed** on it — `TEMPORAL.GAP` computed a 1 ns baseline and cleared it,
+  `TEMPORAL.JITTER` reported a coefficient of variation of exactly zero, `CLOCK_SKEW` reported zero
+  drift. The result was a verdict with no temporal findings and a signed certificate recording ten
+  temporal checks executed with `categories_skipped: []`, which reads as "these sensors are
+  synchronized" on a dataset where nothing was ever measured. `EPISODE_DURATION_OUTLIER` went
+  further and emitted the arithmetic out loud: *"episode 4 lasts 0.0 ms — 26.3x longer than the
+  dataset median of 0.0 ms"*, a step count compared as a duration and printed in milliseconds.
+
+  A new check, `temporal.clock-measurability`, emits `TEMPORAL.UNMEASURED_CLOCK` (info) naming the
+  clock and the streams it blinded. It is a *finding* deliberately: findings reach the terminal
+  report, the JSON, the SARIF, the HTML, and the certificate's own findings summary, whereas the
+  ingest report's coverage note reaches only `veridex inspect`. A passing temporal result on such a
+  dataset now says what it is — the absence of a measurement, not evidence of good timing.
 - **Canonical Dataset Model (CDM)** — the cross-format neutrality substrate
   (dataset / episode / stream / frame / provenance / label), with deterministic canonicalization
   streamed into SHA-256 and property-tested determinism.
@@ -62,7 +82,7 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 - **Validation engine** — check registry with duplicate-id rejection, category/id selection,
   severity overrides, deterministic stably-ordered verdicts with a result content hash, fault
   isolation for panicking checks, and reproducibility metadata.
-- **Checks catalog** — 32 checks across six families (the sixth, **autonomy**, is described in its own
+- **Checks catalog** — 36 checks across six families (the sixth, **autonomy**, is described in its own
   entries below), each finding carrying a training **risk** and a **remedy** and located to the exact
   episode / stream / frame:
   - **Structural** — episode-boundary integrity (the lerobot#4143 class: a per-episode declared

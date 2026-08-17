@@ -38,8 +38,8 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::cdm::{
-    Dataset, Episode, Frame, Label, Modality, Provenance, ProvenanceClass, ProvenanceElement,
-    ProvenanceScope, Stream, ValueRef,
+    ClockKind, Dataset, Episode, Frame, Label, Modality, Provenance, ProvenanceClass,
+    ProvenanceElement, ProvenanceScope, Stream, ValueRef,
 };
 
 use super::{
@@ -1443,6 +1443,9 @@ fn build_episode(
             // RLDS declares no sampling rate, and none is invented from the step count.
             declared_rate_hz: None,
             clock_id: CLOCK_ID.into(),
+            // RLDS has no per-step timestamp: these are step indices, and the CDM says so, so the
+            // temporal checks abstain instead of passing on a timeline nobody measured.
+            clock_kind: ClockKind::StepIndex,
             dtype: leaf.dtype.clone(),
             shape: leaf.shape.clone(),
             frames,
@@ -1471,6 +1474,7 @@ fn build_episode(
             modality: leaf.modality,
             declared_rate_hz: None,
             clock_id: CLOCK_ID.into(),
+            clock_kind: ClockKind::StepIndex,
             dtype: leaf.dtype.clone(),
             shape: leaf.shape.clone(),
             frames: Vec::new(),

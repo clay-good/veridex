@@ -844,6 +844,7 @@ fn a_clean_rlds_dataset_passes_the_standard_checks_without_false_findings() {
         .iter()
         .map(|f| f.code.as_str())
         .filter(|code| !code.starts_with("PROVENANCE."))
+        .filter(|code| *code != "TEMPORAL.UNMEASURED_CLOCK")
         .collect();
     assert!(
         noise.is_empty(),
@@ -861,6 +862,84 @@ fn a_clean_rlds_dataset_passes_the_standard_checks_without_false_findings() {
     assert!(
         missing.contains(&"PROVENANCE.MISSING_CLOCK"),
         "a format with no wall clock must be reported as having none: {missing:?}"
+    );
+}
+
+#[test]
+fn a_run_over_an_unmeasured_timeline_says_so_in_the_verdict() {
+    // Without this, the temporal checks compare step indices — flawlessly monotonic, perfectly
+    // regular, identical across every stream — and all of them pass. The verdict then carries zero
+    // temporal findings and the certificate records ten temporal checks executed with nothing
+    // skipped, which reads as "these sensors are synchronized" rather than "nothing here was ever
+    // measured". The abstention has to be a finding, because a finding is the only disclosure that
+    // reaches the JSON, the SARIF, the HTML, and the signed certificate.
+    let tmp = tempfile::tempdir().unwrap();
+    write_dataset(tmp.path(), 4, 20);
+    let out = veridex_core::pipeline::run_check(
+        &default_registry(),
+        &Source::Local(tmp.path().to_path_buf()),
+        None,
+        &IngestOptions::default(),
+    )
+    .unwrap();
+    let unmeasured: Vec<&veridex_core::check::Finding> = out
+        .verdict
+        .findings
+        .iter()
+        .filter(|f| f.code == "TEMPORAL.UNMEASURED_CLOCK")
+        .collect();
+    assert_eq!(
+        unmeasured.len(),
+        1,
+        "the clock is a property of the format, so it is one finding for the dataset — not one per \
+         episode: {:?}",
+        out.verdict
+            .findings
+            .iter()
+            .map(|f| &f.code)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        unmeasured[0].message.contains("rlds-step-index"),
+        "the finding must name the clock: {}",
+        unmeasured[0].message
+    );
+    // And it is informational: the dataset is not defective for the format it was published in.
+    assert_eq!(unmeasured[0].severity, veridex_core::check::Severity::Info);
+    assert_eq!(out.verdict.status, veridex_core::engine::Status::Pass);
+}
+
+#[test]
+fn an_unmeasured_timeline_is_never_graded_as_a_duration() {
+    // `Episode::duration_ns` used to fall back to a step-index span, so a 500-step episode among
+    // 20-step ones was reported as "lasts 0.0 ms — 26.3x longer than the dataset median of 0.0 ms":
+    // a duration outlier measured in steps and printed in milliseconds.
+    let tmp = tempfile::tempdir().unwrap();
+    write_dataset(tmp.path(), 4, 20);
+    let long = episode_record(500, &["pick up the block"], "/raw/long.h5", 7.0);
+    std::fs::write(
+        tmp.path().join("demo_rlds-train.tfrecord-00001-of-00002"),
+        shard(&[long]),
+    )
+    .unwrap();
+    let out = veridex_core::pipeline::run_check(
+        &default_registry(),
+        &Source::Local(tmp.path().to_path_buf()),
+        None,
+        &IngestOptions::default(),
+    )
+    .unwrap();
+    assert!(
+        !out.verdict
+            .findings
+            .iter()
+            .any(|f| f.code == "TEMPORAL.EPISODE_DURATION_OUTLIER"),
+        "a step count is not a duration, and must not be reported as one: {:?}",
+        out.verdict
+            .findings
+            .iter()
+            .map(|f| f.message.as_str())
+            .collect::<Vec<_>>()
     );
 }
 

@@ -1,6 +1,6 @@
 //! Behavior tests for configuration parsing and its effect on a run.
 
-use veridex_core::cdm::{Dataset, Episode, Frame, Modality, Stream, ValueRef};
+use veridex_core::cdm::{ClockKind, Dataset, Episode, Frame, Modality, Stream, ValueRef};
 use veridex_core::check::{Category, Severity};
 use veridex_core::{content_hash, CheckConfig, FailOn, RunConfig};
 
@@ -10,6 +10,7 @@ fn stream(name: &str, clock: &str, ts: &[i64]) -> Stream {
         modality: Modality::ScalarState,
         declared_rate_hz: None,
         clock_id: clock.into(),
+        clock_kind: ClockKind::Measured,
         dtype: None,
         shape: None,
         stats: None,

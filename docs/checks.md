@@ -28,8 +28,17 @@ others are fixed defaults today (config-wiring them is a follow-up).
 
 ## Temporal — is the time base sound?
 
+Every check in this family except `temporal.rate-validity` and `temporal.rate-consistency` (which
+grade a *declared* rate, not a timeline) reads only streams whose timestamps are **measured time**.
+A source that records no clock — RLDS/TFDS has no per-step timestamp — carries a step index instead,
+and an index satisfies all of them trivially: flawlessly monotonic, perfectly regular, identical
+across every stream of an episode. Grading it would put a clean temporal result in a report and a
+signed certificate on the strength of a timeline nobody measured, so those streams are skipped and
+`temporal.clock-measurability` reports that they were.
+
 | Check id | Finding code | Severity | Fires when |
 |---|---|---|---|
+| `temporal.clock-measurability` | `TEMPORAL.UNMEASURED_CLOCK` | info | A stream's timestamps are a positional step index rather than measured time, so the rate, gap, jitter, clock-skew, start/end-offset and episode-duration checks had nothing to grade. Reported once per clock for the dataset (the clock is a property of the source format, not of an episode), naming the streams. Not a defect in the data — what it changes is what a passing temporal result is *evidence of*: the absence of a measurement, not good timing. |
 | `temporal.monotonicity` | `TEMPORAL.NON_MONOTONIC` | error | Timestamps within a stream do not strictly increase (out-of-order or duplicated frames). Streams sharing one timeline (a CAN or MF4 group off a single clock) are reported once, naming the others. |
 | `temporal.rate-validity` | `TEMPORAL.INVALID_RATE` | error | A stream declares a sampling rate that isn't a positive, finite number (`0`, negative, `NaN`, `inf`) — corrupt metadata the rate and gap checks would otherwise skip silently. |
 | `temporal.rate-conformance` | `TEMPORAL.RATE` | warning | The observed mean rate deviates from the declared rate beyond tolerance. |
@@ -147,15 +156,23 @@ a trivial perturbation — need a similarity measure over frame payloads, which 
 them. A dataset can therefore hold two nearly-identical episodes and pass.
 
 **Measured time, on a format that records none.** RLDS/TFDS has no per-step timestamp. Veridex
-stamps those frames with their step index on a clock named `rlds-step-index` and never invents a
-rate, so on an RLDS dataset the checks that need measured time — `TEMPORAL.RATE`, `GAP`, `JITTER`,
-`CLOCK_SKEW`, `START_OFFSET`, `END_OFFSET` — have nothing to grade and stay silent. That silence is
-about the format, not the data: the ingest report states the omission, and the missing clock is
-reported as `PROVENANCE.MISSING_CLOCK`. What still applies there is everything derived from
-structure and content — episode counts, shapes, duplicates, stuck streams, annotation integrity —
-plus RLDS's own integrity gate, which is enforced at ingest rather than as a finding: a record whose
-step features disagree on the episode's length, or whose TFRecord CRC-32C fails, is refused by name
-instead of mapped into a CDM that would read as sound.
+stamps those frames with their step index, marks the stream's `clock_kind` as `step-index`, and
+never invents a rate — so the checks that need measured time (`TEMPORAL.RATE`, `NON_MONOTONIC`,
+`GAP`, `JITTER`, `CLOCK_SKEW`, `START_OFFSET`, `END_OFFSET`, `EPISODE_DURATION_OUTLIER`) skip those
+streams rather than grading them.
+
+The abstention is **reported, not silent**, and that distinction is the whole point. A step index is
+flawlessly monotonic, perfectly regular, and identical across every stream of an episode, so a check
+that graded it would *pass* — and a passing temporal result is what reaches the report and the signed
+certificate, where it reads as "these sensors are synchronized". So every such run emits
+`TEMPORAL.UNMEASURED_CLOCK` (info), naming the clock and the streams; it appears in the terminal
+report, the JSON, the SARIF, the HTML, and the certificate's own findings summary. What still
+applies is everything derived from structure and content — episode counts, shapes, duplicates,
+stuck streams, empty streams, annotation integrity — plus RLDS's own integrity gate, enforced at
+ingest rather than as a finding: a record whose step features disagree on the episode's length, or
+whose TFRecord CRC-32C fails, is refused by name instead of mapped into a CDM that would read as
+sound. Frame counts are the one thing genuinely not covered: RLDS declares no total, so
+`STRUCTURAL.FRAME_COUNT_MISMATCH` has nothing to test against.
 
 All three limits are recorded here rather than left implicit, on the same principle as the rest of
 the catalog: a check that abstains must say so, or its silence reads as a pass.

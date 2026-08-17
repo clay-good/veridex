@@ -31,7 +31,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::cdm::{
-    Dataset, DimStats, Episode, Frame, Label, Media, MediaParams, MediaStatus, Modality,
+    ClockKind, Dataset, DimStats, Episode, Frame, Label, Media, MediaParams, MediaStatus, Modality,
     Provenance, ProvenanceClass, ProvenanceElement, ProvenanceScope, Saturation, Stream,
     StreamStats, ValueRef,
 };
@@ -1280,6 +1280,8 @@ impl Adapter for LeRobotAdapter {
                         modality: *modality,
                         declared_rate_hz: if fps > 0.0 { Some(fps) } else { None },
                         clock_id: CLOCK_ID.to_string(),
+                        // Real recorded timestamps: every temporal check applies.
+                        clock_kind: ClockKind::Measured,
                         dtype: dtype.clone(),
                         shape: shape.clone(),
                         frames: rows

@@ -22,7 +22,7 @@ use std::collections::BTreeSet;
 use sha2::{Digest, Sha256};
 
 use crate::cdm::{
-    Dataset, Episode, Frame, Modality, Provenance, ProvenanceClass, ProvenanceElement,
+    ClockKind, Dataset, Episode, Frame, Modality, Provenance, ProvenanceClass, ProvenanceElement,
     ProvenanceScope, Stream, ValueRef,
 };
 
@@ -808,6 +808,8 @@ fn decode_channel_group(
             // Each channel group is its own raster with its own master; they are not a shared clock,
             // so cross-stream timing checks must not compare one raster's span against another's.
             clock_id: format!("{CLOCK_ID}#{group_index}"),
+            // Real recorded timestamps: every temporal check applies.
+            clock_kind: ClockKind::Measured,
             dtype: Some("float64".into()),
             shape: None,
             frames,

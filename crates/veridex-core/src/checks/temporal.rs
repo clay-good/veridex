@@ -1,10 +1,25 @@
 //! Temporal checks: per-stream timeline health and the headline cross-stream clock-skew check.
 
-use crate::cdm::{Dataset, Stream};
+use crate::cdm::{ClockKind, Dataset, Episode, Stream};
 use crate::check::{Category, Check, Finding, Location, Scope, Severity};
 use std::collections::{BTreeMap, BTreeSet};
 
 const NS_PER_S: f64 = 1_000_000_000.0;
+
+/// The streams of an episode whose timestamps are measured time.
+///
+/// Every check below that *compares* timestamps — differences them, turns them into a rate, or
+/// aligns two streams — reads its streams through here. A positional step index is flawlessly
+/// monotonic, perfectly regular, and identical across an episode's streams, so it satisfies all of
+/// them trivially; reporting that as a pass would put "these sensors are synchronized" in a report
+/// and a signed certificate on the strength of a timeline nobody measured.
+///
+/// The checks that grade a *declared* field instead — `TEMPORAL.INVALID_RATE` and
+/// `TEMPORAL.RATE_INCONSISTENT` read `declared_rate_hz` out of the manifest — deliberately do not
+/// filter: a nonsense declared rate is wrong whatever the timestamps are.
+fn measured_streams(episode: &Episode) -> impl Iterator<Item = &Stream> {
+    episode.streams.iter().filter(|s| s.has_measured_time())
+}
 
 /// `min_ts`, `max_ts` over a stream's frames (frames are not assumed sorted).
 fn span_bounds(stream: &Stream) -> Option<(i64, i64)> {
@@ -80,7 +95,7 @@ impl Check for Monotonicity {
     fn run(&self, dataset: &Dataset) -> Vec<Finding> {
         let mut findings = Vec::new();
         for ep in &dataset.episodes {
-            for stream in &ep.streams {
+            for stream in measured_streams(ep) {
                 // Streams sharing one timeline (a CAN or MF4 group is dozens of channels off a single
                 // clock) share the fault too: one repeated timestamp is one defect, not one per
                 // channel. Report it against the first stream on that timeline and name the rest, as
@@ -169,7 +184,7 @@ impl Check for RateConformance {
     fn run(&self, dataset: &Dataset) -> Vec<Finding> {
         let mut findings = Vec::new();
         for ep in &dataset.episodes {
-            for stream in &ep.streams {
+            for stream in measured_streams(ep) {
                 let Some(declared) = stream.declared_rate_hz else {
                     continue;
                 };
@@ -413,7 +428,7 @@ impl Check for Gaps {
     fn run(&self, dataset: &Dataset) -> Vec<Finding> {
         let mut findings = Vec::new();
         for ep in &dataset.episodes {
-            for stream in &ep.streams {
+            for stream in measured_streams(ep) {
                 if stream.frames.len() < 2 {
                     continue;
                 }
@@ -513,7 +528,7 @@ impl Check for Jitter {
     fn run(&self, dataset: &Dataset) -> Vec<Finding> {
         let mut findings = Vec::new();
         for ep in &dataset.episodes {
-            for stream in &ep.streams {
+            for stream in measured_streams(ep) {
                 // One timeline, one report — see `timeline_group`.
                 let (is_representative, shared) = timeline_group(ep, stream);
                 if !is_representative {
@@ -626,6 +641,7 @@ impl Check for ClockSkew {
             let spans: Vec<(&str, &str, i64, i64)> = ep
                 .streams
                 .iter()
+                .filter(|s| s.has_measured_time())
                 .filter_map(|s| {
                     span_bounds(s).map(|(lo, hi)| {
                         (
@@ -733,7 +749,7 @@ impl Check for StartOffset {
             // Group each stream's start (min ts) by clock_id; BTreeMap keeps clocks in a stable
             // order so findings are deterministic.
             let mut by_clock: BTreeMap<&str, Vec<(&str, i64)>> = BTreeMap::new();
-            for s in &ep.streams {
+            for s in measured_streams(ep) {
                 if let Some((lo, _hi)) = span_bounds(s) {
                     by_clock
                         .entry(s.clock_id.as_str())
@@ -832,7 +848,7 @@ impl Check for EndOffset {
             // Group each stream's end (max ts) by clock_id; BTreeMap keeps clocks in a stable
             // order so findings are deterministic.
             let mut by_clock: BTreeMap<&str, Vec<(&str, i64)>> = BTreeMap::new();
-            for s in &ep.streams {
+            for s in measured_streams(ep) {
                 if let Some((_lo, hi)) = span_bounds(s) {
                     by_clock
                         .entry(s.clock_id.as_str())
@@ -1088,5 +1104,107 @@ impl Check for EpisodeDuration {
             }
         }
         findings
+    }
+}
+
+/// Streams whose timestamps are not measured time — and therefore what the rest of this family could
+/// not grade.
+///
+/// This check exists because of what its absence looked like. A source that records no clock (RLDS/
+/// TFDS has no per-step timestamp at all) still needs *some* ordering, so its frames carry a step
+/// index. Every other temporal check then compares those indices and passes: the timeline is
+/// flawlessly monotonic, the intervals are perfectly regular, and every stream in an episode starts,
+/// ends, and spans identically. A run over such a dataset reported zero temporal findings and a
+/// signed certificate recorded ten temporal checks executed with nothing skipped — which reads as
+/// "these sensors are synchronized" when the truth is "there was never anything here to measure".
+///
+/// So the abstention is reported rather than left as silence, and it is reported as a *finding*,
+/// which is the only disclosure that travels: findings reach the terminal report, the JSON, the
+/// SARIF, the HTML, and the certificate's own summary. An ingest report's coverage note reaches none
+/// of those.
+///
+/// Informational, not a defect: a dataset is not worse for the format it was published in. What it
+/// changes is what a passing verdict is *evidence of*.
+pub struct ClockMeasurability;
+
+impl Check for ClockMeasurability {
+    fn id(&self) -> &'static str {
+        "temporal.clock-measurability"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["TEMPORAL.UNMEASURED_CLOCK"]
+    }
+    fn title(&self) -> &'static str {
+        "Timestamps are measured time"
+    }
+    fn category(&self) -> Category {
+        Category::Temporal
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Info
+    }
+    fn scope(&self) -> Scope {
+        Scope::Dataset
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        // Reported once for the dataset, by clock: the clock is a property of the source format, so
+        // one finding per episode would be the same fact repeated for every episode in the dataset.
+        let mut unmeasured: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        for ep in &dataset.episodes {
+            for stream in &ep.streams {
+                if stream.clock_kind == ClockKind::StepIndex {
+                    unmeasured
+                        .entry(stream.clock_id.as_str())
+                        .or_default()
+                        .insert(stream.name.as_str());
+                }
+            }
+        }
+        unmeasured
+            .into_iter()
+            .map(|(clock, streams)| {
+                let names: Vec<&str> = streams.into_iter().collect();
+                // Naming a few is useful; naming four hundred is not.
+                let shown = names
+                    .iter()
+                    .take(4)
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let rest = names.len().saturating_sub(4);
+                let listed = if rest > 0 {
+                    format!("{shown} and {rest} more")
+                } else {
+                    shown
+                };
+                Finding::new(
+                    self.id(),
+                    Category::Temporal,
+                    Severity::Info,
+                    Location::Dataset,
+                    "TEMPORAL.UNMEASURED_CLOCK",
+                    format!(
+                        "clock `{clock}` carries a step index, not measured time, so the rate, \
+                         gap, jitter, clock-skew, start/end-offset and episode-duration checks \
+                         could not grade {} stream(s) on it ({listed})",
+                        names.len(),
+                    ),
+                )
+                .with_risk(
+                    "The source records no clock, so nothing in this run can tell you whether the \
+                     sensors were synchronized, whether frames were dropped, or how long an episode \
+                     actually lasted. A clean temporal result here is the absence of a measurement, \
+                     not evidence of good timing.",
+                )
+                .with_remedy(
+                    "Treat the temporal result as unverified for these streams. If timing matters \
+                     for your use, check it against the source recording the dataset was converted \
+                     from, or re-export in a format that carries per-frame timestamps.",
+                )
+            })
+            .collect()
     }
 }

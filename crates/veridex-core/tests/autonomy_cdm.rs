@@ -8,8 +8,8 @@
 
 use veridex_core::canonical::content_hash;
 use veridex_core::cdm::{
-    Calibration, CameraIntrinsics, Dataset, EgoPose, Episode, Frame, Modality, PointField, Pose,
-    Stream, Transform, ValueRef,
+    Calibration, CameraIntrinsics, ClockKind, Dataset, EgoPose, Episode, Frame, Modality,
+    PointField, Pose, Stream, Transform, ValueRef,
 };
 
 fn frame(ts: i64) -> Frame {
@@ -31,6 +31,7 @@ fn cloud_stream(fields: &[&str]) -> Stream {
         modality: Modality::PointCloud,
         declared_rate_hz: Some(10.0),
         clock_id: "rig".into(),
+        clock_kind: ClockKind::Measured,
         dtype: None,
         shape: None,
         frames: vec![frame(0), frame(100_000_000)],
@@ -253,6 +254,7 @@ fn permuting_every_canonicalized_collection_changes_neither_the_hash_nor_the_ver
         modality,
         declared_rate_hz: None,
         clock_id: "rig".into(),
+        clock_kind: ClockKind::Measured,
         dtype: None,
         shape: None,
         frames: frames.clone(),

@@ -33,6 +33,7 @@ pub fn standard_checks_with(t: &Tolerances) -> Vec<Box<dyn Check>> {
         Box::new(structural::StreamPresence),
         Box::new(structural::DuplicateEpisode),
         Box::new(structural::StuckStream),
+        Box::new(temporal::ClockMeasurability),
         Box::new(temporal::Monotonicity),
         Box::new(temporal::RateValidity),
         Box::new(temporal::RateConformance {

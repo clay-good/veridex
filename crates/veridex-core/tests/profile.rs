@@ -1,7 +1,7 @@
 //! Tests for the `world-model-ready` policy profile and its per-criterion readiness report (A4).
 
 use veridex_core::cdm::{
-    Calibration, Dataset, Episode, Frame, Modality, Pose, Stream, Transform, ValueRef,
+    Calibration, ClockKind, Dataset, Episode, Frame, Modality, Pose, Stream, Transform, ValueRef,
 };
 use veridex_core::certificate::ReadinessReport;
 use veridex_core::{content_hash, profile, RunConfig};
@@ -26,6 +26,7 @@ fn sensor(name: &str, modality: Modality, ts: &[i64]) -> Stream {
         modality,
         declared_rate_hz: None,
         clock_id: "rig".into(),
+        clock_kind: ClockKind::Measured,
         dtype: None,
         shape: None,
         frames: frames(ts),

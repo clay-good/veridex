@@ -1,7 +1,7 @@
 //! Behavior tests for the v1 trust-scoring rubric and provenance coverage.
 
 use veridex_core::cdm::{
-    Dataset, Episode, Frame, Modality, Provenance, ProvenanceClass, ProvenanceElement,
+    ClockKind, Dataset, Episode, Frame, Modality, Provenance, ProvenanceClass, ProvenanceElement,
     ProvenanceScope, Stream, ValueRef,
 };
 use veridex_core::certificate::{score, Grade, ProvenanceCoverage, RUBRIC_VERSION};
@@ -13,6 +13,7 @@ fn stream(name: &str, clock: &str, rate: Option<f64>, ts: &[i64]) -> Stream {
         modality: Modality::ScalarState,
         declared_rate_hz: rate,
         clock_id: clock.into(),
+        clock_kind: ClockKind::Measured,
         dtype: None,
         shape: None,
         stats: None,

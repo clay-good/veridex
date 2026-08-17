@@ -149,7 +149,16 @@ impl Episode {
     /// `[start_ts, end_ts]`; otherwise falls back to the longest single-stream frame span — a
     /// clock-safe proxy, since one stream's frames share a clock so the subtraction never mixes
     /// clocks. `None` when neither is available or positive.
+    ///
+    /// An episode whose streams are all on a step-index clock has **no** measurable duration, and
+    /// that includes its declared bounds: those are step indices too. Subtracting them yields a step
+    /// count, which the report would print as nanoseconds and the outlier check would compare as a
+    /// duration — a 500-step episode among 20-step ones was reported as "lasts 0.0 ms, 26.3x longer
+    /// than the dataset median of 0.0 ms".
     pub fn duration_ns(&self) -> Option<TimestampNs> {
+        if !self.streams.is_empty() && !self.streams.iter().any(|s| s.has_measured_time()) {
+            return None;
+        }
         if let (Some(start), Some(end)) = (self.start_ts, self.end_ts) {
             if end > start {
                 // Saturating: corrupt boundaries spanning the full i64 range must not overflow
@@ -159,6 +168,10 @@ impl Episode {
         }
         self.streams
             .iter()
+            // Only a stream whose timestamps are measured time can stand in for a duration. A step
+            // index yields a span in "steps" that would be printed as nanoseconds — an episode of
+            // 500 steps reported as lasting 0.0 ms, and compared as a duration against its peers.
+            .filter(|s| s.has_measured_time())
             .filter_map(|s| {
                 let mut it = s.frames.iter().map(|f| f.ts);
                 let first = it.next()?;
@@ -235,6 +248,37 @@ impl Modality {
     }
 }
 
+/// What a stream's timestamps actually are.
+///
+/// Not every source records time. RLDS/TFDS has no per-step timestamp at all, so its frames are
+/// stamped with their step index — a perfectly good *order*, and not a measurement of anything. The
+/// distinction has to be in the CDM rather than in a comment, because a check cannot tell the two
+/// apart by looking at the numbers: an index is flawlessly monotonic, perfectly regular, and
+/// identical across every stream of an episode, so every temporal check *passes* on it. That pass is
+/// what reaches the report and the signed certificate, where it reads as "these sensors are
+/// synchronized" rather than "there was nothing here to measure".
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ClockKind {
+    /// Timestamps are measured time on some clock. Every temporal check applies.
+    #[default]
+    Measured,
+    /// Timestamps are a positional step index, not time. The checks that compare durations, rates,
+    /// gaps, or cross-stream alignment have nothing to measure and abstain, and
+    /// `temporal.clock-measurability` reports that they did.
+    StepIndex,
+}
+
+impl ClockKind {
+    /// The stable canonical tag for this kind, used in hashing and reporting.
+    pub fn tag(self) -> &'static str {
+        match self {
+            ClockKind::Measured => "measured",
+            ClockKind::StepIndex => "step-index",
+        }
+    }
+}
+
 /// One stream within an episode (e.g. a camera, a joint-state channel).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Stream {
@@ -248,6 +292,11 @@ pub struct Stream {
     /// `clock_id` are directly comparable; differing ids require alignment (the `TEMPORAL.CLOCK_SKEW`
     /// check, design D4).
     pub clock_id: String,
+    /// Whether [`Frame::ts`] is *measured time* or a positional index. Defaults to
+    /// [`ClockKind::Measured`]; a source that records no clock at all (RLDS/TFDS) sets
+    /// [`ClockKind::StepIndex`].
+    #[serde(default)]
+    pub clock_kind: ClockKind,
     /// Declared element data type of each value (e.g. `float32`, `uint8`, `video`), if the source
     /// states one. Checks compare it across a stream's appearances; Veridex never infers it.
     pub dtype: Option<String>,
@@ -308,6 +357,18 @@ pub struct Stream {
     /// `autonomy.sensor-frame-resolution` check reads it. `None` for a source that declares no frame.
     #[serde(default)]
     pub frame_id: Option<FrameId>,
+}
+
+impl Stream {
+    /// Whether this stream's timestamps are measured time, and so can be compared, differenced, or
+    /// turned into a rate.
+    ///
+    /// Every temporal check guards on this. A step index passes all of them trivially — it is
+    /// perfectly monotonic, perfectly regular, and identical across an episode's streams — and that
+    /// pass is indistinguishable in a report from a genuinely well-synchronized rig.
+    pub fn has_measured_time(&self) -> bool {
+        self.clock_kind == ClockKind::Measured
+    }
 }
 
 /// Recomputed summary statistics for one dimension of a multi-DoF feature, tagged with its index.

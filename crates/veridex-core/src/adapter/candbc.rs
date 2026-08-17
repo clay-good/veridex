@@ -17,7 +17,7 @@ use std::path::Path;
 
 use sha2::{Digest, Sha256};
 
-use crate::cdm::{Dataset, Episode, Frame, Modality, Stream, ValueRef};
+use crate::cdm::{ClockKind, Dataset, Episode, Frame, Modality, Stream, ValueRef};
 
 use super::{
     Adapter, Coverage, Detection, IngestError, IngestOptions, IngestReport, Ingested, Source,
@@ -327,6 +327,8 @@ impl Adapter for CanDbcAdapter {
                 modality: Modality::CanSignal,
                 declared_rate_hz: None,
                 clock_id: CLOCK_ID.to_string(),
+                // Real recorded timestamps: every temporal check applies.
+                clock_kind: ClockKind::Measured,
                 dtype: Some("float64".into()),
                 shape: None,
                 frames,

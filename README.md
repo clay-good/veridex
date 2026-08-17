@@ -242,12 +242,19 @@ shard lengths and ships three (`STRUCTURAL.EPISODE_COUNT_MISMATCH`), and `corrup
 inside a record — only the TFRecord CRC-32C notices, and Veridex verifies it on every record rather
 than parsing past it.
 
-One honesty note this format forces: **RLDS records no wall clock.** There is no per-step
-timestamp in it, so Veridex stamps frames with their step index on a clock named
-`rlds-step-index`, never invents a rate, and states the omission in the ingest report — the rate,
-gap, jitter and skew checks then abstain instead of grading a dataset against a period Veridex made
-up. (An `inspect` duration of `0.000s` on such a dataset is that step-index clock, not a zero-length
-episode.)
+One honesty note this format forces: **RLDS records no wall clock.** There is no per-step timestamp
+in it, so Veridex stamps frames with their step index, records in the CDM that those timestamps are
+an index rather than measured time, and never invents a rate. The checks that need measured time —
+rate, gap, jitter, clock skew, start/end offset, episode duration — then skip those streams instead
+of grading a dataset against a period Veridex made up.
+
+They *say* they skipped, which is the part that matters. A step index is flawlessly monotonic,
+perfectly regular, and identical across every stream of an episode, so a check that graded it would
+pass — and a clean temporal result is exactly what a report and a signed certificate carry forward,
+where it reads as "these sensors were synchronized." So a run over such a dataset emits
+`TEMPORAL.UNMEASURED_CLOCK`, and it travels: into the JSON, the SARIF, the HTML, and the
+certificate's findings summary. A passing verdict on an RLDS dataset means the structure and the
+content are sound, and that nobody measured the timing.
 
 The certificate binds to the dataset's CDM content hash and is Ed25519-signed: `verify` succeeds
 offline, and rejects a tampered certificate (signature mismatch) or one presented against a

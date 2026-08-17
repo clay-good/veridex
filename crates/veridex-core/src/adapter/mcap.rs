@@ -28,8 +28,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use crate::cdm::{
-    Calibration, CameraIntrinsics, Dataset, EgoPose, Episode, Frame, Label, Modality, PointField,
-    Provenance, ProvenanceClass, ProvenanceElement, ProvenanceScope, Stream, Transform, ValueRef,
+    Calibration, CameraIntrinsics, ClockKind, Dataset, EgoPose, Episode, Frame, Label, Modality,
+    PointField, Provenance, ProvenanceClass, ProvenanceElement, ProvenanceScope, Stream, Transform,
+    ValueRef,
 };
 
 use super::{
@@ -341,6 +342,8 @@ impl Adapter for McapAdapter {
                 modality: b.modality,
                 declared_rate_hz: None,
                 clock_id: CLOCK_ID.to_string(),
+                // Real recorded timestamps: every temporal check applies.
+                clock_kind: ClockKind::Measured,
                 dtype: None,
                 shape: None,
                 frames: b.frames,

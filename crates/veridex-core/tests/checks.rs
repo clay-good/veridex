@@ -1,8 +1,8 @@
 //! Behavior tests for the MVP checks catalog.
 
 use veridex_core::cdm::{
-    Dataset, Episode, Frame, Label, Modality, Provenance, ProvenanceClass, ProvenanceElement,
-    ProvenanceScope, Stream, ValueRef,
+    ClockKind, Dataset, Episode, Frame, Label, Modality, Provenance, ProvenanceClass,
+    ProvenanceElement, ProvenanceScope, Stream, ValueRef,
 };
 use veridex_core::check::{Check, Severity};
 use veridex_core::checks::{autonomy, provenance, semantic, statistical, structural, temporal};
@@ -31,6 +31,7 @@ fn stream(name: &str, clock: &str, rate: Option<f64>, ts: &[i64]) -> Stream {
         modality: Modality::ScalarState,
         declared_rate_hz: rate,
         clock_id: clock.into(),
+        clock_kind: ClockKind::Measured,
         dtype: None,
         shape: None,
         stats: None,
@@ -297,6 +298,7 @@ fn stream_hashed(name: &str, clock: &str, ts: &[i64], contents: &[u8]) -> Stream
         modality: Modality::ScalarState,
         declared_rate_hz: Some(10.0),
         clock_id: clock.into(),
+        clock_kind: ClockKind::Measured,
         dtype: None,
         shape: None,
         stats: None,
@@ -382,6 +384,7 @@ fn stream_with_content(name: &str, modality: Modality, contents: &[u8]) -> Strea
         modality,
         declared_rate_hz: Some(30.0),
         clock_id: "c".into(),
+        clock_kind: ClockKind::Measured,
         dtype: None,
         shape: None,
         stats: None,
@@ -456,6 +459,7 @@ fn shaped(name: &str, dtype: Option<&str>, shape: Option<Vec<u64>>, ts: &[i64]) 
         modality: Modality::ScalarState,
         declared_rate_hz: None,
         clock_id: "c".into(),
+        clock_kind: ClockKind::Measured,
         dtype: dtype.map(Into::into),
         shape,
         stats: None,
@@ -1102,7 +1106,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 35);
+    assert_eq!(verdict.executed_checks.len(), 36);
 }
 
 #[test]
@@ -2247,6 +2251,7 @@ fn a_bus_only_measurement_is_not_treated_as_a_sensor_rig() {
                 modality: m,
                 declared_rate_hz: None,
                 clock_id: "c".into(),
+                clock_kind: ClockKind::Measured,
                 dtype: None,
                 shape: None,
                 frames: vec![],
@@ -2313,6 +2318,7 @@ fn one_shared_timeline_reports_once_and_an_event_driven_signal_is_not_called_inc
         modality: Modality::CanSignal,
         declared_rate_hz: None,
         clock_id: "bus".into(),
+        clock_kind: ClockKind::Measured,
         dtype: None,
         shape: None,
         frames: ts

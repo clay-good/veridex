@@ -46,7 +46,12 @@ use crate::cdm::{
 /// nothing else in the CDM: without this, a dataset whose video matches its data and one whose video
 /// is a different length hashed identically, so a certificate issued for the good one verified
 /// against the broken one.
-pub const CANONICAL_VERSION: u32 = 6;
+///
+/// v7 binds each stream's `clock_kind` — whether its timestamps are measured time or a positional
+/// step index. It decides which temporal checks can grade the stream at all, so the same frames are
+/// a synchronized rig under one value and an unmeasurable timeline under the other. Same rule as v4
+/// and v5: the hash binds whatever changes what a check can conclude.
+pub const CANONICAL_VERSION: u32 = 7;
 
 const DOMAIN: &[u8] = b"veridex.cdm.v1\0";
 
@@ -297,6 +302,11 @@ impl Stream {
         e.str(self.modality.tag());
         e.opt(&self.declared_rate_hz, |e, r| e.f64(*r));
         e.str(&self.clock_id);
+        // Whether the timestamps are measured time or a step index. Bound because it decides which
+        // temporal checks can grade the stream at all: the same frames read as a synchronized rig
+        // under `Measured` and as an unmeasurable one under `StepIndex`, so a passing dataset and an
+        // ungraded one must not hash alike.
+        e.str(self.clock_kind.tag());
         e.opt(&self.dtype, |e, d| e.str(d));
         e.opt(&self.shape, |e, sh| e.seq(sh, |e, d| e.u64(*d)));
         // Stored statistics (from the source manifest): the scalar summary and, for a multi-DoF
