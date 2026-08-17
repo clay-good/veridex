@@ -285,6 +285,15 @@ impl Verdict {
         cats.dedup();
         cats
     }
+
+    /// Whether this run departed from the declared catalog — checks deselected, a severity
+    /// overridden, or a threshold moved.
+    ///
+    /// Reads the [`SCOPE_CHECK_ID`] finding rather than re-deriving the condition, so there is one
+    /// answer to "was this run narrowed" and every consumer gets the same one.
+    pub fn scope_narrowed(&self) -> bool {
+        self.findings.iter().any(|f| f.check_id == SCOPE_CHECK_ID)
+    }
 }
 
 /// A subset view of the verdict used to compute [`Verdict::result_content_hash`] — every field
@@ -622,7 +631,12 @@ fn scope_finding(
         if let Some(cats) = &config.categories {
             let mut names: Vec<&str> = cats.iter().map(|c| c.tag()).collect();
             names.sort_unstable();
-            clauses.push(format!("categories limited to {}", names.join(", ")));
+            // `categories = []` selects nothing and is the most extreme narrowing there is, so the
+            // one line reporting it must not trail off as "categories limited to )".
+            clauses.push(match names.is_empty() {
+                true => "categories limited to none".to_string(),
+                false => format!("categories limited to {}", names.join(", ")),
+            });
         }
         if let Some(only) = &config.only_checks {
             let mut ids: Vec<&str> = only.iter().map(String::as_str).collect();

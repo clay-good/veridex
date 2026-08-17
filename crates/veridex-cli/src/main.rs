@@ -649,18 +649,48 @@ fn cmd_check(rest: &[String]) -> ExitCode {
         }
     }
 
-    // A score gate over a run that read no data is not a gate. Under `--metadata-only` the data
-    // axis is computed from checks that overwhelmingly had nothing to measure, so it lands near 100
-    // whatever the data holds — and `--min-score 90 --metadata-only` is then a one-flag way to
-    // satisfy the gate on a dataset whose values are garbage. A *sample* is different in kind: it
-    // scores real data, just less of it, so it keeps working. Refused rather than silently ignored,
-    // because a gate that quietly does nothing is worse than one that is absent.
-    if min_score.is_some() && !out.verdict.coverage.frames_read() {
-        eprintln!(
-            "veridex: --min-score cannot gate a --metadata-only run — its data score is computed \
-             over checks that had no data to measure, so it says nothing about the dataset"
-        );
-        return ExitCode::from(EXIT_TOOL_ERROR);
+    // A score gate is a claim about *the dataset*, so it holds only over a run that looked at the
+    // whole dataset with the whole catalog. Every way of falling short of that is refused rather
+    // than silently honored, because a gate that quietly does nothing is worse than one that is
+    // absent — and each of these is one flag or one config line away from a green CI job.
+    //
+    // The data axis starts at 100 and only deducts, so anything that stops a check from measuring
+    // *raises* the score. That is what makes all three of these bypasses rather than inaccuracies.
+    if min_score.is_some() {
+        let refusal = if !out.verdict.coverage.frames_read() {
+            Some(
+                "--metadata-only run — its data score is computed over checks that had no data to \
+                 measure, so it says nothing about the dataset"
+                    .to_string(),
+            )
+        } else if let veridex_core::engine::CoverageNote::Sample { request, .. } =
+            &out.verdict.coverage
+        {
+            // A sample was previously waved through as "real data, just less of it". It is less of
+            // it precisely where it matters: the episodes it skipped are where the defect it is
+            // being asked to catch would be. On this repo's own demo dataset — whose generator puts
+            // the flaw in episode 1 — a full run fails `--min-score 75` at 69 and
+            // `--sample-episodes 1` passes it at 79.
+            Some(format!(
+                "sampled run ({request}) — the episodes it skipped are exactly where the defect \
+                 the gate is meant to catch would be"
+            ))
+        } else if out.verdict.scope_narrowed() {
+            // Includes `categories = []`, which runs no checks at all and scores a clean 100 on the
+            // data axis, and a moved tolerance, which passes data the default would have failed.
+            Some(
+                "narrowed run — checks were deselected, a severity overridden, or a threshold \
+                 moved, so the score was earned within that selection and not over the catalog \
+                 (see the SCOPE.NARROWED finding)"
+                    .to_string(),
+            )
+        } else {
+            None
+        };
+        if let Some(reason) = refusal {
+            eprintln!("veridex: --min-score cannot gate a {reason}");
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
     }
 
     // A trust score below --min-score fails the run regardless of finding severities, so CI can

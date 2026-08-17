@@ -144,10 +144,14 @@ exits `20` (fail). The `late-start` variant instead trips `TEMPORAL.START_OFFSET
 came online late on the shared clock — and the `stuck` variant a frozen camera whose byte-identical
 frames trip `STRUCTURAL.STUCK_STREAM`, a freeze the timestamp checks can't see. Exit codes: `0` pass · `10`
 pass-with-warnings · `20` fail · `2` tool-error. For CI you can gate on severity (`--fail-on
-warning`) or on the trust score directly (`--min-score 80` fails when the score is below 80 — and
-is refused outright on a `--metadata-only` run, whose data score is computed over checks that had no
-data to measure). `check --profile world-model-ready` also prints the per-criterion readiness verdict
-it judged against; `certify` is what signs it.
+warning`) or on the trust score directly (`--min-score 80` fails when the score is below 80). A score
+gate is a claim about the whole dataset, so it is **refused outright** — loudly, with exit `2` —
+over any run that cannot support that claim: `--metadata-only`, a `--sample-episodes` /
+`--sample-fraction` run (the episodes it skipped are where the defect would be), or a run narrowed
+by config (checks deselected, a severity overridden, or a tolerance moved). The data score starts at
+100 and only deducts, so anything that stops a check from measuring *raises* it — each of those is
+otherwise one flag away from a green gate on bad data. `check --profile world-model-ready` also
+prints the per-criterion readiness verdict it judged against; `certify` is what signs it.
 
 Drop a [`veridex.toml`](docs/veridex.toml.example) in your repo (or pass `--config`) to select
 categories, disable checks, override per-check severities, tune numeric tolerances (clock-skew,

@@ -872,8 +872,11 @@ fn a_score_gate_cannot_be_satisfied_by_reading_nothing() {
         "unexpected stderr {stderr}"
     );
 
-    // A sample scores real data, just less of it, so it still gates.
-    let (code, _, _) = run(&[
+    // A sample was once waved through here as "real data, just less of it". It is less of it
+    // exactly where it matters — the skipped episodes are where the defect the gate is meant to
+    // catch would be. On this repo's own demo dataset, whose generator puts the flaw in episode 1,
+    // a full run fails `--min-score 75` at 69 and `--sample-episodes 1` passes it at 79.
+    let (code, _, stderr) = run(&[
         "check",
         path,
         "--sample-episodes",
@@ -881,7 +884,30 @@ fn a_score_gate_cannot_be_satisfied_by_reading_nothing() {
         "--min-score",
         "100",
     ]);
-    assert_eq!(code, 20, "a sampled run still answers to --min-score");
+    assert_eq!(code, 2, "a sampled run cannot carry a score gate either");
+    assert!(
+        stderr.contains("--min-score cannot gate a sampled run"),
+        "unexpected stderr {stderr}"
+    );
+
+    // Narrowing the catalog is the third way in, and the widest: `categories = []` runs no checks
+    // at all, and the data axis starts at 100 and only deducts, so nothing measured scores a
+    // perfect 100.
+    let cfg = dir.join("none.toml");
+    std::fs::write(&cfg, "categories = []\n").unwrap();
+    let (code, _, stderr) = run(&[
+        "check",
+        path,
+        "--config",
+        cfg.to_str().unwrap(),
+        "--min-score",
+        "90",
+    ]);
+    assert_eq!(code, 2, "a run that measured nothing cannot satisfy a gate");
+    assert!(
+        stderr.contains("--min-score cannot gate a narrowed run"),
+        "unexpected stderr {stderr}"
+    );
 }
 
 /// The flag allow-list is only a guard if it knows every flag.

@@ -269,7 +269,13 @@ Coverage answers *how much of the dataset did we read*. **`SCOPE.NARROWED`** (in
 `veridex.scope`) answers the other half: *how much of the catalog did we run*.
 
 It is emitted whenever fewer checks ran than are registered — `categories`, `only_checks` or
-`disabled_checks` — or a severity was overridden on a check that did run. Until it existed, a
+`disabled_checks` — a severity was overridden on a check that did run, or a **numeric tolerance was
+moved** off its default. That third axis hid in the gap between the first two: a moved threshold
+deselects nothing, so the check runs, measures the defect, and passes it, and the run looks complete
+on every count. On the demo MCAP two `[tolerances]` lines took a run from exit `20` carrying a real
+210 ms `TEMPORAL.CLOCK_SKEW` to exit `0` carrying neither it nor `TEMPORAL.END_OFFSET`, with no
+trace in the SARIF, while `diff --fail-on-regression` exited 0 calling the 13-point climb an
+improvement. The disclosure now names which thresholds moved and to what. Until it existed, a
 `veridex.toml` carrying one line rewrote the verdict everywhere it mattered. On the demo MCAP,
 `only_checks = ["structural.episode-boundary"]` turned `FAIL / 76 / 5 findings` into
 `PASS / 89 / 0 findings`, with no trace of the narrowing in the terminal report, the HTML report,
@@ -290,3 +296,9 @@ all (leaving ordinary output and content hashes unchanged).
 
 `veridex verify` names the same limit beside the score, because a certificate issued from a narrowed
 run is genuine, correctly bound, and still not a verdict on the dataset.
+
+A narrowed run also cannot carry a **score gate**: `--min-score` is refused with exit `2` over a
+narrowed run, a sampled run, or a `--metadata-only` one. The data axis starts at 100 and only
+deducts, so anything that stops a check from measuring raises the score — `categories = []` runs no
+checks at all and scores a perfect 100 on that axis. A gate that quietly does nothing is worse than
+one that is absent.
