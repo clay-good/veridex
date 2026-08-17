@@ -911,10 +911,25 @@ fn build_stream(
     // not a robot signal and would cost an accumulator each.
     let elem = info.datatype.size as u64;
     let per_row = if elem == 0 { 0 } else { row_elements(&info) };
-    let decodable = info.datatype.is_numeric() && elem > 0 && elem <= 8;
+    // Asked of the decoder rather than guessed from the width: a 2-byte float is numeric and fits in
+    // eight bytes, but nothing here decodes one, and `Some(0)` non-finite over an array whose values
+    // were never examined would satisfy the very check that exists to find a NaN in them.
+    let decodable = info.datatype.is_numeric()
+        && elem > 0
+        && info.datatype.decode(&vec![0u8; elem as usize]).is_some();
     let per_dimension = decodable && per_row > 0 && per_row <= MAX_STATS_DIMS;
     if decodable && !per_dimension && per_row > MAX_STATS_DIMS {
         notes.wide_arrays.insert(entry.path.clone());
+    }
+    if info.datatype.is_numeric() && !decodable {
+        notes.unmapped.push(UnmappedField {
+            source_path: format!("{}/{}", group.path, entry.path),
+            note: format!(
+                "values of type {} are not decoded by this reader, so nothing is summarized from \
+                 them — the statistical checks abstain on this stream rather than reporting it clean",
+                info.datatype.name()
+            ),
+        });
     }
 
     let uri = format!("{file_uri}#{}/{}", group.path, entry.path);

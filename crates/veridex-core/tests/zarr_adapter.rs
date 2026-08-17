@@ -478,3 +478,357 @@ fn an_unwritten_chunk_reads_as_the_declared_fill_value() {
         "four NaN values across the two unwritten rows"
     );
 }
+
+/// Every array in `blosc_real.zarr`, with the rows Python reads back.
+///
+/// These arrays are large enough that blosc actually *compresses* them, and several are forced to
+/// many blocks. That combination is what the first fixture set missed entirely: every blosc chunk in
+/// it was small enough that blosc stored it verbatim (the MEMCPYED flag), so the codec ids, the block
+/// offsets, the split streams, and the shuffle were all unexercised — and two of them were wrong.
+const BLOSC_REAL: &[(&str, &[&str])] = &[
+    (
+        "lz4_shuf_multi",
+        &[
+            "aa4f38cd0b8d07ef988ee1172f9c11a73124c3da08fa5260bcbd089cd91aa449",
+            "7b6fd13e4aa8a05e9b5cddb1efe85c8d1f1369e45c56c497f3ac1e0cdf681929",
+            "4ee848761af02ed696e6ab844add89f9141c85e158ce8b9cbf23dad11c259dfe",
+            "fc889f151246af05a5b6db7710ae4f2545689c3ca85659471ec9750d90f8bfb8",
+            "6c3178d6ec29fc75ca21b3310aa649b1014d7e5d8040faca1712b9b69c384ddf",
+            "a9f1fbd4055eb7db184ea7bdcb536f8249df3b30227830a62f17c48a02e403bc",
+            "b436248aaf2cf8c58afad110bd1c405024c58f16229d37fbb77de86b01203b8f",
+            "fe1934fc43c5e8e56c7a5bf8ad6c8ea8ccaa9bd260120679c750fdf0e561ba9d",
+        ],
+    ),
+    (
+        "zstd_shuf_multi",
+        &[
+            "2f12b71132df2a1d0476f254b94a22645007edd29eedd0c64974f6650785c391",
+            "74523bf233f30b8a7ed2a253e3d9907f9a101a3b99b48f0e359d4e1cc7de4a9d",
+            "a03c36aa5b4bc15314c6b3ce4b902a206a8cc7ea6e92d71ea95e6164556aab96",
+            "ea0e10ff1de5b6dd8f91b58a56c1cac4e1b8e7022c7d319677444483d366349c",
+            "2b978968d1da3f52e2fcc949e61209b7151fc2df17a39b719c945be274f36618",
+            "adc38b2f17557371694eff3e46afc089f3e6d68580f0213004ce7ddab12dc39a",
+            "0a060b8b21350c5ef108b4badd7e9d8e0c11758b284da4330fd2bd3a82347a5f",
+            "df5af30bb138c14439e8a2bb5ca6b165a4631751a051dc10a4d3513f31edae8f",
+        ],
+    ),
+    (
+        "zlib_shuf_multi",
+        &[
+            "2f12b71132df2a1d0476f254b94a22645007edd29eedd0c64974f6650785c391",
+            "74523bf233f30b8a7ed2a253e3d9907f9a101a3b99b48f0e359d4e1cc7de4a9d",
+            "a03c36aa5b4bc15314c6b3ce4b902a206a8cc7ea6e92d71ea95e6164556aab96",
+            "ea0e10ff1de5b6dd8f91b58a56c1cac4e1b8e7022c7d319677444483d366349c",
+            "2b978968d1da3f52e2fcc949e61209b7151fc2df17a39b719c945be274f36618",
+            "adc38b2f17557371694eff3e46afc089f3e6d68580f0213004ce7ddab12dc39a",
+            "0a060b8b21350c5ef108b4badd7e9d8e0c11758b284da4330fd2bd3a82347a5f",
+            "df5af30bb138c14439e8a2bb5ca6b165a4631751a051dc10a4d3513f31edae8f",
+        ],
+    ),
+    (
+        "lz4hc_shuf",
+        &[
+            "e70540b2a774257412c15b594eac07279f5fda53f7299308094d4038fefdd7f6",
+            "b036ccaed3c80fa5f522547632839f25a5b32876f4601a96dd29b326a5dd02f7",
+            "4e6ded3539409daa84cc5f5bca9ca1df77fbd03977cabf90b5b64b6bf59be51b",
+            "d57329c2652fa94a0ede6a079a84b9664c90ca6dff56f53bf5365c12489c6a10",
+            "a757bfc23db6c7c83fe51b96ffbbfd1820a3dd1cc9536cd2ada2051e9b36267b",
+            "bcce9bfa0deee60091e34ec309ac9311006e308d060bd96bb2ef403a3efa8882",
+            "92a4ee0e372af0557da7ddfb4ea8432738bc2e936720c21c98231438462bf4b9",
+            "5c98899fe9a164dc99861677b358264c0f2c1398a430a74ccce7952990156a7e",
+        ],
+    ),
+    (
+        "zstd_noshuf",
+        &[
+            "a0645e14fa190697100d03136776796bd17b4e21b67f17046489f7ea91a337a4",
+            "005f27976d491ec09edbd1d0cc1d475798d62661bb38461780f34ba4c8743b50",
+            "13a784ea573d9afb966ef813b557d657918686961603c0d0a16a8153353e12d0",
+            "f29099503fda41a257bc80b1e465c1b882ddea4bfcc401156bf70ac1ff36a2fc",
+            "caec4314b2a8abeaea582d6e49205d35103e452e9fc6c920fac285198598521f",
+            "366f804025fdb2a8fad0f456804b94d169984ab35e765841493fd3078bf799c7",
+            "ded1805e60c00c700de0fc909107fd53924255e49a67ebfb184ba492901b5dae",
+            "2da60b3b4587254b32f037f03224af3a85686c03f168c318b41e09e025eb5784",
+        ],
+    ),
+    (
+        "lz4_u1_multi",
+        &[
+            "0420e375f1385b8295a908d8d95bdbda755aa5b66a1ba63ec68be364c72e9910",
+            "613e2c679171742dd1d816eef898f85150d6a99a48e0c6de26c92bb1f53bfa42",
+            "747b596807b26fea4be5e88286e73973e438af672aec153c8c8b85c5549a210f",
+            "f92aaeaa883cc2909c2a071af4abbe34c2ab1def37b24252f5038633da014a36",
+            "1e506cc43280176ed8d47cb8cbde015c2458552c178813ee1ab930f96c2858ae",
+            "30c1638bcda42d0361df90f73e3ca6232dc86548a95fdc3fac820015e1f02666",
+            "df1cfc93f33b1e376ffa6ebfffc1d29a7fa31c494f6b8ad7cbcfe7b4596f0442",
+            "979da8bca3f0baec954cdd6c7e2a06c1793f59dd0f6592243e1646d492239b97",
+        ],
+    ),
+];
+
+#[test]
+fn blosc_arrays_that_are_really_compressed_decode_correctly() {
+    // Two bugs lived here. The codec ids were read off blosc's public compcode table instead of the
+    // *compformat* field in the header, so a `zstd` chunk went to the zlib inflater and a `zlib`
+    // chunk was refused as `snappy` — every store using either was unreadable. And the byte shuffle
+    // was undone once over the whole chunk instead of per block, which is only equivalent when there
+    // is one block: with more, every value came back scrambled, with no error at all.
+    let ingested = ingest("blosc_real.zarr", IngestOptions::default());
+    for (label, expected) in BLOSC_REAL {
+        assert_eq!(
+            row_hashes(stream_of(&ingested, 0, label)),
+            *expected,
+            "{label} decoded to different bytes than Python wrote"
+        );
+    }
+}
+
+#[test]
+fn a_unicode_dtype_is_sized_in_bytes_not_characters() {
+    // NumPy's `U` size is a character count and each character is four bytes, so `<U5` is a 20-byte
+    // element. Reading 5 made every chunk the wrong size and refused the whole store.
+    let ingested = ingest("dtype_edges.zarr", IngestOptions::default());
+    let labels = stream_of(&ingested, 0, "labels");
+    assert_eq!(labels.dtype.as_deref(), Some("string[5]"));
+    assert_eq!(labels.frames[0].value_ref.byte_len, Some(20));
+    // Taken from `array[i:i+1].tobytes()`, not `array[i].tobytes()`: extracting a single element of
+    // a `<U5` array yields a NumPy scalar whose width shrinks to its own content, so the latter hashes
+    // 12 bytes for `"abc"` where the array stores 20. The stored width is what a reader sees.
+    assert_eq!(
+        row_hashes(labels),
+        [
+            "5ac05fc946ac1e134d4aff902b475f0eee0102db829be96901f48e076d473217",
+            "276bb5c7b30dd9ad496b6f391b65ce86f167b57ab8e444410f86d3b0cc46220e",
+            "0be8638f8759241eecb590ad38a411c429cd26d1a75e86d1263088e423913c88",
+            "afa70f32ccca9325286da833899d714681c40233c42ef9f13242c88c8d509c2a",
+        ]
+    );
+}
+
+#[test]
+fn a_width_the_reader_cannot_decode_abstains_instead_of_reporting_clean() {
+    // `half` is float16 and holds a NaN and an infinity. Nothing here decodes a 2-byte float, so
+    // reporting `Some(0)` non-finite would satisfy STATISTICAL.NON_FINITE_OBSERVED on an array full
+    // of them — "read and clean" is a claim, and it has to be earned.
+    let ingested = ingest("dtype_edges.zarr", IngestOptions::default());
+    let half = stream_of(&ingested, 0, "half");
+    assert_eq!(half.dtype.as_deref(), Some("float16"));
+    assert_eq!(
+        half.observed_non_finite, None,
+        "never read is not the same answer as read and clean"
+    );
+    assert!(half.observed_stats.is_none() && half.observed_dim_stats.is_none());
+    assert!(
+        ingested
+            .report
+            .unmapped_fields
+            .iter()
+            .any(|f| f.source_path == "half" && f.note.contains("not decoded")),
+        "and the report says the values were not summarized: {:?}",
+        ingested.report.unmapped_fields
+    );
+    // The float32 array beside it is still summarized, so this is an abstention, not a shutdown.
+    assert!(stream_of(&ingested, 0, "action").observed_stats.is_some());
+}
+
+#[test]
+fn each_episode_of_a_group_layout_holds_only_its_own_arrays() {
+    // Two groups, three and four rows. Before this was fixed every episode carried every group's
+    // arrays — so each episode held its neighbour's frames, truncated to its own length, and the
+    // whole store still certified as a pass.
+    let ingested = ingest("group_layout.zarr", IngestOptions::default());
+    assert_eq!(ingested.dataset.episodes.len(), 2);
+    for episode in &ingested.dataset.episodes {
+        assert_eq!(
+            episode
+                .streams
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["action", "obs/state"],
+            "a stream is named below its own episode's group, so the same sensor is the same name in \
+             every episode — which is what makes the cross-episode checks comparable"
+        );
+    }
+    assert_eq!(
+        row_hashes(stream_of(&ingested, 0, "action")),
+        [
+            "22b6f43bd8d27738d3213f29e96b62d01d9d6c0ab4f9732aaae803186f51eab7",
+            "2fd848aa90e817e10e20985de4e8ac6a09b0fe70623d6b952e46800be6b025b9",
+            "84c4426d4f7c3fb46daf2e28151e2adbdb53091cd52dfbc76c7edf418b1ff65d",
+        ]
+    );
+    assert_eq!(
+        row_hashes(stream_of(&ingested, 1, "action")),
+        [
+            "1ec4ebd1e506bbcaaa7bad31e5e40f9d139ca4ca33745c956a3c0dcba8f38d9e",
+            "0e602bdf1fd8e3e685fa6ed695073f45ab129c211b997462f5b2e4c51b896477",
+            "4f4ef093487eed5d3029312ff74ed6d2818f6984903d4a3c1b01778908b2db9d",
+            "0b1000a1f2af3bc8f4d5c7dddeb34d0ad634abf9af8336ca2cb06f09df626da0",
+        ],
+        "and episode 1's own four rows, not episode 0's three"
+    );
+}
+
+#[test]
+fn one_episodes_timestamps_do_not_become_another_episodes_clock() {
+    // `ep_0` records a timeline; `ep_1` records none. Taking the first timeline found in the store
+    // stamped episode 1 with episode 0's nanoseconds — fabricated time, feeding every rate, gap, and
+    // skew verdict downstream.
+    let ingested = ingest("group_time.zarr", IngestOptions::default());
+    assert_eq!(
+        stream_of(&ingested, 0, "action").clock_kind,
+        ClockKind::Measured
+    );
+    assert_eq!(
+        stream_of(&ingested, 1, "action").clock_kind,
+        ClockKind::StepIndex,
+        "an episode that recorded no time is on a step index"
+    );
+    assert_eq!(ingested.dataset.episodes[1].start_ts, Some(0));
+    assert_ne!(
+        ingested.dataset.episodes[0].start_ts,
+        ingested.dataset.episodes[1].start_ts
+    );
+}
+
+#[test]
+fn a_single_array_store_is_one_episode_with_one_stream() {
+    let ingested = ingest("bare_array.zarr", IngestOptions::default());
+    assert_eq!(ingested.dataset.episodes.len(), 1);
+    assert_eq!(ingested.dataset.episodes[0].streams.len(), 1);
+    assert_eq!(ingested.dataset.episodes[0].streams[0].frames.len(), 5);
+}
+
+#[test]
+fn an_empty_boundary_stays_an_empty_episode() {
+    // `episode_ends = [3, 3, 6]` declares three episodes, one of which spans nothing. Dropping it
+    // would leave the ingested count disagreeing with the declared one for no stated reason; keeping
+    // it lets STRUCTURAL.EMPTY_EPISODE say exactly what is wrong.
+    let ingested = ingest("ends_empty.zarr", IngestOptions::default());
+    assert_eq!(
+        ingested
+            .dataset
+            .episodes
+            .iter()
+            .map(|e| (e.index, e.streams.len()))
+            .collect::<Vec<_>>(),
+        vec![(0, 1), (1, 0), (2, 1)]
+    );
+    let out = veridex_core::pipeline::run_check(
+        &default_registry(),
+        &Source::Local(fixture("ends_empty.zarr")),
+        None,
+        &IngestOptions::default(),
+    )
+    .expect("the pipeline runs");
+    assert!(
+        out.verdict
+            .findings
+            .iter()
+            .any(|f| f.code == "STRUCTURAL.EMPTY_EPISODE"),
+        "the empty episode is named: {:?}",
+        out.verdict
+            .findings
+            .iter()
+            .map(|f| f.code.as_str())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn hostile_metadata_is_refused_rather_than_trusted() {
+    // A dtype width that overflows the arithmetic derived from it. Five characters of JSON used to
+    // abort the process with a multiply overflow in a checked build.
+    let message = refusal("huge_dtype.zarr");
+    assert!(
+        message.contains("ceiling"),
+        "an absurd element width is bounded, not multiplied: {message}"
+    );
+    // A zero-length dimension after the first means every row holds no values, and every one of them
+    // fingerprints to the hash of nothing — a dataset with no data must not read back as a pass.
+    let message = refusal("zero_width.zarr");
+    assert!(message.contains("zero-length dimension"), "{message}");
+    // An unreadable `.zattrs` is not an absent one: the licence, the task, and a timeline's units all
+    // live there.
+    let message = refusal("bad_attrs.zarr");
+    assert!(
+        message.contains(".zattrs"),
+        "a corrupt attributes file is named: {message}"
+    );
+}
+
+#[test]
+fn a_declared_chunk_with_no_chunk_files_cannot_allocate_gigabytes() {
+    // `chunks: [1, 1000000000]` with no chunk files on disk. Every row is a fill chunk, and the fill
+    // path was the one allocation that was never charged — a 350-byte store that climbed past 3 GB.
+    let err = default_registry()
+        .ingest(
+            &Source::Local(fixture("fill_bomb.zarr")),
+            &IngestOptions::default(),
+        )
+        .expect_err("a metadata-only allocation is still an allocation");
+    assert!(
+        matches!(
+            err,
+            IngestError::DecompressionBudgetExceeded { format_id, .. } if format_id == "zarr"
+        ),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn a_symlink_out_of_the_store_is_not_followed() {
+    // A store that links to a directory outside itself would otherwise have that directory's bytes
+    // read, hashed, and signed into a certificate as part of the dataset — and a link to its own
+    // parent makes the walk exponential. The LeRobot and CAN adapters already refuse this.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let outside = dir.path().join("outside");
+    std::fs::create_dir_all(&outside).expect("mkdir");
+    std::fs::copy(
+        fixture("bare_array.zarr").join(".zarray"),
+        outside.join(".zarray"),
+    )
+    .expect("copy .zarray");
+    for chunk in ["0.0", "1.0", "2.0"] {
+        let from = fixture("bare_array.zarr").join(chunk);
+        if from.exists() {
+            std::fs::copy(&from, outside.join(chunk)).expect("copy chunk");
+        }
+    }
+    let store = dir.path().join("store.zarr");
+    std::fs::create_dir_all(&store).expect("mkdir");
+    std::fs::write(store.join(".zgroup"), br#"{"zarr_format": 2}"#).expect("write");
+    std::fs::copy(
+        fixture("dp_replay.zarr").join("data").join(".zgroup"),
+        store.join(".zgroup"),
+    )
+    .ok();
+    std::os::unix::fs::symlink(&outside, store.join("leaked")).expect("symlink");
+
+    let result = default_registry().ingest(&Source::Local(store), &IngestOptions::default());
+    match result {
+        Ok(ingested) => {
+            assert!(
+                ingested
+                    .dataset
+                    .episodes
+                    .iter()
+                    .flat_map(|e| e.streams.iter())
+                    .all(|s| s.name != "leaked"),
+                "the linked directory's data must not be in the CDM"
+            );
+            assert!(ingested
+                .report
+                .unmapped_fields
+                .iter()
+                .any(|f| f.note.contains("symbolic link")));
+        }
+        // A store whose only entry was the link has nothing left to read, which is also correct — as
+        // long as the refusal is not a dataset.
+        Err(IngestError::Parse { message, .. }) => {
+            assert!(!message.is_empty(), "the refusal names something");
+        }
+        Err(other) => panic!("unexpected error: {other:?}"),
+    }
+}

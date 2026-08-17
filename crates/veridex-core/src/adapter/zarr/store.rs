@@ -26,6 +26,17 @@ pub(crate) fn parse_error(message: impl Into<String>) -> IngestError {
     }
 }
 
+/// The ceiling on one element's declared width.
+///
+/// Nothing above 8 bytes is decodable into a number, but a fixed-length string element is legitimately
+/// wider, so the ceiling is generous rather than tight. What it is really for is arithmetic: the width
+/// is multiplied by a shape read from the same file, and `"<f4294967295"` is twelve bytes of JSON.
+const MAX_ELEMENT_BYTES: u32 = 1 << 16;
+
+/// The ceiling on a metadata file's size. `.zarray` and `.zattrs` are read whole before parsing, and
+/// a real one is a few hundred bytes.
+const MAX_METADATA_BYTES: u64 = 4 << 20;
+
 /// The file that marks a directory as a Zarr group.
 pub(crate) const GROUP_FILE: &str = ".zgroup";
 /// The file that marks a directory as a Zarr array, and describes it.
@@ -132,12 +143,30 @@ fn parse_dtype(value: &serde_json::Value) -> Result<Dtype, IngestError> {
     let kind = chars
         .next()
         .ok_or_else(|| parse_error(format!("dtype `{text}` declares no kind")))?;
-    let size: u32 = chars
-        .as_str()
-        .parse()
-        .map_err(|_| parse_error(format!("dtype `{text}` declares no element size")))?;
+    let declared: u32 = chars.as_str().parse().map_err(|_| {
+        parse_error(format!(
+            "dtype `{text}` is not a plain numeric or string type this reader sizes (its element \
+             size is not a bare byte count)"
+        ))
+    })?;
+    // NumPy's `U` size is a *character* count, and each character is stored as 4 bytes (UCS-4);
+    // every other kind states bytes. Reading 5 where the element is 20 bytes wide makes every chunk
+    // the wrong size.
+    let size = if kind == 'U' {
+        declared.saturating_mul(4)
+    } else {
+        declared
+    };
     if size == 0 {
         return Err(parse_error(format!("dtype `{text}` declares a zero size")));
+    }
+    // Bounded before it is multiplied by anything. `"<f4294967295"` is twelve bytes of JSON, and
+    // `size * 8` overflows — which panics a checked build, taking the whole CI run with it.
+    if size > MAX_ELEMENT_BYTES {
+        return Err(parse_error(format!(
+            "dtype `{text}` declares a {size}-byte element, over the {MAX_ELEMENT_BYTES}-byte \
+             ceiling; no real array holds one"
+        )));
     }
     let (name, numeric, signed, float) = match kind {
         'f' => (format!("float{}", size * 8), true, true, true),
@@ -145,7 +174,7 @@ fn parse_dtype(value: &serde_json::Value) -> Result<Dtype, IngestError> {
         'u' => (format!("uint{}", size * 8), true, false, false),
         'b' => ("bool".to_string(), true, false, false),
         'S' => (format!("bytes[{size}]"), false, false, false),
-        'U' => (format!("string[{}]", size / 4), false, false, false),
+        'U' => (format!("string[{declared}]"), false, false, false),
         other => (format!("opaque[{other}{size}]"), false, false, false),
     };
     Ok(Dtype {
@@ -156,6 +185,20 @@ fn parse_dtype(value: &serde_json::Value) -> Result<Dtype, IngestError> {
         signed,
         float,
     })
+}
+
+/// Read a metadata file, refusing one far larger than any real `.zarray` or `.zattrs`.
+fn read_metadata(path: &Path) -> Result<Vec<u8>, IngestError> {
+    let size = std::fs::metadata(path)
+        .map_err(|e| IngestError::Io(e.to_string()))?
+        .len();
+    if size > MAX_METADATA_BYTES {
+        return Err(parse_error(format!(
+            "{} is {size} bytes, over the {MAX_METADATA_BYTES}-byte ceiling for a metadata file",
+            path.display()
+        )));
+    }
+    std::fs::read(path).map_err(|e| IngestError::Io(e.to_string()))
 }
 
 /// One element of an array's fill value, as the bytes a chunk would have held.
@@ -274,8 +317,7 @@ pub(crate) struct ZarrArray {
 impl ZarrArray {
     /// Read and validate an array's `.zarray`.
     pub fn open(dir: &Path) -> Result<ZarrArray, IngestError> {
-        let bytes =
-            std::fs::read(dir.join(ARRAY_FILE)).map_err(|e| IngestError::Io(e.to_string()))?;
+        let bytes = read_metadata(&dir.join(ARRAY_FILE))?;
         let meta: ZarrayJson = serde_json::from_slice(&bytes)
             .map_err(|e| parse_error(format!("{}: {e}", dir.join(ARRAY_FILE).display())))?;
         if let Some(format) = meta.zarr_format {
@@ -303,6 +345,16 @@ impl ZarrArray {
             return Err(parse_error(
                 "an array declares a zero-length chunk dimension",
             ));
+        }
+        // A zero *after* the first dimension means every row holds no values at all: the rows exist,
+        // each is zero bytes long, and every one of them fingerprints to the hash of nothing. That is
+        // a dataset with no data, and it must not read back as a clean pass.
+        if meta.shape.iter().skip(1).any(|d| *d == 0) {
+            return Err(parse_error(format!(
+                "this array's shape {:?} has a zero-length dimension after the first, so each of \
+                 its rows holds no values",
+                meta.shape
+            )));
         }
         // Fortran order would need every row transposed on the way out. Refused rather than read as
         // if it were C-order, which would silently permute every value.
@@ -486,13 +538,19 @@ impl<'a> RowReader<'a> {
             return Ok(());
         }
         let path = self.array.chunk_path(grid);
-        let decoded = match std::fs::read(&path) {
+        let decoded = match read_chunk_file(&path, self.chunk_bytes) {
             // A chunk that was never written is not in the store at all, and reads as the fill
             // value. That is Zarr's own semantics, not a guess: the array's shape says the row
             // exists, and a sparse write is ordinary.
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => self.fill_chunk(),
-            Err(e) => return Err(IngestError::Io(e.to_string())),
-            Ok(raw) => {
+            // A chunk that was never written is not in the store at all, so it reads as the fill
+            // value — charged first, because a `.zarray` declaring gigabyte chunks and shipping no
+            // chunk files at all is a metadata-only way to allocate gigabytes.
+            Ok(None) => {
+                self.budget.take(FORMAT_ID, self.chunk_bytes)?;
+                self.fill_chunk()
+            }
+            Err(e) => return Err(e),
+            Ok(Some(raw)) => {
                 self.budget.take(FORMAT_ID, self.chunk_bytes)?;
                 let decoded = decode_chunk(
                     &raw,
@@ -516,6 +574,38 @@ impl<'a> RowReader<'a> {
     }
 }
 
+/// Read a chunk file, or `Ok(None)` when the store simply does not hold that chunk.
+///
+/// Only a **regular file** is read. A chunk path that names a FIFO blocks in `open` forever, and one
+/// that symlinks to `/dev/zero` never reaches end of file — both are a store's own bytes deciding
+/// that a CI runner should stop responding. The read is also capped: a chunk's decoded size is known
+/// from the shape, and no honest compressor expands, so anything far past that is not chunk data.
+fn read_chunk_file(path: &Path, chunk_bytes: u64) -> Result<Option<Vec<u8>>, IngestError> {
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(IngestError::Io(e.to_string())),
+    };
+    if !meta.file_type().is_file() {
+        return Err(parse_error(format!(
+            "{} is not a regular file, so it is not chunk data this reader will read",
+            path.display()
+        )));
+    }
+    // Slack for a container header and for the pathological case of a codec that grew its input.
+    let ceiling = chunk_bytes.saturating_add(1 << 16).saturating_mul(2);
+    if meta.len() > ceiling {
+        return Err(parse_error(format!(
+            "{} is {} bytes for a chunk whose shape needs {chunk_bytes}",
+            path.display(),
+            meta.len()
+        )));
+    }
+    Ok(Some(
+        std::fs::read(path).map_err(|e| IngestError::Io(e.to_string()))?,
+    ))
+}
+
 /// Decode one chunk's bytes through its compressor.
 fn decode_chunk(
     raw: &[u8],
@@ -533,11 +623,12 @@ fn decode_chunk(
                 &mut std::io::Read::take(
                     zstd::stream::read::Decoder::new(raw)
                         .map_err(|e| parse_error(format!("a zstd chunk could not be read: {e}")))?,
-                    expected,
+                    expected + 1,
                 ),
                 &mut out,
             )
             .map_err(|e| parse_error(format!("a zstd chunk failed to decompress: {e}")))?;
+            check_decoded_len(out.len() as u64, expected, "zstd")?;
             Ok(out)
         }
         Compressor::Lz4 => decode_lz4_framed(raw, expected),
@@ -547,21 +638,37 @@ fn decode_chunk(
 
 fn inflate_zlib(raw: &[u8], expected: u64) -> Result<Vec<u8>, IngestError> {
     let mut out = Vec::with_capacity(expected.min(1 << 20) as usize);
+    // One byte past what the shape needs, so a stream that decodes to *more* than that is caught
+    // rather than truncated to fit. A silent truncation is the worst outcome available here: the
+    // caller's size check passes, and the rows past the cut are fill value presented as data.
     std::io::Read::read_to_end(
-        &mut std::io::Read::take(flate2::read::ZlibDecoder::new(raw), expected),
+        &mut std::io::Read::take(flate2::read::ZlibDecoder::new(raw), expected + 1),
         &mut out,
     )
     .map_err(|e| parse_error(format!("a zlib chunk failed to inflate: {e}")))?;
+    check_decoded_len(out.len() as u64, expected, "zlib")?;
     Ok(out)
+}
+
+/// Reject a stream that decoded to a different size than the shape it belongs to declares.
+fn check_decoded_len(got: u64, expected: u64, codec: &str) -> Result<(), IngestError> {
+    if got != expected {
+        return Err(parse_error(format!(
+            "a {codec} chunk decoded to {}{got} bytes where its shape needs {expected}",
+            if got > expected { "more than " } else { "" }
+        )));
+    }
+    Ok(())
 }
 
 fn inflate_gzip(raw: &[u8], expected: u64) -> Result<Vec<u8>, IngestError> {
     let mut out = Vec::with_capacity(expected.min(1 << 20) as usize);
     std::io::Read::read_to_end(
-        &mut std::io::Read::take(flate2::read::GzDecoder::new(raw), expected),
+        &mut std::io::Read::take(flate2::read::GzDecoder::new(raw), expected + 1),
         &mut out,
     )
     .map_err(|e| parse_error(format!("a gzip chunk failed to inflate: {e}")))?;
+    check_decoded_len(out.len() as u64, expected, "gzip")?;
     Ok(out)
 }
 
@@ -660,6 +767,7 @@ fn decode_blosc(raw: &[u8], expected: u64, _typesize: usize) -> Result<Vec<u8>, 
         };
         let stream_size = block_size / splits;
         let mut cursor = offset;
+        let mut block_out: Vec<u8> = Vec::with_capacity(block_size);
         for split in 0..splits {
             // Every stream is prefixed with its own compressed length; a length equal to the stream
             // size means it was stored verbatim.
@@ -680,12 +788,20 @@ fn decode_blosc(raw: &[u8], expected: u64, _typesize: usize) -> Result<Vec<u8>, 
                 stream_size
             };
             if clen == want {
-                out.extend_from_slice(&raw[cursor..end]);
+                block_out.extend_from_slice(&raw[cursor..end]);
             } else {
-                out.extend_from_slice(&decode_blosc_stream(codec, &raw[cursor..end], want)?);
+                block_out.extend_from_slice(&decode_blosc_stream(codec, &raw[cursor..end], want)?);
             }
             cursor = end;
         }
+        // Blosc shuffles each block *independently*, so the inverse has to be per block too. Undoing
+        // it once over the concatenated chunk is equivalent only when there is a single block, and
+        // silently scrambles every value when there is more than one — no error, just wrong numbers,
+        // fingerprinted and summarized as if they were the data.
+        if flags & BLOSC_SHUFFLE != 0 && typesize > 1 {
+            block_out = unshuffle(&block_out, typesize);
+        }
+        out.extend_from_slice(&block_out);
     }
     if out.len() as u64 != nbytes {
         return Err(parse_error(format!(
@@ -693,28 +809,31 @@ fn decode_blosc(raw: &[u8], expected: u64, _typesize: usize) -> Result<Vec<u8>, 
             out.len()
         )));
     }
-    if flags & BLOSC_SHUFFLE != 0 && typesize > 1 {
-        out = unshuffle(&out, typesize);
-    }
     Ok(out)
 }
 
-/// The codec a blosc header's compressor id names.
-fn blosc_codec(id: u8) -> Result<BloscCodec, IngestError> {
-    match id {
-        1 | 2 => Ok(BloscCodec::Lz4),
-        4 => Ok(BloscCodec::Zlib),
-        5 => Ok(BloscCodec::Zstd),
+/// The codec a blosc header's *compressor format* names.
+///
+/// This is the `compformat` field (the top three bits of the flags byte), not blosc's public
+/// `compcode`, and the two do not agree: measured from `numcodecs`, blosclz is 0, lz4 and lz4hc are
+/// both 1, snappy is 2, zlib is 3, and zstd is 4. Getting this table wrong is not a decode failure —
+/// it hands a zstd stream to the zlib inflater, which is an error, and would hand a snappy stream to
+/// the LZ4 decoder, which may not be.
+fn blosc_codec(compformat: u8) -> Result<BloscCodec, IngestError> {
+    match compformat {
+        1 => Ok(BloscCodec::Lz4),
+        3 => Ok(BloscCodec::Zlib),
+        4 => Ok(BloscCodec::Zstd),
         0 => Err(parse_error(
             "this chunk is blosc-compressed with `blosclz`, which this reader does not implement — \
              re-save the array with `cname='lz4'`, `'zstd'`, or `'zlib'`",
         )),
-        3 => Err(parse_error(
+        2 => Err(parse_error(
             "this chunk is blosc-compressed with `snappy`, which this reader does not implement — \
              re-save the array with `cname='lz4'`, `'zstd'`, or `'zlib'`",
         )),
         other => Err(parse_error(format!(
-            "this chunk names blosc compressor id {other}, which is not one this reader knows"
+            "this chunk names blosc compressor format {other}, which is not one this reader knows"
         ))),
     }
 }
@@ -770,13 +889,20 @@ fn unshuffle(data: &[u8], typesize: usize) -> Vec<u8> {
 
 /// The attributes of a group or array (`.zattrs`), as flat key/value pairs. A nested or array value
 /// is rendered as its compact JSON, which is what the source actually said.
-pub(crate) fn read_attrs(dir: &Path) -> BTreeMap<String, serde_json::Value> {
+pub(crate) fn read_attrs(dir: &Path) -> Result<BTreeMap<String, serde_json::Value>, IngestError> {
     let path = dir.join(ATTRS_FILE);
-    let Ok(bytes) = std::fs::read(path) else {
-        return BTreeMap::new();
-    };
+    if !path.exists() {
+        return Ok(BTreeMap::new());
+    }
+    let bytes = read_metadata(&path)?;
+    // An unreadable `.zattrs` is not an absent one: the licence, the task, and a timeline's units all
+    // live here, and "no units declared" is a different report from "the attributes would not parse".
     match serde_json::from_slice::<serde_json::Value>(&bytes) {
-        Ok(serde_json::Value::Object(map)) => map.into_iter().collect(),
-        _ => BTreeMap::new(),
+        Ok(serde_json::Value::Object(map)) => Ok(map.into_iter().collect()),
+        Ok(_) => Err(parse_error(format!(
+            "{} does not hold a JSON object, so this object's attributes cannot be read",
+            path.display()
+        ))),
+        Err(e) => Err(parse_error(format!("{}: {e}", path.display()))),
     }
 }

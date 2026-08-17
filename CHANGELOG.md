@@ -10,6 +10,45 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **Zarr hardening, from a two-agent audit.** Fifteen confirmed defects, including two that returned
+  wrong data with no error at all. What changed:
+
+  - **Blosc codec ids were read off the wrong table.** The header's top flag bits are the
+    *compformat* (0 blosclz, 1 lz4/lz4hc, 2 snappy, 3 zlib, 4 zstd), not blosc's public compcode. So a
+    `zstd` chunk went to the zlib inflater and a `zlib` chunk was refused *as snappy* — every store
+    using either was unreadable, and `zstd` is what the Diffusion Policy tooling reaches for.
+  - **The byte shuffle was undone once per chunk instead of once per block.** Equivalent only when
+    there is a single block; with more, every value came back scrambled — no error, just wrong
+    numbers, fingerprinted and summarized as if they were the data. The reason the tests missed both:
+    every blosc chunk in the fixtures was small enough that blosc stored it verbatim, so the entire
+    codec body was unexercised. The fixtures now include arrays that genuinely compress, several
+    forced to many blocks.
+  - **Every episode of a group-per-episode store held every other episode's arrays.** Each episode
+    now owns only its own group, and streams are named below it, so the same sensor is the same stream
+    name in every episode — which is what makes the cross-episode checks comparable at all. The same
+    layout also handed every episode the *first* timeline found anywhere in the store; an episode that
+    recorded no time was stamped with another episode's nanoseconds. Timelines are now read per
+    episode.
+  - **A panic, two hangs, and an OOM, all reachable from a store's own bytes.** `"<f4294967295"` in a
+    `.zarray` overflowed the arithmetic derived from it and aborted the process; a chunk path naming a
+    FIFO blocked in `open` forever, and one symlinked to `/dev/zero` grew past 6 GB; a `.zarray`
+    declaring gigabyte chunks with no chunk files on disk allocated them anyway, because the fill path
+    was the one allocation never charged against the budget. Element widths are bounded, only regular
+    files are read as chunks, and the fill is charged like everything else.
+  - **Symlinks are no longer followed.** A store linking to a directory outside itself had that
+    directory's bytes read, hashed, and signed into a certificate as part of the dataset; a link to its
+    own parent made the directory walk exponential. The LeRobot and CAN adapters already refused this;
+    now Zarr does too, and says so.
+  - Smaller, same spirit: a `<U5` element is 20 bytes, not 5; a zero-length dimension after the first
+    is refused rather than yielding rows that hash to nothing; an unparseable `.zattrs` is reported
+    rather than read as "no attributes"; a `float16` array reports its values as *not examined* instead
+    of "read and clean" (the same fix landed in the HDF5 adapter); one unreadable array no longer
+    refuses the whole store, but when nothing survives the refusal carries the reason; a store that is
+    a single array reads as one episode; and an empty boundary pair stays an empty episode so
+    `STRUCTURAL.EMPTY_EPISODE` can name it.
+
+  A 3,000-case byte-mutation sweep over the fixtures produced no panics and no hangs, worst case 13 ms.
+
 - **Zarr adapter** — the replay-buffer layout Diffusion Policy, UMI, and the tooling around them ship
   in, read into the CDM as the fifth first-class format behind `veridex check`, and the last format on
   the roadmap.

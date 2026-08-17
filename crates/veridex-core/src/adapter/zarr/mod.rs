@@ -32,7 +32,7 @@
 
 mod store;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
@@ -95,6 +95,13 @@ const MAX_ATTR_TEXT: usize = 4096;
 /// constant in the HDF5 adapter: per-position statistics of an image answer nothing.
 const MAX_STATS_DIMS: u64 = 256;
 
+/// The ceiling on arrays one store may hold.
+///
+/// Every array becomes a stream in every episode that owns it, and both counts come from the store's
+/// own directory tree. A frame budget bounds frames, not the `Stream` structs around them, so a store
+/// of thousands of tiny arrays across thousands of groups is bounded here instead.
+const MAX_ARRAYS: usize = 100_000;
+
 /// The ceiling on episodes a store's `episode_ends` may declare.
 ///
 /// The boundaries are read before any data is, and each one becomes an episode with a stream per
@@ -130,7 +137,7 @@ impl ArrayEntry {
     }
 }
 
-/// One episode: a name, and the rows of the store's arrays it covers.
+/// One episode: which arrays it owns, and which of their rows it covers.
 struct EpisodeSlice {
     index: u64,
     /// The store path this episode came from, for provenance.
@@ -138,6 +145,25 @@ struct EpisodeSlice {
     /// The half-open row range within each array (the whole array for a per-episode-group layout).
     start: u64,
     end: u64,
+    /// For a group-per-episode layout, the group whose arrays belong to this episode. Its own arrays
+    /// and *only* its own: without this, every episode would carry every group's data, so each
+    /// episode would hold its neighbours' frames and no per-episode verdict would mean anything.
+    /// `None` for a replay buffer, where every array spans every episode.
+    prefix: Option<String>,
+}
+
+impl EpisodeSlice {
+    /// Whether `path` names an array this episode owns, and what the stream is called within it.
+    ///
+    /// The name is the path *below* the episode's group, so the same sensor is the same stream name in
+    /// every episode — which is what makes the cross-episode dtype, shape, and stream-presence checks
+    /// comparable at all.
+    fn stream_name<'a>(&self, path: &'a str) -> Option<&'a str> {
+        match &self.prefix {
+            None => Some(path),
+            Some(prefix) => path.strip_prefix(prefix)?.strip_prefix('/'),
+        }
+    }
 }
 
 impl Adapter for ZarrAdapter {
@@ -197,7 +223,7 @@ impl Adapter for ZarrAdapter {
         // the total size of the chunks on disk.
         let mut decompression = DecompressionBudget::new(options, store_bytes(root));
 
-        let root_attrs = read_attrs(root);
+        let root_attrs = read_attrs(root)?;
 
         // Which group holds the per-step arrays, and how the episodes are delimited.
         let data_dir = if root.join(DATA_GROUP).join(GROUP_FILE).is_file() {
@@ -206,7 +232,21 @@ impl Adapter for ZarrAdapter {
             root.to_path_buf()
         };
         let mut arrays = Vec::new();
-        collect_arrays(&data_dir, "", 0, &mut arrays, &mut notes)?;
+        if root.join(ARRAY_FILE).is_file() {
+            // The store *is* an array: one stream, and one episode covering its rows. `zarr.open()`
+            // reads such a store as an array, so refusing it would be this reader's limitation
+            // dressed up as the store's.
+            arrays.push(ArrayEntry {
+                path: root
+                    .file_stem()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("values")
+                    .to_string(),
+                array: ZarrArray::open(root)?,
+            });
+        } else {
+            collect_arrays(&data_dir, "", 0, &mut arrays, &mut notes)?;
+        }
         arrays.sort_by(|a, b| a.path.cmp(&b.path));
 
         let ends = read_episode_ends(root, &mut decompression)?;
@@ -215,10 +255,11 @@ impl Adapter for ZarrAdapter {
             None => group_slices(&data_dir, &mut arrays, &mut notes)?,
         };
         if slices.is_empty() {
-            return Err(parse_error(
+            return Err(parse_error(format!(
                 "no episodes: the store holds no `meta/episode_ends` and no group of arrays, so \
-                 there is no timeline to read",
-            ));
+                 there is no timeline to read{}",
+                why_nothing_was_read(&notes)
+            )));
         }
 
         let available: BTreeSet<u64> = slices.iter().map(|s| s.index).collect();
@@ -228,7 +269,21 @@ impl Adapter for ZarrAdapter {
             available.clone()
         };
 
-        let timeline = read_timeline(&arrays, &mut decompression, &mut notes)?;
+        // Read within each episode's own scope. A replay buffer's timeline spans the whole store, so
+        // one read serves every episode; a group-per-episode layout has one timeline per group, and
+        // taking the first one found would stamp every episode with another episode's recorded times.
+        let mut timelines: BTreeMap<u64, Option<Vec<i64>>> = BTreeMap::new();
+        for slice in &slices {
+            if !selected.contains(&slice.index) {
+                continue;
+            }
+            let owned: Vec<&ArrayEntry> = arrays
+                .iter()
+                .filter(|a| slice.stream_name(&a.path).is_some())
+                .collect();
+            let timeline = read_timeline(&owned, &mut decompression, &mut notes)?;
+            timelines.insert(slice.index, timeline);
+        }
         let store_name = root
             .file_name()
             .and_then(|n| n.to_str())
@@ -241,13 +296,18 @@ impl Adapter for ZarrAdapter {
             if !selected.contains(&slice.index) {
                 continue;
             }
+            let timeline = timelines.get(&slice.index).and_then(|t| t.as_ref());
             let mut streams = Vec::new();
             for entry in &arrays {
+                let Some(name) = slice.stream_name(&entry.path) else {
+                    continue;
+                };
                 if let Some(stream) = build_stream(
                     entry,
+                    name,
                     slice,
                     &store_name,
-                    timeline.as_ref(),
+                    timeline,
                     &mut budget,
                     &mut decompression,
                     &mut notes,
@@ -255,12 +315,9 @@ impl Adapter for ZarrAdapter {
                     streams.push(stream);
                 }
             }
-            if streams.is_empty() {
-                continue;
-            }
             let fully_timed =
                 timeline.is_some() && streams.iter().all(|s| s.clock_kind == ClockKind::Measured);
-            let (start_ts, end_ts) = match &timeline {
+            let (start_ts, end_ts) = match timeline {
                 // Measured bounds only when the recorded timeline covers the whole episode; a mixed
                 // episode would otherwise state nanosecond bounds for streams on a step index.
                 Some(stamps) if fully_timed => {
@@ -308,10 +365,10 @@ impl Adapter for ZarrAdapter {
         }
         episodes.sort_by_key(|e| e.index);
         if episodes.iter().all(|e| e.streams.is_empty()) {
-            return Err(parse_error(
-                "no arrays under any episode, so there are no frames to check — this store's layout \
-                 is not one this adapter maps",
-            ));
+            return Err(parse_error(format!(
+                "no arrays under any episode, so there are no frames to check{}",
+                why_nothing_was_read(&notes)
+            )));
         }
 
         let mut metadata: Vec<(String, String)> = vec![
@@ -363,10 +420,18 @@ impl Adapter for ZarrAdapter {
             ".zarray shape after the first dimension -> stream.shape".into(),
             "row bytes -> frame.value_ref.content_hash (SHA-256)".into(),
             ".zattrs -> dataset metadata".into(),
-            "numeric array values -> recomputed per-dimension statistics, saturation, and \
-             non-finite counts"
-                .into(),
         ];
+        if episodes
+            .iter()
+            .flat_map(|e| e.streams.iter())
+            .any(|s| s.observed_stats.is_some() || s.observed_non_finite.is_some())
+        {
+            mapped_fields.push(
+                "numeric array values -> recomputed per-dimension statistics, saturation, and \
+                 non-finite counts"
+                    .into(),
+            );
+        }
         if ends.is_some() {
             mapped_fields.push("meta/episode_ends -> episode boundaries".into());
         }
@@ -436,6 +501,26 @@ impl Adapter for ZarrAdapter {
     }
 }
 
+/// Why a store yielded nothing, when the reason is an array this reader had to skip.
+///
+/// Skipping one unreadable array and disclosing it is right — a real store keeps auxiliary arrays
+/// beside its data, and Python reads the rest of it. But when *nothing* survives, the refusal has to
+/// carry the reason: "this store's layout is not one this adapter maps" would blame the layout for a
+/// codec, and the codec is what the user has to change.
+fn why_nothing_was_read(notes: &Notes) -> String {
+    let reasons: Vec<&str> = notes
+        .unmapped
+        .iter()
+        .filter(|f| f.note.contains("could not be read"))
+        .map(|f| f.note.as_str())
+        .take(3)
+        .collect();
+    if reasons.is_empty() {
+        return " — this store's layout is not one this adapter maps".into();
+    }
+    format!(" — {}", reasons.join("; "))
+}
+
 /// The total size of the store's files, which scales the expansion budget.
 fn store_bytes(root: &Path) -> u64 {
     fn walk(dir: &Path, total: &mut u64, depth: usize) {
@@ -447,7 +532,10 @@ fn store_bytes(root: &Path) -> u64 {
         };
         for entry in entries.filter_map(|e| e.ok()) {
             let path = entry.path();
-            match entry.metadata() {
+            // Symlinks are not followed here either, so a link cycle cannot make sizing the store
+            // an exponential walk.
+            match std::fs::symlink_metadata(&path) {
+                Ok(meta) if meta.file_type().is_symlink() => {}
                 Ok(meta) if meta.is_dir() => walk(&path, total, depth + 1),
                 Ok(meta) => *total = total.saturating_add(meta.len()),
                 Err(_) => {}
@@ -472,14 +560,35 @@ fn collect_arrays(
             "the store nests deeper than {MAX_GROUP_DEPTH} levels"
         )));
     }
-    let mut children: Vec<PathBuf> = match std::fs::read_dir(dir) {
-        Ok(entries) => entries
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.is_dir())
-            .collect(),
+    let mut children: Vec<PathBuf> = Vec::new();
+    match std::fs::read_dir(dir) {
+        Ok(entries) => {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                // `symlink_metadata`, not `metadata`: a link is *not* followed. A store that links to
+                // a directory outside itself would otherwise have that directory's bytes read,
+                // hashed, and signed into a certificate as if they were part of the dataset — and a
+                // link pointing at its own parent makes this walk exponential. The same rule the
+                // LeRobot and CAN adapters already apply.
+                let Ok(meta) = std::fs::symlink_metadata(&path) else {
+                    continue;
+                };
+                if meta.file_type().is_symlink() {
+                    notes.unmapped.push(UnmappedField {
+                        source_path: entry.file_name().to_string_lossy().into_owned(),
+                        note: "this entry is a symbolic link; it is not followed, because what it \
+                               points at is not part of the store"
+                            .into(),
+                    });
+                    continue;
+                }
+                if meta.is_dir() {
+                    children.push(path);
+                }
+            }
+        }
         Err(e) => return Err(IngestError::Io(e.to_string())),
-    };
+    }
     // Sorted so ingestion does not depend on the order the filesystem happens to list a directory.
     children.sort();
     for child in children {
@@ -498,10 +607,24 @@ fn collect_arrays(
             format!("{prefix}/{name}")
         };
         if child.join(ARRAY_FILE).is_file() {
-            out.push(ArrayEntry {
-                path,
-                array: ZarrArray::open(&child)?,
-            });
+            // One array this reader cannot read must not refuse the whole store: a real store keeps
+            // auxiliary arrays beside its data (a structured dtype, a string index), and Python reads
+            // the rest of it happily. What matters is that the omission is named, so a stream that is
+            // *absent* is never mistaken for a stream that is clean.
+            match ZarrArray::open(&child) {
+                Ok(array) => out.push(ArrayEntry { path, array }),
+                Err(e) => notes.unmapped.push(UnmappedField {
+                    source_path: path,
+                    note: format!(
+                        "this array could not be read, so no stream is built from it: {e}"
+                    ),
+                }),
+            }
+            if out.len() > MAX_ARRAYS {
+                return Err(parse_error(format!(
+                    "the store holds more than {MAX_ARRAYS} arrays"
+                )));
+            }
         } else if child.join(GROUP_FILE).is_file() {
             collect_arrays(&child, &path, depth + 1, out, notes)?;
         } else {
@@ -591,6 +714,7 @@ fn replay_buffer_slices(
             source: format!("{META_GROUP}/{EPISODE_ENDS}[{index}]"),
             start: previous,
             end,
+            prefix: None,
         });
         previous = end;
     }
@@ -644,6 +768,7 @@ fn group_slices(
                 .to_string(),
             start: 0,
             end: rows,
+            prefix: None,
         }]);
     }
     // Otherwise each first-level group is an episode, and its arrays are its streams. Handled by
@@ -677,9 +802,15 @@ fn group_slices(
                 source: group.clone(),
                 start: 0,
                 end: rows,
+                prefix: Some(group.clone()),
             }
         })
         .collect())
+}
+
+/// The final segment of a `/`-joined path.
+fn leaf_of(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
 }
 
 /// The trailing run of digits in a name (`episode_12` -> 12).
@@ -697,7 +828,7 @@ fn trailing_number(name: &str) -> Option<u64> {
 
 /// The store's timeline in nanoseconds, when it records one with declared units.
 fn read_timeline(
-    arrays: &[ArrayEntry],
+    arrays: &[&ArrayEntry],
     budget: &mut DecompressionBudget,
     notes: &mut Notes,
 ) -> Result<Option<Vec<i64>>, IngestError> {
@@ -709,7 +840,7 @@ fn read_timeline(
     }) else {
         return Ok(None);
     };
-    let attrs = read_attrs(&entry.array.dir);
+    let attrs = read_attrs(&entry.array.dir)?;
     let units = attrs
         .get(UNITS_ATTR)
         .and_then(|v| v.as_str())
@@ -770,6 +901,7 @@ fn ns_per_unit(units: &str) -> Option<f64> {
 #[allow(clippy::too_many_arguments)]
 fn build_stream(
     entry: &ArrayEntry,
+    name: &str,
     slice: &EpisodeSlice,
     store_name: &str,
     timeline: Option<&Vec<i64>>,
@@ -783,14 +915,19 @@ fn build_stream(
     let rows = array.shape[0];
     let (start, end) = (slice.start.min(rows), slice.end.min(rows));
     if end <= start {
-        notes.unmapped.push(UnmappedField {
-            source_path: format!("{}[{}..{}]", entry.path, slice.start, slice.end),
-            note: format!(
-                "this array holds {rows} row(s), so it has none in episode {}'s range; no stream \
-                 is built from it for that episode",
-                slice.index
-            ),
-        });
+        // A boundary pair that spans nothing is an *empty episode*, which the structural checks
+        // report on their own; noting it once per array would bury that in noise. An array too short
+        // to reach the episode at all is a different fact, and is still said.
+        if slice.start != slice.end {
+            notes.unmapped.push(UnmappedField {
+                source_path: format!("{}[{}..{}]", entry.path, slice.start, slice.end),
+                note: format!(
+                    "this array holds {rows} row(s), so it has none in episode {}'s range; no \
+                     stream is built from it for that episode",
+                    slice.index
+                ),
+            });
+        }
         return Ok(None);
     }
     if end < slice.end {
@@ -815,10 +952,25 @@ fn build_stream(
 
     let elem = array.dtype.size as u64;
     let per_row = array.row_elements();
-    let decodable = array.dtype.numeric && elem > 0 && elem <= 8;
+    // `float16` is numeric and fits in eight bytes, but this reader decodes no 2-byte float — so its
+    // values are never examined, and reporting `Some(0)` non-finite for an array full of NaNs would
+    // satisfy the check that exists to find them. Decodability is asked of the decoder, not guessed
+    // from the width.
+    let decodable =
+        array.dtype.numeric && elem > 0 && array.dtype.decode(&vec![0u8; elem as usize]).is_some();
     let per_dimension = decodable && per_row > 0 && per_row <= MAX_STATS_DIMS;
     if decodable && !per_dimension {
         notes.wide_arrays.insert(entry.path.clone());
+    }
+    if array.dtype.numeric && !decodable {
+        notes.unmapped.push(UnmappedField {
+            source_path: entry.path.clone(),
+            note: format!(
+                "values of type {} are not decoded by this reader, so nothing is summarized from \
+                 them — the statistical checks abstain on this stream rather than reporting it clean",
+                array.dtype.name
+            ),
+        });
     }
 
     let uri = format!("{store_name}#{}", entry.path);
@@ -860,8 +1012,8 @@ fn build_stream(
     }
 
     Ok(Some(Stream {
-        name: entry.path.clone(),
-        modality: modality_for(entry.leaf(), array),
+        name: name.to_string(),
+        modality: modality_for(leaf_of(name), array),
         // Zarr declares no sample rate, and nothing is inferred from the timestamps.
         declared_rate_hz: None,
         clock_id: clock_id.to_string(),
