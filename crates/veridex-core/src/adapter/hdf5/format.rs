@@ -202,6 +202,7 @@ pub(crate) struct Message {
 const MSG_DATASPACE: u16 = 0x0001;
 const MSG_LINK_INFO: u16 = 0x0002;
 const MSG_DATATYPE: u16 = 0x0003;
+const MSG_FILL_VALUE: u16 = 0x0005;
 const MSG_LINK: u16 = 0x0006;
 const MSG_LAYOUT: u16 = 0x0008;
 const MSG_FILTER: u16 = 0x000B;
@@ -366,6 +367,15 @@ pub(crate) struct DatasetInfo {
     pub datatype: Datatype,
     pub layout: Layout,
     pub filters: Vec<Filter>,
+    /// The dataset's declared fill value, as raw element bytes, when it declares one.
+    ///
+    /// A chunked dataset that is only partly written has no index entry for the unwritten chunks;
+    /// HDF5 defines those regions as this value, and that is what `h5py` returns for them. Reading
+    /// them as zeros instead is not a rounding error — it fabricates data. It changes the frame's
+    /// content hash, it feeds invented numbers to the statistics, and with `fillvalue=nan` it turns
+    /// "16 values were never written" into `observed_non_finite = Some(0)`, which means "every value
+    /// was read and every one was finite". A check then passes confidently over data it never saw.
+    pub fill_value: Option<Vec<u8>>,
 }
 
 impl DatasetInfo {
@@ -943,11 +953,16 @@ impl H5File {
             Some(msg) => parse_filter_pipeline(&msg.data)?,
             None => Vec::new(),
         };
+        let fill_value = match header.first(MSG_FILL_VALUE) {
+            Some(msg) => parse_fill_value(&msg.data, datatype.size as usize)?,
+            None => None,
+        };
         Ok(DatasetInfo {
             dims,
             datatype,
             layout,
             filters,
+            fill_value,
         })
     }
 
@@ -1413,6 +1428,54 @@ fn parse_datatype(data: &[u8]) -> H5Result<Datatype> {
     })
 }
 
+/// Parse a Fill Value message (type `0x0005`), returning the raw fill bytes when the dataset both
+/// defines one and it is the size of one element.
+///
+/// Three versions are in the wild and they disagree about the header layout:
+///
+/// - **v1**: `version, space_alloc_time, fill_write_time, fill_defined`, then a 4-byte size and the
+///   value. The `fill_defined` byte governs whether the size/value follow.
+/// - **v2**: same four bytes, but the size/value are present only when `fill_defined == 1`.
+/// - **v3**: `version, flags`, then size/value present only when bit 5 of `flags` is set. Bits 0–1
+///   and 2–3 carry the allocation and write times, which say nothing about the value.
+///
+/// A message that defines no fill value, or whose stored value is not exactly one element wide (a
+/// variable-length or compound type), yields `None` — the caller then keeps the previous
+/// zero-initialized behavior for that dataset rather than guessing. Being unable to read the fill
+/// value is not a reason to refuse the file; being wrong about it silently was the defect.
+fn parse_fill_value(data: &[u8], elem_size: usize) -> H5Result<Option<Vec<u8>>> {
+    let mut cursor = Cursor::new(data, "fill value message");
+    let version = cursor.u8()?;
+    let defined = match version {
+        1 | 2 => {
+            cursor.u8()?; // space allocation time
+            cursor.u8()?; // fill value write time
+            cursor.u8()? == 1
+        }
+        3 => {
+            let flags = cursor.u8()?;
+            flags & 0b0010_0000 != 0
+        }
+        other => {
+            return Err(parse_error(format!(
+                "unsupported fill value message version {other}"
+            )))
+        }
+    };
+    if !defined {
+        return Ok(None);
+    }
+    // v1 always stores the size; v2/v3 store it only when a value is defined, which `defined`
+    // already established.
+    let size = cursor.u32()? as usize;
+    if size == 0 || size != elem_size {
+        // A fill value that is not one element wide belongs to a type this reader does not
+        // reconstruct element-wise. Abstain rather than smear the bytes across the row.
+        return Ok(None);
+    }
+    Ok(Some(cursor.take(size)?.to_vec()))
+}
+
 fn parse_filter_pipeline(data: &[u8]) -> H5Result<Vec<Filter>> {
     let mut cursor = Cursor::new(data, "filter pipeline message");
     let version = cursor.u8()?;
@@ -1537,6 +1600,18 @@ impl<'a> RowReader<'a> {
     }
 
     /// Assemble one row out of every chunk that intersects it.
+    /// A row initialized to the dataset's declared fill value, or to zeros when it declares none
+    /// (HDF5's own default fill is zero, so that case is not a guess).
+    fn filled_row(&self) -> Vec<u8> {
+        let len = self.row_bytes as usize;
+        match &self.info.fill_value {
+            Some(fill) if !fill.is_empty() && len % fill.len() == 0 => {
+                fill.iter().copied().cycle().take(len).collect()
+            }
+            _ => vec![0u8; len],
+        }
+    }
+
     fn chunked_row(&mut self, index: u64, chunk_dims: &[u64]) -> H5Result<Vec<u8>> {
         let rank = self.info.dims.len();
         if chunk_dims.len() != rank + 1 {
@@ -1556,7 +1631,9 @@ impl<'a> RowReader<'a> {
         // source and has a 64 MB floor, so a real dataset never notices).
         self.file.charge(self.row_bytes)?;
         let elem = self.info.datatype.size as u64;
-        let mut row = vec![0u8; self.row_bytes as usize];
+        // Start from the dataset's declared fill value, not from zeros. Anything no chunk covers is
+        // defined by HDF5 to *be* this value, and it is what h5py returns for those elements.
+        let mut row = self.filled_row();
         // Every chunk holding part of this row: its first-dimension extent covers `index`, and the
         // other dimensions are visited in full.
         let origins: Vec<Vec<u64>> = self
@@ -1569,11 +1646,15 @@ impl<'a> RowReader<'a> {
             })
             .cloned()
             .collect();
-        if origins.is_empty() {
-            return Err(parse_error(format!(
-                "no chunk in the index holds row {index}; the dataset's chunk index is incomplete"
-            )));
-        }
+        // No chunk covering the row is not a corrupt index: it is what a partly-written dataset
+        // looks like, and it is the single most common shape a robot logger produces — pre-allocate
+        // N steps, write fewer. h5py reads those rows as the fill value. Refusing the whole file and
+        // blaming its index was wrong about a file that was in fact complete and correct, and it was
+        // inconsistent with the partial-row case one branch above, which fabricated silently rather
+        // than erroring. Both now resolve the same way: the fill value.
+        //
+        // The row is still charged against the budget above, so a dataspace claiming an enormous
+        // first dimension cannot mint rows for free.
         for origin in origins {
             self.load_chunk(&origin, chunk_dims, elem)?;
             let (_, chunk) = self.cached.as_ref().expect("just loaded");

@@ -31,6 +31,25 @@ Regenerating changes the row hashes pinned in the tests (the arrays are drawn fr
 | `dense_links.h5` | 40 links in one group, which moves them into fractal-heap (dense) storage |
 | `statistical_faults.h5` | A saturated dimension, a lone 250x spike, and NaNs — each in a non-first dimension, so an element-0-only recompute would miss them |
 | `bomb.h5` | 100 KB on disk declaring a 98 MB chunk — refused on what it declares, before anything is inflated |
+| `partial_fill.h5` | Chunked arrays that are only *partly* written, with non-zero, negative, and NaN fill values — the regions no chunk covers are defined by HDF5 to be the fill value, including rows covered by no chunk at all |
+
+
+`partial_fill.h5` is written by:
+
+```python
+import h5py, numpy as np
+
+with h5py.File("partial_fill.h5", "w") as f:
+    g = f.create_group("data/demo_0")
+    d = g.create_dataset("actions", shape=(4, 20), dtype="f4", chunks=(2, 5), fillvalue=7.5)
+    d[:, 0:5] = np.arange(20, dtype="f4").reshape(4, 5)
+    d2 = g.create_dataset("obs", shape=(4, 3), dtype="f4", chunks=(2, 3), fillvalue=-1.0)
+    d2[0:2, :] = 1.0
+    d3 = g.create_dataset("nanfill", shape=(4, 4), dtype="f4", chunks=(2, 2),
+                          fillvalue=np.float32("nan"))
+    d3[:, 0:2] = 1.0
+    g.attrs["num_samples"] = 4
+```
 
 ```python
 import h5py, numpy as np, json

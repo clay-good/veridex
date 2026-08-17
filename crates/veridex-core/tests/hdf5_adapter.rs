@@ -1215,3 +1215,68 @@ fn a_cyclic_btree_is_a_parse_error_not_a_stack_overflow() {
         other => panic!("expected a parse error naming the cycle, got {other:?}"),
     }
 }
+
+/// A chunked dataset that is only partly written has no index entry for the unwritten chunks; HDF5
+/// defines those regions as the dataset's declared fill value, and that is what `h5py` returns. The
+/// reader zero-initialized the row instead, so every unwritten element came back as 0 — silently,
+/// with `coverage: Full` and nothing in `unmapped_fields`. The written chunks decoded correctly, so
+/// only the invented part was wrong, which is the hardest kind of wrong to notice.
+///
+/// The hashes below are `sha256(h5py_row.tobytes())`, taken from `h5py` reading this same fixture.
+#[test]
+fn unwritten_regions_read_as_the_declared_fill_value_not_as_zeros() {
+    let ingested = ingest("partial_fill.h5", IngestOptions::default());
+
+    // Only columns 0..5 of 20 were written; the rest is fill 7.5.
+    assert_row_hashes(
+        stream_of(&ingested, 0, "actions"),
+        &[
+            "773362c3f1fb07c58c60bf29f131a65c2a20b7dc93847350c9f5e61e943fd103",
+            "76ab32749f98a51c09f1372c1145fd82410585ddde97f14bb429b007bc3be59f",
+            "90245e59ddf2e8ad8559aab1f92d0bf4c30a576ab719925bcadc939dcfe38408",
+            "dfe318b1d409538bb42a328ca3b565c082f2e78bd4eeea24bfc79c19d009499b",
+        ],
+    );
+}
+
+/// Rows 2 and 3 of `obs` are covered by *no* chunk at all — a logger that pre-allocated 4 steps and
+/// wrote 2. `h5py` reads them as the fill value. The reader refused the whole file with "the
+/// dataset's chunk index is incomplete", blaming a file that was complete and correct — and doing so
+/// inconsistently with the partly-written row above, which it fabricated without complaint.
+#[test]
+fn a_wholly_unwritten_row_is_the_fill_value_not_a_corrupt_index() {
+    let ingested = ingest("partial_fill.h5", IngestOptions::default());
+    assert_row_hashes(
+        stream_of(&ingested, 0, "obs"),
+        &[
+            "8a31a40ecac0ceb4d87b30bd156ca7a547e8e33dc071454b765fbc777d1c34a1",
+            "8a31a40ecac0ceb4d87b30bd156ca7a547e8e33dc071454b765fbc777d1c34a1",
+            "f48af7dd3f3adb7dcc618687a0a2a61b8df98065ca0c180875e8ae65a88e28e4",
+            "f48af7dd3f3adb7dcc618687a0a2a61b8df98065ca0c180875e8ae65a88e28e4",
+        ],
+    );
+}
+
+/// The worst instance of the same bug: with `fillvalue=nan` and a partial write, the fabricated
+/// zeros made `observed_non_finite` report `Some(0)` — which means "every value was read and every
+/// one was finite". `STATISTICAL.NON_FINITE_OBSERVED` then returned a confident clean answer over
+/// eight NaNs it never read.
+#[test]
+fn a_nan_fill_value_is_seen_by_the_non_finite_check() {
+    let ingested = ingest("partial_fill.h5", IngestOptions::default());
+    let s = stream_of(&ingested, 0, "nanfill");
+    assert_row_hashes(
+        s,
+        &[
+            "31f7fdde50e0a38c241f71e37ba65be3f2cb4d79d47a47ebc65cce5932834eb8",
+            "31f7fdde50e0a38c241f71e37ba65be3f2cb4d79d47a47ebc65cce5932834eb8",
+            "31f7fdde50e0a38c241f71e37ba65be3f2cb4d79d47a47ebc65cce5932834eb8",
+            "31f7fdde50e0a38c241f71e37ba65be3f2cb4d79d47a47ebc65cce5932834eb8",
+        ],
+    );
+    assert_eq!(
+        s.observed_non_finite,
+        Some(8),
+        "two NaN columns over four rows must be counted, not read as zeros"
+    );
+}
