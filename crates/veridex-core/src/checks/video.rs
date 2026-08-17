@@ -205,17 +205,35 @@ impl Check for MediaReadable {
     }
 }
 
-/// Streams whose every media-carrying episode misses its row count by the *same* signed amount.
+/// Streams where every episode that could be *measured* misses its row count by the *same* signed
+/// amount, and at least two could be.
 ///
 /// That is the fingerprint of a systematic export defect — an encoder dropping a leading frame, a
 /// converter counting from one — rather than N independently broken episodes, and it is charged once
 /// like the other export-wide defects. A stream where only some episodes are wrong, or where they
 /// are wrong by differing amounts, is not here: those episodes are each separately wrong, and naming
-/// them is the point.
+/// them is the point. Neither is a stream where only one episode yielded a length — an episode whose
+/// file is missing, whose container would not parse, or whose container declares no sample count was
+/// never weighed, and one measurement is not a pattern.
 fn systematic_frame_delta(dataset: &Dataset) -> BTreeMap<&str, i64> {
-    let mut deltas: BTreeMap<&str, Option<i64>> = BTreeMap::new();
+    /// What one stream's episodes have shown so far.
+    struct Pattern {
+        /// The delta every measured episode has agreed on, or `None` once two disagreed or one
+        /// came back clean.
+        delta: Option<i64>,
+        /// Distinct episodes that actually yielded a length. Counted by watching the episode index
+        /// change: a stream name may legitimately appear twice in one episode.
+        measured: u64,
+        last_episode: Option<u64>,
+    }
+
+    let mut patterns: BTreeMap<&str, Pattern> = BTreeMap::new();
     for ep in &dataset.episodes {
         for s in &ep.streams {
+            // An episode whose file is missing, whose container would not parse, or whose container
+            // declares no sample count contributed no length. It is not evidence for a pattern and
+            // it is not evidence against one — it simply was not measured, and the roll-up's claim
+            // is about the episodes that were.
             let Some(media) = &s.media else { continue };
             if media.status != MediaStatus::Read {
                 continue;
@@ -224,29 +242,28 @@ fn systematic_frame_delta(dataset: &Dataset) -> BTreeMap<&str, i64> {
                 continue;
             };
             let delta = container_frames as i64 - s.frames.len() as i64;
-            match deltas.entry(s.name.as_str()).or_insert(Some(delta)) {
-                // A zero delta means this episode is fine, so the stream is not systematically off.
-                Some(seen) if *seen != delta || delta == 0 => {
-                    deltas.insert(s.name.as_str(), None);
-                }
-                _ => {}
+            let pattern = patterns.entry(s.name.as_str()).or_insert(Pattern {
+                delta: Some(delta),
+                measured: 0,
+                last_episode: None,
+            });
+            if pattern.last_episode != Some(ep.index) {
+                pattern.measured += 1;
+                pattern.last_episode = Some(ep.index);
+            }
+            // A zero delta means this episode is fine, so the stream is not systematically off.
+            if pattern.delta != Some(delta) || delta == 0 {
+                pattern.delta = None;
             }
         }
     }
-    // A stream present in a single episode has no pattern to be systematic about; leave it to the
-    // per-episode report, which names the file and both counts.
-    let mut episodes_seen: BTreeMap<&str, u64> = BTreeMap::new();
-    for ep in &dataset.episodes {
-        for s in &ep.streams {
-            if s.media.is_some() {
-                *episodes_seen.entry(s.name.as_str()).or_insert(0) += 1;
-            }
-        }
-    }
-    deltas
+
+    patterns
         .into_iter()
-        .filter(|(name, _)| episodes_seen.get(name).is_some_and(|n| *n > 1))
-        .filter_map(|(name, d)| d.filter(|d| *d != 0).map(|d| (name, d)))
+        // A stream measured in a single episode has no pattern to be systematic about; leave it to
+        // the per-episode report, which names the file and both counts.
+        .filter(|(_, p)| p.measured > 1)
+        .filter_map(|(name, p)| p.delta.filter(|d| *d != 0).map(|d| (name, d)))
         .collect()
 }
 
@@ -343,7 +360,8 @@ impl Check for MediaConformance {
                             record(
                                 "VIDEO.FRAME_COUNT_MISMATCH",
                                 format!(
-                                    "every episode's video is {} frame(s) {} than its rows",
+                                    "every episode with a readable video is {} frame(s) {} than \
+                                     its rows",
                                     delta.unsigned_abs(),
                                     if delta < 0 { "shorter" } else { "longer" }
                                 ),
