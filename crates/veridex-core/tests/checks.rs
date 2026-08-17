@@ -1838,8 +1838,23 @@ fn docs_checks_md_lists_no_unknown_finding_codes() {
         // The scope disclosure, emitted by the engine for the same reason: whether the catalog was
         // narrowed is a property of the run's configuration, which no check can read from the CDM.
         "SCOPE.NARROWED",
+        // A check that crashed. Emitted as a SARIF rule id by the reporter, so no registered check
+        // declares it either.
+        "VERIDEX.CHECK_ERRORED",
     ]
     .into();
+
+    // Forward direction, which did not exist: this list was consulted *only* to excuse a code the
+    // docs mention that no check emits. Nothing required an engine-emitted code to be documented at
+    // all, so `COVERAGE.*` and `SCOPE.NARROWED` were documented by luck and `VERIDEX.CHECK_ERRORED`
+    // — which SARIF hands to code scanning with a `helpUri` pointing at this very page — was not
+    // documented and nothing noticed.
+    for code in &engine_emitted {
+        assert!(
+            doc.contains(&format!("`{code}`")),
+            "the engine can emit `{code}`, but docs/checks.md does not document it"
+        );
+    }
 
     // Backtick-delimited spans are the odd-indexed pieces when splitting on '`'.
     for token in doc.split('`').skip(1).step_by(2) {

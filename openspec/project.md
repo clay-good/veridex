@@ -104,7 +104,7 @@ The decision and its consequences are recorded as design D6a.
 |---|---|
 | **CDM** | Canonical Dataset Model — Veridex's single internal representation that all adapters populate and all checks read. The neutrality substrate. |
 | **Adapter** | A per-format component that maps a source (LeRobot, MCAP, RLDS, HDF5/Zarr) into the CDM. |
-| **Check** | A deterministic rule that inspects the CDM and emits findings. Grouped into categories (structural, temporal, statistical, semantic, video, provenance, privacy, duplicate). |
+| **Check** | A deterministic rule that inspects the CDM and emits findings. Grouped into categories (structural, temporal, statistical, semantic, video, provenance, autonomy). |
 | **Finding** | A single issue: check ID, severity, precise CDM location, message, code, risk, remedy. |
 | **Verdict** | The full, deterministic result of a run: findings, status, and reproducibility metadata. |
 | **Trust score / grade** | A 0–100 score and A–F grade computed from the verdict + provenance coverage by a versioned rubric. |

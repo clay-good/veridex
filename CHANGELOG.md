@@ -8,6 +8,80 @@ All notable changes to Veridex are recorded here. The format follows
 The first shippable slice of the [`bootstrap-veridex-mvp`](openspec/changes/bootstrap-veridex-mvp/)
 change. Runs end-to-end: ingest → validate → score → report → sign.
 
+### Fixed
+
+*The entries below close a **seven-agent audit** covering determinism and the content hash, the
+certificate and its signing, scoring/profiles/gates, untrusted-input resilience across all seven
+adapters, the CLI and Python front ends with their machine-readable outputs, and the documentation
+against the code. Each defect below was reproduced before it was fixed, and each fix has a test that
+fails without it.*
+
+- **A run could look complete on every count while measuring less than it claimed.** Three
+  independent agents converged on one shape: *coverage* (how much data was read) was refused at gates
+  and at `certify`, but *scope* (how much of the catalog ran, at what thresholds) was only disclosed —
+  and the data score starts at 100 and only deducts, so anything that stops a check from measuring
+  **raises** it.
+
+  - A moved tolerance produced no `SCOPE.NARROWED` finding, because it deselects nothing: the check
+    runs, measures the defect, and passes it. Two `veridex.toml` lines took the demo MCAP from exit
+    20 with a real 210 ms `TEMPORAL.CLOCK_SKEW` to exit 0 with no trace in SARIF, while `diff
+    --fail-on-regression` called the 13-point climb an improvement.
+  - `--min-score` was refused over `--metadata-only` but honored over a **sample** and over a
+    **narrowed** run. On this repo's own demo dataset, whose generator puts the flaw in episode 1,
+    `--sample-episodes 1` turns a failing gate green; `categories = []` runs no checks at all and
+    scores a perfect 100 on the data axis. Both are now refused with exit 2, naming the reason.
+  - `verify`'s JSON said nothing about narrowing, though the terminal render always warned. A
+    `veridex.toml` in the working directory — auto-discovered, no flag — took a signed certificate
+    from `status: fail, grade C (76)` to `status: pass, grade B (89)` on the same content hash, and a
+    CI gate on `verified && status == "pass"` could not tell. `verified_json` now carries `narrowed`
+    and the narrowing clauses; both renderers share one function so they cannot disagree.
+
+- **A hostile file could kill the process, or read files that were never part of the dataset.**
+
+  - A ~700-byte Zarr store aborted `veridex check`: `all()` over an empty collection is *true*, so an
+    episode no array reaches read as "fully timed" and sliced the timeline out of range. HDF5 had the
+    same vacuous `all()` and took the same fix.
+  - A LeRobot dataset could ship `data/chunk-000/file-000.parquet -> /home/victim/payroll.parquet`
+    and have that file read: its columns' statistics and a SHA-256 per cell went into the CDM, which
+    is content-hashed, printed, and **signed into a certificate**. The containment guard existed and
+    media was its only caller; the data walk was documented as "inside by construction", which
+    stopped being true when the walk started following symlinks.
+  - Two HDF5 sizes overflowed the arithmetic reading them. In release the first was worse than a
+    crash: a 2^64-element attribute wrapped to 0, was clamped to 1, and was read as a single scalar.
+  - MCAP charged its decompression budget from a reader that stops at the first unparseable record,
+    while the framing walk behind it reached every chunk and drained each to its own declared size.
+    One flipped magic byte bought 16 GB of decompression over two seconds, uncharged.
+
+- **`diff` read a crashed check as a fixed one.** An errored check costs 10 points where the error
+  finding it suppresses costs 15, so a check that panics instead of reporting takes the score *up*.
+  Every other renderer named it; the CI gate was the one that could not see it.
+
+- **A profile could loosen a threshold the operator set tighter.** `--profile world-model-ready` is
+  documented as tightening cross-sensor sync, and it relaxed a configured `clock_skew_ms = 5.0` to
+  its own 20 ms. Among thresholds a profile names, the stricter of the two now applies.
+
+- **A dataset was named by how its path was typed.** `dataset_id_from_path` exists because
+  `Path::file_name` has no answer for a path ending in `.` or `..`; CAN+DBC and RLDS still used a raw
+  `file_name()`, so `certify mydata` and `cd mydata && verify .` disagreed on the content hash and the
+  genuine certificate was rejected against its own dataset. The regression test that was meant to hold
+  this line passed with the fix reverted — none of its four spellings actually reached the failing
+  branch.
+
+- **`verify` printed the verdict status where the data sub-score belongs** ("[data pass · provenance
+  66%]"), so the sub-score `docs/rubric-v1.md` promises was never shown — and the substitute
+  flattered, since ten warnings and no errors renders as `pass (warnings)` beside a data score of 60.
+
+- **Documentation corrections.** The README described the signed certificate as "Croissant + W3C PROV
+  underneath"; those are the `veridex provenance --emit` documents, and no Croissant or PROV appears in
+  a certificate. The catalog was described as "36 checks across six families" (38, across seven); the
+  glossary named two categories that do not exist (`privacy`, `duplicate`) and omitted `autonomy`; the
+  CLI spec documented `--format json|sarif`, which is the adapter override; the narrowing example
+  cited "eleven vanished findings" and a "55-point" climb (five, and 13); and the changelog still
+  listed metadata-only ingestion as unbuilt in the same file that announces it. `VERIDEX.CHECK_ERRORED`
+  was emitted to SARIF with a `helpUri` pointing at a page that never documented it — the docs guard
+  consulted its engine-emitted list only to *excuse* codes, never to require them, so it now asserts
+  the forward direction too.
+
 ### Added
 
 - **Metadata-only ingestion** (`veridex check --metadata-only`, `veridex.check(..., metadata_only=True)`),
@@ -288,8 +362,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 - **Validation engine** — check registry with duplicate-id rejection, category/id selection,
   severity overrides, deterministic stably-ordered verdicts with a result content hash, fault
   isolation for panicking checks, and reproducibility metadata.
-- **Checks catalog** — 36 checks across six families (the sixth, **autonomy**, is described in its own
-  entries below), each finding carrying a training **risk** and a **remedy** and located to the exact
+- **Checks catalog** — 38 checks across seven families (the seventh, **autonomy**, is described in its
+  own entries below), each finding carrying a training **risk** and a **remedy** and located to the exact
   episode / stream / frame:
   - **Structural** — episode-boundary integrity (the lerobot#4143 class: a per-episode declared
     `length` from `meta/episodes.jsonl` that disagrees with the frames ingested, duplicate episode
@@ -611,8 +685,8 @@ defects.*
   `only_checks = ["structural.episode-boundary"]` turned `FAIL / 76 / 5 findings` into
   `PASS / 89 / 0 findings`, with 1 of 38 checks run and no trace of that in the terminal report, the
   HTML report built to travel, the SARIF a CI code-scanning job reads, or a signed certificate.
-  `diff --fail-on-regression` read the eleven vanished findings — including a real 210 ms clock
-  skew — as *resolved*, saw the trust score climb 55 points, and exited 0.
+  `diff --fail-on-regression` read the five vanished findings — including a real 210 ms clock
+  skew — as *resolved*, saw the trust score climb 13 points, and exited 0.
 
   `effective_config` had carried the facts all along, in the JSON envelope and in the certificate,
   but only for a reader who thought to look. This is the same failure shape `CoverageNote` exists to
@@ -1444,6 +1518,7 @@ excluded for cross-platform hash stability). Everything else is below.*
 
 ### Not yet included
 
-Streaming / large-than-memory and remote Hub ingestion (both are *refused* with a clear error rather
-than silently ignored — `metadata_only` and `Source::Remote` return `IngestError::NotImplemented`);
-and publishing to PyPI / crates.io.
+Streaming / larger-than-memory reads and remote Hub ingestion (`Source::Remote` is *refused* with a
+clear error rather than silently ignored, returning `IngestError::NotImplemented`); and publishing to
+PyPI / crates.io. Metadata-only ingestion is no longer in this list — it shipped, and has its own
+entry above.

@@ -38,8 +38,9 @@ Veridex Trust Report
   boundaries, timeline gaps, duplicate frames, a video whose frame count no longer matches the
   actions it is paired with — each reported with the *training risk* it creates and a *remedy*.
 - **Proves where data came from.** Which sensor, clock, calibration, annotator, license, and
-  upstream dataset produced each segment — surfaced, scored, and emitted as a signed certificate
-  (Croissant + W3C PROV underneath).
+  upstream dataset produced each segment — surfaced, scored, and emitted two ways: as a signed
+  trust certificate, and as Croissant + W3C PROV documents (`veridex provenance --emit`) for tools
+  that speak them.
 - **A number you can trust and share.** A deterministic 0–100 trust score and A–F grade. Same
   dataset and the same Veridex version always yield the same result — including from inside the
   dataset directory, so a certificate issued anywhere verifies anywhere — and the signed certificate

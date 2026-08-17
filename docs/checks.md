@@ -236,8 +236,16 @@ the terminal report, the JSON, the SARIF, the HTML, and the certificate's own su
 | `statistical.value-measurability` | the adapter never read values (MCAP, CAN+DBC, MF4, RLDS), or read them but had no stored statistics to compare against (HDF5, Zarr) |
 | `structural.content-measurability` | frames carry no content fingerprint, so the duplicate-episode and stuck-stream checks had no bytes to compare |
 
-All three are **informational**: a dataset is not worse for the container it was published in. What
-they change is what a passing verdict is evidence *of*. Without them, a CAN log with a wheel speed
+A fourth disclosure comes from the engine rather than the catalog. When a check *crashes* instead of
+producing findings, that is neither a pass nor a defect in the data — it is a hole where a
+measurement should be. The verdict records it under `errored_checks`, the terminal, HTML and JSON
+reports name it, SARIF reports it as **`VERIDEX.CHECK_ERRORED`**, and the certificate lists it under
+`checks_errored` rather than `checks_run`. `diff --fail-on-regression` treats a check that newly
+crashed as a regression, because a crash costs the score less (10 points) than the error finding it
+suppressed (15) — so without that, a check panicking instead of reporting looked like a fix.
+
+All three catalog checks are **informational**: a dataset is not worse for the container it was
+published in. What they change is what a passing verdict is evidence *of*. Without them, a CAN log with a wheel speed
 pinned at its rail for 70% of the recording reported `data 100` with no statistical findings — and
 the certificate listed all five statistical checks under `checks_run` with `categories_skipped: []`.
 
@@ -279,8 +287,8 @@ improvement. The disclosure now names which thresholds moved and to what. Until 
 `veridex.toml` carrying one line rewrote the verdict everywhere it mattered. On the demo MCAP,
 `only_checks = ["structural.episode-boundary"]` turned `FAIL / 76 / 5 findings` into
 `PASS / 89 / 0 findings`, with no trace of the narrowing in the terminal report, the HTML report,
-the SARIF upload, or a signed certificate — and `diff --fail-on-regression` read the eleven vanished
-findings, including a real 210 ms clock skew, as *resolved*, saw the score climb 55 points, and
+the SARIF upload, or a signed certificate — and `diff --fail-on-regression` read the five vanished
+findings, including a real 210 ms clock skew, as *resolved*, saw the score climb 13 points, and
 exited 0.
 
 The remedy is the one coverage already uses, for the same reason: findings are the only channel that

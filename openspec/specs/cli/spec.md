@@ -54,7 +54,8 @@ guess.
 
 ### Requirement: CI-friendly exit codes and output
 The CLI SHALL return distinct, documented exit codes for pass, pass-with-warnings, fail, and
-tool-error, and SHALL support machine-readable output selectable by flag (`--format json|sarif`).
+tool-error, and SHALL support machine-readable output selectable by flag (`--json`, `--sarif`, `--html`; `--format`
+is the adapter override, not an output selector).
 Thresholds for what counts as failure SHALL be configurable.
 
 #### Scenario: CI fails the build on an error verdict

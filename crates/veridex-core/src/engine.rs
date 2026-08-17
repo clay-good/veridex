@@ -597,7 +597,7 @@ pub const SCOPE_CHECK_ID: &str = "veridex.scope";
 /// we run", and until now nothing answered it outside the JSON envelope. A `veridex.toml` carrying
 /// one `only_checks` line turned a 12-finding FAIL into a clean PASS on the terminal, in the HTML
 /// report that is built to travel, in SARIF, and in a signed certificate — and `diff
-/// --fail-on-regression` read the eleven vanished findings as *resolved* and the score's 55-point
+/// --fail-on-regression` read the five vanished findings as *resolved* and the score's 13-point
 /// climb as an improvement. That is the same failure shape `CoverageNote` exists to prevent, one
 /// axis over, and it takes the same remedy: a finding, because findings are the only channel that
 /// reaches every renderer, the diff, and the certificate's own summary.
