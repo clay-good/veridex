@@ -23,6 +23,10 @@ pub struct ReportDiff {
     pub old_coverage: Option<String>,
     /// See [`ReportDiff::old_coverage`].
     pub new_coverage: Option<String>,
+    /// Ids of checks that crashed instead of producing findings, in the old report.
+    pub old_errored: Vec<String>,
+    /// See [`ReportDiff::old_errored`].
+    pub new_errored: Vec<String>,
 }
 
 impl ReportDiff {
@@ -48,6 +52,40 @@ impl ReportDiff {
             _ => false,
         }
     }
+
+    /// Checks that crashed in the new report and did not in the old one.
+    ///
+    /// A crash is *cheaper* than the finding it suppresses: an errored check costs 10 points and an
+    /// error finding costs 15, so a check that panics instead of reporting its error takes the
+    /// score **up** by 5. Every other renderer says a check crashed — the terminal report, the HTML
+    /// report and SARIF all do — but the diff, which is the one that gates CI, read the vanished
+    /// finding as *resolved* and the higher score as an improvement, and exited 0.
+    pub fn newly_errored(&self) -> Vec<&str> {
+        self.new_errored
+            .iter()
+            .filter(|id| !self.old_errored.contains(*id))
+            .map(String::as_str)
+            .collect()
+    }
+}
+
+/// Ids of the checks a report records as having crashed.
+fn errored_checks(report: &Value) -> Vec<String> {
+    report
+        .get("verdict")
+        .unwrap_or(report)
+        .get("errored_checks")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|e| {
+                    e.get("check_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The coverage kind a report records (`full`, `sample`, `metadata_only`), if it carries one.
@@ -124,6 +162,8 @@ pub fn diff_reports(old: &Value, new: &Value) -> ReportDiff {
         new_score: trust_score(new),
         old_coverage: coverage_kind(old),
         new_coverage: coverage_kind(new),
+        old_errored: errored_checks(old),
+        new_errored: errored_checks(new),
     }
 }
 
@@ -155,6 +195,18 @@ pub fn render_diff(diff: &ReportDiff) -> String {
         diff.resolved.len(),
         diff.unchanged.len()
     );
+    // A check that crashed in the new run is why some of those "resolved" findings are missing, and
+    // it *raised* the score — an errored check costs 10 points, the error finding it suppressed
+    // costs 15. Said right under the counts it explains.
+    let newly_errored = diff.newly_errored();
+    if !newly_errored.is_empty() {
+        let _ = writeln!(
+            out,
+            "  Checks newly crashed: {} — a check that did not run cannot have resolved anything, \
+             and costs the score less than the findings it suppressed",
+            newly_errored.join(", ")
+        );
+    }
 
     let mut section = |title: &str, items: &[Value]| {
         if items.is_empty() {
@@ -196,6 +248,8 @@ pub fn render_diff_json(old: &Value, new: &Value) -> String {
         "resolved": diff.resolved,
         "unchanged_count": diff.unchanged.len(),
         "score_delta": diff.score_delta(),
+        // Why findings vanished and the score rose, for the consumer that cannot see the terminal.
+        "newly_errored_checks": diff.newly_errored(),
     });
     serde_json::to_string_pretty(&doc).expect("diff serializes")
 }

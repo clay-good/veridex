@@ -1450,8 +1450,12 @@ fn is_regression(diff: &veridex_core::ReportDiff) -> bool {
     // Substituting a metadata-only or sampled report for a full one silences most of the catalog,
     // so the diff reads as findings *resolved* and a trust score that went up — a gate that passes
     // precisely because the new run stopped looking.
+    // A check that crashed in the new run is a regression even though it introduces no finding and
+    // *raises* the score: an errored check costs 10 points where the error finding it suppressed
+    // cost 15, so the gate saw the vanished finding as resolved and the score as improved.
     diff.coverage_differs()
         || !diff.introduced.is_empty()
+        || !diff.newly_errored().is_empty()
         || diff.score_delta().is_some_and(|d| d < 0)
 }
 
@@ -1534,6 +1538,19 @@ fn cmd_diff(rest: &[String]) -> ExitCode {
                  ({} -> {}), so the comparison is between unlike runs",
                 diff.old_coverage.as_deref().unwrap_or("unknown"),
                 diff.new_coverage.as_deref().unwrap_or("unknown"),
+            );
+            return ExitCode::from(EXIT_FAIL);
+        }
+        // Named before the counts, because a crashed check is why they look the way they do: it
+        // suppresses findings and *raises* the score, so "0 introduced, score delta +3" on its own
+        // reads like an improvement.
+        let newly_errored = diff.newly_errored();
+        if !newly_errored.is_empty() {
+            eprintln!(
+                "veridex: regression — {} check(s) crashed in the new run ({}); a check that did \
+                 not run cannot have resolved anything",
+                newly_errored.len(),
+                newly_errored.join(", ")
             );
             return ExitCode::from(EXIT_FAIL);
         }
@@ -1664,9 +1681,27 @@ mod tests {
             new_score: Some(80),
             old_coverage: Some("full".into()),
             new_coverage: Some("full".into()),
+            old_errored: vec![],
+            new_errored: vec![],
         };
         // No change → not a regression.
         assert!(!super::is_regression(&base));
+        // A check that crashed in the new run is a regression despite introducing no finding and
+        // *raising* the score: an errored check costs 10 points, the error finding it suppressed
+        // cost 15. Every other renderer says a check crashed; the gate could not see it.
+        let crashed = veridex_core::ReportDiff {
+            new_errored: vec!["temporal.clock-skew".into()],
+            new_score: Some(83),
+            ..base.clone()
+        };
+        assert!(super::is_regression(&crashed));
+        // A check that was already crashing in both runs is not a *new* regression.
+        let still_crashing = veridex_core::ReportDiff {
+            old_errored: vec!["temporal.clock-skew".into()],
+            new_errored: vec!["temporal.clock-skew".into()],
+            ..base.clone()
+        };
+        assert!(!super::is_regression(&still_crashing));
         // A coverage change is a regression on its own: the new run may report fewer findings and a
         // higher score precisely because it stopped looking.
         let narrowed = veridex_core::ReportDiff {
