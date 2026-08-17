@@ -815,3 +815,68 @@ fn a_refusal_names_the_thing_that_was_wrong() {
         "unexpected stderr {stderr}"
     );
 }
+
+#[test]
+fn check_reports_the_profile_it_judged_against() {
+    // `--help` calls a profile what the run is "judged against", and `check` only borrowed its
+    // tolerances — printing no criterion verdicts at all, so the one thing the flag names was the
+    // one thing it did not report.
+    let dir = temp_dir("check-profile");
+    let path = dir.join("av.mcap");
+    let status = std::process::Command::new(env!("CARGO"))
+        .args([
+            "run",
+            "--quiet",
+            "-p",
+            "veridex-core",
+            "--example",
+            "make_demo_mcap",
+            "--",
+        ])
+        .arg(&path)
+        .arg("av")
+        .status()
+        .expect("run the demo generator");
+    assert!(status.success());
+    let path = path.to_str().unwrap();
+
+    let (_, stdout, _) = run(&["check", path, "--profile", "world-model-ready"]);
+    assert!(
+        stdout.contains("world-model-ready profile:"),
+        "the criterion verdicts must be reported: {stdout}"
+    );
+    assert!(
+        stdout.contains("autonomy.sensor-frame-resolution"),
+        "every criterion, not a subset: {stdout}"
+    );
+    // Without the flag, nothing about readiness is printed.
+    let (_, stdout, _) = run(&["check", path]);
+    assert!(!stdout.contains("world-model-ready profile:"), "{stdout}");
+}
+
+#[test]
+fn a_score_gate_cannot_be_satisfied_by_reading_nothing() {
+    // Under `--metadata-only` the data axis is computed from checks that overwhelmingly had nothing
+    // to measure, so it lands near 100 whatever the data holds — making `--min-score 90
+    // --metadata-only` a one-flag way to satisfy a CI gate on a dataset whose values are garbage.
+    let dir = make_lerobot("min-score-metadata-only");
+    let path = dir.to_str().unwrap();
+
+    let (code, _, stderr) = run(&["check", path, "--metadata-only", "--min-score", "90"]);
+    assert_eq!(code, 2, "the gate must be refused, not silently satisfied");
+    assert!(
+        stderr.contains("--min-score cannot gate a --metadata-only run"),
+        "unexpected stderr {stderr}"
+    );
+
+    // A sample scores real data, just less of it, so it still gates.
+    let (code, _, _) = run(&[
+        "check",
+        path,
+        "--sample-episodes",
+        "1",
+        "--min-score",
+        "100",
+    ]);
+    assert_eq!(code, 20, "a sampled run still answers to --min-score");
+}

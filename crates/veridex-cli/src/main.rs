@@ -548,6 +548,28 @@ fn cmd_check(rest: &[String]) -> ExitCode {
             "{}",
             veridex_core::render_terminal(&out.verdict, Some(out.trust), 10)
         );
+        // `--help` says a profile is what the run is "judged against", and until now `check` only
+        // borrowed its tolerances — it printed no criterion verdicts at all, so the one thing the
+        // flag names was the one thing it did not report. `certify` renders the same block from the
+        // same helper; the difference is that this one is not signed.
+        if let Some(p) = &profile {
+            let readiness = ReadinessReport::evaluate(p, &out.verdict, &out.ingested.dataset);
+            print!("\n{}", veridex_core::render_readiness(&readiness, "  "));
+        }
+    }
+
+    // A score gate over a run that read no data is not a gate. Under `--metadata-only` the data
+    // axis is computed from checks that overwhelmingly had nothing to measure, so it lands near 100
+    // whatever the data holds — and `--min-score 90 --metadata-only` is then a one-flag way to
+    // satisfy the gate on a dataset whose values are garbage. A *sample* is different in kind: it
+    // scores real data, just less of it, so it keeps working. Refused rather than silently ignored,
+    // because a gate that quietly does nothing is worse than one that is absent.
+    if min_score.is_some() && !out.verdict.coverage.frames_read() {
+        eprintln!(
+            "veridex: --min-score cannot gate a --metadata-only run — its data score is computed \
+             over checks that had no data to measure, so it says nothing about the dataset"
+        );
+        return ExitCode::from(EXIT_TOOL_ERROR);
     }
 
     // A trust score below --min-score fails the run regardless of finding severities, so CI can
