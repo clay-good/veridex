@@ -152,6 +152,7 @@ const MSG_LINK: u16 = 0x0006;
 const MSG_LAYOUT: u16 = 0x0008;
 const MSG_FILTER: u16 = 0x000B;
 const MSG_ATTRIBUTE: u16 = 0x000C;
+const MSG_ATTRIBUTE_INFO: u16 = 0x0015;
 const MSG_CONTINUATION: u16 = 0x0010;
 const MSG_SYMBOL_TABLE: u16 = 0x0011;
 
@@ -706,7 +707,7 @@ impl H5File {
         }
         let heap = self.read_local_heap(heap_addr)?;
         let mut entries = Vec::new();
-        self.walk_symbol_btree(btree_addr, &heap, &mut entries, &mut 0)?;
+        self.walk_symbol_btree(btree_addr, &heap, &mut entries, skipped, &mut 0)?;
         Ok(entries)
     }
 
@@ -760,6 +761,7 @@ impl H5File {
         addr: u64,
         heap: &[u8],
         out: &mut Vec<(String, u64)>,
+        skipped: &mut Vec<SkippedLink>,
         visited: &mut usize,
     ) -> H5Result<()> {
         *visited += 1;
@@ -794,9 +796,9 @@ impl H5File {
             cursor.sized(self.length_size)?; // key
             let child = cursor.sized(self.offset_size)?;
             if level > 0 {
-                self.walk_symbol_btree(child, heap, out, visited)?;
+                self.walk_symbol_btree(child, heap, out, skipped, visited)?;
             } else {
-                self.read_symbol_table_node(child, heap, out)?;
+                self.read_symbol_table_node(child, heap, out, skipped)?;
             }
         }
         Ok(())
@@ -807,6 +809,7 @@ impl H5File {
         addr: u64,
         heap: &[u8],
         out: &mut Vec<(String, u64)>,
+        skipped: &mut Vec<SkippedLink>,
     ) -> H5Result<()> {
         let head = self.read_at(addr, 8)?;
         if &head[..4] != b"SNOD" {
@@ -822,8 +825,21 @@ impl H5File {
         for _ in 0..count {
             let name_offset = cursor.sized(self.offset_size)?;
             let obj_addr = cursor.sized(self.offset_size)?;
-            cursor.skip(8 + 16)?;
-            out.push((heap_string(heap, name_offset)?, obj_addr));
+            let cache_type = cursor.u32()?;
+            cursor.skip(4 + 16)?;
+            let name = heap_string(heap, name_offset)?;
+            // Cache type 2 is a *symbolic* (soft) link: its target is a path string in the local
+            // heap, and its object header address field is undefined. Following it would read at
+            // 0xFFFF… and blame the file for a truncated header.
+            if cache_type == 2 || is_undefined(obj_addr, self.offset_size) {
+                skipped.push(SkippedLink {
+                    name,
+                    reason: "a soft or external link points outside this file's object graph and \
+                             is not followed",
+                });
+                continue;
+            }
+            out.push((name, obj_addr));
         }
         Ok(())
     }
@@ -957,6 +973,21 @@ impl H5File {
             .filter(|m| m.kind == MSG_ATTRIBUTE)
             .map(|m| m.data.clone())
             .collect();
+        // An object with many attributes moves them out of the header into a fractal heap. Those are
+        // not read — but an object whose attributes all live there would otherwise come back as
+        // having none, and "no license, no task, no declared count" is a materially different dataset
+        // from "the attributes were somewhere this reader does not look".
+        if let Some(info) = header.first(MSG_ATTRIBUTE_INFO) {
+            match self.dense_attribute_storage(&info.data) {
+                Ok(true) => skipped.push(
+                    "this object keeps its attributes in dense (fractal heap) storage, which this \
+                     reader does not read, so none of them were mapped"
+                        .into(),
+                ),
+                Ok(false) => {}
+                Err(e) => skipped.push(e.to_string()),
+            }
+        }
         let mut out = Vec::new();
         for data in messages {
             match self.parse_attribute(&data) {
@@ -965,6 +996,18 @@ impl H5File {
             }
         }
         out
+    }
+
+    /// Whether an attribute-info message says the object's attributes live in a fractal heap.
+    fn dense_attribute_storage(&self, data: &[u8]) -> H5Result<bool> {
+        let mut cursor = Cursor::new(data, "attribute info message");
+        cursor.u8()?; // version
+        let flags = cursor.u8()?;
+        if flags & 0x01 != 0 {
+            cursor.skip(2)?; // maximum creation index
+        }
+        let heap = cursor.sized(self.offset_size)?;
+        Ok(!is_undefined(heap, self.offset_size))
     }
 
     fn parse_attribute(&mut self, data: &[u8]) -> H5Result<Attribute> {
@@ -1149,6 +1192,11 @@ impl H5File {
         Ok(())
     }
 
+    /// Charge the ingest's expansion budget for `n` bytes this reader is about to synthesize.
+    fn charge(&mut self, n: u64) -> H5Result<()> {
+        self.budget.take(FORMAT_ID, n)
+    }
+
     /// Undo a chunk's filter pipeline, in reverse declaration order.
     fn apply_filters(
         &mut self,
@@ -1195,14 +1243,32 @@ impl H5File {
                 }
                 other => {
                     return Err(parse_error(format!(
-                        "chunk data is filtered with filter {other}, which this reader does not \
-                         implement (it applies deflate, shuffle, and fletcher32)"
+                        "chunk data is filtered with {}, which this reader does not implement (it \
+                         applies deflate, shuffle, and fletcher32) — re-save the array with gzip \
+                         compression, or without a filter",
+                        filter_name(other)
                     )))
                 }
             };
         }
         Ok(data)
     }
+}
+
+/// The name HDF5 registers for a filter id, so a refusal names what the file used rather than a
+/// number the reader's user has to look up.
+fn filter_name(id: u16) -> String {
+    let name = match id {
+        4 => "szip",
+        5 => "nbit",
+        6 => "scaleoffset",
+        32_000 => "lzf",
+        32_001 => "blosc",
+        32_004 => "lz4",
+        32_015 => "zstd",
+        _ => return format!("filter {id}"),
+    };
+    format!("the `{name}` filter (id {id})")
 }
 
 /// Both field widths must be something this reader can hold in a `u64`.
@@ -1400,6 +1466,13 @@ impl<'a> RowReader<'a> {
         if rank == 0 {
             return Err(parse_error("a chunked dataset declares no dimensions"));
         }
+        // Charged before the buffer exists. A chunked row is *synthesized* — assembled from chunks
+        // and fill value — so unlike a contiguous read its size is not bounded by the file's own
+        // size: one flipped byte in a dataspace dimension of this 23 KB fixture turned a 144-byte
+        // row into a 141 MB one, and four of those took forty seconds to hash into frames the file
+        // never held. The expansion budget is exactly the instrument for that (it scales with the
+        // source and has a 64 MB floor, so a real dataset never notices).
+        self.file.charge(self.row_bytes)?;
         let elem = self.info.datatype.size as u64;
         let mut row = vec![0u8; self.row_bytes as usize];
         // Every chunk holding part of this row: its first-dimension extent covers `index`, and the

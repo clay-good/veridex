@@ -477,3 +477,513 @@ fn a_truncated_file_is_a_parse_error_not_a_clean_verdict() {
         "got {err:?}"
     );
 }
+
+#[test]
+fn chunks_that_split_inner_dimensions_assemble_the_right_row() {
+    // `chunked_ragged.h5` chunks every axis smaller than the dataset, so a row is stitched from
+    // several chunks and every axis has a ragged edge: `(5,6,8,3)` in `(2,3,5,2)` chunks, and
+    // `(5,7,5)` in `(2,3,2)`. This is the case that catches a wrong destination stride, a bad
+    // odometer carry, or missing edge clipping in `copy_chunk_into_row` — with a chunk shape equal
+    // to the dataset shape on the inner axes, those mistakes are invisible.
+    let ingested = ingest("chunked_ragged.h5", IngestOptions::default());
+    assert_row_hashes(
+        stream_of(&ingested, 0, "obs/agentview_image"),
+        &[
+            "7c90e5bcde9e838fc2ea6fd95e7344dc74c931bd0cddefb1edb7af151e37c3ad",
+            "6a514b189d8db1e1b248feb889f609ce2907de527169a3ca3e213e3297d1e21d",
+            "ab6c0b2ec8bf3f48c5522ab81fb51d1dd9073f29c8534e3aacca19c991e8258d",
+            "55c47460d2cab02439142891b5fe6dd73d07effc9fcfd8227e7d303dbb3acaa1",
+            "9600ff5d01472f113d173a3b49240960c7406f44e899f6a8e8e882080aba8d12",
+        ],
+    );
+    // Rank 3, chunked on all three axes, uncompressed.
+    assert_row_hashes(
+        stream_of(&ingested, 0, "grid"),
+        &[
+            "e2107dd5a468deee906767b6f2cca0222dcdebc3a657d54f27fc51257f5dd486",
+            "4a9bc7f1db75e5319e7a300a055c32847e415cdd7bb25f825d2de6e9e1299df4",
+            "b6641dd2b0a8166a98fa0dfe27b7bbb5275bf4b396f63ce0a42f906e956b8215",
+            "3fd08e4f73484df784c929a14a74a27f1bc2a4a6b89211e32a9c55c6ca7e5cfb",
+            "cda5a74b5581e81169382578f86a59e2325df44944c209f5388bee6791d40e3e",
+        ],
+    );
+    // Rank 1, chunked: a "row" is a single element, and 7 rows in 3-element chunks ends ragged.
+    assert_row_hashes(
+        stream_of(&ingested, 0, "scalar_series"),
+        &[
+            "0c9157e10a6a39cd2ce611562b0bb5135b5f3a66ca4e69c6760949eb29463249",
+            "962c6503e5d82deadc4d3a263fee3e3f552015d98326556f1e9e5eb5c08548ca",
+            "3d008cc2a04fb424ddfd4b5325a544a14b9b8f5abf58b26163740077839b6cb0",
+            "4918f74327942562f39a87de5710fba0db7c392aa34c1b6dd9f5908d1b2581bf",
+            "16c6048bf6605136cac18e8281be92243edd45f251084d0a4f0059d1ce235765",
+            "f5152210196715e48bef981617d3a901b373875503e743b3085e51e3dd3fb11d",
+            "61e3168d498e22a91bb6bfc0a605dc913d838ac4a31112a0205496ff718459a7",
+        ],
+    );
+}
+
+#[test]
+fn every_unit_spelling_the_adapter_knows_scales_to_nanoseconds() {
+    // Four episodes recording the same 150 ms span in ms, us, ns, and " S " (padded and
+    // upper-case), plus a fifth declaring a unit that means nothing.
+    let ingested = ingest("units_zoo.h5", IngestOptions::default());
+    for index in 0..4 {
+        let actions = stream_of(&ingested, index, "actions");
+        assert_eq!(
+            actions.clock_kind,
+            ClockKind::Measured,
+            "episode {index} declares its units"
+        );
+        assert_eq!(
+            actions.frames.iter().map(|f| f.ts).collect::<Vec<_>>(),
+            vec![0, 50_000_000, 100_000_000, 150_000_000],
+            "episode {index} spans the same 150 ms whichever unit it is written in"
+        );
+    }
+    let unknown = stream_of(&ingested, 4, "actions");
+    assert_eq!(
+        unknown.clock_kind,
+        ClockKind::StepIndex,
+        "an unrecognized unit is not a clock"
+    );
+    assert!(
+        ingested
+            .report
+            .unmapped_fields
+            .iter()
+            .any(|f| f.note.contains("furlongs")),
+        "the refusal names the unit the file declared: {:?}",
+        ingested.report.unmapped_fields
+    );
+}
+
+#[test]
+fn a_non_finite_timestamp_is_refused_rather_than_stamped() {
+    let err = default_registry()
+        .ingest(
+            &Source::Local(fixture("nan_timestamp.h5")),
+            &IngestOptions::default(),
+        )
+        .expect_err("a NaN in the timeline is not a clock");
+    match err {
+        IngestError::Parse { message, .. } => assert!(
+            message.contains("non-finite"),
+            "the refusal says what was wrong: {message}"
+        ),
+        other => panic!("expected a parse error, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_timeline_that_covers_only_some_arrays_leaves_the_episode_unbounded() {
+    // `timestamps` has 4 rows, `actions` has 6. Only the arrays the timeline describes are on
+    // measured time; the episode's own bounds must not then be stated in nanoseconds, because
+    // `Episode::duration_ns` would subtract them into a duration and the outlier check would
+    // compare that against genuinely measured episodes.
+    let ingested = ingest("mismatched_timeline.h5", IngestOptions::default());
+    let episode = &ingested.dataset.episodes[0];
+
+    assert_eq!(
+        stream_of(&ingested, 0, "actions").clock_kind,
+        ClockKind::StepIndex
+    );
+    assert_eq!(
+        stream_of(&ingested, 0, "timestamps").clock_kind,
+        ClockKind::Measured
+    );
+    assert_eq!((episode.start_ts, episode.end_ts), (None, None));
+    assert!(
+        ingested
+            .report
+            .unmapped_fields
+            .iter()
+            .any(|f| f.note.contains("does not cover every array")),
+        "the mixed timeline is disclosed: {:?}",
+        ingested.report.unmapped_fields
+    );
+
+    // And neither declared count is comparable against an episode with no single length.
+    assert_eq!(
+        episode.declared_frame_count, None,
+        "`num_samples` has no single actual count to be compared against here"
+    );
+    assert!(
+        !ingested
+            .dataset
+            .metadata
+            .iter()
+            .any(|(k, _)| k == "declared_total_frames"),
+        "nor does the dataset-wide total"
+    );
+    assert!(
+        ingested
+            .report
+            .unmapped_fields
+            .iter()
+            .filter(|f| f.note.contains("different numbers of rows"))
+            .count()
+            >= 2,
+        "both withheld counts say why"
+    );
+}
+
+#[test]
+fn everything_the_reader_skips_is_named_in_the_report() {
+    // `disclosure.h5` holds, deliberately: a soft link, a hard link back to its own episode group,
+    // a variable-length string array, a scalar array, a zero-row array, an array attribute, an
+    // array beside the episode groups, and a committed datatype.
+    let ingested = ingest("disclosure.h5", IngestOptions::default());
+    let notes: Vec<String> = ingested
+        .report
+        .unmapped_fields
+        .iter()
+        .map(|f| format!("{} :: {}", f.source_path, f.note))
+        .collect();
+    let says = |needle: &str| {
+        assert!(
+            notes.iter().any(|n| n.contains(needle)),
+            "no note mentions {needle}: {notes:#?}"
+        )
+    };
+    says("soft or external link");
+    says("linked more than once");
+    says("variable-length array");
+    says("scalar array");
+    says("sits beside the episode groups");
+    says("array or a compound value");
+
+    // A zero-row array is a stream with no frames — a fact for the structural checks to report,
+    // not something to drop.
+    let empty = stream_of(&ingested, 0, "empty_rows");
+    assert!(empty.frames.is_empty());
+}
+
+#[test]
+fn attribute_values_survive_as_the_file_wrote_them() {
+    let ingested = ingest("disclosure.h5", IngestOptions::default());
+    let meta = |key: &str| {
+        ingested
+            .dataset
+            .metadata
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
+    };
+    assert_eq!(
+        meta("h5:offset_steps").as_deref(),
+        Some("-7"),
+        "a negative int32 attribute is sign-extended, not read as 4.29 billion"
+    );
+    let blob = meta("h5:notes_blob").expect("the long attribute is carried");
+    assert!(
+        blob.ends_with("… (truncated)") && blob.len() < 4200,
+        "an attribute far larger than the cap is cut at a character boundary and says so \
+         (len {})",
+        blob.len()
+    );
+}
+
+#[test]
+fn an_image_is_recognized_by_structure_and_nothing_else_is() {
+    let ingested = ingest("disclosure.h5", IngestOptions::default());
+    assert_eq!(
+        stream_of(&ingested, 0, "channels_7").modality,
+        Modality::ScalarState,
+        "a uint8 [4, 4, 7] frame is not an image: no camera writes 7 channels"
+    );
+    assert_eq!(
+        stream_of(&ingested, 0, "float_image_shaped").modality,
+        Modality::ScalarState,
+        "image *shape* alone is not an image; the element type has to be uint8 as well"
+    );
+}
+
+#[test]
+fn ingestion_does_not_depend_on_the_order_the_file_lists_its_links() {
+    // Groups written `demo_10`, `demo_2`, `demo_1`, and arrays written in reverse alphabetical
+    // order, so link order differs from name order.
+    let ingested = ingest("unsorted_names.h5", IngestOptions::default());
+    assert_eq!(
+        ingested
+            .dataset
+            .episodes
+            .iter()
+            .map(|e| e.index)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 10],
+        "episodes come out in index order, and 10 sorts after 2"
+    );
+    assert_eq!(
+        ingested.dataset.episodes[0]
+            .streams
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["actions", "obs/a_first", "obs/z_last", "rewards"],
+        "streams come out in name order, not creation order"
+    );
+}
+
+#[test]
+fn colliding_or_digitless_group_names_fall_back_to_position() {
+    // `run_1` and `other_1` both end in 1, so the trailing number cannot be the index — two
+    // episodes sharing index 1 would be a duplicate this adapter invented.
+    let ingested = ingest("colliding_names.h5", IngestOptions::default());
+    assert_eq!(
+        ingested
+            .dataset
+            .episodes
+            .iter()
+            .map(|e| e.index)
+            .collect::<Vec<_>>(),
+        vec![0, 1],
+        "indices fall back to position in name order"
+    );
+    let upstreams: Vec<String> = ingested
+        .dataset
+        .provenance
+        .iter()
+        .flat_map(|p| p.elements.iter())
+        .filter(|e| e.key == "upstream")
+        .filter_map(|e| e.value.clone())
+        .collect();
+    assert!(
+        upstreams.iter().any(|u| u.ends_with("/data/other_1"))
+            && upstreams.iter().any(|u| u.ends_with("/data/run_1")),
+        "the real group name is preserved, so a derived index is never mistaken for a stated one: \
+         {upstreams:?}"
+    );
+}
+
+#[test]
+fn dense_link_storage_is_refused_by_name_not_read_as_an_empty_group() {
+    // 40 arrays in one group written with `libver='latest'` moves the links into a fractal heap.
+    // Reading that group as empty would turn a 40-stream episode into a clean verdict over nothing.
+    let err = default_registry()
+        .ingest(
+            &Source::Local(fixture("dense_links.h5")),
+            &IngestOptions::default(),
+        )
+        .expect_err("a group this reader cannot enumerate is not an empty group");
+    match err {
+        IngestError::Parse { message, .. } => {
+            assert!(
+                message.contains("fractal heap") && message.contains("invisible"),
+                "the refusal names the structure and the consequence: {message}"
+            );
+        }
+        other => panic!("expected a parse error, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_chunk_that_inflates_past_the_budget_is_refused_while_decoding() {
+    // 128 KB on disk, 94 MB inflated. The budget is charged on what each chunk's shape says it
+    // must become, before the bytes are allocated.
+    let err = default_registry()
+        .ingest(
+            &Source::Local(fixture("bomb.h5")),
+            &IngestOptions {
+                max_decompression_ratio: Some(1),
+                ..IngestOptions::default()
+            },
+        )
+        .expect_err("a file that expands 700x is refused");
+    assert!(
+        matches!(
+            err,
+            IngestError::DecompressionBudgetExceeded { format_id, .. } if format_id == "hdf5"
+        ),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn a_corrupt_chunk_fails_its_own_checksum() {
+    // `timed_rig.h5`'s `actions` arrays are fletcher32-protected. Flip one byte of the file's
+    // chunk data and the checksum stored with it must catch it — silently reading a corrupted
+    // chunk is how poisoned data reaches training.
+    let bytes = std::fs::read(fixture("timed_rig.h5")).expect("read fixture");
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut caught = 0;
+    // The chunk payloads sit past the header structures; patching a spread of offsets in the file's
+    // second half hits chunk data (and, where it does not, produces some other honest error).
+    for offset in (bytes.len() / 2..bytes.len()).step_by(97) {
+        let mut patched = bytes.clone();
+        patched[offset] ^= 0xFF;
+        let path = dir.path().join(format!("patched-{offset}.h5"));
+        std::fs::write(&path, &patched).expect("write");
+        if let Err(IngestError::Parse { message, .. }) =
+            default_registry().ingest(&Source::Local(path), &IngestOptions::default())
+        {
+            if message.contains("fletcher32") && message.contains("corrupt") {
+                caught += 1;
+            }
+        }
+    }
+    assert!(
+        caught > 0,
+        "no single-byte corruption of the chunk data was caught by its stored checksum"
+    );
+}
+
+#[test]
+fn no_single_byte_corruption_panics_or_passes_silently() {
+    // The one property that matters for a tool that runs in CI over untrusted files: whatever the
+    // bytes are, the answer is a dataset or a named error — never a panic, a hang, or a verdict
+    // over data that was never read.
+    let bytes = std::fs::read(fixture("robomimic_small.h5")).expect("read fixture");
+    let dir = tempfile::tempdir().expect("temp dir");
+    for (n, offset) in (0..bytes.len()).step_by(311).enumerate() {
+        let mut patched = bytes.clone();
+        patched[offset] = patched[offset].wrapping_add(0x5A);
+        let path = dir.path().join(format!("fuzz-{n}.h5"));
+        std::fs::write(&path, &patched).expect("write");
+        // Run it the way a CI gate would: a bounded budget, so a patched dimension field that now
+        // declares millions of frames is refused on what it declares instead of being materialized.
+        let options = IngestOptions {
+            max_frames: Some(50_000),
+            ..IngestOptions::default()
+        };
+        match default_registry().ingest(&Source::Local(path), &options) {
+            Ok(ingested) => assert!(
+                ingested
+                    .dataset
+                    .episodes
+                    .iter()
+                    .any(|e| !e.streams.is_empty()),
+                "byte {offset} produced a dataset with no streams — a pass over nothing"
+            ),
+            // A patched signature stops being an HDF5 file at all, which the registry says rather
+            // than guessing — also an acceptable answer.
+            Err(IngestError::UnsupportedFormat { .. })
+            | Err(IngestError::Parse { .. })
+            | Err(IngestError::Io(_))
+            | Err(IngestError::FrameBudgetExceeded { .. })
+            | Err(IngestError::DecompressionBudgetExceeded { .. }) => {}
+            Err(other) => panic!("byte {offset} produced an unexpected error: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn the_step_index_span_is_the_first_and_last_step() {
+    let ingested = ingest("robomimic_small.h5", IngestOptions::default());
+    let episode = &ingested.dataset.episodes[0];
+    assert_eq!((episode.start_ts, episode.end_ts), (Some(0), Some(4)));
+    assert_eq!(
+        ingested
+            .dataset
+            .metadata
+            .iter()
+            .find(|(k, _)| k == "hdf5_superblock_version")
+            .map(|(_, v)| v.as_str()),
+        Some("0"),
+        "h5py's default writes a version-0 superblock"
+    );
+}
+
+#[test]
+fn a_run_over_an_unmeasured_timeline_says_so_in_the_verdict() {
+    // The report field is not what a user sees — the verdict is. A step-index dataset has to carry
+    // its abstention all the way into the findings, or a clean temporal result reads as good timing.
+    let out = veridex_core::pipeline::run_check(
+        &default_registry(),
+        &Source::Local(fixture("robomimic_small.h5")),
+        None,
+        &IngestOptions::default(),
+    )
+    .expect("the pipeline runs");
+    let verdict = &out.verdict;
+    assert!(
+        verdict
+            .findings
+            .iter()
+            .any(|f| f.code == "TEMPORAL.UNMEASURED_CLOCK"),
+        "the unmeasured clock reaches the findings"
+    );
+    assert!(
+        !verdict
+            .findings
+            .iter()
+            .any(|f| f.code.starts_with("TEMPORAL.CLOCK_SKEW")),
+        "and nothing grades a clock the file never recorded"
+    );
+}
+
+#[test]
+fn the_registry_claims_an_hdf5_file_exactly_once() {
+    let registry = default_registry();
+    assert!(
+        registry.supported_formats().contains(&"hdf5"),
+        "the default registry carries the adapter: {:?}",
+        registry.supported_formats()
+    );
+    // Autodetection resolving to exactly one adapter is what makes `veridex check <file>` work
+    // without `--format`; two claimants would be an AmbiguousFormat error instead.
+    let ingested = registry
+        .ingest(
+            &Source::Local(fixture("robomimic_small.h5")),
+            &IngestOptions::default(),
+        )
+        .expect("exactly one adapter claims it");
+    assert_eq!(ingested.report.format_id, "hdf5");
+}
+
+#[test]
+fn a_deterministic_fraction_draws_the_same_episodes_every_time() {
+    let draw = |seed: u64| {
+        ingest(
+            "unsorted_names.h5",
+            IngestOptions {
+                sample: Sample::Fraction {
+                    fraction: 0.3,
+                    seed,
+                },
+                ..IngestOptions::default()
+            },
+        )
+        .dataset
+        .episodes
+        .iter()
+        .map(|e| e.index)
+        .collect::<Vec<_>>()
+    };
+    let first = draw(7);
+    assert_eq!(first.len(), 1, "a third of three episodes is one episode");
+    assert_eq!(
+        first,
+        draw(7),
+        "the same seed always draws the same episode"
+    );
+    let others: Vec<Vec<u64>> = (0..8).map(draw).collect();
+    assert!(
+        others.iter().any(|d| *d != first),
+        "and a different seed can draw a different one: {others:?}"
+    );
+}
+
+#[test]
+fn a_crafted_dimension_cannot_make_the_reader_synthesize_gigabytes() {
+    // Byte 19282 of the fixture is the third byte of the image array's second dataspace dimension.
+    // Adding 0x5A turns `6` into 5,898,246, which turns a 144-byte row into a 141 MB one — and a
+    // chunked row is *assembled*, not read, so nothing about the file's own 23 KB size bounds it.
+    // Before this was charged against the expansion budget, this one byte cost forty seconds and
+    // still returned a dataset: four frames of mostly fill value, fingerprinted as content.
+    let mut bytes = std::fs::read(fixture("robomimic_small.h5")).expect("read fixture");
+    bytes[19282] = bytes[19282].wrapping_add(0x5A);
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("inflated-dimension.h5");
+    std::fs::write(&path, &bytes).expect("write");
+
+    let err = default_registry()
+        .ingest(&Source::Local(path), &IngestOptions::default())
+        .expect_err("a row larger than the whole budget is refused");
+    assert!(
+        matches!(
+            err,
+            IngestError::DecompressionBudgetExceeded { format_id, .. } if format_id == "hdf5"
+        ),
+        "got {err:?}"
+    );
+}

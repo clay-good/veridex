@@ -195,7 +195,8 @@ impl Adapter for Hdf5Adapter {
         let parent_header = file.object_header(episode_parent_addr)?;
         let parent_links = file.group_links(&parent_header, &mut notes.skipped_links)?;
 
-        let mut groups = episode_groups(&mut file, &episode_parent_path, &parent_links)?;
+        let mut groups =
+            episode_groups(&mut file, &episode_parent_path, &parent_links, &mut notes)?;
         // A file whose arrays sit directly under the parent — what a simple collector writes when it
         // records one trajectory per file — is one episode, not zero. The parent group *is* the
         // episode; nothing is fabricated, because the arrays are still the only source of frames.
@@ -261,6 +262,9 @@ impl Adapter for Hdf5Adapter {
             });
             episodes.push(episode);
         }
+        // Emitted in episode-index order — the order the canonical form and every report use — so a
+        // derived index never leaves the CDM in the order the file's link index happened to use.
+        episodes.sort_by_key(|e| e.index);
         // A tree of groups that holds no arrays at all is not a dataset with empty episodes; it is a
         // file this adapter did not understand. Saying so beats emitting a verdict over nothing,
         // which would score a clean pass on a file Veridex never read.
@@ -311,14 +315,35 @@ impl Adapter for Hdf5Adapter {
         }
         // A declared frame total is an assertion *about* the content, which a structural check
         // compares against the frames actually ingested — so it is only carried when the whole
-        // dataset was ingested. Under a sample it would be compared against a fraction of itself.
-        if !options.sample.is_partial() {
-            if let Some(AttrValue::Number(total)) = root_attrs
-                .iter()
-                .chain(parent_attrs.iter())
-                .find(|(name, _)| name == DECLARED_TOTAL_ATTR)
-                .map(|(_, v)| v)
-            {
+        // dataset was ingested. Under a sample it would be compared against a fraction of itself,
+        // and where an episode's arrays disagree on their row count there is no single frame count
+        // for it to be compared against either (the check sums each episode's longest stream, which
+        // over-counts a ragged episode and would fail a sound file).
+        let declared_total = root_attrs
+            .iter()
+            .chain(parent_attrs.iter())
+            .find(|(name, _)| name == DECLARED_TOTAL_ATTR)
+            .map(|(_, v)| v.clone());
+        let ragged_episodes: Vec<u64> = dataset_episodes_with_ragged_rows(&episodes);
+        // Said only when there is actually a declared total to withhold; otherwise the note would
+        // report the absence of something the file never claimed.
+        if !ragged_episodes.is_empty() && declared_total.is_some() {
+            notes.unmapped.push(UnmappedField {
+                source_path: format!("@{DECLARED_TOTAL_ATTR}"),
+                note: format!(
+                    "episode(s) {} hold arrays with different numbers of rows, so the dataset has \
+                     no single frame count to compare a declared total against; the declared total \
+                     is not carried",
+                    ragged_episodes
+                        .iter()
+                        .map(|i| i.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            });
+        }
+        if !options.sample.is_partial() && ragged_episodes.is_empty() {
+            if let Some(AttrValue::Number(total)) = declared_total.as_ref() {
                 if *total >= 0.0 && total.fract() == 0.0 && *total <= u64::MAX as f64 {
                     metadata.push((
                         META_DECLARED_FRAMES.to_string(),
@@ -415,6 +440,22 @@ impl Adapter for Hdf5Adapter {
     }
 }
 
+/// The indices of episodes whose arrays disagree on how many rows they hold.
+fn dataset_episodes_with_ragged_rows(episodes: &[Episode]) -> Vec<u64> {
+    episodes
+        .iter()
+        .filter(|e| {
+            e.streams
+                .iter()
+                .map(|s| s.frames.len())
+                .collect::<BTreeSet<_>>()
+                .len()
+                > 1
+        })
+        .map(|e| e.index)
+        .collect()
+}
+
 /// The address a link with this name points at.
 fn named_link(links: &[(String, u64)], name: &str) -> Option<u64> {
     links
@@ -428,11 +469,22 @@ fn episode_groups(
     file: &mut H5File,
     parent_path: &str,
     links: &[(String, u64)],
+    notes: &mut Notes,
 ) -> Result<Vec<EpisodeGroup>, IngestError> {
     let mut groups: Vec<EpisodeGroup> = Vec::new();
     for (name, addr) in links {
         let header = file.object_header(*addr)?;
         if !header.is_group() {
+            // An array (or a committed datatype) sitting beside the episode groups is not itself an
+            // episode. It is still something the file holds and this ingest did not read, so it is
+            // named rather than passed over.
+            notes.unmapped.push(UnmappedField {
+                source_path: format!("{parent_path}/{name}"),
+                note:
+                    "this object sits beside the episode groups but is not a group, so no episode \
+                       is built from it"
+                        .into(),
+            });
             continue;
         }
         groups.push(EpisodeGroup {
@@ -697,13 +749,35 @@ fn build_episode(
         })
         .unwrap_or_default();
 
-    // The episode's span: measured time when the file recorded it, otherwise the step index — an
-    // episode of n steps spans 0..n-1, and an empty one spans nothing.
+    // Whether the timeline describes *every* stream in the episode. It only does when they all hold
+    // the same number of rows; a shorter or longer array is not on that clock.
+    let fully_timed = match &timeline {
+        Some((count, _)) => streams
+            .iter()
+            .all(|s| s.frames.len() as u64 == *count && s.clock_kind == ClockKind::Measured),
+        None => false,
+    };
+    if timeline.is_some() && !fully_timed {
+        notes.unmapped.push(UnmappedField {
+            source_path: format!("{}/[timeline]", group.path),
+            note: "the timeline array does not cover every array in this episode (they hold \
+                   different numbers of rows), so the episode's own start and end are left unset \
+                   rather than stated in a unit only some of its streams share"
+                .into(),
+        });
+    }
+
+    // The episode's span. Measured time only when the recorded timeline covers the whole episode —
+    // otherwise its bounds would be nanoseconds describing streams that are on a step index, which
+    // `Episode::duration_ns` would subtract into a duration and the outlier check would compare
+    // against real ones. Without a timeline the span is the step index: an episode of n steps runs
+    // 0..n-1, and an empty one spans nothing.
     let (start_ts, end_ts) = match &timeline {
-        Some((_, stamps)) if !stamps.is_empty() => {
+        Some((_, stamps)) if fully_timed && !stamps.is_empty() => {
             (stamps.iter().copied().min(), stamps.iter().copied().max())
         }
-        _ => {
+        Some(_) => (None, None),
+        None => {
             let steps = streams
                 .iter()
                 .map(|s| s.frames.len() as u64)
@@ -717,6 +791,21 @@ fn build_episode(
         }
     };
 
+    // A per-episode declared count is comparable against the episode's frames only when its arrays
+    // agree on how many rows they hold. Where they disagree the episode has no single length, and the
+    // boundary check would charge the source for the longest array it happens to hold.
+    let row_counts: BTreeSet<u64> = streams.iter().map(|s| s.frames.len() as u64).collect();
+    let ragged = row_counts.len() > 1;
+    if ragged && declared_frame_count.is_some() {
+        notes.unmapped.push(UnmappedField {
+            source_path: format!("{}@{DECLARED_LENGTH_ATTR}", group.path),
+            note:
+                "this episode's arrays hold different numbers of rows, so it has no single frame \
+                   count to compare the declared one against; the declared count is not carried"
+                    .into(),
+        });
+    }
+
     Ok(Episode {
         index,
         start_ts,
@@ -726,7 +815,7 @@ fn build_episode(
         labels,
         // An HDF5 manipulation dataset records no ego trajectory.
         ego_poses: None,
-        declared_frame_count,
+        declared_frame_count: declared_frame_count.filter(|_| !ragged),
     })
 }
 

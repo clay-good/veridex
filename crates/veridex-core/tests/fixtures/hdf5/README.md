@@ -8,7 +8,9 @@ format — so the HDF5 adapter is tested against the reference implementation's 
 They are small on purpose (a few kilobytes each) and are committed so the suite needs no HDF5
 toolchain, no Python, and no network.
 
-Regenerate them with `python3 -m pip install h5py` and the script below, run from this directory.
+Regenerate them with `python3 -m pip install h5py` and the scripts below, run from this directory
+(the first script writes the first five files; `generate_audit_fixtures.py` in the same directory
+writes the rest).
 Regenerating changes the row hashes pinned in the tests (the arrays are drawn from a seeded RNG, but
 `h5py` also stamps its own version into the file), so update those alongside.
 
@@ -19,6 +21,15 @@ Regenerating changes the row hashes pinned in the tests (the arrays are drawn fr
 | `untimed_units.h5` | A `time` array with **no** `units` attribute — which must not become a clock |
 | `flat_single_episode.h5` | Arrays directly at the root: one episode, no `/data` group |
 | `libver_latest.h5` | `libver='latest'`: a version-3 superblock and version-2 (`OHDR`) object headers |
+| `chunked_ragged.h5` | Chunks smaller than the dataset on *every* axis, with a ragged edge on each — the case that catches a wrong stride or a bad odometer carry in the chunk-to-row copy |
+| `units_zoo.h5` | One episode per unit spelling (`ms`, `us`, `ns`, `" S "`) plus one declaring a unit that means nothing |
+| `nan_timestamp.h5` | A non-finite value in a timeline that declares units |
+| `mismatched_timeline.h5` | A timeline covering only some of the episode's arrays, and a declared count with no single actual count to match |
+| `disclosure.h5` | Everything that must be *named* rather than dropped: a soft link, a hard link back to an ancestor, a variable-length array, a scalar array, a zero-row array, an array attribute, an oversized attribute, a negative `int32` attribute, an array beside the episode groups, a committed datatype |
+| `unsorted_names.h5` | Link order ≠ name order (`demo_10`, `demo_2`, `demo_1`; arrays written in reverse) |
+| `colliding_names.h5` | Group names whose trailing numbers collide (`run_1`, `other_1`), forcing positional indices |
+| `dense_links.h5` | 40 links in one group, which moves them into fractal-heap (dense) storage |
+| `bomb.h5` | 100 KB on disk declaring a 98 MB chunk — refused on what it declares, before anything is inflated |
 
 ```python
 import h5py, numpy as np, json

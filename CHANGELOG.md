@@ -10,6 +10,46 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **HDF5 adapter hardening, from a multi-agent audit.** Four agents went at the new adapter with
+  distinct lenses (format conformance, hostile input, CDM invariants, test-coverage mutation
+  survival). What they found, and what changed:
+
+  - **A soft link made the reader call the file truncated.** In an old-style group, a symbolic
+    link's symbol-table entry carries an *undefined* object-header address, and the reader followed
+    it — reading at `0xFFFF…` and blaming the file. Soft and external links are now recognized by
+    their cache type, skipped, and named in the report.
+  - **One flipped byte cost forty seconds and still passed.** A chunked row is *assembled* from
+    chunks and fill value, not read, so nothing about the file's own size bounds it: adding `0x5A`
+    to the third byte of a dataspace dimension in a 23 KB fixture turned a 144-byte row into a
+    141 MB one, and the result was a *successful* dataset whose frames were mostly fill value
+    fingerprinted as content. Synthesized rows are now charged against the expansion budget before
+    the buffer exists — the same sweep now runs in 0.05 s and the crafted file is refused by name.
+  - **Attributes in dense storage came back as none.** An object with many attributes moves them
+    into a fractal heap. The reader does not read those, and an object whose attributes all live
+    there looked like an object with no license, no task, and no declared count. It now says so.
+  - **A partial timeline left an episode's bounds in the wrong unit.** Where a timestamp array
+    covers only some of an episode's arrays, the episode kept nanosecond bounds while its other
+    streams were on a step index — and `Episode::duration_ns` would have subtracted those into a
+    duration for the outlier check to compare against real ones. The bounds are now unset and the
+    mismatch disclosed.
+  - **Declared counts are withheld where there is no single actual count.** When an episode's arrays
+    disagree on their row count, the frame-count checks compare a declared total against the longest
+    array and fail a sound file. Both `num_samples` and `total` are now dropped in that case, with a
+    note saying why.
+  - Arrays sitting beside the episode groups are disclosed rather than passed over; episodes are
+    emitted in index order; and an unsupported filter now names itself (`szip`, `lzf`, `blosc`,
+    `zstd`, …) instead of printing a bare id.
+  - The CLI's `--sample-episodes` help listed only LeRobot and RLDS as samplable formats; HDF5
+    supports it too.
+
+  Tests went from 16 to 34, on 13 real `h5py` fixtures (up from 5), including: chunk shapes smaller
+  than the dataset on *every* axis with a ragged edge on each — the case that catches a wrong stride
+  or odometer carry in the chunk-to-row copy, and the single largest untested path the audit found;
+  every unit spelling and the rejection of one that means nothing; the fractal-heap refusal; a
+  decompression bomb refused on what it declares; a single-byte corruption sweep asserting the answer
+  is always a dataset or a named error; and an end-to-end assertion that `TEMPORAL.UNMEASURED_CLOCK`
+  reaches the verdict rather than only the ingest report.
+
 - **HDF5 adapter** — the format `robomimic`, MimicGen, RoboTurk, and most hand-rolled lab
   collectors write, read into the CDM as the fourth first-class format behind `veridex check`. The
   container is parsed directly, with **no libhdf5 dependency**: superblocks v0–v3, object headers v1
