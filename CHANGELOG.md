@@ -590,6 +590,85 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **Whole check families abstained without saying so.** The project's own principle is that a check
+  which cannot measure must report that, or its silence reads as a pass. Two families did not.
+  `statistical.value-measurability`: MCAP, CAN+DBC, MF4 and RLDS fingerprint payload bytes without
+  interpreting them, so every statistical check hit its `let Some(..) else { continue }` — a CAN log
+  with a wheel speed pinned at 655.35 km/h for 70% of its frames scored `data 100`, and the
+  certificate listed all five statistical checks under `checks_run` with `categories_skipped: []`.
+  HDF5 and Zarr are the narrower case: they recompute but publish no stored statistics, so the two
+  stored-vs-observed checks can never fire there. Both are now reported, as separate codes, because
+  they are different statements. `structural.content-measurability`: two checks compare frame bytes
+  and abstain on any frame lacking a `content_hash`. A LeRobot video feature's pixels live in `.mp4`
+  files outside the Parquet, and `duplicate-episode` aborted the whole episode signature if *any*
+  frame lacked a hash — so the ordinary layout of a real LeRobot dataset made two byte-identical
+  episodes undetectable, and `stuck-stream` (which only inspects `Video` streams) never ran at all.
+  Both findings are informational: a dataset is not worse for the container it was published in.
+  What changes is what a passing verdict is evidence of.
+
+- **`diff` was coverage-blind.** Substituting a metadata-only report for a full one silences most of
+  the catalog, so the full run's findings read as *resolved*, the trust score went up, and
+  `--fail-on-regression` passed — precisely because the new run stopped looking. A coverage change is
+  now a regression on its own, stated before anything else in the rendered diff.
+
+- **Readiness was evaluated over partial runs.** Every `world-model-ready` criterion reported
+  `passed: true, ran: true, findings: 0` over a metadata-only dataset with no frames at all, because
+  `ran` records that a check was invoked, not that it had anything to inspect. A non-full run is no
+  longer applicable. Alongside it, Python `certify` never called `Certificate::certifiable` though
+  its doc comment claims both front-ends do — absent rather than satisfied, and one parameter away
+  from a certificate over a run that never read the data.
+
+- **`--min-score` could be satisfied by reading nothing.** Under `--metadata-only` the trust score's
+  data axis is computed from checks that overwhelmingly had nothing to measure, so it lands near 100
+  whatever the data holds — making `--min-score 90 --metadata-only` a one-flag way to pass a CI gate
+  on a dataset whose values are garbage. The certify refusal does not contain this: the score also
+  reaches `--json`, `--html`, and `diff`, none of which refuse it. The gate is now refused on a
+  metadata-only run. A *sample* is different in kind — it scores real data, just less of it — and
+  keeps working.
+
+- **`check --profile` judged nothing.** `--help` calls a profile what the run is "judged against",
+  and `check` only borrowed its tolerances: it printed no criterion verdicts at all, so the one thing
+  the flag names was the one thing it did not report. It now renders the same per-criterion block
+  `certify` does, from the same helper — unsigned, being the only difference.
+
+- **A shared-file video layout was invisible to the entire video family.** A LeRobot v3 layout that
+  concatenates episodes into shared video files gives Veridex nothing it can pair with a specific
+  episode's rows, which was handled by attaching no `media` at all — but `media: None` is exactly
+  what a non-video feature carries, so the video checks iterated straight past those streams and
+  emitted nothing, for files that might hold no container at all. `MediaStatus::Unattributable` now
+  records the abstention where a check can see it, reported once per stream as
+  `VIDEO.MEDIA_UNATTRIBUTED` (info). Nothing is observed and nothing is accused; what is stated is
+  that a desynced or re-encoded video here is not absent from the report, it was never looked for.
+  The new status takes a fresh encoder tag rather than renumbering, so every dataset that hashed
+  before it existed still hashes identically.
+
+- **A single measured episode was reported as a systematic export defect.** The frame-count roll-up
+  charges a video-length defect once when every episode is off by the same signed amount — an encoder
+  dropping a leading frame — instead of naming each episode. It decided a stream had more than one
+  episode by counting episodes that carried a `media` field at all, including those whose file was
+  missing, whose container would not parse, or whose container declared no sample count. None of
+  those yielded a length, so a stream with one short video beside one missing file announced "every
+  episode's video is 1 frame(s) shorter than its rows" from one measurement, and discarded the
+  per-episode report naming the file and both counts. It now counts the episodes that produced a
+  length and requires two.
+
+- **Jitter was charged as dropped frames.** `AUTONOMY.SEQUENCE_COMPLETE` counts a frame as dropped
+  when an inter-frame gap sits near a multiple of the stream's median cadence, but the ±0.25-period
+  window and the CV-0.5 abstention gate were not consistent with the 5% drop threshold they guard: on
+  a 401-frame stream with gaussian jitter and nothing dropped, a CV of 0.44 measured "~6% of its
+  frames". At that noise level a single interval reaches twice the median by chance often enough that
+  the estimate is not merely noisy, it is unfounded. The window narrows to ±0.15 and the gate to CV
+  0.40 — no false positive over 40 honest jittery streams (CV 0.1–0.45), while a real 10% drop rate is
+  still caught and a 20% one is now covered by its own test.
+
+- **Two refusals named the nearest thing to the mistake rather than the mistake.** `--max-frames -5`
+  reported "--max-frames requires a value", because a leading `-` was read as the flag's value being
+  swallowed by the next flag, so a negative number never reached the parser that knows what the flag
+  accepts. And `verify --key issuer` (the secret file, not `issuer.pub`) reported "untrusted issuer" —
+  a secret key is also 64 hex characters, so it parses as a public key, and `keygen` writes the two
+  paths one letter apart. Verification now derives the public key the given secret would produce and
+  says so when it matches the signer; a genuinely different issuer is still an untrusted issuer.
+
 - **A `videos/` tree that never arrived passed clean and silent.** A LeRobot manifest declaring
   `dtype: "video"` says the stream's pixels live in video files. When none were found, the checks
   abstained — so an un-pulled LFS pointer or an interrupted `snapshot_download`, the single most
