@@ -711,18 +711,31 @@ impl Check for EpisodeContinuity {
             return Vec::new();
         }
 
-        // Any index missing between the smallest and largest observed is a dropped episode.
+        // Any index missing between the smallest and largest observed is a dropped episode. Both
+        // bounds come from the file, so the span between them is attacker-controlled and enormous:
+        // two lines of a LeRobot `meta/episodes.jsonl` declaring index 0 and index u64::MAX made
+        // this walk `0..=u64::MAX` and collect the misses into a `Vec` — not a slow check, a process
+        // that never returns and allocates until it is killed. The gap count is the difference of
+        // the bounds and the number present; it never needs the misses enumerated to be computed.
         let (lo, hi) = (indices[0], indices[indices.len() - 1]);
-        let present: std::collections::HashSet<u64> = indices.iter().copied().collect();
-        let missing: Vec<u64> = (lo..=hi).filter(|i| !present.contains(i)).collect();
-        if missing.is_empty() {
+        // Written as `(hi - lo) - (n - 1)` rather than `(hi - lo + 1) - n`: the indices are sorted,
+        // distinct, and at least two, so `hi - lo >= n - 1` and neither subtraction can wrap — while
+        // the `+ 1` form overflows on exactly the input that motivated this, `lo = 0, hi = u64::MAX`.
+        let missing_count = (hi - lo) - (indices.len() as u64 - 1);
+        if missing_count == 0 {
             return Vec::new();
         }
 
-        // Summarize the gap compactly; list the first few missing indices.
-        let shown: Vec<String> = missing.iter().take(8).map(|i| i.to_string()).collect();
-        let more = if missing.len() > shown.len() {
-            format!(", … ({} more)", missing.len() - shown.len())
+        // List the first few missing indices for the message, walking only far enough to find them
+        // rather than materializing the whole gap.
+        let present: std::collections::HashSet<u64> = indices.iter().copied().collect();
+        let shown: Vec<String> = (lo..=hi)
+            .filter(|i| !present.contains(i))
+            .take(8)
+            .map(|i| i.to_string())
+            .collect();
+        let more = if missing_count > shown.len() as u64 {
+            format!(", … ({} more)", missing_count - shown.len() as u64)
         } else {
             String::new()
         };
@@ -732,11 +745,7 @@ impl Check for EpisodeContinuity {
             Severity::Warning,
             Location::Dataset,
             "STRUCTURAL.EPISODE_INDEX_GAP",
-            format!(
-                "episode indices span {lo}..={hi} but {} are missing: {}{more}",
-                missing.len(),
-                shown.join(", ")
-            ),
+            format!("episode indices span {lo}..={hi} but {missing_count} are missing: {}{more}", shown.join(", ")),
         )
         .with_risk(
             "A gap in episode indices means an episode was dropped between export and ingest; you \

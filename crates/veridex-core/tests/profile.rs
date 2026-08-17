@@ -20,7 +20,13 @@ fn frames(ts: &[i64]) -> Vec<Frame> {
         .collect()
 }
 
+/// A rig sensor that declares which coordinate frame it is in — as a real one must, or its
+/// calibration is unverifiable and `autonomy.sensor-frame-resolution` says so.
 fn sensor(name: &str, modality: Modality, ts: &[i64]) -> Stream {
+    sensor_in_frame(name, modality, ts, Some(format!("{name}_frame")))
+}
+
+fn sensor_in_frame(name: &str, modality: Modality, ts: &[i64], frame_id: Option<String>) -> Stream {
     Stream {
         name: name.into(),
         modality,
@@ -38,7 +44,7 @@ fn sensor(name: &str, modality: Modality, ts: &[i64]) -> Stream {
         observed_dim_stats: None,
         point_fields: None,
         media: None,
-        frame_id: None,
+        frame_id,
     }
 }
 
@@ -102,7 +108,15 @@ fn healthy_rig() -> Dataset {
             declared_frame_count: None,
         }],
         calibration: Some(Calibration {
-            transforms: vec![xf("base_link", "lidar"), xf("base_link", "cam")],
+            // Every sensor's declared frame is in the tree and reaches the camera's — which is what
+            // `autonomy.sensor-frame-resolution` attests, and what a rig has to actually satisfy
+            // rather than satisfy by declaring nothing.
+            transforms: vec![
+                xf("base_link", "lidar_frame"),
+                xf("base_link", "cam_frame"),
+                xf("base_link", "gnss_frame"),
+                xf("base_link", "imu_frame"),
+            ],
             intrinsics: vec![cam],
         }),
     }
@@ -490,5 +504,69 @@ fn a_certificate_never_says_ready_over_a_failing_verdict() {
     assert!(
         !(v.status == veridex_core::Status::Fail && r.ready),
         "a failing verdict must never carry ready=true"
+    );
+}
+
+#[test]
+fn a_rig_where_no_sensor_declares_a_frame_is_not_ready() {
+    // The unconfigured-driver case: a well-formed, fully connected transform tree beside sensors
+    // that never say which frame they are in — what a ROS driver publishing an empty
+    // `header.frame_id` produces. `autonomy.sensor-frame-resolution` used to skip those streams
+    // silently, so it found nothing, so the criterion it backs read as satisfied — and a signed
+    // certificate went out attesting "every sensor's own frame resolves through the tree to a
+    // camera" over a rig where not one sensor said where it was. Not one transform in the tree
+    // could be applied to any data.
+    let p = profile::world_model_ready();
+    let mut d = healthy_rig();
+    for s in &mut d.episodes[0].streams {
+        s.frame_id = None;
+    }
+
+    let v = verdict_for(&d, &p);
+    let r = ReadinessReport::evaluate(&p, &v, &d);
+    assert!(!r.ready, "criteria: {:?}", r.criteria);
+    let frame = r
+        .criteria
+        .iter()
+        .find(|c| c.check_id == "autonomy.sensor-frame-resolution")
+        .expect("the profile must judge sensor-frame resolution");
+    assert!(
+        !frame.passed && frame.findings > 0,
+        "the criterion must fail on evidence, not pass on silence: {frame:?}"
+    );
+}
+
+#[test]
+fn a_failing_verdict_is_never_ready_even_when_every_criterion_passes() {
+    // The criteria name a subset of the catalog, so a rig can satisfy every autonomy criterion and
+    // still fail the run on something the profile does not name. `ready: true` printed beside
+    // `status: fail` is a certificate contradicting itself on the same page; whichever half a
+    // reader believes, one of them misled them.
+    let p = profile::world_model_ready();
+    let mut d = healthy_rig();
+    // An inverted stored range — a statistical error, judged by no autonomy criterion.
+    d.episodes[0].streams[0].stats = Some(veridex_core::cdm::StreamStats {
+        min: 10.0,
+        max: -10.0,
+        mean: 0.0,
+        std: 1.0,
+    });
+
+    let v = verdict_for(&d, &p);
+    assert_eq!(
+        v.status,
+        veridex_core::Status::Fail,
+        "findings: {:?}",
+        v.findings
+    );
+    let r = ReadinessReport::evaluate(&p, &v, &d);
+    assert!(
+        r.criteria.iter().all(|c| c.passed),
+        "every autonomy criterion still passes: {:?}",
+        r.criteria
+    );
+    assert!(
+        !r.ready,
+        "a failing verdict must never be reported as world-model-ready"
     );
 }

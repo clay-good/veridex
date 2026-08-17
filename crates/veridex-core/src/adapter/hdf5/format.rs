@@ -49,6 +49,59 @@ const SUPERBLOCK_ADDRESSES: &[u64] = &[0, 512, 1024, 2048, 4096, 8192, 16384, 32
 const MAX_HEADER_MESSAGES: usize = 65_536;
 const MAX_BTREE_NODES: usize = 100_000;
 
+/// The ceiling on how deep a B-tree walk may recurse.
+///
+/// The node count above bounds the *work* a walk does; it does not bound the *stack* it does it on,
+/// and the walkers are recursive. A file whose interior nodes chain downwards — each pointing at a
+/// fresh address, so the visited-set never fires — overflows the 8 MB stack thousands of nodes
+/// before the 100,000-node ceiling is reached, and a stack overflow aborts the process rather than
+/// returning an error a CI gate can report. A real B-tree's depth is logarithmic in its entry count:
+/// even a million chunks at the format's minimum fan-out is nowhere near this, so only a file that
+/// is lying can reach it.
+const MAX_BTREE_DEPTH: u32 = 64;
+
+/// The state one B-tree walk carries: every node address already entered, and how deep the recursion
+/// currently is.
+///
+/// A B-tree node has exactly one parent, so an address seen twice is a cycle (or a corruption that
+/// would make the walk read the same subtree forever) and is refused. The depth bound covers the
+/// case the visited-set cannot: a chain of *distinct* addresses, which is still unbounded stack.
+#[derive(Default)]
+struct BtreeWalk {
+    visited: BTreeSet<u64>,
+    depth: u32,
+}
+
+impl BtreeWalk {
+    /// Enter the node at `addr`, or fail with the reason it cannot be entered.
+    fn enter(&mut self, addr: u64) -> H5Result<()> {
+        if self.visited.len() >= MAX_BTREE_NODES {
+            return Err(parse_error(
+                "a B-tree walk visited more nodes than a real file holds; the index is corrupt",
+            ));
+        }
+        if !self.visited.insert(addr) {
+            return Err(parse_error(format!(
+                "a B-tree node points back at {addr}, which the walk has already entered; the \
+                 index is cyclic"
+            )));
+        }
+        self.depth += 1;
+        if self.depth > MAX_BTREE_DEPTH {
+            return Err(parse_error(format!(
+                "a B-tree walk recursed past {MAX_BTREE_DEPTH} levels; a real index of any size is \
+                 far shallower, so this one is corrupt"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Leave the node, so a sibling subtree is measured from the same depth rather than accumulating.
+    fn leave(&mut self) {
+        self.depth = self.depth.saturating_sub(1);
+    }
+}
+
 /// The ceiling on chunks a single dataset's index may enumerate. The index is walked in full before
 /// any row is read, so this bounds that walk against a file declaring an enormous one.
 const MAX_CHUNKS_PER_DATASET: usize = 4_000_000;
@@ -710,7 +763,13 @@ impl H5File {
         }
         let heap = self.read_local_heap(heap_addr)?;
         let mut entries = Vec::new();
-        self.walk_symbol_btree(btree_addr, &heap, &mut entries, skipped, &mut 0)?;
+        self.walk_symbol_btree(
+            btree_addr,
+            &heap,
+            &mut entries,
+            skipped,
+            &mut BtreeWalk::default(),
+        )?;
         Ok(entries)
     }
 
@@ -765,15 +824,22 @@ impl H5File {
         heap: &[u8],
         out: &mut Vec<(String, u64)>,
         skipped: &mut Vec<SkippedLink>,
-        visited: &mut usize,
+        walk: &mut BtreeWalk,
     ) -> H5Result<()> {
-        *visited += 1;
-        if *visited > MAX_BTREE_NODES {
-            return Err(parse_error(
-                "a group B-tree walk visited more nodes than a real file holds; the index is \
-                 cyclic or corrupt",
-            ));
-        }
+        walk.enter(addr)?;
+        let result = self.walk_symbol_btree_inner(addr, heap, out, skipped, walk);
+        walk.leave();
+        result
+    }
+
+    fn walk_symbol_btree_inner(
+        &mut self,
+        addr: u64,
+        heap: &[u8],
+        out: &mut Vec<(String, u64)>,
+        skipped: &mut Vec<SkippedLink>,
+        walk: &mut BtreeWalk,
+    ) -> H5Result<()> {
         let head = self.read_at(addr, 8 + 2 * self.offset_size as u64)?;
         let mut cursor = Cursor::new(&head, "group B-tree node");
         if cursor.take(4)? != b"TREE" {
@@ -799,7 +865,7 @@ impl H5File {
             cursor.sized(self.length_size)?; // key
             let child = cursor.sized(self.offset_size)?;
             if level > 0 {
-                self.walk_symbol_btree(child, heap, out, skipped, visited)?;
+                self.walk_symbol_btree(child, heap, out, skipped, walk)?;
             } else {
                 self.read_symbol_table_node(child, heap, out, skipped)?;
             }
@@ -1142,15 +1208,21 @@ impl H5File {
         addr: u64,
         key_rank: usize,
         out: &mut BTreeMap<Vec<u64>, ChunkRecord>,
-        visited: &mut usize,
+        walk: &mut BtreeWalk,
     ) -> H5Result<()> {
-        *visited += 1;
-        if *visited > MAX_BTREE_NODES {
-            return Err(parse_error(
-                "a chunk B-tree walk visited more nodes than a real file holds; the index is \
-                 cyclic or corrupt",
-            ));
-        }
+        walk.enter(addr)?;
+        let result = self.walk_chunk_btree_inner(addr, key_rank, out, walk);
+        walk.leave();
+        result
+    }
+
+    fn walk_chunk_btree_inner(
+        &mut self,
+        addr: u64,
+        key_rank: usize,
+        out: &mut BTreeMap<Vec<u64>, ChunkRecord>,
+        walk: &mut BtreeWalk,
+    ) -> H5Result<()> {
         let head = self.read_at(addr, 8 + 2 * self.offset_size as u64)?;
         let mut cursor = Cursor::new(&head, "chunk B-tree node");
         if cursor.take(4)? != b"TREE" {
@@ -1183,7 +1255,7 @@ impl H5File {
             }
             let child = cursor.sized(self.offset_size)?;
             if level > 0 {
-                self.walk_chunk_btree(child, key_rank, out, visited)?;
+                self.walk_chunk_btree(child, key_rank, out, walk)?;
             } else {
                 if out.len() >= MAX_CHUNKS_PER_DATASET {
                     return Err(parse_error(format!(
@@ -1398,8 +1470,7 @@ impl<'a> RowReader<'a> {
         if let Layout::Chunked { addr, dims } = &info.layout {
             let (addr, dims) = (*addr, dims.clone());
             if !is_undefined(addr, file.offset_size) {
-                let mut visited = 0usize;
-                file.walk_chunk_btree(addr, dims.len(), &mut chunks, &mut visited)?;
+                file.walk_chunk_btree(addr, dims.len(), &mut chunks, &mut BtreeWalk::default())?;
             }
         }
         Ok(RowReader {

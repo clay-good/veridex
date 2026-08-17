@@ -393,6 +393,21 @@ impl Engine {
             frames_read: coverage.frames_read(),
         };
 
+        // A partial run says so as a *finding*, not only as the verdict's `coverage` field.
+        //
+        // The field is rendered by the terminal report, the JSON, and the HTML — and by nothing
+        // else. SARIF carries no coverage marker, so a CI job gating on a code-scanning upload sees
+        // a metadata-only or sampled run as a clean scan of the whole dataset; `diff` never reads
+        // coverage either, so swapping a partial report in for a full one reads as findings
+        // *resolved*. Findings are the one channel that reaches every renderer and the certificate's
+        // own summary — the same reasoning `temporal.clock-measurability` is built on, and the same
+        // reason SARIF synthesizes a result for a check that errored rather than letting its silence
+        // pass. Info severity: this is a statement about the run's scope, not a defect in the data,
+        // and it must not change the status of a dataset that is genuinely sound.
+        if let Some(finding) = coverage_finding(&coverage) {
+            findings.push(finding);
+        }
+
         for check in &self.checks {
             if !check_selected(check.as_ref(), config) {
                 continue;
@@ -473,6 +488,61 @@ impl Engine {
             result_content_hash,
         }
     }
+}
+
+/// The check id under which a partial run discloses its own scope.
+///
+/// Not a registered [`Check`] — coverage is a property of the ingest, which no check can read from
+/// the CDM. The engine emits it directly, the way SARIF synthesizes a result for a check that
+/// errored. It is deliberately not in the catalog, so `veridex checks` still lists exactly the
+/// checks that run, and configuration cannot disable the disclosure.
+pub const COVERAGE_CHECK_ID: &str = "veridex.coverage";
+
+/// The finding a partial run discloses about itself, or `None` for a full run.
+fn coverage_finding(coverage: &CoverageNote) -> Option<Finding> {
+    let (code, message, risk, remedy) = match coverage {
+        CoverageNote::Full => return None,
+        CoverageNote::Sample {
+            request,
+            episodes_ingested,
+        } => (
+            "COVERAGE.SAMPLE",
+            format!(
+                "this run read a sample of the dataset ({request}; {episodes_ingested} episode(s) \
+                 ingested), so every result below speaks for those episodes alone"
+            ),
+            "The episodes this run never opened are exactly where an undetected problem would be. \
+             A clean result over a sample is not a clean result over the dataset, and read as one \
+             it waves through the data it never looked at.",
+            "Re-run without the sampling flags before treating this as a verdict on the dataset. \
+             `veridex certify` refuses a sampled run for the same reason.",
+        ),
+        CoverageNote::MetadataOnly { episodes_declared } => (
+            "COVERAGE.METADATA_ONLY",
+            format!(
+                "this run read only the dataset's manifest ({episodes_declared} episode(s) \
+                 declared); no stream payload was opened, so no timestamp, value, content hash, or \
+                 media header was examined"
+            ),
+            "The checks that need the data — every temporal check, every recomputed statistic, the \
+             duplicate, stuck-stream, and video checks — had nothing to measure and produced \
+             nothing. Their silence is the shape of the request, not evidence about the dataset.",
+            "Re-run without --metadata-only before treating this as a verdict on the data. \
+             `veridex certify` refuses a metadata-only run for the same reason.",
+        ),
+    };
+    Some(
+        Finding::new(
+            COVERAGE_CHECK_ID,
+            Category::Structural,
+            Severity::Info,
+            crate::check::Location::Dataset,
+            code,
+            message,
+        )
+        .with_risk(risk)
+        .with_remedy(remedy),
+    )
 }
 
 /// Whether a check runs under the given config: category filter, id allow-list, then disable-list.

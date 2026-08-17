@@ -1193,3 +1193,25 @@ fn a_sampled_hdf5_run_carries_its_coverage_and_cannot_be_certified() {
     assert!(err.contains("sampled run"), "{err}");
     assert!(veridex_core::certificate::Certificate::certifiable(&full.verdict).is_ok());
 }
+
+#[test]
+fn a_cyclic_btree_is_a_parse_error_not_a_stack_overflow() {
+    // `btree_cycle.h5` is `robomimic_small.h5` with one group B-tree node relabelled as interior
+    // (level 1) and its first child pointer aimed back at the node itself. The walkers recurse on
+    // interior nodes, so before the visited-set existed this recursed until the thread's stack was
+    // gone — and a stack overflow *aborts the process* (SIGABRT, exit 134). A CI gate or a
+    // validation service reading an untrusted file cannot report that; it just dies. Every other
+    // corruption in this file's tests comes back as a named error, and so must this one.
+    let err = default_registry()
+        .ingest(
+            &Source::Local(fixture("btree_cycle.h5")),
+            &IngestOptions::default(),
+        )
+        .expect_err("a self-referential B-tree node must be refused");
+    match err {
+        IngestError::Parse { message, .. } => {
+            assert!(message.contains("cyclic"), "got {message}")
+        }
+        other => panic!("expected a parse error naming the cycle, got {other:?}"),
+    }
+}

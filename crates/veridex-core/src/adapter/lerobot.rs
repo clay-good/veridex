@@ -757,7 +757,7 @@ fn load_tasks(dir: &Path) -> BTreeMap<i64, String> {
 /// episode. The structural check compares this declared length against the frames actually ingested.
 /// Absent or unreadable file yields an empty map (the check simply has nothing to compare); malformed
 /// lines are skipped.
-fn load_episode_lengths(dir: &Path) -> BTreeMap<u64, u64> {
+fn load_episode_lengths(dir: &Path) -> Result<BTreeMap<u64, u64>, IngestError> {
     #[derive(Deserialize)]
     struct EpisodeRow {
         episode_index: u64,
@@ -765,7 +765,7 @@ fn load_episode_lengths(dir: &Path) -> BTreeMap<u64, u64> {
     }
     let mut out = BTreeMap::new();
     let Ok(contents) = std::fs::read_to_string(dir.join("meta").join("episodes.jsonl")) else {
-        return out;
+        return Ok(out);
     };
     for line in contents.lines() {
         let line = line.trim();
@@ -773,10 +773,26 @@ fn load_episode_lengths(dir: &Path) -> BTreeMap<u64, u64> {
             continue;
         }
         if let Ok(row) = serde_json::from_str::<EpisodeRow>(line) {
-            out.insert(row.episode_index, row.length);
+            // A repeated `episode_index` is refused rather than collapsed. Keying a map on it made
+            // the second line silently overwrite the first, so a manifest declaring episode 1 with
+            // both length 10 and length 99 produced a CDM carrying 99 and no complaint — while the
+            // cumulative boundaries LeRobot derives from those lines are, by construction, wrong for
+            // every episode after the duplicate. That is the lerobot#4143 class stated outright in
+            // the manifest, and it is the one form of it a run that never reads a frame can prove.
+            if let Some(previous) = out.insert(row.episode_index, row.length) {
+                return Err(IngestError::Parse {
+                    format_id: "lerobot",
+                    message: format!(
+                        "meta/episodes.jsonl declares episode_index {} more than once (lengths {} \
+                         and {}); the cumulative episode boundaries derived from it cannot be \
+                         correct — re-export the manifest from the source shards",
+                        row.episode_index, previous, row.length
+                    ),
+                });
+            }
         }
     }
-    out
+    Ok(out)
 }
 
 /// Ingest a LeRobot dataset from its `meta/` manifest alone, without opening a Parquet or video file.
@@ -794,6 +810,7 @@ fn ingest_metadata_only(
     features: &[FeatureSpec],
     fps: f64,
     declared_lengths: &BTreeMap<u64, u64>,
+    options: &IngestOptions,
 ) -> Result<Ingested, IngestError> {
     // The episode set has to come from the manifest, since reading the data is exactly what this
     // mode does not do. `meta/episodes.jsonl` is the good source: it names each episode and its
@@ -825,6 +842,18 @@ fn ingest_metadata_only(
                 .into(),
         });
     };
+
+    // A metadata-only ingest reads no frames, so the frame budget — which is charged per frame —
+    // never fires, and nothing else bounds what the manifest can make this allocate. It builds one
+    // `Stream` per (episode × feature), and *both* factors come straight from attacker-controlled
+    // text: an 11 MB `meta/episodes.jsonl` of 300,000 lines against 60 declared features measured
+    // 18,000,000 streams and 6 GB of resident memory, a 520x amplification from a file that costs
+    // nothing to write. Charge that product against the same budget the frame count uses, before a
+    // single `Stream` is built — a stream and a frame are the same order of allocation, so the same
+    // ceiling is the right one, and `--max-frames` raises both together.
+    let declared_streams = (episode_indices.len() as u64).saturating_mul(features.len() as u64);
+    let mut budget = super::FrameBudget::new(options);
+    budget.take("lerobot", declared_streams)?;
 
     let stats = load_stats(dir);
     let card_license = load_card_license(dir);
@@ -1140,12 +1169,12 @@ impl Adapter for LeRobotAdapter {
         // Declared per-episode frame counts from meta/episodes.jsonl (empty if absent) — the manifest
         // assertion the boundary check tests against the frames actually ingested (lerobot#4143), and
         // the episode index set a sampled ingest draws from.
-        let declared_lengths = load_episode_lengths(dir);
+        let declared_lengths = load_episode_lengths(dir)?;
 
         // A metadata-only ingest answers a different question — "does the manifest hold together?" —
         // and answers it without opening a single Parquet or video file. It returns here.
         if options.metadata_only {
-            return ingest_metadata_only(dir, &info, &features, fps, &declared_lengths);
+            return ingest_metadata_only(dir, &info, &features, fps, &declared_lengths, options);
         }
 
         // Resolve a sampling request into the concrete episode indices to keep, *before* reading any

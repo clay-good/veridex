@@ -2805,19 +2805,49 @@ fn a_correctly_wired_rig_is_clean() {
 }
 
 #[test]
-fn a_sensor_that_declares_no_frame_abstains() {
-    // Nothing was claimed, so there is nothing to contradict. Inventing a finding here would flag
-    // every MF4 and CAN rig, which declare no coordinate frames at all.
+fn a_sensor_that_declares_no_frame_is_named_not_passed_over() {
+    // A rig that recorded a transform tree, beside sensors that never say which frame they are in —
+    // what an unconfigured ROS driver publishing an empty `header.frame_id` produces. Skipping them
+    // silently made this check find nothing, which made the `world-model-ready` criterion it backs
+    // read as satisfied: a signed certificate attesting "every sensor's own frame resolves through
+    // the tree to a camera" over a rig where not one sensor said where it was.
     let d = rig_with_frames(Some(wired_rig()), &[("cam", "camera_front")]);
+    let f = autonomy::SensorFrameResolution.run(&d);
+    let named: Vec<&str> = f
+        .iter()
+        .filter(|f| f.code == "AUTONOMY.SENSOR_FRAME_UNDECLARED")
+        .map(|f| f.message.as_str())
+        .collect();
+    assert_eq!(
+        named.len(),
+        3,
+        "lidar, imu, and gnss each declare no frame: {f:?}"
+    );
+    assert!(named.iter().any(|m| m.contains("`lidar`")), "{named:?}");
+    // The camera did declare one, so it is not accused of anything.
+    assert!(!named.iter().any(|m| m.contains("`cam`")), "{named:?}");
+}
+
+#[test]
+fn a_rig_that_declares_no_frames_at_all_is_not_flagged_per_sensor() {
+    // MF4 and CAN rigs record no coordinate frames *and* no transform tree. With no tree there is
+    // no calibration to be missing from, so this check stays silent and
+    // `autonomy.calibration-completeness` reports the one real defect once.
+    let d = rig_with_frames(None, &[]);
     assert!(autonomy::SensorFrameResolution.run(&d).is_empty());
 }
 
 #[test]
 fn connectivity_abstains_when_no_camera_names_a_known_frame() {
-    // Without a camera frame in the tree there is no reference to measure a path against; only the
-    // "frame is not in the tree at all" half can still speak.
+    // Without a camera frame in the tree there is no reference to measure a path against, so no
+    // stream is reported as *unrelated* to a camera. The undeclared-frame half still speaks.
     let d = rig_with_frames(Some(wired_rig()), &[("lidar", "lidar_top")]);
-    assert!(autonomy::SensorFrameResolution.run(&d).is_empty());
+    let f = autonomy::SensorFrameResolution.run(&d);
+    assert!(
+        !f.iter()
+            .any(|f| f.code == "AUTONOMY.SENSOR_FRAME_UNRELATED"),
+        "{f:?}"
+    );
 }
 
 #[test]
@@ -3045,5 +3075,50 @@ fn a_bus_signal_is_not_asked_to_reach_the_camera() {
     assert!(
         autonomy::SensorFrameResolution.run(&d).is_empty(),
         "a bus signal and an ego-pose frame are not reprojection targets"
+    );
+}
+
+#[test]
+fn an_enormous_episode_index_span_is_summarized_not_enumerated() {
+    // Both bounds come from the file, so their span is attacker-controlled. Two episodes numbered
+    // `0` and `u64::MAX` made this check walk `0..=u64::MAX` and collect the misses into a `Vec`:
+    // not a slow check, a process that never returned and allocated until it was killed. Two lines
+    // of a LeRobot `meta/episodes.jsonl` are enough to write it. The gap *count* is arithmetic on
+    // the bounds and never needs the misses materialized.
+    let d = dataset(vec![
+        episode(0, vec![stream("a", "c", None, &[0, 1])]),
+        episode(u64::MAX, vec![stream("a", "c", None, &[0, 1])]),
+    ]);
+    let started = std::time::Instant::now();
+    let f = structural::EpisodeContinuity.run(&d);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "the check must not walk the span"
+    );
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].code, "STRUCTURAL.EPISODE_INDEX_GAP");
+    // u64::MAX - 0 - 1 = 18446744073709551614 missing, reported by count.
+    assert!(
+        f[0].message.contains("18446744073709551614 are missing"),
+        "{}",
+        f[0].message
+    );
+    // And it still names the first few, so the message stays actionable on an ordinary gap.
+    assert!(f[0].message.contains("1, 2, 3"), "{}", f[0].message);
+}
+
+#[test]
+fn an_ordinary_index_gap_is_still_reported_exactly() {
+    let d = dataset(vec![
+        episode(0, vec![stream("a", "c", None, &[0, 1])]),
+        episode(1, vec![stream("a", "c", None, &[0, 1])]),
+        episode(3, vec![stream("a", "c", None, &[0, 1])]),
+    ]);
+    let f = structural::EpisodeContinuity.run(&d);
+    assert_eq!(f.len(), 1);
+    assert!(
+        f[0].message.contains("1 are missing: 2"),
+        "{}",
+        f[0].message
     );
 }

@@ -446,3 +446,67 @@ fn what_it_cannot_see_it_does_not_claim_to_have_seen() {
     );
     assert!(!partial.verdict.coverage.frames_read());
 }
+
+#[test]
+fn a_manifest_that_declares_an_episode_twice_is_refused() {
+    // The lerobot#4143 class stated outright in the manifest, and the one form of it a run that
+    // never reads a frame can prove. Keying the episode map on `episode_index` silently collapsed
+    // the duplicate — last line wins — so a manifest declaring episode 1 with both length 10 and
+    // length 99 produced a clean CDM carrying 99, while the cumulative boundaries LeRobot derives
+    // from those lines are wrong for every episode after the duplicate.
+    let dir = tempfile::tempdir().unwrap();
+    write_dataset(dir.path(), 2, 10, None);
+    fs::write(
+        dir.path().join("meta/episodes.jsonl"),
+        "{\"episode_index\": 0, \"length\": 10}\n\
+         {\"episode_index\": 1, \"length\": 10}\n\
+         {\"episode_index\": 1, \"length\": 99}\n",
+    )
+    .unwrap();
+
+    for options in [metadata_only(), IngestOptions::default()] {
+        match ingest(dir.path(), &options) {
+            Err(IngestError::Parse { message, .. }) => {
+                assert!(message.contains("more than once"), "{message}")
+            }
+            other => panic!("expected a refusal, got ok={}", other.is_ok()),
+        }
+    }
+}
+
+#[test]
+fn the_manifest_cannot_make_the_ingest_allocate_without_bound() {
+    // No frame is read, so the frame budget — charged per frame — never fires, and nothing else
+    // bounded what the manifest could make this build: one `Stream` per (episode x feature), both
+    // factors straight from attacker-controlled text. 300k declared episodes against 60 features
+    // measured 18M streams and 6 GB resident, from a file that costs nothing to write.
+    let dir = tempfile::tempdir().unwrap();
+    write_dataset(dir.path(), 2, 10, None);
+    let manifest: String = (0..50_000u64)
+        .map(|e| format!("{{\"episode_index\": {e}, \"length\": 10}}\n"))
+        .collect();
+    fs::write(dir.path().join("meta/episodes.jsonl"), manifest).unwrap();
+
+    // 50,000 episodes x 2 features = 100,000 streams, refused against a 1,000 ceiling.
+    let tight = IngestOptions {
+        metadata_only: true,
+        max_frames: Some(1_000),
+        ..IngestOptions::default()
+    };
+    match ingest(dir.path(), &tight) {
+        Err(IngestError::FrameBudgetExceeded {
+            format_id,
+            requested,
+            ..
+        }) => {
+            assert_eq!(format_id, "lerobot");
+            assert_eq!(requested, 100_000);
+        }
+        other => panic!("expected the budget to refuse, got ok={}", other.is_ok()),
+    }
+
+    // Under the default ceiling the same manifest is ingested, so the guard bounds abuse without
+    // refusing a genuinely large dataset.
+    let ok = ingest(dir.path(), &metadata_only()).unwrap();
+    assert_eq!(ok.dataset.episodes.len(), 50_000);
+}

@@ -378,8 +378,26 @@ fn coverage_is_bound_into_the_verdict_hash() {
             episodes_ingested: 5,
         },
     );
-    assert_eq!(full.findings, partial.findings);
+    // The partial run's findings are the full run's plus its own disclosure that it was partial —
+    // which is what carries the coverage into SARIF, `diff`, and the certificate's findings summary,
+    // none of which read the `coverage` field.
+    let disclosure: Vec<&veridex_core::check::Finding> = partial
+        .findings
+        .iter()
+        .filter(|f| f.code == "COVERAGE.SAMPLE")
+        .collect();
+    assert_eq!(disclosure.len(), 1, "{:?}", partial.findings);
+    assert_eq!(disclosure[0].severity, veridex_core::check::Severity::Info);
+    let partial_without: Vec<_> = partial
+        .findings
+        .iter()
+        .filter(|f| f.code != "COVERAGE.SAMPLE")
+        .cloned()
+        .collect();
+    assert_eq!(full.findings, partial_without);
     assert_ne!(full.result_content_hash, partial.result_content_hash);
+    // An info-severity disclosure never turns a sound dataset into a failing one.
+    assert_eq!(full.status, partial.status);
 }
 
 #[test]

@@ -123,7 +123,7 @@ pub struct ReadinessReport {
     pub profile: String,
     /// Whether the profile applies to this dataset at all (an autonomy profile needs a sensor rig).
     pub applicable: bool,
-    /// Whether every criterion passed (and the profile applies).
+    /// Whether every criterion passed, the profile applies, and the run itself did not fail.
     pub ready: bool,
     /// Per-criterion results, in the profile's declared order.
     pub criteria: Vec<CriterionResult>,
@@ -165,7 +165,15 @@ impl ReadinessReport {
                 }
             })
             .collect();
-        let ready = applicable && criteria.iter().all(|c| c.passed);
+        // Readiness also requires the run itself not to be failing. The criteria name a *subset* of
+        // the catalog, so a dataset can satisfy every autonomy criterion while failing on something
+        // the profile does not name — an inverted stored statistic, a corrupt episode boundary, a
+        // desynced video — and `ready: true` printed beside `status: fail` is a certificate
+        // contradicting itself on the same page. Whichever half a reader believes, one of them
+        // misled them. "Ready" is the stronger claim, so it is the one that yields.
+        let ready = applicable
+            && verdict.status != crate::engine::Status::Fail
+            && criteria.iter().all(|c| c.passed);
         ReadinessReport {
             profile: profile.name.to_string(),
             applicable,

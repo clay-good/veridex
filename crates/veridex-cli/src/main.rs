@@ -708,11 +708,23 @@ fn cmd_inspect(rest: &[String]) -> ExitCode {
     println!("  CDM hash: {}", veridex_core::content_hash(d));
     // A sampled inspect describes a subset. Said up front, next to the hash it produced, so the
     // summary below is not read as the shape of the whole dataset.
-    if let veridex_core::Coverage::Sample { sample, .. } = &ingested.report.coverage {
-        println!(
-            "  coverage: SAMPLE — {} (this summary covers only the episodes listed below)",
-            sample.describe()
-        );
+    match &ingested.report.coverage {
+        veridex_core::Coverage::Full => {}
+        veridex_core::Coverage::Sample { sample, .. } => {
+            println!(
+                "  coverage: SAMPLE — {} (this summary covers only the episodes listed below)",
+                sample.describe()
+            );
+        }
+        // Without this the listing reads "episode 0 — 2 stream(s), 0 frame(s)" for every episode,
+        // which is indistinguishable from a dataset whose episodes are genuinely empty — the exact
+        // defect `STRUCTURAL.EMPTY_STREAM` exists to report. The zeros are the request, not the data.
+        veridex_core::Coverage::MetadataOnly { .. } => {
+            println!(
+                "  coverage: METADATA-ONLY — no stream payload was read, so every frame count \
+                 below is 0 by request, not by defect"
+            );
+        }
     }
     println!("  episodes: {}", d.episodes.len());
     for ep in &d.episodes {

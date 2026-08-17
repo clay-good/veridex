@@ -691,6 +691,7 @@ impl Check for SensorFrameResolution {
     }
     fn finding_codes(&self) -> &'static [&'static str] {
         &[
+            "AUTONOMY.SENSOR_FRAME_UNDECLARED",
             "AUTONOMY.SENSOR_FRAME_UNKNOWN",
             "AUTONOMY.SENSOR_FRAME_UNRELATED",
         ]
@@ -751,7 +752,54 @@ impl Check for SensorFrameResolution {
                     continue;
                 }
                 let Some(frame) = stream.frame_id.as_deref() else {
-                    continue; // the source declares no frame; nothing was claimed, nothing to check
+                    // The source declares no frame for a spatial sensor on a rig that *does* carry a
+                    // transform tree. Skipping silently was the worst outcome available: the check
+                    // then found nothing, the `world-model-ready` criterion it backs read as
+                    // satisfied, and a certificate went out attesting "every sensor's own frame
+                    // resolves through the tree to a camera" over a rig where not one sensor said
+                    // which frame it was in. An unconfigured ROS driver publishing an empty
+                    // `header.frame_id` produces exactly this — a well-formed tree beside sensors
+                    // nothing in it describes.
+                    //
+                    // A warning rather than an error: the recording may be perfectly good for
+                    // non-geometric use, and Veridex is not claiming the data is wrong. It is saying
+                    // it cannot verify this sensor's calibration — which must not be readable as
+                    // having verified it. The finding is what blocks readiness.
+                    if !reported.insert((stream.name.as_str(), "AUTONOMY.SENSOR_FRAME_UNDECLARED"))
+                    {
+                        continue;
+                    }
+                    findings.push(
+                        Finding::new(
+                            "autonomy.sensor-frame-resolution",
+                            Category::Autonomy,
+                            Severity::Warning,
+                            Location::Stream {
+                                episode: ep.index,
+                                stream: stream.name.clone(),
+                            },
+                            "AUTONOMY.SENSOR_FRAME_UNDECLARED",
+                            format!(
+                                "episode {}: stream `{}` declares no coordinate frame, so it cannot \
+                                 be located in the rig's transform tree — its calibration is \
+                                 unverifiable, not verified",
+                                ep.index, stream.name
+                            ),
+                        )
+                        .with_risk(
+                            "Nothing connects this sensor's data to the rig's geometry, so fusion, \
+                             projection, and any world model built on it are unfounded. The tree \
+                             being well-formed makes the gap invisible: the calibration checks pass \
+                             because there is nothing to contradict, not because anything was \
+                             confirmed.",
+                        )
+                        .with_remedy(
+                            "Configure the sensor's driver to stamp its `frame_id` (ROS \
+                             `header.frame_id`), then re-record — or re-export the log with the \
+                             frame each stream belongs to.",
+                        ),
+                    );
+                    continue;
                 };
                 let located = tf_reachable_from(transforms, frame);
                 if located.is_empty() {
