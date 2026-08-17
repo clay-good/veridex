@@ -220,3 +220,55 @@ fn a_symlinked_directory_pointing_at_an_ancestor_does_not_recurse() {
     let ds = ingest(&dir).dataset;
     assert_eq!(ds.episodes.len(), 1);
 }
+
+/// A shard symlinked *out* of the dataset is not the dataset's data, and must not be read.
+///
+/// `path_is_inside` (then `media_path_is_inside`) guarded exactly this for video, and
+/// `probe_stream_media` was its only caller — the data walk was documented as "inside by
+/// construction", which following symlinks had already made untrue. So a published dataset could
+/// ship `data/chunk-000/file-000.parquet -> /home/victim/payroll.parquet` and anyone running
+/// `veridex check` on it read that file: its columns' min/max/mean/std and a SHA-256 per cell went
+/// into the CDM, which is content-hashed, printed, and signed into a certificate the victim might
+/// then hand to someone else.
+#[cfg(unix)]
+#[test]
+fn a_shard_symlinked_out_of_the_dataset_is_not_read() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("dataset");
+    write_dataset(&dir, "cam");
+
+    // The victim's file lives entirely outside the dataset, as it would on a real machine.
+    let outside = tmp.path().join("victim");
+    fs::create_dir_all(&outside).unwrap();
+    let secret = outside.join("payroll.parquet");
+    let shard = dir.join("data/chunk-000/file-000.parquet");
+    fs::rename(&shard, &secret).unwrap();
+    std::os::unix::fs::symlink(&secret, &shard).unwrap();
+
+    let ingested: Ingested = LeRobotAdapter
+        .ingest(&Source::Local(dir.clone()), &IngestOptions::default())
+        .expect("a dataset whose shard points outside still ingests, with nothing from it");
+
+    let frames: usize = ingested
+        .dataset
+        .episodes
+        .iter()
+        .flat_map(|e| e.streams.iter())
+        .map(|s| s.frames.len())
+        .sum();
+    assert_eq!(
+        frames, 0,
+        "not one row of a file outside the dataset may reach the CDM"
+    );
+    // Disclosed by name, not silently skipped: otherwise this reads as a dataset that merely holds
+    // fewer episodes than its manifest declares.
+    assert!(
+        ingested
+            .report
+            .unmapped_fields
+            .iter()
+            .any(|f| f.note.contains("outside the dataset directory")),
+        "the escape must be reported: {:?}",
+        ingested.report.unmapped_fields
+    );
+}

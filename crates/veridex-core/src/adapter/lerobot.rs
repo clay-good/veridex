@@ -283,7 +283,25 @@ fn version_supported(declared: &str, supported: &[&str]) -> bool {
 }
 
 /// Recursively collect `.parquet` files under `dir`, in a deterministic sorted order.
-fn find_parquet(dir: &Path, out: &mut Vec<PathBuf>) {
+///
+/// `escaped` collects shards that resolve outside `dataset_root`, so the caller can disclose them
+/// rather than let the dataset merely look empty.
+///
+/// The walk follows symlinked files because that is the shape `snapshot_download` writes, and the
+/// component filter in [`path_is_inside`] cannot see through one — so containment is re-checked
+/// after resolution, here, on the way in. Without it a published dataset could ship
+/// `data/chunk-000/file-000.parquet -> /home/victim/payroll.parquet` and anyone who ran `veridex
+/// check` on it read that file: its columns' min/max/mean/std and a SHA-256 per cell went into the
+/// CDM, which is content-hashed, printed, and **signed into a certificate** the victim might then
+/// hand to someone else. `path_is_inside` already guarded exactly this for media (`probe_stream_media`
+/// was its only caller); the data walk was documented as "inside by construction", which following
+/// symlinks had already made untrue.
+fn find_parquet(
+    dataset_root: &Path,
+    dir: &Path,
+    out: &mut Vec<PathBuf>,
+    escaped: &mut Vec<PathBuf>,
+) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -292,9 +310,13 @@ fn find_parquet(dir: &Path, out: &mut Vec<PathBuf>) {
     for p in paths {
         let Some(kind) = walk_entry(&p) else { continue };
         if kind == EntryKind::Dir {
-            find_parquet(&p, out);
+            find_parquet(dataset_root, &p, out, escaped);
         } else if p.extension().and_then(|e| e.to_str()) == Some("parquet") {
-            out.push(p);
+            if path_is_inside(dataset_root, &p) {
+                out.push(p);
+            } else {
+                escaped.push(p);
+            }
         }
     }
 }
@@ -524,7 +546,7 @@ fn expected_sibling_path(by_episode: &BTreeMap<u64, PathBuf>, episode: u64) -> P
 /// `Media` is bound into the content hash and the signed certificate, and `MediaStatus` distinguishes
 /// missing from unreadable from read, that is a published existence-and-content oracle over the
 /// whole filesystem of anyone who checks the dataset.
-fn media_path_is_inside(dataset_root: &Path, expected: &Path) -> bool {
+fn path_is_inside(dataset_root: &Path, expected: &Path) -> bool {
     use std::path::Component;
     // Lexical first: the path must be the root plus ordinary components only. This is what rejects
     // both `..` (which `strip_prefix` leaves in place) and an absolute path (which does not carry
@@ -558,7 +580,7 @@ fn probe_stream_media(dataset_root: &Path, expected: &Path, declared: MediaParam
         .filter_map(|c| c.as_os_str().to_str())
         .collect::<Vec<_>>()
         .join("/");
-    if !media_path_is_inside(dataset_root, expected) {
+    if !path_is_inside(dataset_root, expected) {
         // Named rather than quietly treated as absent: the dataset did not merely fail to ship a
         // video, its manifest asked Veridex to read somewhere it has no business reading, and a
         // reader deciding whether to trust this dataset should be told that outright.
@@ -1398,7 +1420,13 @@ impl Adapter for LeRobotAdapter {
 
         // Read every data Parquet, grouping row timestamps by episode.
         let mut parquet_files = Vec::new();
-        find_parquet(&dir.join("data"), &mut parquet_files);
+        let mut escaped_shards = Vec::new();
+        find_parquet(
+            dir,
+            &dir.join("data"),
+            &mut parquet_files,
+            &mut escaped_shards,
+        );
 
         // Per episode: rows in read order, each a (timestamp, feature-name -> content hash) pair.
         type RowContent = (i64, BTreeMap<String, Option<[u8; 32]>>);
@@ -1759,6 +1787,24 @@ impl Adapter for LeRobotAdapter {
                    or interpreted"
                 .into(),
         }];
+        // Named rather than quietly skipped: the dataset did not merely fail to ship a shard, it
+        // asked Veridex to read somewhere it has no business reading, and a reader deciding whether
+        // to trust this dataset should be told that outright. Without this the run would just look
+        // like a dataset with fewer episodes than its manifest declares.
+        for path in &escaped_shards {
+            unmapped_fields.push(UnmappedField {
+                source_path: path
+                    .strip_prefix(dir)
+                    .unwrap_or(path)
+                    .components()
+                    .filter_map(|c| c.as_os_str().to_str())
+                    .collect::<Vec<_>>()
+                    .join("/"),
+                note: "this data shard resolves outside the dataset directory, so it was not read \
+                       — a dataset is built only from its own files"
+                    .into(),
+            });
+        }
         for feature in &video_index.unresolvable {
             unmapped_fields.push(UnmappedField {
                 source_path: format!("videos/**/{feature}/"),
