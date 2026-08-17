@@ -43,8 +43,9 @@ fn median_sorted(sorted: &[i64]) -> f64 {
     }
 }
 
-/// A stream's own sampling period: the median positive inter-frame interval, in nanoseconds, or 0
-/// when the stream has fewer than two distinct timestamps.
+/// A stream's own sampling period: the median positive inter-frame interval, in nanoseconds —
+/// falling back to the rate the source declares when there are too few intervals to take a median,
+/// and 0 when the source declares none either.
 ///
 /// This is the *quantum* of a span comparison. A stream observing a window of length `W` at period
 /// `T` spans `floor(W / T) * T`, so its measured span understates `W` by up to one full period —
@@ -65,9 +66,28 @@ pub(crate) fn sampling_period_ns(stream: &Stream) -> i64 {
     // sensor died after two frames while every other stream covered one second gets a ten-second
     // allowance, under which no drift of any size can be reported. One interval is equally
     // consistent with a 0.1 Hz sensor and a sensor that fired twice and stopped; the second is
-    // exactly what these checks exist to catch, so the cadence is not guessed from it.
+    // exactly what these checks exist to catch, so the cadence is not *guessed* from it.
+    //
+    // But the source often *states* the cadence, and a stated rate is not a guess. Returning 0 here
+    // meant a slow sensor that lands exactly two samples in a short episode — a 1 Hz LiDAR beside a
+    // 100 Hz IMU — got no allowance at all, and its intrinsic one-period span difference was
+    // reported as a 990 ms `TEMPORAL.CLOCK_SKEW` **error** on a perfectly synchronized rig. The
+    // check flipped between clean and headline error on whether the LiDAR caught 2 samples or 3.
+    //
+    // So fall back to the declared period, bounded by the one interval actually observed. That
+    // bound is what keeps the died-early sensor honest: its declared rate is fast, so it still
+    // gets a small allowance, and a corrupt declaration of 0.001 Hz cannot buy a 1000-second one.
     if intervals.len() < 2 {
-        return 0;
+        let declared = stream
+            .declared_rate_hz
+            .filter(|hz| hz.is_finite() && *hz > 0.0)
+            .map(|hz| (NS_PER_S / hz) as i64)
+            .filter(|p| *p > 0);
+        return match (declared, intervals.first()) {
+            (Some(period), Some(observed)) => period.min(*observed),
+            (Some(period), None) => period,
+            (None, _) => 0,
+        };
     }
     intervals.sort_unstable();
     median_sorted(&intervals).max(0.0) as i64

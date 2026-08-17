@@ -265,10 +265,23 @@ impl Check for RangeSanity {
         let mut reported: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
         for ep in &dataset.episodes {
             for stream in &ep.streams {
-                let Some(stats) = stream.stats else {
-                    continue;
-                };
-                let Some(finding) = self.evaluate(stream, ep.index, &stats) else {
+                // Element 0 is only the *first* dimension's summary. A multi-DoF feature's stored
+                // stats are per-dimension arrays, and reading element 0 alone meant an inverted
+                // range, a NaN, a negative standard deviation, or a dead joint on any axis above the
+                // first passed clean — while `value-measurability` counted `dim_stats` as "stats
+                // present", so nothing abstained either and the certificate listed this check as
+                // executed. On a 7-DoF arm that is six unexamined joints.
+                let per_dim = stream
+                    .dim_stats
+                    .iter()
+                    .flatten()
+                    .map(|d| (Some(d.dim), d.stats));
+                let scalar = stream.stats.map(|s| (None, s));
+                let Some(finding) = scalar
+                    .into_iter()
+                    .chain(per_dim)
+                    .find_map(|(dim, stats)| self.evaluate(stream, ep.index, &stats, dim))
+                else {
                     continue;
                 };
                 if !reported.insert(stream.name.as_str()) {
@@ -286,10 +299,23 @@ impl RangeSanity {
     /// "the numbers are corrupt" to "the numbers are fine but the distribution is degenerate", and
     /// the first that fires is the finding — later rules read the same fields and would only restate
     /// the same defect.
-    fn evaluate(&self, stream: &Stream, episode: u64, stats: &StreamStats) -> Option<Finding> {
+    fn evaluate(
+        &self,
+        stream: &Stream,
+        episode: u64,
+        stats: &StreamStats,
+        dim: Option<u64>,
+    ) -> Option<Finding> {
         let at = || Location::Stream {
             episode,
             stream: stream.name.clone(),
+        };
+        // What the message calls the thing these numbers summarize. For a multi-DoF feature that is
+        // one joint, not the whole feature, and saying so is the difference between a report a user
+        // can act on and one that sends them auditing six healthy axes.
+        let name = match dim {
+            Some(d) => format!("{} dim {d}", stream.name),
+            None => stream.name.clone(),
         };
 
         // Non-finite statistics are always a data-integrity error.
@@ -306,7 +332,7 @@ impl RangeSanity {
                     "STATISTICAL.NON_FINITE",
                     format!(
                         "stream `{}` in episode {} has non-finite stored statistics",
-                        stream.name, episode
+                        name, episode
                     ),
                 )
                 .with_risk(
@@ -329,7 +355,7 @@ impl RangeSanity {
                     "STATISTICAL.RANGE_INVERTED",
                     format!(
                         "stream `{}` in episode {}: min {} exceeds max {}",
-                        stream.name, episode, stats.min, stats.max
+                        name, episode, stats.min, stats.max
                     ),
                 )
                 .with_risk("An inverted range means the stored statistics are corrupt.")
@@ -346,7 +372,7 @@ impl RangeSanity {
                     "STATISTICAL.NEGATIVE_STD",
                     format!(
                         "stream `{}` in episode {}: negative std {}",
-                        stream.name, episode, stats.std
+                        name, episode, stats.std
                     ),
                 )
                 .with_risk(
@@ -372,7 +398,7 @@ impl RangeSanity {
                     "STATISTICAL.MEAN_OUT_OF_RANGE",
                     format!(
                         "stream `{}` in episode {}: mean {} lies outside range [{}, {}]",
-                        stream.name, episode, stats.mean, stats.min, stats.max
+                        name, episode, stats.mean, stats.min, stats.max
                     ),
                 )
                 .with_risk("A mean outside its own min/max means the stored statistics are corrupt; normalization built on them will be wrong.")
@@ -394,7 +420,7 @@ impl RangeSanity {
                     "STATISTICAL.STD_IMPLAUSIBLE",
                     format!(
                         "stream `{}` in episode {}: std {} exceeds the maximum possible {} for range [{}, {}]",
-                        stream.name, episode, stats.std, bound, stats.min, stats.max
+                        name, episode, stats.std, bound, stats.min, stats.max
                     ),
                 )
                 .with_risk("An impossibly large std means the stored statistics don't match the data (often computed on the wrong dtype or stream); normalization built on them will be wrong.")
@@ -418,7 +444,7 @@ impl RangeSanity {
                         format!(
                             "stream `{}` in episode {}: stored range [{}, {}] falls outside \
                              what `{dtype}` can represent [{lo}, {hi}]",
-                            stream.name, episode, stats.min, stats.max
+                            name, episode, stats.min, stats.max
                         ),
                     )
                     .with_risk("Stats outside the declared dtype's range mean the dtype or the stats are wrong; normalization and any dtype-based decoding will be incorrect.")
@@ -442,7 +468,7 @@ impl RangeSanity {
                         // slack, and at magnitude 1e6 that slack is 1.0 — so this line asserted a
                         // std of zero over a stored std of 0.9, in a signed certificate.
                         "stream `{}` in episode {} is constant (min == max)",
-                        stream.name, episode
+                        name, episode
                     ),
                 )
                 .with_risk("A constant stream carries no information and can bias training.")

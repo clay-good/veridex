@@ -312,11 +312,20 @@ impl Check for DeclaredFrameCount {
 /// pooled under one dataset. Streams that declare no dtype/shape are skipped — Veridex never infers.
 pub struct ShapeConsistency;
 
-/// The first declared schema seen for a stream name, kept to compare later episodes against.
+/// The first declared dtype and the first declared shape seen for a stream name, each kept with the
+/// episode it came from.
+///
+/// The two are tracked **independently**. A single baseline captured from the first episode that
+/// declared *either* one, and was never enriched afterwards, so a stream whose first episode stated
+/// a dtype but no shape had `shape: None` frozen in as its baseline — and the comparison requires
+/// both sides declared, so shape drift for that stream could never be reported again, however many
+/// later episodes declared conflicting shapes. HDF5 and Zarr both write `shape: None` for a 1-D
+/// dataset, which makes this the ordinary case rather than a corner: an `/action` that is `(N,)` in
+/// one episode file and `(N,7)` in another is exactly the un-collatable drift this check exists for.
+#[derive(Default)]
 struct Baseline<'a> {
-    dtype: &'a Option<String>,
-    shape: &'a Option<Vec<u64>>,
-    episode: u64,
+    dtype: Option<(&'a String, u64)>,
+    shape: Option<(&'a Vec<u64>, u64)>,
 }
 
 impl Check for ShapeConsistency {
@@ -354,58 +363,71 @@ impl Check for ShapeConsistency {
                 if stream.dtype.is_none() && stream.shape.is_none() {
                     continue;
                 }
-                match baseline.get(stream.name.as_str()) {
-                    None => {
-                        baseline.insert(
-                            &stream.name,
-                            Baseline {
-                                dtype: &stream.dtype,
-                                shape: &stream.shape,
-                                episode: ep.index,
-                            },
-                        );
-                    }
-                    Some(base) => {
-                        let dtype_differs = stream.dtype.is_some()
-                            && base.dtype.is_some()
-                            && &stream.dtype != base.dtype;
-                        let shape_differs = stream.shape.is_some()
-                            && base.shape.is_some()
-                            && &stream.shape != base.shape;
-                        if (dtype_differs || shape_differs) && reported.insert(stream.name.as_str())
-                        {
-                            findings.push(
-                                Finding::new(
-                                    self.id(),
-                                    Category::Structural,
-                                    Severity::Error,
-                                    Location::Stream {
-                                        episode: ep.index,
-                                        stream: stream.name.clone(),
-                                    },
-                                    "STRUCTURAL.SHAPE_MISMATCH",
-                                    format!(
-                                        "stream `{}` declares {} in episode {} but {} in episode {}",
-                                        stream.name,
-                                        describe(base.dtype, base.shape),
-                                        base.episode,
-                                        describe(&stream.dtype, &stream.shape),
-                                        ep.index,
-                                    ),
-                                )
-                                .with_risk(
-                                    "Inconsistent tensor dtype/shape across episodes breaks batched \
-                                     collation: the data loader errors or silently pads/truncates, \
-                                     corrupting inputs.",
-                                )
-                                .with_remedy(
-                                    "Re-export the affected episodes with a consistent feature \
-                                     schema, or drop the episodes that diverge.",
-                                ),
-                            );
-                        }
+                let base = baseline.entry(&stream.name).or_default();
+
+                // Compare against whichever axis already has a baseline, then fill in the ones that
+                // do not — so a stream declaring only a dtype in one episode and only a shape in
+                // another still acquires a baseline for both.
+                let conflict = match (&stream.dtype, base.dtype) {
+                    (Some(d), Some((b, at))) if d != b => Some((
+                        at,
+                        describe(&Some(b.clone()), &None),
+                        describe(&Some(d.clone()), &None),
+                    )),
+                    _ => match (&stream.shape, base.shape) {
+                        (Some(sh), Some((b, at))) if sh != b => Some((
+                            at,
+                            describe(&None, &Some(b.clone())),
+                            describe(&None, &Some(sh.clone())),
+                        )),
+                        _ => None,
+                    },
+                };
+                if base.dtype.is_none() {
+                    if let Some(d) = &stream.dtype {
+                        base.dtype = Some((d, ep.index));
                     }
                 }
+                if base.shape.is_none() {
+                    if let Some(sh) = &stream.shape {
+                        base.shape = Some((sh, ep.index));
+                    }
+                }
+
+                let Some((base_episode, base_desc, here_desc)) = conflict else {
+                    continue;
+                };
+                // One finding per stream name: a schema that drifts across many episodes is one
+                // defect, and the first pair that shows it is the pair worth naming.
+                if !reported.insert(stream.name.as_str()) {
+                    continue;
+                }
+                findings.push(
+                    Finding::new(
+                        self.id(),
+                        Category::Structural,
+                        Severity::Error,
+                        Location::Stream {
+                            episode: ep.index,
+                            stream: stream.name.clone(),
+                        },
+                        "STRUCTURAL.SHAPE_MISMATCH",
+                        format!(
+                            "stream `{}` declares {base_desc} in episode {base_episode} but \
+                             {here_desc} in episode {}",
+                            stream.name, ep.index,
+                        ),
+                    )
+                    .with_risk(
+                        "Inconsistent tensor dtype/shape across episodes breaks batched \
+                         collation: the data loader errors or silently pads/truncates, \
+                         corrupting inputs.",
+                    )
+                    .with_remedy(
+                        "Re-export the affected episodes with a consistent feature \
+                         schema, or drop the episodes that diverge.",
+                    ),
+                );
             }
         }
         findings
