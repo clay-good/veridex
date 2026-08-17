@@ -30,6 +30,14 @@ the build plan.
       answers must agree — a record contradicting its own schema is refused, never mapped into a
       short episode. RLDS records no wall clock, so the timeline is the step index on a clock named
       `rlds-step-index`, no rate is invented, and the ingest report states the omission.
+- [x] HDF5 adapter → CDM (group of arrays→episode, array→stream, first dimension→frames, attributes
+      →metadata/provenance/declared counts). The container is parsed directly with no libhdf5
+      dependency: superblocks v0–v3, object headers v1/v2 with continuation chunks, old-style
+      symbol-table groups and new-style link messages, compact/contiguous/chunked storage, global-heap
+      variable-length strings, and the deflate, shuffle, and fletcher32 filters. HDF5 records no
+      clock, so the timeline is the step index on `hdf5-step-index` unless the file both stores a
+      timestamp array and declares its `units`; a structure the reader does not implement is refused
+      by name rather than read as absent. Tested against real `h5py` output committed as fixtures.
 - [~] Streaming/large-than-memory ingestion; remote (Hub) metadata-only ingestion. **Sampled
       ingestion is in** (`--sample-episodes` / `--sample-fraction` / `--sample-seed`, and the same
       arguments from Python): the LeRobot adapter resolves the draw from the declared episode set

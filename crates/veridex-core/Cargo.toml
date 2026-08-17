@@ -18,6 +18,7 @@ getrandom = "0.2"
 parquet = "59"
 arrow = "59"
 toml = "0.8"
+flate2 = "1"
 
 [dev-dependencies]
 proptest = "1"

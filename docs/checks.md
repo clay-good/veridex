@@ -30,7 +30,8 @@ others are fixed defaults today (config-wiring them is a follow-up).
 
 Every check in this family except `temporal.rate-validity` and `temporal.rate-consistency` (which
 grade a *declared* rate, not a timeline) reads only streams whose timestamps are **measured time**.
-A source that records no clock — RLDS/TFDS has no per-step timestamp — carries a step index instead,
+A source that records no clock — RLDS/TFDS has no per-step timestamp, and HDF5 has no notion of time
+at all — carries a step index instead,
 and an index satisfies all of them trivially: flawlessly monotonic, perfectly regular, identical
 across every stream of an episode. Grading it would put a clean temporal result in a report and a
 signed certificate on the strength of a timeline nobody measured, so those streams are skipped and
@@ -155,8 +156,9 @@ tool before publishing.
 a trivial perturbation — need a similarity measure over frame payloads, which again means decoding
 them. A dataset can therefore hold two nearly-identical episodes and pass.
 
-**Measured time, on a format that records none.** RLDS/TFDS has no per-step timestamp. Veridex
-stamps those frames with their step index, marks the stream's `clock_kind` as `step-index`, and
+**Measured time, on a format that records none.** RLDS/TFDS has no per-step timestamp, and an HDF5
+file has one only when it both stores a timestamp array and declares that array's units. Veridex
+stamps the rest of those frames with their step index, marks the stream's `clock_kind` as `step-index`, and
 never invents a rate — so the checks that need measured time (`TEMPORAL.RATE`, `NON_MONOTONIC`,
 `GAP`, `JITTER`, `CLOCK_SKEW`, `START_OFFSET`, `END_OFFSET`, `EPISODE_DURATION_OUTLIER`) skip those
 streams rather than grading them.
@@ -168,11 +170,14 @@ certificate, where it reads as "these sensors are synchronized". So every such r
 `TEMPORAL.UNMEASURED_CLOCK` (info), naming the clock and the streams; it appears in the terminal
 report, the JSON, the SARIF, the HTML, and the certificate's own findings summary. What still
 applies is everything derived from structure and content — episode counts, shapes, duplicates,
-stuck streams, empty streams, annotation integrity — plus RLDS's own integrity gate, enforced at
+stuck streams, empty streams, annotation integrity — plus each format's own integrity gate, enforced at
 ingest rather than as a finding: a record whose step features disagree on the episode's length, or
 whose TFRecord CRC-32C fails, is refused by name instead of mapped into a CDM that would read as
-sound. Frame counts are the one thing genuinely not covered: RLDS declares no total, so
-`STRUCTURAL.FRAME_COUNT_MISMATCH` has nothing to test against.
+sound. (HDF5's gate is the same idea one level down: a chunk that fails its stored `fletcher32`
+checksum, or inflates to the wrong size for its own shape, is refused rather than read past.) Frame
+counts are the one thing genuinely not covered *for RLDS*: it declares no total, so
+`STRUCTURAL.FRAME_COUNT_MISMATCH` has nothing to test against. An HDF5 file that writes `num_samples`
+or `total` does get that check.
 
 All three limits are recorded here rather than left implicit, on the same principle as the rest of
 the catalog: a check that abstains must say so, or its silence reads as a pass.

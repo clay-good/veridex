@@ -14,6 +14,7 @@
 
 pub mod candbc;
 pub(crate) mod cdr;
+pub mod hdf5;
 pub mod lerobot;
 pub mod mcap;
 pub mod mdf4;
@@ -575,8 +576,8 @@ fn check_source_exists(source: &Source) -> Result<(), IngestError> {
     Ok(())
 }
 
-/// A registry preloaded with the standard adapters: LeRobot v3, MCAP, CAN+DBC, ASAM MF4, and
-/// RLDS/TFDS.
+/// A registry preloaded with the standard adapters: LeRobot v3, MCAP, CAN+DBC, ASAM MF4, RLDS/TFDS,
+/// and HDF5.
 pub fn default_registry() -> AdapterRegistry {
     let mut reg = AdapterRegistry::new();
     reg.register(Box::new(lerobot::LeRobotAdapter));
@@ -584,6 +585,7 @@ pub fn default_registry() -> AdapterRegistry {
     reg.register(Box::new(candbc::CanDbcAdapter));
     reg.register(Box::new(mdf4::Mdf4Adapter));
     reg.register(Box::new(rlds::RldsAdapter));
+    reg.register(Box::new(hdf5::Hdf5Adapter));
     reg
 }
 

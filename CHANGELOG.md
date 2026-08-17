@@ -10,6 +10,40 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **HDF5 adapter** — the format `robomimic`, MimicGen, RoboTurk, and most hand-rolled lab
+  collectors write, read into the CDM as the fourth first-class format behind `veridex check`. The
+  container is parsed directly, with **no libhdf5 dependency**: superblocks v0–v3, object headers v1
+  and v2 (`OHDR`) with their continuation chunks, old-style groups (a v1 B-tree over symbol-table
+  nodes plus a local heap) and new-style compact link messages, the compact, contiguous, and chunked
+  (v1 B-tree indexed) storage layouts, variable-length strings through the global heap, and the
+  `deflate`, `shuffle`, and `fletcher32` filters.
+
+  The mapping is the file's own structure, never a guess: a **group of arrays is an episode**
+  (`/data/demo_0`, or the root itself for a one-trajectory file), every array below it is a
+  **stream** carrying the dtype and shape the file declares, and an array's first dimension is its
+  frame count. Two things are read as a modality, both facts rather than substrings: an array named
+  exactly `action`/`actions`, and a `uint8` array whose per-frame shape is `[H, W, C]` with 1, 3, or
+  4 channels — an image *by its structure*. Attributes become metadata and provenance, with
+  `num_samples` and `total` carried as the source's own frame assertions so
+  `STRUCTURAL.FRAME_COUNT_MISMATCH` has something to test. Sampling works (HDF5 has an episode
+  axis), and each episode records the group it came from, so an index derived from a name is never
+  mistaken for one the file stated.
+
+  Two honesty rules this format forces. First, **HDF5 has no notion of time.** Frames carry a step
+  index on the clock `hdf5-step-index`, and the temporal checks abstain and report that they did
+  (`TEMPORAL.UNMEASURED_CLOCK`) rather than passing on an index. A file that records timestamps gets
+  measured time only when it also declares their units in a `units` attribute — whether a bare
+  `time` column is seconds or nanoseconds is not stated, and guessing it would fabricate every rate,
+  duration, and skew verdict derived from it. Second, a structure the reader does not implement
+  (dense fractal-heap links, the HDF5 1.10 chunk indexes, an unknown filter) is **named and
+  refused**, never skipped past: a group read as empty would turn a large dataset into a clean
+  verdict over nothing. Integrity is checked as the file is read — a chunk that fails its stored
+  `fletcher32` checksum, or inflates to the wrong size for its own shape, is a parse error.
+
+  Tested against **real `h5py` output** committed under `crates/veridex-core/tests/fixtures/hdf5/`,
+  with per-row SHA-256 values taken from `h5py` itself: a reader tested only against its own writer
+  proves the two agree, not that either matches the format.
+
 - **RLDS / TFDS adapter** — the layout Open X-Embodiment and most TFDS-published robot datasets
   ship in, read into the CDM as the third first-class format behind `veridex check`. TFRecord
   framing and `tf.train.Example` are parsed directly (no TensorFlow, no new dependency), and the

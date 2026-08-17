@@ -30,9 +30,10 @@ Veridex Trust Report
 
 ## Why it's useful
 
-- **One command, any format.** LeRobot v3, RLDS/TFDS (what Open X-Embodiment ships in), MCAP,
-  CAN+DBC, and ASAM MDF/MF4 all map into one Canonical Dataset Model, so you check them the same
-  way — no per-format tooling. HDF5/Zarr is on the roadmap.
+- **One command, any format.** LeRobot v3, RLDS/TFDS (what Open X-Embodiment ships in), HDF5 (what
+  robomimic and most lab collectors write), MCAP, CAN+DBC, and ASAM MDF/MF4 all map into one
+  Canonical Dataset Model, so you check them the same way — no per-format tooling. Zarr is on the
+  roadmap.
 - **Catches the failures that quietly ruin training.** Clock skew across sensors, broken episode
   boundaries, timeline gaps, duplicate frames, a video whose frame count no longer matches the
   actions it is paired with — each reported with the *training risk* it creates and a *remedy*.
@@ -55,7 +56,7 @@ also captures **provenance**.
 
 ```mermaid
 flowchart LR
-    A[Your dataset<br/>LeRobot · RLDS/TFDS · MCAP · CAN+DBC · MF4] --> B[Adapter]
+    A[Your dataset<br/>LeRobot · RLDS/TFDS · HDF5 · MCAP · CAN+DBC · MF4] --> B[Adapter]
     B --> C[Canonical Dataset Model<br/>one neutral shape]
     C --> D[Validation engine<br/>structural · temporal · provenance checks]
     D --> E[Trust score<br/>0–100 · A–F grade]
@@ -167,8 +168,8 @@ veridex check my-dataset/ --sample-fraction 0.1 --sample-seed 7   # a determinis
 
 The draw is resolved from the dataset's declared episode set *before* any data is read, so the
 episodes you skipped cost nothing — a sample of a dataset over the frame budget succeeds where the
-full ingest is refused. The same seed always draws the same episodes. Sampling applies to LeRobot
-and RLDS/TFDS (which have an episode axis); MCAP, CAN+DBC, and MF4 ingest a recording as one episode and refuse the request rather than handing
+full ingest is refused. The same seed always draws the same episodes. Sampling applies to LeRobot,
+RLDS/TFDS, and HDF5 (which have an episode axis); MCAP, CAN+DBC, and MF4 ingest a recording as one episode and refuse the request rather than handing
 back everything labelled as a sample.
 
 A sampled run is never presented as a whole-dataset one. The verdict carries a `coverage` field
@@ -256,6 +257,29 @@ where it reads as "these sensors were synchronized." So a run over such a datase
 certificate's findings summary. A passing verdict on an RLDS dataset means the structure and the
 content are sound, and that nobody measured the timing.
 
+It works on an **HDF5** file too — what `robomimic`, MimicGen, RoboTurk, and most hand-rolled lab
+collectors write, and the fourth format behind the same command:
+
+```sh
+# a real h5py-written robomimic-layout file, committed as a test fixture
+cargo run -p veridex-cli -- check crates/veridex-core/tests/fixtures/hdf5/robomimic_small.h5
+```
+
+The mapping is the file's own structure: a **group of arrays is an episode** (`/data/demo_0`), every
+array under it is a **stream** (`actions`, `obs/agentview_image`, nested paths included), and an
+array's first dimension is that stream's frame count. Types and shapes come from the file — a
+`float32 [T, 7]` action stream stays exactly that — and the attributes a collector writes become
+metadata, provenance, and the counts a check can test against (`num_samples` per episode, `/data`'s
+`total` frames). Veridex reads the HDF5 container directly, with no libhdf5 dependency: superblocks
+v0–v3, old- and new-style groups, contiguous, compact, and chunked storage, and the `deflate`,
+`shuffle`, and `fletcher32` filters. A structure it does not read is named rather than skipped past.
+
+HDF5 records no clock either, so the same honesty rule applies: frames carry a step index, and the
+temporal checks abstain and say so. A file that *does* record time gets measured time — but only if
+it also declares its units (a `units` attribute on the timestamp array). Whether a bare `time`
+column is seconds or nanoseconds is not something Veridex will guess: guess wrong and every rate,
+duration, and skew verdict derived from it is fiction.
+
 The certificate binds to the dataset's CDM content hash and is Ed25519-signed: `verify` succeeds
 offline, and rejects a tampered certificate (signature mismatch) or one presented against a
 different dataset (content-hash mismatch). **`verify` requires a trusted issuer key**: a valid
@@ -307,7 +331,7 @@ LiDAR-camera miscalibration a well-formed transform tree hides, where a sensor's
 from the tree or has no chain of transforms to the camera); **video/media checks** that read an
 `.mp4`'s container headers (never a pixel) and catch the missing, unparseable, desynced, or
 re-encoded video behind a camera stream; the v1 trust-score rubric and the `world-model-ready` readiness profile;
-terminal, JSON, SARIF 2.1.0, and self-contained HTML reporting; **LeRobot v3, RLDS/TFDS, MCAP (with
+terminal, JSON, SARIF 2.1.0, and self-contained HTML reporting; **LeRobot v3, RLDS/TFDS, HDF5, MCAP (with
 ROS-message decode into an autonomy rig), CAN+DBC, and ASAM MDF/MF4 adapters** with a passing cross-format
 neutrality gate (the same logical dataset yields equivalent CDMs as LeRobot v3 and as MCAP); descriptive scenario-dimension coverage and **scenario/map/sim
 reference extraction** (OpenSCENARIO / OpenDRIVE / OSI / simulator, with the version read from the
