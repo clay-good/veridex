@@ -69,10 +69,16 @@ fn status_label(status: Status) -> &'static str {
 /// `issuer_verified` says whether the signature was checked against a **trusted** issuer key. A valid
 /// signature alone only proves the document is self-consistent: anyone can sign a certificate that
 /// says whatever they like about data they hold, so an unverified issuer is called out, not implied.
+///
+/// `dataset_checked` says whether the certificate's bound content hash was compared against an actual
+/// dataset. The same reasoning applies: without a dataset to compare, the `bound to:` line is an echo
+/// of the certificate's own claim rather than a confirmation of anything, and a certificate issued
+/// for one dataset presented alongside another verifies exactly like a genuine pairing.
 pub fn render_verified(
     signed: &SignedCertificate,
     verified: &Verified,
     issuer_verified: bool,
+    dataset_checked: bool,
 ) -> String {
     use std::fmt::Write;
     let cert = &signed.certificate;
@@ -83,6 +89,45 @@ pub fn render_verified(
             out,
             "⚠ issuer NOT verified: this certificate is internally consistent, but anyone could \
              have issued it — re-run with --key <trusted-public-key> to check who did"
+        );
+    }
+    if !dataset_checked {
+        let _ = writeln!(
+            out,
+            "⚠ dataset NOT checked: no dataset was given, so nothing confirms this certificate \
+             describes the data you hold — pass the dataset path to compare its content hash"
+        );
+    }
+    // A certificate issued from a narrowed run scores what it measured, which can be far less than
+    // the catalog. Signed and genuine, and still not a verdict on the dataset — so the limit is
+    // named here rather than left inside `effective_config` for a reader who thought to look.
+    let cfg = &cert.effective_config;
+    let mut narrowed: Vec<String> = Vec::new();
+    if let Some(only) = &cfg.only_checks {
+        narrowed.push(format!("only_checks = {}", only.join(", ")));
+    }
+    if let Some(cats) = &cfg.categories {
+        let names: Vec<&str> = cats.iter().map(|c| c.tag()).collect();
+        narrowed.push(format!("categories = {}", names.join(", ")));
+    }
+    if !cfg.disabled_checks.is_empty() {
+        narrowed.push(format!("disabled = {}", cfg.disabled_checks.join(", ")));
+    }
+    if !cfg.severity_overrides.is_empty() {
+        let pairs: Vec<String> = cfg
+            .severity_overrides
+            .iter()
+            .map(|(id, sev)| format!("{id} -> {}", sev.tag()))
+            .collect();
+        narrowed.push(format!("severity overridden: {}", pairs.join(", ")));
+    }
+    if !narrowed.is_empty() {
+        let _ = writeln!(
+            out,
+            "⚠ narrowed run: {} check(s) ran ({}) — this score was earned within that selection, \
+             not over the full catalog",
+            cert.checks_run.len(),
+            narrowed.join("; ")
         );
     }
     let _ = writeln!(out, "  issuer key: {}", verified.key_id);
@@ -116,17 +161,26 @@ pub fn verified_json(
     signed: &SignedCertificate,
     verified: &Verified,
     issuer_verified: bool,
+    dataset_checked: bool,
 ) -> String {
     let cert = &signed.certificate;
     let mut doc = json!({
         "verified": true,
         "issuer_verified": issuer_verified,
+        // Whether the bound content hash was compared against a real dataset. A CI script keying on
+        // `verified: true` alone would accept a certificate issued for entirely different data.
+        "dataset_checked": dataset_checked,
         "key_id": verified.key_id,
         "timestamp": verified.timestamp,
         "dataset_id": cert.dataset_id,
         "cdm_content_hash": cert.cdm_content_hash,
         "status": cert.status,
         "trust_score": cert.trust_score,
+        // The scope the score was earned within, so a machine reader can tell a full run from a
+        // one-check run without parsing the signed document itself.
+        "checks_run": cert.checks_run.len(),
+        "categories_skipped": cert.categories_skipped,
+        "effective_config": cert.effective_config,
     });
     if let Some(readiness) = &cert.readiness {
         doc["readiness"] = serde_json::to_value(readiness).expect("readiness serializes");

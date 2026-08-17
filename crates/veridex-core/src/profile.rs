@@ -24,6 +24,50 @@ pub struct Profile {
     pub applies_to: fn(&crate::cdm::Dataset) -> bool,
 }
 
+impl Profile {
+    /// Lay this profile's thresholds over the ones the run was already configured with.
+    ///
+    /// A profile is built as `Tolerances { clock_skew_ns: 20ms, ..Tolerances::default() }`, so every
+    /// field it does not deliberately name holds a *default* rather than an absence of opinion.
+    /// Assigning the whole struct therefore did more than tighten: a `veridex.toml` setting
+    /// `ego_max_speed_mps = 1.0`, `outlier_z = 2.0`, `gap_factor = 1.5` had all three silently
+    /// reverted to 100.0 / 10.0 / 3.0 by `--profile world-model-ready`, making the run *looser* than
+    /// the operator asked for — and the "Tolerances (non-default)" line then said nothing, because
+    /// the reverted values were once again exactly the defaults.
+    ///
+    /// The rule the profile's own rationale implies is narrower than replacement: the thresholds a
+    /// profile *names* win, because a readiness judgement is only meaningful at those; the rest are
+    /// none of its business. A field the profile leaves at the default is treated as unnamed, which
+    /// is indistinguishable from naming it *as* the default — and in that case both readings give
+    /// the same answer anyway, since the config's value is the one with an opinion behind it.
+    pub fn apply_tolerances(&self, base: Tolerances) -> Tolerances {
+        let d = Tolerances::default();
+        let p = self.tolerances;
+        // `pick` keeps the profile's value only where the profile departs from the default.
+        macro_rules! pick {
+            ($($field:ident),+ $(,)?) => {
+                Tolerances {
+                    $($field: if p.$field == d.$field { base.$field } else { p.$field },)+
+                }
+            };
+        }
+        pick!(
+            clock_skew_ns,
+            start_offset_ns,
+            end_offset_ns,
+            rate_deviation,
+            gap_factor,
+            jitter_cv,
+            episode_duration_factor,
+            saturation_fraction,
+            saturation_min_samples,
+            outlier_z,
+            sequence_drop_fraction,
+            ego_max_speed_mps,
+        )
+    }
+}
+
 /// The `world-model-ready` criteria: the autonomy checks and the guarantee each attests.
 ///
 /// Every autonomy check that can fail a rig belongs here. A check missing from this list is a check

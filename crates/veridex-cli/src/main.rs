@@ -253,6 +253,30 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
 /// hand every time a flag was added to the parser, and every miss was silent by construction — the
 /// failure mode was a flag that did nothing, which is the exact thing this function exists to prevent.
 /// Inverted, a flag missing from a command's list is rejected, which is loud and trivially fixed.
+/// Reject surplus positional arguments for a command that acts on exactly one.
+///
+/// The parser was meticulous about flags — unknown ones, unsupported ones, ones missing their value
+/// — and then took `positionals.first()` and dropped the rest without a word. The shell makes that
+/// an easy mistake to make and an expensive one to miss: `veridex check datasets/*.mcap` expands to
+/// several paths, checks only the first, and exits 0 on it while never opening the rest. A CI job
+/// reads that as "all my datasets passed". `veridex keygen k1 k2` writes one keypair and silently
+/// ignores the second name.
+///
+/// Same treatment as an unsupported flag, for the same reason: the user asked for something that was
+/// not going to happen, and naming it beats ignoring it. `diff` already validated its own two-path
+/// form; this is the one-path equivalent.
+fn reject_extra_positionals(command: &str, args: &Args, noun: &str) -> Result<(), ExitCode> {
+    if args.positionals.len() > 1 {
+        eprintln!(
+            "veridex: {command} takes one {noun} (got {}: {})",
+            args.positionals.len(),
+            args.positionals.join(", ")
+        );
+        return Err(ExitCode::from(EXIT_TOOL_ERROR));
+    }
+    Ok(())
+}
+
 fn reject_flags_except(command: &str, args: &Args, supported: &[&[&str]]) -> Result<(), ExitCode> {
     for (flag, given) in args.given_flags() {
         if given && !supported.iter().any(|group| group.contains(&flag)) {
@@ -459,6 +483,9 @@ fn cmd_check(rest: &[String]) -> ExitCode {
     ) {
         return code;
     }
+    if let Err(code) = reject_extra_positionals("check", &args, "dataset path") {
+        return code;
+    }
     // One run writes one report. The dispatch below is an if/else chain, so `--json --sarif` emitted
     // SARIF and dropped `--json` without a word -- a CI job doing `check --json --sarif > report.json`
     // silently got the wrong document, and `veridex diff` then rejected it as not a Veridex report.
@@ -553,11 +580,12 @@ fn cmd_check(rest: &[String]) -> ExitCode {
     };
     let source = Source::Local(PathBuf::from(path));
     let registry = veridex_core::default_registry();
-    // The profile's tolerances win over the config's: a readiness judgement is only meaningful at the
-    // thresholds the profile names.
+    // The thresholds the profile *names* win over the config's: a readiness judgement is only
+    // meaningful at those. The ones it does not name stay as the operator configured them — see
+    // `Profile::apply_tolerances`, which is why this is not a whole-struct assignment.
     let mut run_config = config.to_run_config();
     if let Some(p) = &profile {
-        run_config.tolerances = p.tolerances;
+        run_config.tolerances = p.apply_tolerances(run_config.tolerances);
     }
     let out = match veridex_core::run_check_with(
         &registry,
@@ -750,6 +778,9 @@ fn cmd_inspect(rest: &[String]) -> ExitCode {
             METADATA_ONLY_FLAG,
         ],
     ) {
+        return code;
+    }
+    if let Err(code) = reject_extra_positionals("inspect", &args, "dataset path") {
         return code;
     }
     let mut ingested = match ingest(&args) {
@@ -947,6 +978,9 @@ fn cmd_certify(rest: &[String]) -> ExitCode {
     ) {
         return code;
     }
+    if let Err(code) = reject_extra_positionals("certify", &args, "dataset path") {
+        return code;
+    }
     let Some(key_path) = &args.key else {
         eprintln!("veridex: certify requires --key <secret-key-file>");
         return ExitCode::from(EXIT_TOOL_ERROR);
@@ -1010,11 +1044,12 @@ fn cmd_certify(rest: &[String]) -> ExitCode {
         eprintln!("veridex: {e}");
         return ExitCode::from(EXIT_TOOL_ERROR);
     }
-    // A profile applies its own tolerances to the run (e.g. tighter cross-sensor sync), overriding
-    // the config's — a readiness judgement means nothing at looser thresholds than it names.
+    // A profile applies the tolerances it names (e.g. tighter cross-sensor sync) over the config's —
+    // a readiness judgement means nothing at looser thresholds than it names. Thresholds it does not
+    // name are left as configured rather than reset to the defaults.
     let mut run_config = config.to_run_config();
     if let Some(p) = &profile {
-        run_config.tolerances = p.tolerances;
+        run_config.tolerances = p.apply_tolerances(run_config.tolerances);
     }
     let out = match veridex_core::run_check_with(
         &registry,
@@ -1153,6 +1188,9 @@ fn cmd_verify(rest: &[String]) -> ExitCode {
     ) {
         return code;
     }
+    if let Err(code) = reject_extra_positionals("verify", &args, "dataset path") {
+        return code;
+    }
     let Some(cert_path) = &args.certificate else {
         eprintln!("veridex: verify requires --certificate <cert.json>");
         return ExitCode::from(EXIT_TOOL_ERROR);
@@ -1215,15 +1253,19 @@ fn cmd_verify(rest: &[String]) -> ExitCode {
             // Everything printed here is covered by the signature that just verified, including the
             // readiness block — a tampered certificate never reaches this branch.
             let issuer_verified = expected_issuer.is_some();
+            // Whether the transplant check actually ran. With no dataset path there is nothing to
+            // compare the bound hash against, and saying so is the difference between confirming a
+            // binding and echoing the certificate's claim about one.
+            let dataset_checked = presented_hash.is_some();
             if args.json {
                 println!(
                     "{}",
-                    veridex_core::verified_json(&signed, &v, issuer_verified)
+                    veridex_core::verified_json(&signed, &v, issuer_verified, dataset_checked)
                 );
             } else {
                 print!(
                     "{}",
-                    veridex_core::render_verified(&signed, &v, issuer_verified)
+                    veridex_core::render_verified(&signed, &v, issuer_verified, dataset_checked)
                 );
             }
             ExitCode::SUCCESS
@@ -1276,6 +1318,9 @@ fn cmd_keygen(rest: &[String]) -> ExitCode {
     if let Err(code) = reject_flags_except("keygen", &args, &[&["--force"]]) {
         return code;
     }
+    if let Err(code) = reject_extra_positionals("keygen", &args, "output path") {
+        return code;
+    }
     let Some(path) = &args.path else {
         eprintln!("veridex: keygen requires an output path, e.g. `veridex keygen issuer`");
         return ExitCode::from(EXIT_TOOL_ERROR);
@@ -1319,6 +1364,9 @@ fn cmd_provenance(rest: &[String]) -> ExitCode {
     if let Err(code) =
         reject_flags_except("provenance", &args, &[&["--emit", "--out"], INGEST_FLAGS])
     {
+        return code;
+    }
+    if let Err(code) = reject_extra_positionals("provenance", &args, "dataset path") {
         return code;
     }
     let mut ingested = match ingest(&args) {

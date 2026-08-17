@@ -378,3 +378,37 @@ fn a_certificate_from_a_future_schema_is_refused() {
         other => panic!("a schema this build cannot read must be refused, got {other:?}"),
     }
 }
+
+/// `verify` with no dataset path skips the transplant check entirely, and until now said so nowhere:
+/// the output was byte-identical to a run that did compare hashes, and the `bound to:` line read as
+/// a confirmation when it was only echoing the certificate's own claim. Hand a consumer dataset D
+/// and a certificate issued for D' and every unbound invocation accepts it.
+#[test]
+fn an_unbound_verification_does_not_read_like_a_bound_one() {
+    let d = dataset(vec![stream("s", "c", &[0, 1_000_000])]);
+    let (cert, _hash) = issue_cert(&d);
+    let signed = sign(cert, &keypair());
+    let v = verify(&signed, None, Some(&keypair().public_hex())).expect("verifies");
+
+    let unbound = veridex_core::render_verified(&signed, &v, true, false);
+    assert!(
+        unbound.contains("dataset NOT checked"),
+        "an unbound verification must say so: {unbound}"
+    );
+
+    let bound = veridex_core::render_verified(&signed, &v, true, true);
+    assert!(!bound.contains("dataset NOT checked"));
+    assert_ne!(
+        unbound, bound,
+        "bound and unbound verification must not render identically"
+    );
+
+    // A CI script keys on the JSON, so the same fact has to be there too.
+    let json: serde_json::Value =
+        serde_json::from_str(&veridex_core::verified_json(&signed, &v, true, false)).unwrap();
+    assert_eq!(json["verified"], true);
+    assert_eq!(json["dataset_checked"], false);
+    let json_bound: serde_json::Value =
+        serde_json::from_str(&veridex_core::verified_json(&signed, &v, true, true)).unwrap();
+    assert_eq!(json_bound["dataset_checked"], true);
+}

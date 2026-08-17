@@ -130,6 +130,35 @@ fn run_config_from(config: Option<&str>) -> PyResult<veridex_core::RunConfig> {
     parsed
         .validate_check_ids(engine.check_ids())
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+
+    // `min_score` and `fail_on` are gate/exit-code fields the CLI reads off `CheckConfig` directly;
+    // `to_run_config()` does not carry them, because there is no exit code to apply them to here.
+    // Accepting them anyway meant a config whose whole purpose was to gate CI was parsed, validated
+    // (a `min_score = 200` was even rejected!), and then discarded — `veridex.check(path,
+    // config=open("veridex.toml").read())`, the migration path the README prescribes, returned a
+    // clean result for a dataset the CLI refuses under the same file.
+    //
+    // Refused rather than silently honored: the caller gets the verdict as a return value, not an
+    // exit status, so the gate is theirs to apply and the score is right there in the report. The
+    // repo already treats a flag that is accepted and does nothing as a defect; this is that rule
+    // reaching the Python front-end.
+    let mut inert: Vec<&str> = Vec::new();
+    if parsed.min_score.is_some() {
+        inert.push("min_score");
+    }
+    if parsed.fail_on != veridex_core::config::FailOn::Error {
+        inert.push("fail_on");
+    }
+    if !inert.is_empty() {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "config sets {}, which the Python API cannot apply: they gate the CLI's exit code, and \
+             this call returns the report instead. Remove {} from the config you pass here and gate \
+             on the returned report — `json.loads(veridex.check(...))[\"trust_score\"][\"score\"]` \
+             and `[\"verdict\"][\"status\"]` carry what they would have decided.",
+            inert.join(" and "),
+            if inert.len() == 1 { "it" } else { "them" },
+        )));
+    }
     Ok(parsed.to_run_config())
 }
 
@@ -338,6 +367,7 @@ fn verify(
         &signed,
         &v,
         public_key_hex.is_some(),
+        presented.is_some(),
     ))
 }
 
