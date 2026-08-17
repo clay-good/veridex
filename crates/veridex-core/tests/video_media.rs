@@ -833,3 +833,67 @@ fn episodes_encoded_at_different_wrong_resolutions_are_two_findings_not_one() {
     assert!(findings.iter().any(|f| f.message.contains("320x240")));
     assert!(findings.iter().any(|f| f.message.contains("160x120")));
 }
+
+#[test]
+fn an_export_that_is_short_by_the_same_amount_everywhere_is_one_finding() {
+    // Every episode's video one frame short is an encoder or converter defect, not N broken
+    // episodes — charged once like the other export-wide defects, and still an error.
+    let dir = tempfile::tempdir().unwrap();
+    write_dataset(dir.path(), 10, VideoPlan::default());
+    let dest = dir.path().join("videos").join(FEATURE);
+    for episode in 0..2u64 {
+        fs::write(
+            dest.join(format!("episode_{episode:06}.mp4")),
+            build_mp4(9, 640, 480, b"avc1", FPS as u32),
+        )
+        .unwrap();
+    }
+    let findings = video_findings(&ingest(dir.path()));
+    assert_eq!(findings.len(), 1, "{findings:#?}");
+    assert_eq!(findings[0].code, "VIDEO.FRAME_COUNT_MISMATCH");
+    assert_eq!(
+        findings[0].severity,
+        Severity::Error,
+        "rolling a defect up changes how often it is reported, not how serious it is"
+    );
+    assert!(
+        findings[0].message.contains("2 episodes") && findings[0].message.contains("1 frame(s)"),
+        "{}",
+        findings[0].message
+    );
+}
+
+#[test]
+fn episodes_short_by_different_amounts_stay_per_episode() {
+    // No single pattern to charge once — each episode is separately wrong, and naming them is the
+    // point.
+    let dir = tempfile::tempdir().unwrap();
+    write_dataset(dir.path(), 10, VideoPlan::default());
+    let dest = dir.path().join("videos").join(FEATURE);
+    for (episode, frames) in [(0u64, 9u32), (1, 4)] {
+        fs::write(
+            dest.join(format!("episode_{episode:06}.mp4")),
+            build_mp4(frames, 640, 480, b"avc1", FPS as u32),
+        )
+        .unwrap();
+    }
+    let findings = video_findings(&ingest(dir.path()));
+    assert_eq!(findings.len(), 2, "{findings:#?}");
+    assert!(findings
+        .iter()
+        .all(|f| f.code == "VIDEO.FRAME_COUNT_MISMATCH"));
+    assert!(findings.iter().any(|f| f.message.contains("episode 0")));
+    assert!(findings.iter().any(|f| f.message.contains("episode 1")));
+}
+
+#[test]
+fn the_media_uri_uses_forward_slashes_whatever_the_platform() {
+    // The uri binds into the content hash, so a platform path separator would make the same dataset
+    // hash differently on Windows than on Linux.
+    let (findings, _dir) = chunked_layout(Some(1));
+    assert!(
+        findings[0].message.contains("videos/chunk-000/"),
+        "{}",
+        findings[0].message
+    );
+}

@@ -402,6 +402,22 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   error now names the version difference between the issuing and the verifying Veridex and says to
   re-issue before reading it as tampering.
 
+- **A systematic video-length defect flooded the report.** `VIDEO.FRAME_COUNT_MISMATCH` was charged
+  per episode unconditionally, so an export where every video is one frame short — an encoder
+  dropping a leading frame, a converter counting from one — produced one finding per episode for a
+  single defect, against a catalog whose rule is to charge one defect once. When every episode of a
+  stream is off by the *same* amount it is now charged once, at the same severity; episodes off by
+  differing amounts stay per-episode, because each of those is separately wrong.
+
+- **A media uri could hash differently on Windows than on Linux.** `Stream.media.uri` was built with
+  `Path::display`, which emits the platform separator, and the uri binds into the content hash. It
+  is now joined with `/` explicitly.
+
+- **A duplicate stream key inflated an export defect's episode count.** The per-stream rollup counted
+  occurrences rather than distinct episodes, so a stream name appearing twice in one episode — a
+  condition Veridex reports rather than assumes away — reported the defect as spanning more episodes
+  than it did.
+
 - **A broken transform tree could be reported by neither calibration check.** `CalibrationCompleteness`
   deferred its disconnected-tree finding whenever *any* rig sensor declared a `frame_id`, but
   `SensorFrameResolution` speaks about a stream only if *that stream* declares one, and its

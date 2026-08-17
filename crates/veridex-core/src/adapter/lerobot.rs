@@ -439,11 +439,16 @@ fn expected_sibling_path(by_episode: &BTreeMap<u64, PathBuf>, episode: u64) -> P
 /// [`MediaStatus::Missing`], the same as one that was never there — either way the dataset claims
 /// imagery it cannot produce.
 fn probe_stream_media(dataset_root: &Path, expected: &Path, declared: MediaParams) -> Media {
+    // Joined with `/` explicitly rather than through `Path::display`: the uri is bound into the CDM
+    // content hash, and a platform separator would make the same dataset hash differently on Windows
+    // than on Linux.
     let uri = expected
         .strip_prefix(dataset_root)
         .unwrap_or(expected)
-        .display()
-        .to_string();
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .collect::<Vec<_>>()
+        .join("/");
     if !expected.is_file() {
         return Media {
             uri,

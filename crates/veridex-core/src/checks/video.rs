@@ -170,6 +170,51 @@ impl Check for MediaReadable {
     }
 }
 
+/// Streams whose every media-carrying episode misses its row count by the *same* signed amount.
+///
+/// That is the fingerprint of a systematic export defect — an encoder dropping a leading frame, a
+/// converter counting from one — rather than N independently broken episodes, and it is charged once
+/// like the other export-wide defects. A stream where only some episodes are wrong, or where they
+/// are wrong by differing amounts, is not here: those episodes are each separately wrong, and naming
+/// them is the point.
+fn systematic_frame_delta(dataset: &Dataset) -> BTreeMap<&str, i64> {
+    let mut deltas: BTreeMap<&str, Option<i64>> = BTreeMap::new();
+    for ep in &dataset.episodes {
+        for s in &ep.streams {
+            let Some(media) = &s.media else { continue };
+            if media.status != MediaStatus::Read {
+                continue;
+            }
+            let Some(container_frames) = media.frame_count else {
+                continue;
+            };
+            let delta = container_frames as i64 - s.frames.len() as i64;
+            match deltas.entry(s.name.as_str()).or_insert(Some(delta)) {
+                // A zero delta means this episode is fine, so the stream is not systematically off.
+                Some(seen) if *seen != delta || delta == 0 => {
+                    deltas.insert(s.name.as_str(), None);
+                }
+                _ => {}
+            }
+        }
+    }
+    // A stream present in a single episode has no pattern to be systematic about; leave it to the
+    // per-episode report, which names the file and both counts.
+    let mut episodes_seen: BTreeMap<&str, u64> = BTreeMap::new();
+    for ep in &dataset.episodes {
+        for s in &ep.streams {
+            if s.media.is_some() {
+                *episodes_seen.entry(s.name.as_str()).or_insert(0) += 1;
+            }
+        }
+    }
+    deltas
+        .into_iter()
+        .filter(|(name, _)| episodes_seen.get(name).is_some_and(|n| *n > 1))
+        .filter_map(|(name, d)| d.filter(|d| *d != 0).map(|d| (name, d)))
+        .collect()
+}
+
 /// The media file holds what the dataset says it holds: as many frames as the data stream, at the
 /// declared resolution, codec, and rate.
 pub struct MediaConformance {
@@ -181,6 +226,11 @@ pub struct MediaConformance {
 /// One deduplicated conformance defect: the first episode that showed it, and how many did.
 struct Occurrence {
     first_episode: u64,
+    /// Distinct episodes that showed it. Counted by watching the episode index change rather than
+    /// by call count: a stream name may legitimately appear twice in one episode (a duplicate key is
+    /// a condition Veridex reports rather than assumes away), and counting those as two episodes
+    /// would overstate the spread of the defect.
+    last_episode: u64,
     episodes: u64,
 }
 
@@ -212,11 +262,13 @@ impl Check for MediaConformance {
         "1"
     }
     fn run(&self, dataset: &Dataset) -> Vec<Finding> {
-        // Frame count is a per-episode fact — one bad video is one bad episode — so it is reported
-        // per episode. Resolution, codec, and rate are properties of how the dataset was *exported*:
-        // when they are wrong they are wrong for every episode, and a thousand identical findings
-        // buries the one defect they describe. Those are charged once per stream, naming the first
-        // episode and how many share it.
+        // Frame count is normally a per-episode fact — one bad video is one bad episode — so it is
+        // reported per episode. The exception is an export where *every* episode's video is off by
+        // the *same* amount: that is one systematic defect (an encoder dropping a leading frame, a
+        // converter counting from one), and a thousand identical findings describe it no better than
+        // one does. Resolution, codec, and rate are always properties of the export, so they are
+        // charged once per stream per distinct value.
+        let systematic_delta = systematic_frame_delta(dataset);
         let mut findings = Vec::new();
         let mut export_defects: BTreeMap<(&str, &'static str, String), Occurrence> =
             BTreeMap::new();
@@ -229,9 +281,40 @@ impl Check for MediaConformance {
                     continue;
                 }
 
+                // Keyed by the *value* as well as the code: two episodes encoded at different wrong
+                // resolutions are two defects, and collapsing them under whichever came first would
+                // report the second episode as holding a resolution it does not hold — and hide the
+                // more serious condition, that the episodes disagree with each other.
+                let mut record = |code: &'static str, detail: String| {
+                    export_defects
+                        .entry((s.name.as_str(), code, detail))
+                        .and_modify(|o| {
+                            if o.last_episode != ep.index {
+                                o.episodes += 1;
+                                o.last_episode = ep.index;
+                            }
+                        })
+                        .or_insert(Occurrence {
+                            first_episode: ep.index,
+                            last_episode: ep.index,
+                            episodes: 1,
+                        });
+                };
+
                 if let Some(container_frames) = media.frame_count {
                     let data_frames = s.frames.len() as u64;
                     if container_frames != data_frames {
+                        if let Some(&delta) = systematic_delta.get(s.name.as_str()) {
+                            record(
+                                "VIDEO.FRAME_COUNT_MISMATCH",
+                                format!(
+                                    "every episode's video is {} frame(s) {} than its rows",
+                                    delta.unsigned_abs(),
+                                    if delta < 0 { "shorter" } else { "longer" }
+                                ),
+                            );
+                            continue;
+                        }
                         findings.push(
                             Finding::new(
                                 self.id(),
@@ -261,20 +344,6 @@ impl Check for MediaConformance {
                         );
                     }
                 }
-
-                // Keyed by the *value* as well as the code: two episodes encoded at different wrong
-                // resolutions are two defects, and collapsing them under whichever came first would
-                // report the second episode as holding a resolution it does not hold — and hide the
-                // more serious condition, that the episodes disagree with each other.
-                let mut record = |code: &'static str, detail: String| {
-                    export_defects
-                        .entry((s.name.as_str(), code, detail))
-                        .and_modify(|o| o.episodes += 1)
-                        .or_insert(Occurrence {
-                            first_episode: ep.index,
-                            episodes: 1,
-                        });
-                };
 
                 if let (Some(dw), Some(dh), Some(ow), Some(oh)) = (
                     media.declared.width,
@@ -328,6 +397,16 @@ impl Check for MediaConformance {
 
         for ((stream, code, detail), occ) in export_defects {
             let (message_head, risk, remedy) = match code {
+                "VIDEO.FRAME_COUNT_MISMATCH" => (
+                    "video length",
+                    "A loader pairs video frame i with data row i. When the two lengths differ, \
+                     every pair past the shorter one is wrong or absent — the policy learns actions \
+                     against images from a different moment. That every episode is off by the same \
+                     amount points at the export step rather than at any one recording.",
+                    "Re-export so the video and the data table are written from the same run; a \
+                     constant offset across every episode is usually an encoder dropping a leading \
+                     frame or a converter counting from one.",
+                ),
                 "VIDEO.RESOLUTION_MISMATCH" => (
                     "video resolution",
                     "The manifest's resolution is what preprocessing pipelines size their tensors \
@@ -365,7 +444,12 @@ impl Check for MediaConformance {
                 Finding::new(
                     self.id(),
                     Category::Video,
-                    Severity::Warning,
+                    // Rolling a defect up changes how often it is reported, never how serious it is.
+                    if code == "VIDEO.FRAME_COUNT_MISMATCH" {
+                        Severity::Error
+                    } else {
+                        Severity::Warning
+                    },
                     Location::Stream {
                         episode: occ.first_episode,
                         stream: stream.to_string(),
