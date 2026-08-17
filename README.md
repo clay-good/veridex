@@ -270,7 +270,8 @@ array under it is a **stream** (`actions`, `obs/agentview_image`, nested paths i
 array's first dimension is that stream's frame count. Types and shapes come from the file — a
 `float32 [T, 7]` action stream stays exactly that — and the attributes a collector writes become
 metadata, provenance, and the counts a check can test against (`num_samples` per episode, `/data`'s
-`total` frames). Veridex reads the HDF5 container directly, with no libhdf5 dependency: superblocks
+`total` frames). Values are read, so the statistical checks are live: a gripper pinned at its limit,
+a NaN buried in joint 6, or a lone 250x spike is caught **per dimension** and named. Veridex reads the HDF5 container directly, with no libhdf5 dependency: superblocks
 v0–v3, old- and new-style groups, contiguous, compact, and chunked storage, and the `deflate`,
 `shuffle`, and `fletcher32` filters. A structure it does not read is named rather than skipped past.
 

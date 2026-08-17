@@ -19,6 +19,7 @@ pub mod lerobot;
 pub mod mcap;
 pub mod mdf4;
 pub mod rlds;
+pub(crate) mod stats;
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;

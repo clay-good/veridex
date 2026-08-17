@@ -10,6 +10,25 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **HDF5 values are summarized, which makes the statistical checks live.** The adapter already read
+  every row to fingerprint it; it now also recomputes, per dimension, what the values *are* —
+  min/max/mean/std (Welford, single-pass), how often a dimension sits exactly at an extreme, and how
+  many values are non-finite. That turns five previously inert checks into live ones for HDF5,
+  including two errors: a NaN in the recorded data (`STATISTICAL.NON_FINITE_OBSERVED`), a clamped
+  actuator (`STATISTICAL.SATURATED`), and a lone spike (`STATISTICAL.OUTLIER`), each judged **per
+  dimension** and named — a gripper pinned at element 6 of a 7-DoF action, or a NaN buried in joint 2,
+  is invisible to an element-0-only read.
+
+  The accumulators now live in one place (`adapter/stats.rs`) rather than inside the LeRobot adapter,
+  because two adapters recomputing statistics differently would mean the same logical dataset scores
+  differently in two formats — which is the cross-format neutrality claim itself.
+
+  Two deliberate limits, both disclosed in the ingest report. Per-dimension statistics stop at 256
+  values per frame: that reasoning is about robot signals, and "the statistics of pixel (211, 47, 2)"
+  answers nothing — wider arrays are still scanned for non-finite values, and the report names them.
+  And an integer array is reported as read-and-clean rather than unexamined, because it cannot hold a
+  NaN in the first place.
+
 - **HDF5 adapter hardening, from a multi-agent audit.** Four agents went at the new adapter with
   distinct lenses (format conformance, hostile input, CDM invariants, test-coverage mutation
   survival). What they found, and what changed:

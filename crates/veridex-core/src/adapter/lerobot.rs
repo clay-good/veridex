@@ -36,6 +36,7 @@ use crate::cdm::{
     StreamStats, ValueRef,
 };
 
+use super::stats::FeatureAccum;
 use super::{
     Adapter, Coverage, Detection, IngestError, IngestOptions, IngestReport, Ingested, Sample,
     Source, UnmappedField,
@@ -607,153 +608,6 @@ fn cell_scalars(array: &dyn Array, row: usize, out: &mut Vec<Option<f64>>) {
     // Any other type contributes no scalars.
 }
 
-/// Per-feature recomputed accumulators: one [`StatsAccum`] per dimension, plus a non-finite tally
-/// pooled across all dimensions. Dimension 0 backs `observed_stats` (mirroring the element-0 stored
-/// `stats.json` that `STATISTICAL.STATS_STALE` validates); saturation is judged across every dimension.
-#[derive(Default, Clone)]
-struct FeatureAccum {
-    dims: Vec<StatsAccum>,
-    /// NaN / ±inf scalars seen across all dimensions (kept out of the per-dimension stats).
-    non_finite: u64,
-}
-
-impl FeatureAccum {
-    /// Feed one cell's dimension-ordered scalars: finite values grow their dimension's accumulator;
-    /// non-finite values are tallied and held out (a NaN would poison the summary). A `None` leaf is
-    /// absent data — it is skipped, but its position is still consumed so later dimensions stay aligned.
-    fn push_cell(&mut self, scalars: &[Option<f64>]) {
-        for (dim, v) in scalars.iter().enumerate() {
-            let Some(v) = *v else { continue };
-            if v.is_finite() {
-                if dim >= self.dims.len() {
-                    self.dims.resize(dim + 1, StatsAccum::default());
-                }
-                self.dims[dim].push(v);
-            } else {
-                self.non_finite += 1;
-            }
-        }
-    }
-
-    /// Element-0 stats, for stored-vs-observed comparison against the element-0 stored stats.
-    fn stats(&self) -> Option<StreamStats> {
-        self.dims.first().and_then(StatsAccum::finish)
-    }
-
-    /// The saturation summary of the dimension most likely to be flagged — the non-constant dimension
-    /// with the highest pinned fraction — so a saturating gripper at element 6 is caught, not just
-    /// element 0. Falls back to dimension 0 (constant → the check skips it, DEGENERATE's concern), so
-    /// a scalar stream reports exactly as before.
-    fn saturation(&self) -> Option<Saturation> {
-        let frac = |s: &Saturation| {
-            let n = s.sample_count as f64;
-            if n == 0.0 {
-                0.0
-            } else {
-                s.at_min.max(s.at_max) as f64 / n
-            }
-        };
-        // Tag each dimension's summary with its own index so the winning dimension is named.
-        let with_dim = |(i, a): (usize, &StatsAccum)| {
-            a.finish_saturation().map(|mut s| {
-                s.dim = i as u64;
-                s
-            })
-        };
-        self.dims
-            .iter()
-            .enumerate()
-            .filter_map(with_dim)
-            .filter(|s| s.min != s.max)
-            .max_by(|a, b| {
-                frac(a)
-                    .partial_cmp(&frac(b))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .or_else(|| self.dims.iter().enumerate().next().and_then(with_dim))
-    }
-}
-
-/// Running accumulator for one dimension's recomputed statistics. Mean and variance use Welford's
-/// online algorithm rather than accumulating `sum`/`sum_sq`: real robot signals often ride a large DC
-/// offset (encoder counts ~1e6 with sub-unit variance), where `E[x²]−E[x]²` suffers catastrophic
-/// cancellation and can clamp a real variance to 0 (a spurious `DEGENERATE`). Welford is single-pass
-/// and numerically stable.
-#[derive(Default, Clone, Copy)]
-struct StatsAccum {
-    count: u64,
-    min: f64,
-    max: f64,
-    /// Running mean (Welford).
-    mean: f64,
-    /// Running sum of squared deviations from the mean (Welford's M2); population variance is `m2/n`.
-    m2: f64,
-    /// Values seen exactly equal to the running `min` / `max`. Reset to 1 whenever a new extreme
-    /// appears, so at the end they count values equal to the *final* min/max in a single pass —
-    /// no need to retain the values (mirrors the streaming stats above).
-    at_min: u64,
-    at_max: u64,
-}
-
-impl StatsAccum {
-    fn push(&mut self, v: f64) {
-        if self.count == 0 {
-            self.min = v;
-            self.max = v;
-            self.at_min = 1;
-            self.at_max = 1;
-        } else {
-            if v < self.min {
-                self.min = v;
-                self.at_min = 1;
-            } else if v == self.min {
-                self.at_min += 1;
-            }
-            if v > self.max {
-                self.max = v;
-                self.at_max = 1;
-            } else if v == self.max {
-                self.at_max += 1;
-            }
-        }
-        self.count += 1;
-        // Welford update.
-        let delta = v - self.mean;
-        self.mean += delta / self.count as f64;
-        let delta2 = v - self.mean;
-        self.m2 += delta * delta2;
-    }
-
-    /// Finalize to a [`StreamStats`] (population std), or `None` if nothing was accumulated.
-    fn finish(&self) -> Option<StreamStats> {
-        if self.count == 0 {
-            return None;
-        }
-        let variance = (self.m2 / self.count as f64).max(0.0);
-        Some(StreamStats {
-            min: self.min,
-            max: self.max,
-            mean: self.mean,
-            std: variance.sqrt(),
-        })
-    }
-
-    /// Finalize the pinned-at-extreme counts, or `None` if nothing was accumulated.
-    fn finish_saturation(&self) -> Option<Saturation> {
-        if self.count == 0 {
-            return None;
-        }
-        Some(Saturation {
-            sample_count: self.count,
-            at_min: self.at_min,
-            at_max: self.at_max,
-            min: self.min,
-            max: self.max,
-            dim: 0, // set by FeatureAccum::saturation, which knows the dimension index
-        })
-    }
-}
-
 /// One feature's per-row extraction: `(name, content hash — `None` if the type isn't hashable, the
 /// cell's dimension-ordered scalars — empty if not numeric, `None` per absent leaf)`. The scalars
 /// drive the per-dimension statistics recompute (see [`FeatureAccum`]).
@@ -1203,28 +1057,14 @@ impl Adapter for LeRobotAdapter {
         // the check can distinguish "clean data" from "values never read" (a `None`).
         let observed_non_finite: BTreeMap<String, u64> = observed
             .iter()
-            .map(|(name, acc)| (name.clone(), acc.non_finite))
+            .map(|(name, acc)| (name.clone(), acc.non_finite()))
             .collect();
         // Per-dimension stats, only for multi-DoF features — the extreme-outlier check scans them so a
         // spike in a non-first joint is caught. Scalar features carry their one dimension in
         // `observed_stats` already, so they get `None` here (no duplication).
         let observed_dim_stats: BTreeMap<String, Vec<DimStats>> = observed
             .iter()
-            .filter(|(_, acc)| acc.dims.len() > 1)
-            .filter_map(|(name, acc)| {
-                let dims: Vec<DimStats> = acc
-                    .dims
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, a)| {
-                        a.finish().map(|stats| DimStats {
-                            dim: i as u64,
-                            stats,
-                        })
-                    })
-                    .collect();
-                (!dims.is_empty()).then(|| (name.clone(), dims))
-            })
+            .filter_map(|(name, acc)| acc.dim_stats().map(|dims| (name.clone(), dims)))
             .collect();
 
         let stats = load_stats(dir);

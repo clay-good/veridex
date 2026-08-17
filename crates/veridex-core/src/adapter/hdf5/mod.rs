@@ -47,6 +47,7 @@ use crate::cdm::{
 use self::format::{
     AttrValue, DatasetInfo, Datatype, DatatypeClass, H5File, ObjectHeader, SkippedLink,
 };
+use super::stats::FeatureAccum;
 
 use super::{
     Adapter, Coverage, DecompressionBudget, Detection, FrameBudget, IngestError, IngestOptions,
@@ -102,6 +103,15 @@ const MAX_GROUP_DEPTH: usize = 16;
 /// and every report.
 const MAX_ATTR_TEXT: usize = 4096;
 
+/// The ceiling on values per frame for which per-dimension statistics are recomputed.
+///
+/// Per-dimension statistics exist so a saturating gripper or a NaN in joint 6 is caught rather than
+/// hidden behind element 0. That reasoning applies to a robot signal, not to pixels: a 480x640x3
+/// camera frame has 921,600 positions, each of which would get its own accumulator, and "the
+/// statistics of pixel (211, 47, 2)" answers nothing anyone asks. Wide arrays are still scanned for
+/// non-finite values, and the ingest report names them.
+const MAX_STATS_DIMS: u64 = 256;
+
 /// Adapter for an HDF5 robot dataset.
 pub struct Hdf5Adapter;
 
@@ -121,6 +131,8 @@ struct Notes {
     skipped_links: Vec<SkippedLink>,
     /// Attributes that could not be parsed, and why.
     skipped_attrs: Vec<String>,
+    /// Numeric arrays too wide for per-dimension statistics (an image, not a robot signal).
+    wide_arrays: BTreeSet<String>,
 }
 
 /// One array found under an episode group.
@@ -398,6 +410,9 @@ impl Adapter for Hdf5Adapter {
             "array shape after the first dimension -> stream.shape".into(),
             "row bytes -> frame.value_ref.content_hash (SHA-256)".into(),
             "object attributes -> dataset metadata".into(),
+            "numeric array values -> recomputed per-dimension statistics, saturation, and \
+             non-finite counts"
+                .into(),
         ];
         let mut omitted_fields = vec![
             "image/point payload decoding (frames are fingerprints, not pixels)".into(),
@@ -405,6 +420,21 @@ impl Adapter for Hdf5Adapter {
              period to grade against)"
                 .into(),
         ];
+        if !notes.wide_arrays.is_empty() {
+            let named: Vec<String> = notes.wide_arrays.iter().take(4).cloned().collect();
+            let rest = notes.wide_arrays.len().saturating_sub(named.len());
+            omitted_fields.push(format!(
+                "per-dimension statistics for array(s) with more than {MAX_STATS_DIMS} values per \
+                 frame ({}{}) — they are scanned for non-finite values, but per-position statistics \
+                 of an image answer nothing the statistical checks ask",
+                named.join(", "),
+                if rest > 0 {
+                    format!(" and {rest} more")
+                } else {
+                    String::new()
+                }
+            ));
+        }
         if measured {
             mapped_fields.push(format!(
                 "timestamp array + `{UNITS_ATTR}` attribute -> frame.ts (measured)"
@@ -729,7 +759,15 @@ fn build_episode(
 
     let mut streams: Vec<Stream> = Vec::new();
     for entry in &arrays {
-        match build_stream(file, entry, group, file_uri, timeline.as_ref(), budget)? {
+        match build_stream(
+            file,
+            entry,
+            group,
+            file_uri,
+            timeline.as_ref(),
+            budget,
+            notes,
+        )? {
             Some(stream) => streams.push(stream),
             None => notes.unmapped.push(UnmappedField {
                 source_path: format!("{}/{}", group.path, entry.path),
@@ -847,6 +885,7 @@ fn build_stream(
     file_uri: &str,
     timeline: Option<&(u64, Vec<i64>)>,
     budget: &mut FrameBudget,
+    notes: &mut Notes,
 ) -> Result<Option<Stream>, IngestError> {
     let info = entry.info.clone();
     if info.dims.is_empty() || matches!(info.datatype.class, DatatypeClass::VariableLength) {
@@ -868,8 +907,23 @@ fn build_stream(
         CLOCK_STEP_INDEX
     };
 
+    // Whether the values themselves can be summarized, and at what granularity. Statistics are
+    // recomputed only for a numeric array of a width this reader decodes, and per-dimension only for
+    // a feature narrow enough for per-dimension statistics to mean something: a 7-DoF action has
+    // seven dimensions worth tracking, a 480x640x3 camera frame has 921,600 pixel positions, which is
+    // not a robot signal and would cost an accumulator each.
+    let elem = info.datatype.size as u64;
+    let per_row = if elem == 0 { 0 } else { row_elements(&info) };
+    let decodable = info.datatype.is_numeric() && elem > 0 && elem <= 8;
+    let per_dimension = decodable && per_row > 0 && per_row <= MAX_STATS_DIMS;
+    if decodable && !per_dimension && per_row > MAX_STATS_DIMS {
+        notes.wide_arrays.insert(entry.path.clone());
+    }
+
     let uri = format!("{file_uri}#{}/{}", group.path, entry.path);
     let mut frames = Vec::with_capacity(rows.min(1 << 20) as usize);
+    let mut accum = FeatureAccum::default();
+    let mut scalars: Vec<Option<f64>> = Vec::new();
     {
         let mut reader = file.rows(&info)?;
         let row_bytes = reader.row_bytes();
@@ -879,6 +933,21 @@ fn build_stream(
                 Some(stamps) => stamps[i as usize],
                 None => i as i64,
             };
+            if per_dimension {
+                scalars.clear();
+                for chunk in bytes.chunks_exact(elem as usize) {
+                    scalars.push(info.datatype.decode(chunk));
+                }
+                accum.push_cell(&scalars);
+            } else if decodable && matches!(info.datatype.class, DatatypeClass::Float) {
+                // Too wide for per-dimension statistics, but a NaN buried in one pixel of a float
+                // depth map still matters, and counting it needs no accumulator per position.
+                for chunk in bytes.chunks_exact(elem as usize) {
+                    if info.datatype.decode(chunk).is_some_and(|v| !v.is_finite()) {
+                        accum.count_non_finite();
+                    }
+                }
+            }
             frames.push(Frame {
                 ts,
                 value_ref: ValueRef {
@@ -902,12 +971,17 @@ fn build_stream(
         dtype: Some(info.datatype.name()),
         shape: (info.dims.len() > 1).then(|| info.dims[1..].to_vec()),
         frames,
+        // HDF5 stores no summary statistics of its own, so there is nothing to compare against —
+        // only what Veridex recomputed from the values it read.
         stats: None,
         dim_stats: None,
-        observed_stats: None,
-        observed_saturation: None,
-        observed_non_finite: None,
-        observed_dim_stats: None,
+        observed_stats: accum.stats(),
+        observed_saturation: accum.saturation(),
+        // `Some(0)` says the values were read and every one was finite; `None` says they were never
+        // read, which is what the non-finite check needs to tell a clean stream from an unexamined
+        // one. An integer array cannot hold a NaN, so reading it is enough to say it is clean.
+        observed_non_finite: decodable.then(|| accum.non_finite()),
+        observed_dim_stats: accum.dim_stats(),
         point_fields: None,
         media: None,
         frame_id: None,
@@ -941,6 +1015,15 @@ fn modality_for(path: &str, info: &DatasetInfo) -> Modality {
     } else {
         Modality::ScalarState
     }
+}
+
+/// Values in one frame of an array: the product of every dimension after the first.
+fn row_elements(info: &DatasetInfo) -> u64 {
+    info.dims
+        .iter()
+        .skip(1)
+        .try_fold(1u64, |acc, dim| acc.checked_mul(*dim))
+        .unwrap_or(u64::MAX)
 }
 
 /// The final segment of a `/`-joined path.

@@ -987,3 +987,93 @@ fn a_crafted_dimension_cannot_make_the_reader_synthesize_gigabytes() {
         "got {err:?}"
     );
 }
+
+#[test]
+fn recomputed_statistics_make_the_statistical_checks_live() {
+    // Every fault in `statistical_faults.h5` sits in a *non-first* dimension, which is where a
+    // recompute that only ever looks at element 0 gives false confidence: joint 6 is pinned at its
+    // limit, joint 3 carries one 250x spike, and `obs/joint_state` hides a NaN in dimension 2.
+    let out = veridex_core::pipeline::run_check(
+        &default_registry(),
+        &Source::Local(fixture("statistical_faults.h5")),
+        None,
+        &IngestOptions::default(),
+    )
+    .expect("the pipeline runs");
+    let codes: Vec<&str> = out
+        .verdict
+        .findings
+        .iter()
+        .map(|f| f.code.as_str())
+        .collect();
+    for expected in [
+        "STATISTICAL.NON_FINITE_OBSERVED",
+        "STATISTICAL.SATURATED",
+        "STATISTICAL.OUTLIER",
+    ] {
+        assert!(
+            codes.contains(&expected),
+            "{expected} did not fire — the statistical family is only live if the adapter \
+             recomputes what it reads: {codes:?}"
+        );
+    }
+
+    let ingested = ingest("statistical_faults.h5", IngestOptions::default());
+    let actions = stream_of(&ingested, 0, "actions");
+    assert!(
+        actions.observed_stats.is_some(),
+        "a 7-DoF action array is summarized"
+    );
+    assert_eq!(
+        actions.observed_dim_stats.as_ref().map(|d| d.len()),
+        Some(7),
+        "one summary per degree of freedom, not one for the whole cell"
+    );
+    assert_eq!(
+        actions.observed_saturation.map(|s| s.dim),
+        Some(6),
+        "the saturating dimension is named, so the finding points at the gripper"
+    );
+    assert_eq!(
+        actions.observed_non_finite,
+        Some(0),
+        "read and clean is a different answer from never read"
+    );
+    assert!(
+        actions.stats.is_none(),
+        "HDF5 stores no statistics of its own, so there is nothing to compare against"
+    );
+
+    // A float depth map is far too wide for per-position statistics, but a NaN pixel still counts.
+    let depth = stream_of(&ingested, 0, "obs/depth");
+    assert_eq!(depth.observed_non_finite, Some(1));
+    assert!(
+        depth.observed_dim_stats.is_none() && depth.observed_stats.is_none(),
+        "400 pixel positions get no per-position statistics"
+    );
+    assert!(
+        ingested
+            .report
+            .omitted_fields
+            .iter()
+            .any(|f| f.contains("more than 256 values per frame") && f.contains("obs/depth")),
+        "and the report names the arrays it did not summarize: {:?}",
+        ingested.report.omitted_fields
+    );
+}
+
+#[test]
+fn an_integer_array_counts_as_read_and_clean() {
+    // `dones` is int64: it cannot hold a NaN, so reading it is enough to say it is clean. A `None`
+    // here would make the non-finite check abstain on a stream it had every reason to judge.
+    let ingested = ingest("robomimic_small.h5", IngestOptions::default());
+    assert_eq!(
+        stream_of(&ingested, 0, "dones").observed_non_finite,
+        Some(0)
+    );
+    assert_eq!(
+        stream_of(&ingested, 0, "obs/agentview_image").observed_non_finite,
+        Some(0),
+        "a uint8 image is integer data too"
+    );
+}

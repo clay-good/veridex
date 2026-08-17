@@ -120,5 +120,26 @@ with h5py.File("dense_links.h5", "w", libver="latest") as f:
     for i in range(40):
         g.create_dataset(f"channel_{i:02d}", data=np.zeros((2,), dtype=np.float32))
 
+# Values carrying the faults the statistical checks exist to catch, each in a *non-first* dimension
+# so an element-0-only recompute would miss it. n has to be large enough for one spike to clear the
+# z >= 10 threshold: with a single outlier the best achievable z is about (n - 1) / sqrt(n).
+rng = np.random.default_rng(41)
+n = 140
+with h5py.File("statistical_faults.h5", "w") as f:
+    g = f.create_group("data").create_group("demo_0")
+    actions = rng.normal(0, 0.1, (n, 7)).astype(np.float64)
+    actions[:, 6] = 1.0   # a gripper pinned at its limit...
+    actions[:6, 6] = 0.0  # ...but not constant, so DEGENERATE is not the finding
+    actions[70, 3] = 250.0
+    g.create_dataset("actions", data=actions)
+    state = rng.normal(0, 1.0, (n, 4)).astype(np.float64)
+    state[17, 2] = np.nan
+    g.create_dataset("obs/joint_state", data=state)
+    # 400 values per frame: too wide for per-position statistics. Constant apart from one NaN pixel,
+    # so gzip keeps the committed fixture small.
+    depth = np.zeros((n, 20, 20), dtype=np.float32)
+    depth[5, 4, 4] = np.float32("nan")
+    g.create_dataset("obs/depth", data=depth, chunks=(10, 20, 20), compression="gzip")
+
 for name in sorted(n for n in os.listdir(".") if n.endswith(".h5")):
     print(name, os.path.getsize(name))

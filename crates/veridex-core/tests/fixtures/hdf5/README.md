@@ -29,6 +29,7 @@ Regenerating changes the row hashes pinned in the tests (the arrays are drawn fr
 | `unsorted_names.h5` | Link order ≠ name order (`demo_10`, `demo_2`, `demo_1`; arrays written in reverse) |
 | `colliding_names.h5` | Group names whose trailing numbers collide (`run_1`, `other_1`), forcing positional indices |
 | `dense_links.h5` | 40 links in one group, which moves them into fractal-heap (dense) storage |
+| `statistical_faults.h5` | A saturated dimension, a lone 250x spike, and NaNs — each in a non-first dimension, so an element-0-only recompute would miss them |
 | `bomb.h5` | 100 KB on disk declaring a 98 MB chunk — refused on what it declares, before anything is inflated |
 
 ```python
