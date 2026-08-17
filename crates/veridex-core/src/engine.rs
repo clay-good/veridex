@@ -593,6 +593,16 @@ pub const SCOPE_CHECK_ID: &str = "veridex.scope";
 /// axis over, and it takes the same remedy: a finding, because findings are the only channel that
 /// reaches every renderer, the diff, and the certificate's own summary.
 ///
+/// A moved *threshold* is the third way, and it hid in the gap between the first two. Deselecting
+/// `temporal.clock-skew` fires this finding; setting `clock_skew_ms = 10000` does not deselect
+/// anything — the check runs, measures a real 210ms drift, and passes it — so the run looked
+/// complete on every count this function was watching. The terminal and HTML reports named the
+/// departure in a "Tolerances (non-default)" line, but SARIF and `diff` never saw it, and those are
+/// the two consumers that gate CI: one `veridex.toml` line took a run from exit 20 with
+/// `TEMPORAL.CLOCK_SKEW` and `TEMPORAL.END_OFFSET` to exit 0 with neither, and `diff
+/// --fail-on-regression` read the score's 13-point climb as an improvement. Same shape, same
+/// remedy.
+///
 /// Info severity, for the reason coverage is: the run's scope is not a defect in the data, and
 /// saying so must not fail a dataset that is genuinely sound.
 fn scope_finding(
@@ -601,7 +611,8 @@ fn scope_finding(
     registered: usize,
     overridden: usize,
 ) -> Option<Finding> {
-    if executed == registered && overridden == 0 {
+    let loosened = crate::report::non_default_tolerances(&config.tolerances);
+    if executed == registered && overridden == 0 && loosened.is_empty() {
         return None;
     }
 
@@ -633,6 +644,9 @@ fn scope_finding(
         pairs.sort();
         clauses.push(format!("severity overridden: {}", pairs.join(", ")));
     }
+    if !loosened.is_empty() {
+        clauses.push(format!("thresholds moved: {}", loosened.join(", ")));
+    }
 
     Some(
         Finding::new(
@@ -642,16 +656,17 @@ fn scope_finding(
             crate::check::Location::Dataset,
             "SCOPE.NARROWED",
             format!(
-                "this run did not apply the full check catalog as declared ({}), so every result \
-                 below speaks for the narrowed scope alone",
+                "this run did not apply the full check catalog at its declared thresholds ({}), so \
+                 every result below speaks for the narrowed scope alone",
                 clauses.join("; ")
             ),
         )
         .with_risk(
-            "The checks that did not run produced nothing, and a check whose severity was lowered \
-             produced something quieter than its author intended. Neither silence is evidence about \
-             the data. A clean result here is a clean result within this selection, and read as a \
-             verdict on the dataset it waves through everything outside it.",
+            "The checks that did not run produced nothing, a check whose severity was lowered \
+             produced something quieter than its author intended, and a check measured against a \
+             moved threshold passed data the default would have failed. None of those silences is \
+             evidence about the data. A clean result here is a clean result within this selection, \
+             and read as a verdict on the dataset it waves through everything outside it.",
         )
         .with_remedy(
             "Re-run with the default catalog before treating this as a verdict on the dataset, or \

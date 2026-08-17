@@ -292,6 +292,51 @@ fn a_severity_override_is_disclosed_as_a_narrowed_scope() {
     assert!(!scope.message.contains("catalog checks ran"));
 }
 
+/// A moved threshold narrows the run without deselecting anything: the check runs, measures a real
+/// defect, and passes it. The terminal and HTML reports named the departure; SARIF and `diff` — the
+/// two consumers that gate CI — did not, so one `veridex.toml` line took a run from exit 20 to
+/// exit 0 with no trace and `diff --fail-on-regression` read the score's climb as an improvement.
+#[test]
+fn a_moved_threshold_is_disclosed_as_a_narrowed_scope() {
+    let d = ds(1);
+    let engine = Engine::builder()
+        .register(Box::new(FlagEpisodes {
+            id: "structural.x",
+            category: Category::Structural,
+            severity: Severity::Warning,
+        }))
+        .unwrap()
+        .build();
+
+    let cfg = RunConfig {
+        tolerances: veridex_core::Tolerances {
+            clock_skew_ns: 10_000_000_000,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let v = engine.run(&d, hash(&d), &cfg);
+
+    let scope = v
+        .findings
+        .iter()
+        .find(|f| f.check_id == veridex_core::engine::SCOPE_CHECK_ID)
+        .expect("a moved tolerance is a narrowed scope");
+    assert_eq!(scope.code, "SCOPE.NARROWED");
+    assert_eq!(scope.severity, Severity::Info);
+    assert!(
+        scope
+            .message
+            .contains("thresholds moved: clock-skew 10000ms"),
+        "the disclosure must name which threshold moved and to what, got: {}",
+        scope.message
+    );
+    // Nothing was deselected and no severity was changed, so neither of the other two clauses
+    // belongs here.
+    assert!(!scope.message.contains("catalog checks ran"));
+    assert!(!scope.message.contains("severity overridden"));
+}
+
 #[test]
 fn severity_override_is_applied_and_recorded() {
     let d = ds(1);

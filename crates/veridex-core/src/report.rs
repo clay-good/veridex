@@ -209,7 +209,11 @@ fn trim_num(v: f64) -> String {
 
 /// The tolerances that differ from the built-in defaults, as short human labels. Empty when the run
 /// used every default.
-fn non_default_tolerances(t: &crate::Tolerances) -> Vec<String> {
+///
+/// Shared with [`crate::engine`], which discloses the same departures as a finding: a threshold the
+/// operator moved is a way the run departed from the declared catalog, and the twelve comparisons
+/// below are the one place that knows which ones moved.
+pub(crate) fn non_default_tolerances(t: &crate::Tolerances) -> Vec<String> {
     let d = crate::Tolerances::default();
     let ms = |ns: i64| trim_num(ns as f64 / 1_000_000.0);
     let mut out = Vec::new();
