@@ -63,6 +63,50 @@ fn status_label(status: Status) -> &'static str {
     }
 }
 
+/// The ways a certificate's run departed from the declared catalog, as short human labels. Empty
+/// when it ran the whole catalog at declared severities and default thresholds.
+///
+/// A certificate issued from a narrowed run scores what it measured, which can be far less than the
+/// catalog. Signed and genuine, and still not a verdict on the dataset — so the limit is named
+/// rather than left inside `effective_config` for a reader who thought to look. Shared by the
+/// terminal and JSON renderers so the two cannot disagree about whether a run was narrowed.
+pub(crate) fn narrowing_clauses(cfg: &crate::engine::EffectiveConfig) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if let Some(only) = &cfg.only_checks {
+        out.push(match only.is_empty() {
+            true => "only_checks = none".to_string(),
+            false => format!("only_checks = {}", only.join(", ")),
+        });
+    }
+    if let Some(cats) = &cfg.categories {
+        let names: Vec<&str> = cats.iter().map(|c| c.tag()).collect();
+        // `categories = []` selects nothing at all, and is the one case where saying so matters
+        // most; it must not trail off as "categories = ".
+        out.push(match names.is_empty() {
+            true => "categories = none".to_string(),
+            false => format!("categories = {}", names.join(", ")),
+        });
+    }
+    if !cfg.disabled_checks.is_empty() {
+        out.push(format!("disabled = {}", cfg.disabled_checks.join(", ")));
+    }
+    if !cfg.severity_overrides.is_empty() {
+        let pairs: Vec<String> = cfg
+            .severity_overrides
+            .iter()
+            .map(|(id, sev)| format!("{id} -> {}", sev.tag()))
+            .collect();
+        out.push(format!("severity overridden: {}", pairs.join(", ")));
+    }
+    // A moved threshold narrows a run without deselecting anything — the check runs, measures the
+    // defect, and passes it — so it belongs here beside the selections that remove checks outright.
+    let moved = crate::report::non_default_tolerances(&cfg.tolerances);
+    if !moved.is_empty() {
+        out.push(format!("thresholds moved: {}", moved.join(", ")));
+    }
+    out
+}
+
 /// Render a successful verification for the terminal: who signed it, when, what data it is bound to,
 /// what it scored, and — when present — the per-criterion readiness verdict.
 ///
@@ -98,29 +142,7 @@ pub fn render_verified(
              describes the data you hold — pass the dataset path to compare its content hash"
         );
     }
-    // A certificate issued from a narrowed run scores what it measured, which can be far less than
-    // the catalog. Signed and genuine, and still not a verdict on the dataset — so the limit is
-    // named here rather than left inside `effective_config` for a reader who thought to look.
-    let cfg = &cert.effective_config;
-    let mut narrowed: Vec<String> = Vec::new();
-    if let Some(only) = &cfg.only_checks {
-        narrowed.push(format!("only_checks = {}", only.join(", ")));
-    }
-    if let Some(cats) = &cfg.categories {
-        let names: Vec<&str> = cats.iter().map(|c| c.tag()).collect();
-        narrowed.push(format!("categories = {}", names.join(", ")));
-    }
-    if !cfg.disabled_checks.is_empty() {
-        narrowed.push(format!("disabled = {}", cfg.disabled_checks.join(", ")));
-    }
-    if !cfg.severity_overrides.is_empty() {
-        let pairs: Vec<String> = cfg
-            .severity_overrides
-            .iter()
-            .map(|(id, sev)| format!("{id} -> {}", sev.tag()))
-            .collect();
-        narrowed.push(format!("severity overridden: {}", pairs.join(", ")));
-    }
+    let narrowed = narrowing_clauses(&cert.effective_config);
     if !narrowed.is_empty() {
         let _ = writeln!(
             out,
@@ -140,12 +162,18 @@ pub fn render_verified(
         .get(..16)
         .unwrap_or(&cert.cdm_content_hash);
     let _ = writeln!(out, "  bound to:   {bound}…");
+    // `data` is the data-quality sub-score, the same number `check` prints. It used to be filled
+    // with the verdict *status*, so this line read "[data pass · provenance 66%]" — the one
+    // sub-score `docs/rubric-v1.md` promises the certificate always shows was never printed, and
+    // the substitute flattered: a verdict with ten warnings and no errors is `pass (warnings)`
+    // beside a data score of 60. The status has its own line above.
+    let _ = writeln!(out, "  status:     {}", status_label(cert.status));
     let _ = writeln!(
         out,
         "  trust:      {} ({})  [data {} · provenance {}%]",
         cert.trust_score.grade.letter(),
         cert.trust_score.score,
-        status_label(cert.status),
+        cert.trust_score.data_score,
         cert.trust_score.provenance_pct
     );
     // A score means something only within the rubric that produced it — the rubric is versioned for
@@ -195,6 +223,16 @@ pub fn verified_json(
         "checks_run": cert.checks_run.len(),
         "categories_skipped": cert.categories_skipped,
         "effective_config": cert.effective_config,
+        // The terminal render warns "⚠ narrowed run" here; until now the machine render did not,
+        // and a CI gate keying on `verified && status == "pass"` — the obvious gate to write — was
+        // fully defeated by a `veridex.toml` in the working directory. `effective_config` carried
+        // the facts, but only for a reader who already suspected and knew how to interpret them.
+        // This is the same reason `dataset_checked` and `issuer_verified` are booleans here.
+        "narrowed": !narrowing_clauses(&cert.effective_config).is_empty(),
+        "narrowing": narrowing_clauses(&cert.effective_config),
+        // Signed all along, compared against nothing and reported nowhere: a certificate from an
+        // older Veridex whose catalog lacked today's checks read as current.
+        "veridex_version": cert.veridex_version,
     });
     if let Some(readiness) = &cert.readiness {
         doc["readiness"] = serde_json::to_value(readiness).expect("readiness serializes");

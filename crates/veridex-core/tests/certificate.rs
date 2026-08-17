@@ -412,3 +412,116 @@ fn an_unbound_verification_does_not_read_like_a_bound_one() {
         serde_json::from_str(&veridex_core::verified_json(&signed, &v, true, true)).unwrap();
     assert_eq!(json_bound["dataset_checked"], true);
 }
+
+/// A narrowed run's certificate is genuine, correctly bound, and not a verdict on the dataset.
+///
+/// The terminal render has always said so ("⚠ narrowed run"). The machine render did not, and
+/// `verified && status == "pass"` is the obvious CI gate to write — so a `veridex.toml` in the
+/// working directory (auto-discovered, no flag needed) took the demo dataset from a signed
+/// `status: fail, grade C` to a signed `status: pass, grade B` on the same content hash, and the
+/// gate could not tell. `effective_config` carried the facts, but only for a reader who already
+/// suspected. This is why `dataset_checked` and `issuer_verified` are booleans here too.
+#[test]
+fn a_narrowed_certificate_says_so_to_a_machine_reader() {
+    let d = dataset(vec![stream("s", "c", &[0, 1_000_000])]);
+    let hash = content_hash(&d);
+    let engine = veridex_core::checks::default_engine().unwrap();
+
+    let issue = |cfg: &RunConfig| {
+        let verdict = engine.run(&d, hash, cfg);
+        let ts = score(&verdict, &ProvenanceCoverage::of(&d));
+        let cert = Certificate::build(
+            d.id.clone(),
+            &verdict,
+            ts,
+            ProvenanceCoverage::of(&d),
+            Issuance {
+                key_id: "issuer-1".into(),
+                timestamp: "2026-08-07T00:00:00Z".into(),
+            },
+        );
+        let signed = sign(cert, &keypair());
+        let v = verify(&signed, Some(&hash.to_hex()), Some(&keypair().public_hex()))
+            .expect("should verify");
+        let json: serde_json::Value =
+            serde_json::from_str(&veridex_core::verified_json(&signed, &v, true, true)).unwrap();
+        (json, veridex_core::render_verified(&signed, &v, true, true))
+    };
+
+    // The honest run: the full catalog, default thresholds. Nothing to disclose.
+    let (full, _) = issue(&RunConfig::default());
+    assert_eq!(full["narrowed"], false);
+    assert_eq!(full["narrowing"].as_array().unwrap().len(), 0);
+
+    // Checks deselected.
+    let (disabled, disabled_text) = issue(&RunConfig {
+        disabled_checks: ["temporal.clock-skew".to_string()].into_iter().collect(),
+        ..Default::default()
+    });
+    assert_eq!(
+        disabled["narrowed"], true,
+        "a deselected check must be visible to a machine reader, not only in the terminal"
+    );
+    assert!(disabled["narrowing"][0]
+        .as_str()
+        .unwrap()
+        .contains("temporal.clock-skew"));
+    assert!(disabled_text.contains("⚠ narrowed run"));
+
+    // A moved threshold deselects nothing, so it slipped past the terminal warning too.
+    let (moved, moved_text) = issue(&RunConfig {
+        tolerances: veridex_core::Tolerances {
+            clock_skew_ns: 10_000_000_000,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    assert_eq!(
+        moved["narrowed"], true,
+        "a moved threshold is a narrowed run: the check ran, measured the defect, and passed it"
+    );
+    assert!(moved["narrowing"][0]
+        .as_str()
+        .unwrap()
+        .contains("thresholds moved: clock-skew 10000ms"));
+    assert!(
+        moved_text.contains("⚠ narrowed run"),
+        "the terminal render missed the tolerance axis too: {moved_text}"
+    );
+}
+
+/// The certificate's own version, signed all along, was compared against nothing and reported
+/// nowhere — so a certificate from an older Veridex, whose catalog lacked today's checks, read as
+/// current. The far weaker `rubric_version` drift already got a warning.
+#[test]
+fn a_machine_reader_is_told_which_veridex_issued_the_certificate() {
+    let d = dataset(vec![stream("s", "c", &[0, 1_000_000])]);
+    let (cert, hash) = issue_cert(&d);
+    let signed = sign(cert, &keypair());
+    let v = verify(&signed, Some(&hash.to_hex()), Some(&keypair().public_hex())).unwrap();
+
+    let json: serde_json::Value =
+        serde_json::from_str(&veridex_core::verified_json(&signed, &v, true, true)).unwrap();
+    assert_eq!(json["veridex_version"], veridex_core::VERSION);
+}
+
+/// `docs/rubric-v1.md`: "The certificate always shows both sub-scores." The terminal render filled
+/// the `data` slot with the verdict *status*, so it printed "[data pass · provenance 66%]" — the
+/// data sub-score never appeared, and the substitute flattered: ten warnings and no errors is
+/// `pass (warnings)` beside a data score of 60.
+#[test]
+fn verify_prints_the_data_sub_score_not_the_status() {
+    let d = dataset(vec![stream("s", "c", &[0, 1_000_000])]);
+    let (cert, hash) = issue_cert(&d);
+    let data_score = cert.trust_score.data_score;
+    let signed = sign(cert, &keypair());
+    let v = verify(&signed, Some(&hash.to_hex()), Some(&keypair().public_hex())).unwrap();
+
+    let text = veridex_core::render_verified(&signed, &v, true, true);
+    assert!(
+        text.contains(&format!("[data {data_score} ·")),
+        "the data sub-score must appear in its own slot: {text}"
+    );
+    // The status is still reported — on its own line, where it is not mistaken for a score.
+    assert!(text.contains("status:"), "{text}");
+}
