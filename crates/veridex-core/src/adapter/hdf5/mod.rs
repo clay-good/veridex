@@ -799,10 +799,17 @@ fn build_episode(
 
     // Whether the timeline describes *every* stream in the episode. It only does when they all hold
     // the same number of rows; a shorter or longer array is not on that clock.
+    // `!streams.is_empty()` because `all()` is *true* over nothing: an episode that produced no
+    // streams read as fully timed and took measured nanosecond bounds off a timeline that describes
+    // none of its content. (The Zarr adapter had the same vacuous `all()` and could reach a slice
+    // with it, which aborted the process on a ~700-byte store.)
     let fully_timed = match &timeline {
-        Some((count, _)) => streams
-            .iter()
-            .all(|s| s.frames.len() as u64 == *count && s.clock_kind == ClockKind::Measured),
+        Some((count, _)) => {
+            !streams.is_empty()
+                && streams
+                    .iter()
+                    .all(|s| s.frames.len() as u64 == *count && s.clock_kind == ClockKind::Measured)
+        }
         None => false,
     };
     if timeline.is_some() && !fully_timed {

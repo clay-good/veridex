@@ -311,8 +311,19 @@ impl Adapter for ZarrAdapter {
                     streams.push(stream);
                 }
             }
-            let fully_timed =
-                timeline.is_some() && streams.iter().all(|s| s.clock_kind == ClockKind::Measured);
+            // `all()` on an empty collection is *true*, so an episode that produced no streams at
+            // all — every array in the store is shorter than the range `episode_ends` declares for
+            // it — read as "fully timed" and went on to index the timeline with that range. A
+            // ~700-byte store (`episode_ends = [100, 100]` over a 10-element timeline) aborted the
+            // process: "range start index 100 out of range for slice of length 10". Veridex is
+            // pointed at datasets from strangers, so a hostile file must not be able to panic it.
+            //
+            // The length check is the same reasoning one step further: a timeline is evidence about
+            // the rows it actually covers, and an episode reaching past its end is not timed by it.
+            let fully_timed = timeline.is_some()
+                && !streams.is_empty()
+                && streams.iter().all(|s| s.clock_kind == ClockKind::Measured)
+                && timeline.is_some_and(|t| (slice.end as usize) <= t.len());
             let (start_ts, end_ts) = match timeline {
                 // Measured bounds only when the recorded timeline covers the whole episode; a mixed
                 // episode would otherwise state nanosecond bounds for streams on a step index.

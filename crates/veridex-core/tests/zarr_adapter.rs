@@ -836,3 +836,76 @@ fn a_symlink_out_of_the_store_is_not_followed() {
         Err(other) => panic!("unexpected error: {other:?}"),
     }
 }
+
+/// An episode whose declared range no array reaches must not abort the process.
+///
+/// `fully_timed` was `timeline.is_some() && streams.iter().all(|s| …Measured)`, and `all()` over an
+/// empty collection is **true**. An episode that produced no streams at all therefore read as fully
+/// timed and went on to index the timeline with its own out-of-range slice. A ~700-byte store —
+/// `episode_ends = [100, 100]` over a 10-element timeline — aborted with "range start index 100 out
+/// of range for slice of length 10". Veridex is pointed at datasets from strangers, so a hostile
+/// store must be refused or reported, never allowed to panic.
+#[test]
+fn an_episode_beyond_every_array_is_reported_not_a_panic() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let store = dir.path().join("store.zarr");
+    let zarray = |path: &std::path::Path, len: usize, dtype: &str| {
+        std::fs::create_dir_all(path).expect("mkdir");
+        std::fs::write(
+            path.join(".zarray"),
+            format!(
+                r#"{{"zarr_format":2,"shape":[{len}],"chunks":[{len}],"dtype":"{dtype}",
+                    "compressor":null,"fill_value":0,"order":"C","filters":null}}"#
+            ),
+        )
+        .expect("write .zarray");
+    };
+    for group in ["", "data", "meta"] {
+        let p = store.join(group);
+        std::fs::create_dir_all(&p).expect("mkdir");
+        std::fs::write(p.join(".zgroup"), br#"{"zarr_format": 2}"#).expect("write");
+    }
+
+    // A timeline of 10 stamps, with units, so it is read as a clock.
+    zarray(&store.join("data/timestamps"), 10, "<i8");
+    std::fs::write(store.join("data/timestamps/.zattrs"), br#"{"units":"s"}"#).expect("write");
+    std::fs::write(
+        store.join("data/timestamps/0"),
+        (0i64..10).flat_map(i64::to_le_bytes).collect::<Vec<u8>>(),
+    )
+    .expect("write chunk");
+    zarray(&store.join("data/values"), 100, "<f4");
+    // Two episodes ending at row 100, so episode 1 is the empty range 100..100 — past the timeline.
+    zarray(&store.join("meta/episode_ends"), 2, "<i8");
+    std::fs::write(
+        store.join("meta/episode_ends/0"),
+        [100i64, 100]
+            .iter()
+            .flat_map(|n| n.to_le_bytes())
+            .collect::<Vec<u8>>(),
+    )
+    .expect("write chunk");
+
+    // The assertion is that this returns at all.
+    match default_registry().ingest(&Source::Local(store), &IngestOptions::default()) {
+        Ok(ingested) => {
+            let ep = ingested
+                .dataset
+                .episodes
+                .iter()
+                .find(|e| e.index == 1)
+                .expect("episode 1 is declared, so it is present");
+            assert!(
+                ep.streams.is_empty(),
+                "no array reaches row 100, so the episode holds nothing"
+            );
+            assert_eq!(
+                (ep.start_ts, ep.end_ts),
+                (None, None),
+                "a timeline that does not cover an episode must not stamp bounds on it"
+            );
+        }
+        Err(IngestError::Parse { message, .. }) => assert!(!message.is_empty()),
+        Err(other) => panic!("unexpected error: {other:?}"),
+    }
+}
