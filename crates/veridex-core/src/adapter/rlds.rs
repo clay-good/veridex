@@ -32,6 +32,8 @@
 //! content hash is sensitive to actual recorded content, exactly as in the other adapters.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs::File;
+use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -130,84 +132,145 @@ fn mask_crc(crc: u32) -> u32 {
 
 // ---- TFRecord framing ----
 
-/// One record's payload plus where it began, so a value reference can name it.
-struct Record<'a> {
-    payload: &'a [u8],
+/// Walks the records of one shard, verifying both checksums, without holding the shard in memory.
+///
+/// Real Open X-Embodiment shards run from 60 MB to nearly a gigabyte (`kuka`'s first shard is
+/// 850 MB), and a dataset ships hundreds of them. Reading one whole shard to look at one episode —
+/// which is what `--sample-episodes 1` did — is an allocation the size of the file for a few
+/// kilobytes of interest. This reads a record at a time into a buffer it reuses, so peak memory is
+/// the largest single episode rather than the largest shard, and an unselected record is stepped
+/// over by seeking rather than by reading its payload at all.
+struct ShardReader {
+    file: BufReader<File>,
+    /// The shard's size on disk. Every declared record length is checked against it before a byte is
+    /// allocated, so a corrupt length cannot ask for an arbitrary allocation.
+    file_len: u64,
+    pos: u64,
     ordinal: u64,
+    /// Reused across records: one episode's payload at a time.
+    buf: Vec<u8>,
 }
 
-/// Walks the records of one shard, verifying both checksums.
-struct RecordReader<'a> {
-    bytes: &'a [u8],
-    pos: usize,
+/// One record's framing, read before deciding whether to read its payload.
+struct RecordHeader {
+    payload_len: u64,
     ordinal: u64,
+    /// Byte offset of the record's own header, for error messages.
+    at: u64,
 }
 
-impl<'a> RecordReader<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
-        RecordReader {
-            bytes,
+impl ShardReader {
+    fn open(path: &Path) -> Result<Self, IngestError> {
+        let file = File::open(path).map_err(|e| IngestError::Io(e.to_string()))?;
+        let file_len = file
+            .metadata()
+            .map_err(|e| IngestError::Io(e.to_string()))?
+            .len();
+        Ok(ShardReader {
+            file: BufReader::new(file),
+            file_len,
             pos: 0,
             ordinal: 0,
-        }
+            buf: Vec::new(),
+        })
     }
 
-    /// The next record, `None` at a clean end of file, or `Err` with what is wrong.
-    fn next_record(&mut self) -> Option<Result<Record<'a>, String>> {
-        if self.pos >= self.bytes.len() {
+    /// The next record's framing, `None` at a clean end of file, or `Err` with what is wrong.
+    ///
+    /// A record is: u64 length (LE), masked CRC-32C of those 8 bytes, payload, masked CRC-32C of the
+    /// payload. The length prefix is checksummed here, before its value is used for anything.
+    fn next_header(&mut self) -> Option<Result<RecordHeader, String>> {
+        if self.pos >= self.file_len {
             return None;
         }
-        // A record is: u64 length (LE), masked CRC-32C of those 8 bytes, payload, masked CRC-32C of
-        // the payload. A trailing fragment shorter than a header is truncation, not a clean end.
-        let header = match self.bytes.get(self.pos..self.pos + 12) {
-            Some(h) => h,
-            None => {
-                return Some(Err(format!(
-                    "truncated record header at byte {} ({} bytes remain, 12 needed)",
-                    self.pos,
-                    self.bytes.len() - self.pos
-                )))
-            }
-        };
-        let length = u64::from_le_bytes(header[0..8].try_into().expect("8 bytes"));
+        let at = self.pos;
+        let mut header = [0u8; 12];
+        if let Err(e) = self.file.read_exact(&mut header) {
+            // A trailing fragment shorter than a header is truncation, not a clean end.
+            return Some(Err(format!(
+                "truncated record header at byte {at} ({} bytes remain, 12 needed): {e}",
+                self.file_len.saturating_sub(at),
+            )));
+        }
+        self.pos += 12;
+        let payload_len = u64::from_le_bytes(header[0..8].try_into().expect("8 bytes"));
         let length_crc = u32::from_le_bytes(header[8..12].try_into().expect("4 bytes"));
         if mask_crc(crc32c(&header[0..8])) != length_crc {
             return Some(Err(format!(
-                "record {} at byte {}: length-prefix checksum mismatch (the shard is corrupt)",
-                self.ordinal, self.pos
+                "record {} at byte {at}: length-prefix checksum mismatch (the shard is corrupt)",
+                self.ordinal
             )));
         }
-        // Checked against the file's own size before any slice is taken: `length` comes straight
-        // from the file, so an absurd value must fail cleanly rather than wrap or panic.
-        let start = self.pos + 12;
-        let end = match usize::try_from(length)
-            .ok()
-            .and_then(|len| start.checked_add(len))
-            .and_then(|end| end.checked_add(4))
-        {
-            Some(end) if end <= self.bytes.len() => end,
+        // Checked against the file's own size before anything is allocated: `payload_len` comes
+        // straight from the file, so an absurd value must fail cleanly rather than wrap or ask for
+        // a gigabyte.
+        let ends_at = payload_len
+            .checked_add(4)
+            .and_then(|n| self.pos.checked_add(n));
+        match ends_at {
+            Some(end) if end <= self.file_len => {}
             _ => {
                 return Some(Err(format!(
-                    "record {} at byte {}: declares {length} payload bytes, past the end of a \
-                     {}-byte shard",
-                    self.ordinal,
-                    self.pos,
-                    self.bytes.len()
+                    "record {} at byte {at}: declares {payload_len} payload bytes, past the end of \
+                     a {}-byte shard",
+                    self.ordinal, self.file_len
                 )))
             }
-        };
-        let payload = &self.bytes[start..end - 4];
-        let payload_crc = u32::from_le_bytes(self.bytes[end - 4..end].try_into().expect("4 bytes"));
-        if mask_crc(crc32c(payload)) != payload_crc {
-            return Some(Err(format!(
-                "record {} at byte {}: payload checksum mismatch (the shard is corrupt)",
-                self.ordinal, self.pos
-            )));
         }
         let ordinal = self.ordinal;
-        self.pos = end;
         self.ordinal += 1;
-        Some(Ok(Record { payload, ordinal }))
+        Some(Ok(RecordHeader {
+            payload_len,
+            ordinal,
+            at,
+        }))
+    }
+
+    /// Read and verify the record's payload. Borrowed from a buffer this reader reuses, so it is
+    /// valid only until the next call.
+    fn read_payload(&mut self, header: &RecordHeader) -> Result<&[u8], String> {
+        // Bounded by `next_header` against the shard's real size, so this resize cannot be asked for
+        // more than the file holds.
+        let len = usize::try_from(header.payload_len).map_err(|_| {
+            format!(
+                "record {} at byte {}: {} payload bytes do not fit in this platform's address space",
+                header.ordinal, header.at, header.payload_len
+            )
+        })?;
+        self.buf.resize(len, 0);
+        let mut trailer = [0u8; 4];
+        self.file
+            .read_exact(&mut self.buf)
+            .and_then(|()| self.file.read_exact(&mut trailer))
+            .map_err(|e| {
+                format!(
+                    "record {} at byte {}: shard ended mid-record: {e}",
+                    header.ordinal, header.at
+                )
+            })?;
+        self.pos += header.payload_len + 4;
+        if mask_crc(crc32c(&self.buf)) != u32::from_le_bytes(trailer) {
+            return Err(format!(
+                "record {} at byte {}: payload checksum mismatch (the shard is corrupt)",
+                header.ordinal, header.at
+            ));
+        }
+        Ok(&self.buf)
+    }
+
+    /// Step over a record whose episode this run did not select, without reading its payload.
+    ///
+    /// This is what makes sampling cheap: the record is framed and its length prefix verified, but
+    /// its bytes are never read, so drawing 10 episodes from a 900 MB shard costs 10 episodes of
+    /// I/O. The consequence, stated because it is a real limit: an unselected record's *payload*
+    /// checksum is not verified, so a sampled run does not attest the integrity of what it skipped.
+    fn skip_payload(&mut self, header: &RecordHeader) -> Result<(), String> {
+        let skip = header.payload_len + 4;
+        self.file
+            .seek_relative(skip as i64)
+            .map_err(|e| format!("record {} at byte {}: {e}", header.ordinal, header.at))?;
+        self.pos += skip;
+        Ok(())
     }
 }
 
@@ -1035,25 +1098,30 @@ impl Adapter for RldsAdapter {
                 .file_name()
                 .and_then(|n| n.to_str())
                 .and_then(shard_split);
-            let bytes = std::fs::read(shard).map_err(|e| IngestError::Io(e.to_string()))?;
-            let mut reader = RecordReader::new(&bytes);
-            while let Some(record) = reader.next_record() {
-                let record = record.map_err(|e| parse_error(format!("{shard_uri}: {e}")))?;
+            let mut reader = ShardReader::open(shard)?;
+            while let Some(header) = reader.next_header() {
+                let header = header.map_err(|e| parse_error(format!("{shard_uri}: {e}")))?;
                 let index = episode_ordinal;
                 episode_ordinal += 1;
-                if let Some(sel) = &selected {
-                    if !sel.contains(&index) {
-                        // Not selected: the record was framed and checksummed, but nothing in it is
-                        // parsed or allocated.
-                        if last_selected.is_some_and(|last| index > last) {
-                            break 'shards;
-                        }
-                        continue;
+                if selected.as_ref().is_some_and(|sel| !sel.contains(&index)) {
+                    // Not selected: stepped over without reading its payload, which is what keeps a
+                    // sample cheap on a 900 MB shard.
+                    reader
+                        .skip_payload(&header)
+                        .map_err(|e| parse_error(format!("{shard_uri}: {e}")))?;
+                    if last_selected.is_some_and(|last| index > last) {
+                        break 'shards;
                     }
+                    continue;
                 }
+                let ordinal = header.ordinal;
+                let payload = reader
+                    .read_payload(&header)
+                    .map_err(|e| parse_error(format!("{shard_uri}: {e}")))?;
                 let build = build_episode(
                     index,
-                    &record,
+                    payload,
+                    ordinal,
                     &shard_uri,
                     split.clone(),
                     &step_leaves,
@@ -1315,7 +1383,8 @@ impl Adapter for RldsAdapter {
 #[allow(clippy::too_many_arguments)]
 fn build_episode(
     index: u64,
-    record: &Record<'_>,
+    payload: &[u8],
+    ordinal: u64,
     shard_uri: &str,
     split: Option<String>,
     step_leaves: &[&Leaf],
@@ -1324,10 +1393,9 @@ fn build_episode(
     undecodable_instructions: &mut BTreeSet<String>,
     budget: &mut FrameBudget,
 ) -> Result<EpisodeBuild, IngestError> {
-    let values = parse_example(record.payload).ok_or_else(|| {
+    let values = parse_example(payload).ok_or_else(|| {
         parse_error(format!(
-            "{shard_uri} record {}: not a decodable tf.train.Example",
-            record.ordinal
+            "{shard_uri} record {ordinal}: not a decodable tf.train.Example"
         ))
     })?;
     for key in values.keys() {
@@ -1356,10 +1424,9 @@ fn build_episode(
         let len = feature.len();
         if len % elem != 0 {
             return Err(parse_error(format!(
-                "{shard_uri} record {}: feature `{}` holds {len} {} values, not a whole multiple of \
-                 the {elem} values per step that features.json declares — the record contradicts \
-                 its own schema",
-                record.ordinal,
+                "{shard_uri} record {ordinal}: feature `{}` holds {len} {} values, not a whole \
+                 multiple of the {elem} values per step that features.json declares — the record \
+                 contradicts its own schema",
                 leaf.path,
                 feature.kind(),
             )));
@@ -1374,9 +1441,9 @@ fn build_episode(
     if let Some((leaf, n)) = counts.iter().find(|(_, n)| *n != steps) {
         let (first_leaf, _) = counts[0];
         return Err(parse_error(format!(
-            "{shard_uri} record {}: feature `{}` holds {n} steps but `{}` holds {steps}; the \
-             record's step features disagree on the length of the episode",
-            record.ordinal, leaf.path, first_leaf.path,
+            "{shard_uri} record {ordinal}: feature `{}` holds {n} steps but `{}` holds {steps}; \
+             the record's step features disagree on the length of the episode",
+            leaf.path, first_leaf.path,
         )));
     }
 
@@ -1391,7 +1458,7 @@ fn build_episode(
         let elem = leaf.elem_len.expect("checked above") as usize;
         // One `uri` per stream, shared by its frames: it is identical for every step, and a separate
         // heap string per frame turned a 2 MB shard into hundreds of megabytes.
-        let uri = format!("{shard_uri}#{}/{}", record.ordinal, leaf.path);
+        let uri = format!("{shard_uri}#{ordinal}/{}", leaf.path);
         let frames = (0..steps as usize)
             .map(|step| Frame {
                 ts: step as i64,

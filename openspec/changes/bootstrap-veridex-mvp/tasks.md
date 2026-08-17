@@ -36,7 +36,9 @@ the build plan.
       before reading any Parquet, so a skipped episode is never hashed, never accumulated into the
       statistics, and never charged to the frame budget — the bounded way to check a dataset larger
       than the budget allows. RLDS/TFDS resolves it the same way from the split `shardLengths`, and
-      an unselected record is framed and checksummed but never parsed. Single-episode formats (MCAP,
+      an unselected record is framed, its length prefix verified, and then seeked past without its
+      payload being read — so drawing a few episodes from a 900 MB shard costs a few episodes of I/O,
+      at the stated cost that a sampled run does not attest what it skipped. Single-episode formats (MCAP,
       CAN+DBC, MF4) refuse a sample rather than returning everything. Coverage rides in the verdict (and its hash), every report states it, and
       `certify` refuses a partial run. True streaming (never materializing the whole CDM) and remote
       Hub ingestion remain follow-ups; `metadata_only` and `Source::Remote` are **refused** with

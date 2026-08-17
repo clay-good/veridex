@@ -1442,3 +1442,58 @@ fn a_shard_whose_records_carry_no_declared_feature_is_not_a_clean_pass() {
             .collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn an_unselected_records_payload_is_stepped_over_rather_than_read() {
+    // Sampling is meant to make checking a huge dataset cheap, and real Open X-Embodiment shards run
+    // to hundreds of megabytes. An unselected record is framed and its length prefix verified, then
+    // seeked past — so its payload is never read. The observable consequence, and the honest limit:
+    // a corrupt payload in a record the sample skipped does not fail the run, because nothing looked
+    // at it.
+    let tmp = tempfile::tempdir().unwrap();
+    write_dataset(tmp.path(), 3, 4);
+    let path = tmp.path().join("demo_rlds-train.tfrecord-00000-of-00001");
+    let mut bytes = std::fs::read(&path).unwrap();
+    // Corrupt deep inside the *last* record, which only a full run reaches.
+    let at = bytes.len() - 40;
+    bytes[at] ^= 0x01;
+    std::fs::write(&path, &bytes).unwrap();
+
+    let sampled = RldsAdapter
+        .ingest(
+            &Source::Local(tmp.path().to_path_buf()),
+            &IngestOptions {
+                sample: Sample::FirstEpisodes(1),
+                ..IngestOptions::default()
+            },
+        )
+        .expect("a record the sample never selected must not be read, so it cannot fail the run");
+    assert_eq!(sampled.dataset.episodes.len(), 1);
+
+    // A full run does read it, and does catch it.
+    match ingest(tmp.path()) {
+        Err(IngestError::Parse { message, .. }) => {
+            assert!(message.contains("checksum"), "{message}");
+        }
+        other => panic!("a full run must still verify every payload, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_shard_that_ends_mid_payload_is_refused() {
+    // The streaming reader must not treat a short read as a clean end of file.
+    let tmp = tempfile::tempdir().unwrap();
+    write_dataset(tmp.path(), 1, 6);
+    let path = tmp.path().join("demo_rlds-train.tfrecord-00000-of-00001");
+    let bytes = std::fs::read(&path).unwrap();
+    std::fs::write(&path, &bytes[..bytes.len() / 2]).unwrap();
+    match ingest(tmp.path()) {
+        Err(IngestError::Parse { message, .. }) => {
+            assert!(
+                message.contains("past the end") || message.contains("mid-record"),
+                "{message}"
+            );
+        }
+        other => panic!("a shard cut mid-payload must be refused, got {other:?}"),
+    }
+}

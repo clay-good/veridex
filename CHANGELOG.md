@@ -32,9 +32,15 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   ingest report states the omission — so the rate, gap, jitter and skew checks abstain instead of
   grading a dataset against a period Veridex made up, and the missing clock surfaces as
   `PROVENANCE.MISSING_CLOCK` rather than as silence. Sampling works (RLDS has an episode axis):
-  the draw resolves from `shardLengths` before any shard is read, and an unselected record is framed
-  and checksummed but never parsed. `examples/make_demo_rlds` generates `clean`, `truncated`,
-  `desynced`, and `corrupt` variants for trying it end-to-end.
+  the draw resolves from `shardLengths` before any shard is read, and an unselected record is
+  framed, its length prefix verified, and then seeked past without its payload being read.
+
+  Shards are read a record at a time rather than loaded whole, so peak memory is the largest
+  single episode, not the largest shard — real Open X-Embodiment shards run 60 MB to 850 MB and a
+  dataset ships hundreds of them, so `--sample-episodes 1` used to mean an 850 MB allocation for a
+  few kilobytes of interest. The honest cost of skipping by seek: a sampled run does not verify the
+  payload checksum of the records it passed over. `examples/make_demo_rlds` generates `clean`,
+  `truncated`, `desynced`, and `corrupt` variants for trying it end-to-end.
 - **A clock the source never recorded is no longer graded as if it were.** The CDM now records, per
   stream, whether its timestamps are *measured time* or a positional step index (`clock_kind`, bound
   into the content hash at `CANONICAL_VERSION` 7). Every temporal check that compares timestamps
