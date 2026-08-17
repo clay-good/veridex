@@ -337,11 +337,40 @@ impl Adapter for CanDbcAdapter {
             std::fs::read_to_string(&dbc_path).map_err(|e| IngestError::Io(e.to_string()))?;
         let messages = parse_dbc(&dbc_text);
 
-        // Read and merge all CAN frames, sorted by timestamp.
+        // Read and merge all CAN frames, sorted by timestamp. A line that will not parse is counted
+        // rather than merely skipped: a log every line of which fails -- a CAN-FD capture (`##`), an
+        // RTR frame, a text file that is not a candump at all -- used to ingest as a successful,
+        // zero-finding, `Coverage::Full` dataset with an empty `unmapped`. Reading that silence as a
+        // pass is the invariant this project states most often, and here the adapter, not a check,
+        // is the one doing it.
         let mut frames: Vec<CanFrame> = Vec::new();
+        let mut unreadable_lines = 0u64;
+        let mut content_lines = 0u64;
         for log in &log_paths {
             let text = std::fs::read_to_string(log).map_err(|e| IngestError::Io(e.to_string()))?;
-            frames.extend(text.lines().filter_map(parse_candump_line));
+            for line in text.lines() {
+                // A blank line or a `#` comment is not content and is not a failure.
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    continue;
+                }
+                content_lines += 1;
+                match parse_candump_line(line) {
+                    Some(frame) => frames.push(frame),
+                    None => unreadable_lines += 1,
+                }
+            }
+        }
+        if content_lines > 0 && unreadable_lines == content_lines {
+            return Err(IngestError::Parse {
+                format_id: "candbc",
+                message: format!(
+                    "none of the {content_lines} content line(s) across {} log file(s) parsed as a \
+                     candump frame (`(<seconds>) <iface> <hexid>#<hexdata>`); this is not a CAN log \
+                     Veridex can read -- CAN-FD (`##`) and RTR frames are not supported",
+                    log_paths.len()
+                ),
+            });
         }
         frames.sort_by_key(|f| f.ts_ns);
 
@@ -455,13 +484,26 @@ impl Adapter for CanDbcAdapter {
         };
 
         // Fidelity: DBC-coverage gaps (CAN ids in the log with no DBC message definition).
-        let unmapped_fields: Vec<UnmappedField> = unknown_ids
+        let mut unmapped_fields: Vec<UnmappedField> = unknown_ids
             .iter()
             .map(|(id, count)| UnmappedField {
                 source_path: format!("can id 0x{id:x}"),
                 note: format!("{count} frame(s) with no DBC message definition (coverage gap)"),
             })
             .collect();
+        // Some lines parsed and some did not. That is not enough to refuse the log, but it is a
+        // coverage gap of exactly the kind this report exists to name: those frames were on the bus
+        // and are not in the verdict.
+        if unreadable_lines > 0 {
+            unmapped_fields.push(UnmappedField {
+                source_path: "candump log lines".into(),
+                note: format!(
+                    "{unreadable_lines} of {content_lines} content line(s) did not parse as a \
+                     candump frame and contributed nothing (CAN-FD `##` and RTR frames are not \
+                     supported)"
+                ),
+            });
+        }
 
         Ok(Ingested {
             dataset,

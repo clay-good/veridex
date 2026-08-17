@@ -592,10 +592,29 @@ fn ingest_data_group(
             });
             break;
         }
+        // This module's own doc promises that everything not decoded "is reported as an `unmapped`
+        // field ... so a reader always knows what the verdict did and did not cover". These two
+        // arms broke that promise the loudest way possible: a `##DG` whose `cg_first` link points
+        // at a malformed or non-`##CG` block lost its *entire* data group, and the run came back
+        // with no streams, an empty `unmapped`, and `Coverage::Full`.
         let Some(cg) = block_header(bytes, at) else {
+            out.unmapped.push(UnmappedField {
+                source_path: format!("##DG[{group_index}].##CG @{at}"),
+                note: "truncated or malformed channel-group block; this data group's channels \
+                       contribute no frames"
+                    .into(),
+            });
             break;
         };
         if &cg.id != b"##CG" {
+            out.unmapped.push(UnmappedField {
+                source_path: format!("##DG[{group_index}].##CG @{at}"),
+                note: format!(
+                    "expected a ##CG block, found `{}`; this data group's channels contribute no \
+                     frames",
+                    String::from_utf8_lossy(&cg.id)
+                ),
+            });
             break;
         }
         let cg_data = data_section(bytes, at, &cg);
@@ -614,8 +633,17 @@ fn ingest_data_group(
             let Some(header) = block_header(bytes, cn) else {
                 break;
             };
-            if let Some(channel) = channel_at(bytes, cn) {
-                channels.push(channel);
+            match channel_at(bytes, cn) {
+                Some(channel) => channels.push(channel),
+                // A channel whose `##TX` name block is missing, empty, or unreadable, or whose
+                // header is short, was dropped in silence -- so a real, decodable measurement
+                // vanished from a run that still reported `Coverage::Full`.
+                None => out.unmapped.push(UnmappedField {
+                    source_path: format!("##DG[{group_index}].##CG[{cg_index}].##CN @{cn}"),
+                    note: "channel has no readable name or a malformed header; it contributes no \
+                           stream"
+                        .into(),
+                }),
             }
             cn_at = opt_link(bytes, cn, &header, 0);
         }

@@ -150,3 +150,68 @@ fn the_registry_autodetects_a_candbc_directory() {
         .expect("registry ingest");
     assert_eq!(ingested.report.format_id, "candbc");
 }
+
+/// A log every line of which fails to parse used to ingest as a successful, zero-finding,
+/// `Coverage::Full` dataset with an empty `unmapped` — a signable clean bill of health over a file
+/// that produced nothing. Reading silence as a pass, at the adapter layer, where no check can
+/// recover from it.
+#[test]
+fn a_log_that_parsed_to_nothing_is_refused_rather_than_ingested_clean() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("vehicle.dbc"), DBC).unwrap();
+    fs::write(
+        dir.path().join("drive.log"),
+        // CAN-FD (`##`), an RTR frame, and binary garbage — none of them candump frames.
+        "(1000.000000) can0 100##140010000\n\
+         (1000.100000) can0 100#R\n\
+         \x01\x02 not a log line at all\n",
+    )
+    .unwrap();
+
+    let err = CanDbcAdapter
+        .ingest(
+            &Source::Local(dir.path().to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect_err("a log that parsed to nothing must not ingest as a clean dataset");
+    let text = err.to_string();
+    assert!(
+        text.contains("none of the 3 content line(s)"),
+        "the refusal must say how much did not parse: {text}"
+    );
+}
+
+/// A log where *some* lines fail is not refused — but those frames were on the bus and are not in
+/// the verdict, which is exactly what the fidelity report exists to say.
+#[test]
+fn partially_unreadable_log_lines_are_reported_as_a_coverage_gap() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("vehicle.dbc"), DBC).unwrap();
+    fs::write(
+        dir.path().join("drive.log"),
+        "# a comment, which is not content\n\
+         \n\
+         (1000.000000) can0 100#4001000012343412\n\
+         (1000.100000) can0 100##140010000\n",
+    )
+    .unwrap();
+
+    let report = CanDbcAdapter
+        .ingest(
+            &Source::Local(dir.path().to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("one good line is still a dataset")
+        .report;
+
+    let note = report
+        .unmapped_fields
+        .iter()
+        .find(|u| u.source_path == "candump log lines")
+        .expect("the skipped line must be disclosed");
+    assert!(
+        note.note.contains("1 of 2 content line(s)"),
+        "blank lines and comments are not content: {}",
+        note.note
+    );
+}
