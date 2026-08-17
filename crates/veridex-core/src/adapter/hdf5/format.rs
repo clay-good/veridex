@@ -1150,7 +1150,17 @@ impl H5File {
     /// Render an attribute as text or a number, resolving a variable-length string through the
     /// global heap. Anything else is [`AttrValue::Opaque`] — recorded as present, not invented.
     pub fn attribute_value(&mut self, attr: &Attribute) -> AttrValue {
-        let elements: u64 = attr.dims.iter().product::<u64>().max(1);
+        // `dims` comes from the file's dataspace message, so the product is attacker-chosen.
+        // `product()` panics on overflow in a debug build and *wraps* in a release one, where dims
+        // of `(2^63, 2)` wrapped to 0, `.max(1)` made it 1, and a 2^64-element attribute was read as
+        // a single scalar and folded into provenance, task, or units. An overflowing product cannot
+        // be one element, which is the only case this function goes on to read.
+        let elements: u64 = attr
+            .dims
+            .iter()
+            .try_fold(1u64, |acc, d| acc.checked_mul(*d))
+            .unwrap_or(u64::MAX)
+            .max(1);
         if elements != 1 {
             return AttrValue::Opaque(
                 "the attribute holds several values, which the CDM's key/value metadata cannot hold",
@@ -1208,8 +1218,12 @@ impl H5File {
                     .ok_or_else(|| parse_error("a global heap object runs past its collection"))?;
                 return Ok(body[data_start..end].to_vec());
             }
-            pos = data_start
-                .checked_add((size as usize).next_multiple_of(8))
+            // `next_multiple_of` itself overflows before `checked_add` ever sees the result: a
+            // collection declaring an object size of `u64::MAX` panicked in a debug build ("attempt
+            // to add with overflow") on the rounding, not the addition.
+            pos = (size as usize)
+                .checked_next_multiple_of(8)
+                .and_then(|padded| data_start.checked_add(padded))
                 .ok_or_else(|| parse_error("a global heap object size overflows"))?;
         }
         Err(parse_error(format!(

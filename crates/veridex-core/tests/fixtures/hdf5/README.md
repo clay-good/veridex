@@ -5,6 +5,12 @@ only against its own writer proves the two agree with each other, not that eithe
 format — so the HDF5 adapter is tested against the reference implementation's bytes, and
 `tests/hdf5_adapter.rs` pins per-row SHA-256 values taken from `h5py` itself.
 
+`btree_cycle.h5`, `attr_dims_overflow.h5` and `gcol_size_overflow.h5` are the exception to the rule
+above: they are `robomimic_small.h5` with **one field byte-patched** to a value `h5py` will not
+write. Nothing hostile is regenerable from a well-behaved writer, which is exactly why the reader
+has to be tested against it. Each is described by the field it mutates, so it can be reproduced by
+hand.
+
 They are small on purpose (a few kilobytes each) and are committed so the suite needs no HDF5
 toolchain, no Python, and no network.
 
@@ -33,6 +39,8 @@ Regenerating changes the row hashes pinned in the tests (the arrays are drawn fr
 | `bomb.h5` | 100 KB on disk declaring a 98 MB chunk — refused on what it declares, before anything is inflated |
 | `huge_timeline.h5` | 7.8 KB declaring a 5,000,000-row `time` array — the timeline read must be refused on the declared row count, before the rows are read |
 | `partial_fill.h5` | Chunked arrays that are only *partly* written, with non-zero, negative, and NaN fill values — the regions no chunk covers are defined by HDF5 to be the fill value, including rows covered by no chunk at all |
+| `attr_dims_overflow.h5` | A (2, 2) attribute's dataspace rewritten to (2^63, 2), so its element count overflows — a debug-build panic, and in release it wrapped to 0, was clamped to 1, and a 2^64-element attribute was read as a single scalar |
+| `gcol_size_overflow.h5` | A global-heap object size of `u64::MAX`, which overflows inside the `next_multiple_of(8)` rounding before the surrounding `checked_add` sees it |
 
 
 `huge_timeline.h5` and `partial_fill.h5` are written by:

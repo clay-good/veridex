@@ -1311,3 +1311,31 @@ fn the_frame_budget_refuses_a_declared_timeline_before_reading_it() {
         "the refusal must come from the declared row count, not from reading the rows"
     );
 }
+
+/// Two file-driven arithmetic overflows, each a debug-build panic and a release-build wrong answer.
+///
+/// The repo sets no `[profile]` overrides, so `cargo test` and every dev build have overflow checks
+/// on — these aborted the process outright. In release they wrap silently, which is worse in one of
+/// the two cases: `attr.dims.iter().product()` over `(2^63, 2)` wrapped to 0, `.max(1)` made it 1,
+/// and a 2^64-element attribute was read as a single scalar and folded into provenance, task, or
+/// units. A file from a stranger must not be able to do either.
+#[test]
+fn a_file_supplied_size_that_overflows_is_refused_not_a_panic() {
+    // `attr_dims_overflow.h5` is `robomimic_small.h5` with a (2, 2) attribute's dataspace rewritten
+    // to (2^63, 2); `gcol_size_overflow.h5` has a global-heap object size set to u64::MAX, which
+    // overflowed inside `next_multiple_of(8)` before the surrounding `checked_add` ever saw it.
+    for name in ["attr_dims_overflow.h5", "gcol_size_overflow.h5"] {
+        // Returning at all is the assertion. Either outcome is sound: the file is refused, or the
+        // overflowing field is treated as unreadable and the rest of the file still reads.
+        match default_registry().ingest(&Source::Local(fixture(name)), &IngestOptions::default()) {
+            Ok(ingested) => assert!(
+                !ingested.dataset.episodes.is_empty(),
+                "{name}: an ingest that succeeded must have read something"
+            ),
+            Err(IngestError::Parse { message, .. }) => {
+                assert!(!message.is_empty(), "{name}: the refusal names something")
+            }
+            Err(other) => panic!("{name}: expected a parse error, got {other:?}"),
+        }
+    }
+}
