@@ -154,6 +154,39 @@ pub fn render_verified(
             narrowed.join("; ")
         );
     }
+    // `checks_errored` was added to the document for one stated reason: the offline reader is the
+    // whole point of it, and they cannot re-run Veridex to find out. It was added to the document
+    // and never wired into the reader — neither renderer touched it — so a crashed check sat under
+    // `checks_run` beside an all-zero severity count and the certificate read as a clean, complete
+    // verdict over a check that measured nothing. `check`'s own terminal, JSON, and SARIF outputs
+    // all surface errored checks; the certificate path was the one renderer that lost them.
+    if !cert.checks_errored.is_empty() {
+        let _ = writeln!(
+            out,
+            "⚠ {} check(s) errored and measured nothing: {} — their silence is not evidence about \
+             the data",
+            cert.checks_errored.len(),
+            cert.checks_errored.join(", ")
+        );
+    }
+    // The same gap, one axis over: a whole category that ran nothing. `verified_json` has carried
+    // this since it was added; the terminal render never did, so a certificate whose config is
+    // entirely default but whose `video` and `autonomy` categories ran nothing printed as a clean
+    // grade-A pass with no warning at all.
+    if !cert.categories_skipped.is_empty() {
+        let names: Vec<&str> = cert.categories_skipped.iter().map(|c| c.tag()).collect();
+        let _ = writeln!(
+            out,
+            "⚠ {} categor{} ran no checks: {}",
+            cert.categories_skipped.len(),
+            if cert.categories_skipped.len() == 1 {
+                "y"
+            } else {
+                "ies"
+            },
+            names.join(", ")
+        );
+    }
     let _ = writeln!(out, "  issuer key: {}", verified.key_id);
     let _ = writeln!(out, "  issued at:  {}", verified.timestamp);
     let _ = writeln!(out, "  dataset:    {}", cert.dataset_id);
@@ -192,6 +225,10 @@ pub fn render_verified(
             crate::certificate::RUBRIC_VERSION
         );
     }
+    // Signed all along and, until the JSON render was fixed, compared against nothing and reported
+    // nowhere. The terminal reader has the same need: a certificate from an older Veridex, whose
+    // catalog lacked today's checks, otherwise reads as current.
+    let _ = writeln!(out, "  issued by:  veridex {}", cert.veridex_version);
     if let Some(readiness) = &cert.readiness {
         out.push_str(&render_readiness(readiness, "  "));
     }
@@ -223,6 +260,10 @@ pub fn verified_json(
         // The scope the score was earned within, so a machine reader can tell a full run from a
         // one-check run without parsing the signed document itself.
         "checks_run": cert.checks_run.len(),
+        // Signed since the document gained the field, and read by neither renderer until now: a
+        // CI gate keying on `verified && status != "fail"` could not tell that a check crashed,
+        // because a crash yields `pass (warnings)` — indistinguishable from ordinary warnings.
+        "checks_errored": cert.checks_errored,
         "categories_skipped": cert.categories_skipped,
         "effective_config": cert.effective_config,
         // The terminal render warns "⚠ narrowed run" here; until now the machine render did not,

@@ -355,8 +355,33 @@ fn a_crashed_check_is_named_in_the_certificate_not_listed_as_run() {
     let signed = sign(cert, &keypair());
     let json = serde_json::to_string(&signed).unwrap();
     let back: veridex_core::certificate::SignedCertificate = serde_json::from_str(&json).unwrap();
-    verify(&back, Some(&hash.to_hex()), Some(&keypair().public_hex())).expect("verifies");
+    let v = verify(&back, Some(&hash.to_hex()), Some(&keypair().public_hex())).expect("verifies");
     assert_eq!(back.certificate.checks_errored, vec!["test.crasher"]);
+
+    // ...and a reader is actually told. Everything above proves the fact is *on* the document,
+    // which is where this test used to stop — and where the defect began: the field was added for
+    // the offline reader, who cannot re-run Veridex to find out, and then neither renderer read it.
+    // A crashed check sat under `checks_run` beside an all-zero severity count, and because a crash
+    // yields `pass (warnings)` — indistinguishable from ordinary warnings — a CI gate keying on
+    // `verified && status != "fail"` could not see it either.
+    let text = veridex_core::render_verified(&back, &v, true, true);
+    assert!(
+        text.contains("errored") && text.contains("test.crasher"),
+        "the terminal reader must be told a check measured nothing, and which: {text}"
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&veridex_core::verified_json(&back, &v, true, true)).unwrap();
+    assert_eq!(
+        json["checks_errored"],
+        serde_json::json!(["test.crasher"]),
+        "the machine reader needs the same fact as a keyable field"
+    );
+    // The skipped category is the same gap one axis over: the JSON has carried it since it was
+    // added, the terminal render never did.
+    assert!(
+        text.contains("ran no checks") && text.contains("video"),
+        "a category that ran nothing must reach the terminal reader too: {text}"
+    );
 }
 
 /// Every other version mismatch in `verify` fails closed; the schema did not. A document declaring a
