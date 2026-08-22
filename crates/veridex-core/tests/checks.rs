@@ -3610,3 +3610,57 @@ fn a_negative_standard_deviation_is_reported_on_its_own() {
     assert_eq!(f.len(), 1, "{f:?}");
     assert_eq!(f[0].code, "STATISTICAL.NEGATIVE_STD");
 }
+
+/// Per-episode statistics must each report, while dataset-level ones still collapse to one finding.
+///
+/// The five stored-statistics checks deduped on stream name across the whole dataset, on the stated
+/// premise that "the adapter recomputes one summary per stream (dataset-level)". That is true for
+/// LeRobot and false for HDF5 and Zarr, which build a fresh accumulator per episode group — so
+/// those numbers are genuinely per-episode facts, and reporting only the first affected episode
+/// dropped the rest, including episodes carrying worse defects than the one reported.
+///
+/// Keying the dedupe on the measured values rather than the name gets both behaviors from one rule.
+#[test]
+fn distinct_per_episode_statistics_each_report_while_identical_ones_collapse() {
+    let sat = |at_max: u64| veridex_core::cdm::Saturation {
+        sample_count: 100,
+        at_min: 0,
+        at_max,
+        min: -1.0,
+        max: 1.0,
+        dim: 0,
+    };
+    let with_sat = |at_max: u64| {
+        let mut s = stream("action", "c", None, &[0, 1]);
+        s.observed_saturation = Some(sat(at_max));
+        s
+    };
+
+    // Three episodes, each measured separately, each pinned at a different rate — the HDF5/Zarr
+    // shape. All three are distinct defects at distinct locations.
+    let per_episode = dataset(vec![
+        episode(0, vec![with_sat(90)]),
+        episode(1, vec![with_sat(95)]),
+        episode(2, vec![with_sat(99)]),
+    ]);
+    let f = statistical::Saturation::default().run(&per_episode);
+    assert_eq!(
+        f.len(),
+        3,
+        "each episode's own measurement is its own defect to fix: {f:?}"
+    );
+
+    // The same stream, same dataset-level summary attached to every episode — the LeRobot shape.
+    // One fact, so one finding, exactly as before.
+    let dataset_level = dataset(vec![
+        episode(0, vec![with_sat(90)]),
+        episode(1, vec![with_sat(90)]),
+        episode(2, vec![with_sat(90)]),
+    ]);
+    let f = statistical::Saturation::default().run(&dataset_level);
+    assert_eq!(
+        f.len(),
+        1,
+        "one dataset-level measurement is one finding, not one per episode: {f:?}"
+    );
+}

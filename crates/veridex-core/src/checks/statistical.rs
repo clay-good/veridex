@@ -60,9 +60,19 @@ impl Check for Saturation {
     }
     fn run(&self, dataset: &Dataset) -> Vec<Finding> {
         let mut findings = Vec::new();
-        // The adapter recomputes one saturation summary per stream (dataset-level), so report each
-        // stream once — on the first episode that carries it — rather than repeating per episode.
-        let mut reported: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        // Keyed by the *measured values*, not by the stream name alone.
+        //
+        // The premise of a name-only key is that these statistics are dataset-level -- the adapter
+        // recomputes one summary per stream and attaches it to every episode's copy. That holds for
+        // LeRobot and is false for HDF5 and Zarr, which build a fresh accumulator per episode
+        // group, so those numbers are genuinely per-episode facts. Deduping by name reported the
+        // first affected episode and silently dropped the rest, including episodes carrying worse
+        // defects than the one that was reported.
+        //
+        // Keying on the payload gets both: identical dataset-level stats collapse to one finding as
+        // before, and distinct per-episode stats each report the episode a reader has to go and fix.
+        let mut reported: std::collections::BTreeSet<(&str, String)> =
+            std::collections::BTreeSet::new();
         for ep in &dataset.episodes {
             for stream in &ep.streams {
                 let Some(sat) = stream.observed_saturation else {
@@ -99,7 +109,7 @@ impl Check for Saturation {
                 }
                 // Claim the stream only now that it has produced a finding — claiming it on sight
                 // would let a clean episode-0 copy mask a saturated one in a later episode.
-                if !reported.insert(stream.name.as_str()) {
+                if !reported.insert((stream.name.as_str(), format!("{sat:?}"))) {
                     continue;
                 }
                 // Name the dimension for a multi-DoF feature (e.g. the gripper joint); a scalar
@@ -177,9 +187,11 @@ impl Check for NonFiniteObserved {
     }
     fn run(&self, dataset: &Dataset) -> Vec<Finding> {
         let mut findings = Vec::new();
-        // The count is dataset-level (attached to every episode's stream), so report each stream
-        // once — on the first episode that carries it — not per episode.
-        let mut reported: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        // Keyed by the measured value, not by the stream name alone: these counts are
+        // dataset-level for LeRobot and genuinely per-episode for HDF5 and Zarr, which build a
+        // fresh accumulator per episode group. See `Saturation::run` for the full reasoning.
+        let mut reported: std::collections::BTreeSet<(&str, String)> =
+            std::collections::BTreeSet::new();
         for ep in &dataset.episodes {
             for stream in &ep.streams {
                 // `None` means values were never read (e.g. MCAP); `Some(0)` means read and clean.
@@ -189,7 +201,7 @@ impl Check for NonFiniteObserved {
                 if count == 0 {
                     continue;
                 }
-                if !reported.insert(stream.name.as_str()) {
+                if !reported.insert((stream.name.as_str(), format!("{count}"))) {
                     continue;
                 }
                 findings.push(
@@ -257,12 +269,12 @@ impl Check for RangeSanity {
     }
     fn run(&self, dataset: &Dataset) -> Vec<Finding> {
         let mut findings = Vec::new();
-        // Stored stats are dataset-level today (attached identically to every episode's copy of a
-        // stream), so report each stream once — on the first episode carrying it. The stream is
-        // claimed only once it has actually produced a finding, so if an adapter ever attaches
-        // per-episode stats, a later episode's corrupt stats are still examined rather than skipped
-        // on the strength of an earlier clean one.
-        let mut reported: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        // Keyed by the stored values, not by the stream name alone: they are dataset-level for
+        // LeRobot and genuinely per-episode for HDF5 and Zarr. See `Saturation::run`. The stream is
+        // claimed only once it has actually produced a finding, so a clean earlier episode never
+        // masks a corrupt later one.
+        let mut reported: std::collections::BTreeSet<(&str, String)> =
+            std::collections::BTreeSet::new();
         for ep in &dataset.episodes {
             for stream in &ep.streams {
                 // Element 0 is only the *first* dimension's summary. A multi-DoF feature's stored
@@ -296,7 +308,8 @@ impl Check for RangeSanity {
                 else {
                     continue;
                 };
-                if !reported.insert(stream.name.as_str()) {
+                let key = format!("{:?}{:?}", stream.stats, stream.dim_stats);
+                if !reported.insert((stream.name.as_str(), key)) {
                     continue;
                 }
                 findings.push(finding);
@@ -602,7 +615,10 @@ impl Check for StoredVsObserved {
         // Both stored and recomputed stats are dataset-level (attached identically to every episode's
         // copy of a stream), so report each stream once — on the first episode carrying it — rather
         // than emitting the same finding per episode.
-        let mut reported: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        // Keyed by the compared values, not by the stream name alone: they are dataset-level for
+        // LeRobot and genuinely per-episode for HDF5 and Zarr. See `Saturation::run`.
+        let mut reported: std::collections::BTreeSet<(&str, String)> =
+            std::collections::BTreeSet::new();
         for ep in &dataset.episodes {
             for stream in &ep.streams {
                 // For a multi-DoF feature with both stored and recomputed per-dimension stats, compare
@@ -625,7 +641,8 @@ impl Check for StoredVsObserved {
                 let Some((stored, observed, dim)) = hit else {
                     continue;
                 };
-                if !reported.insert(stream.name.as_str()) {
+                let key = format!("{stored:?}{observed:?}{dim}");
+                if !reported.insert((stream.name.as_str(), key)) {
                     continue;
                 }
                 // Name the dimension for a multi-DoF feature; a scalar/element-0 mismatch needs none.
@@ -739,7 +756,10 @@ impl Check for ExtremeOutlier {
         // Both stored and recomputed stats are dataset-level (attached identically to every episode's
         // copy of a stream), so report each stream once — on the first episode carrying it — rather
         // than emitting the same finding per episode.
-        let mut reported: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        // Keyed by the compared values, not by the stream name alone: they are dataset-level for
+        // LeRobot and genuinely per-episode for HDF5 and Zarr. See `Saturation::run`.
+        let mut reported: std::collections::BTreeSet<(&str, String)> =
+            std::collections::BTreeSet::new();
         for ep in &dataset.episodes {
             for stream in &ep.streams {
                 // For a multi-DoF feature, scan every dimension and keep the most extreme outlier, so
@@ -772,7 +792,8 @@ impl Check for ExtremeOutlier {
                 let Some((z, value, end, dim)) = hit else {
                     continue;
                 };
-                if !reported.insert(stream.name.as_str()) {
+                let key = format!("{z:?}{value:?}{end}{dim}");
+                if !reported.insert((stream.name.as_str(), key)) {
                     continue;
                 }
                 // Name the dimension for a multi-DoF feature; a scalar/element-0 extreme needs none.
