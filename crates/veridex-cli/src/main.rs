@@ -318,6 +318,15 @@ fn restore_default_sigpipe() {}
 fn main() -> ExitCode {
     restore_default_sigpipe();
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // `--help` after a subcommand, before the subcommand's own flag allow-list sees it. The usage
+    // block lists `--help` under OPTIONS, so `veridex certify --help` reads as supported — and every
+    // command rejected it with "unknown option `--help`" and exit 2, because each allow-list names
+    // only the flags that command *does* something with. Asking a tool how to use it should not be
+    // an error.
+    if args.len() > 1 && args[1..].iter().any(|a| a == "--help" || a == "-h") {
+        print_help();
+        return ExitCode::SUCCESS;
+    }
     match args.first().map(String::as_str) {
         None | Some("-h") | Some("--help") | Some("help") => {
             print_help();

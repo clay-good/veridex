@@ -1164,3 +1164,35 @@ fn a_profile_verdict_reaches_the_machine_readable_outputs() {
     let doc: serde_json::Value = serde_json::from_str(&plain).unwrap();
     assert!(doc.get("readiness").is_none());
 }
+
+/// `--help` is listed under OPTIONS in the usage block, so `veridex certify --help` reads as
+/// supported. Every command rejected it with "unknown option `--help`" and exit 2, because each
+/// command's flag allow-list names only the flags it does something *with* — and `--help` is not
+/// one of those anywhere. Asking a tool how to use it should not be a tool error.
+#[test]
+fn every_command_accepts_help() {
+    for cmd in [
+        "check",
+        "inspect",
+        "checks",
+        "certify",
+        "verify",
+        "keygen",
+        "diff",
+        "provenance",
+    ] {
+        let (code, stdout, _) = run(&[cmd, "--help"]);
+        assert_eq!(code, 0, "`veridex {cmd} --help` must not be an error");
+        assert!(
+            stdout.contains("USAGE:"),
+            "`veridex {cmd} --help` must print the usage: {stdout}"
+        );
+        let (code, _, _) = run(&[cmd, "-h"]);
+        assert_eq!(code, 0, "`veridex {cmd} -h` must not be an error");
+    }
+
+    // ...and a flag that genuinely is not supported still fails, loudly.
+    let (code, _, stderr) = run(&["check", "--bogus"]);
+    assert_eq!(code, 2, "an unknown flag is still a tool error");
+    assert!(stderr.contains("--bogus"), "{stderr}");
+}
