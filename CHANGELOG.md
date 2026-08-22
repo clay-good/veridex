@@ -10,6 +10,86 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+*The entries below close an **eight-agent audit** covering untrusted input across the seven adapters,
+check correctness, determinism and the content hash, the CLI/Python front ends, coverage and scope
+honesty, the crypto and signing path, the documentation against the code, and — new this round — a
+by-hand **mutation pass** that edited production code to find out which tests actually fail. Each
+defect was reproduced before it was fixed, and each fix has a test proven to fail without it.*
+
+- **A 182-byte MCAP file killed the process.** `memory allocation of 117647744172073 bytes failed`,
+  SIGABRT: no finding, no exit code a CI gate could read, and it happened with `--max-frames 1
+  --max-decompression-ratio 1` set, because the abort came before any budget was consulted. The
+  outer framing walk already refuses a record claiming more bytes than the file holds; inside a
+  chunk the same `u64` was read from decompressed bytes and bounded by nothing. Of the `mcap`
+  crate's reader constructors only `LinearReader`'s sets `with_record_length_limit`, and the chain
+  Veridex reads messages through — `MessageStream` → `RawMessageStream` → `ChunkFlattener` — is the
+  one that omits it. The chunk's own declared size is now the bound.
+
+- **A stricter threshold was reported as a narrower run.** `SCOPE.NARROWED` exists because narrowing
+  *raises* the score, but its test for a moved tolerance was direction-blind. Since
+  `Profile::apply_tolerances` can only tighten, and `world-model-ready` tightens cross-sensor sync to
+  20 ms by construction, the product's own readiness profile incriminated itself: every `--profile`
+  run emitted `SCOPE.NARROWED`, `--min-score` refused to gate the profile runs it exists for — while
+  accusing the operator of deselecting checks they had not touched — and every readiness certificate
+  verified carrying `⚠ narrowed run` and `"narrowed": true`.
+
+- **One config line bought a signed READY verdict.** The profile names one tolerance, so the rest of
+  its criteria's limits come from `veridex.toml`, and each criterion's threshold is static prose.
+  `sequence_drop_fraction = 0.9` took a rig dropping a seventh of its LiDAR frames to `ready: true`
+  beside "no rig sensor dropping more than 5% of its frames". Readiness is now inapplicable over a
+  narrowed run — which is only a usable guard *because* narrowing is now directional.
+
+- **A dataset half unread was indistinguishable from an intact one.** "The CDM cannot represent this
+  field" and "there is data here and I did not look at it" shared one vector, and that vector reaches
+  `inspect` alone. A LeRobot dataset with one of its two Parquet shards symlinked out of the
+  directory produced `coverage: Full`, the same findings, the same score, and a certifiable verdict
+  naming the whole dataset; `diff` reported zero change against the intact one. Now disclosed as
+  `COVERAGE.SOURCE_UNREAD` — a warning, because unlike a sample this was requested by nobody.
+
+- **Three signed certificate facts that no reader was shown.** `checks_errored` was added to the
+  document for the offline reader who cannot re-run Veridex, and then wired into neither renderer, so
+  a crashed check sat under `checks_run` beside an all-zero severity count. `categories_skipped` and
+  `veridex_version` were in the JSON render and not the terminal one.
+
+- **Three checks stopped looking before they were done.** `range-sanity` kept the first rule that
+  fired across a scan that starts at element 0, so a constant first dimension — a locked joint, a
+  gripper at rest — hid an inverted range or a NaN on every axis above it, turning a `fail` into
+  `pass (warnings)`. `extreme-outlier` never read the source's stored per-dimension stats, so under
+  `--metadata-only` it examined one joint of seven. `media-conformance` `continue`d past its own
+  resolution, codec, and fps comparisons once a frame-count delta was rolled up.
+
+- **Per-episode statistics reported only their first episode.** Five stored-statistics checks deduped
+  on stream name across the dataset, which is right for LeRobot and wrong for HDF5 and Zarr, whose
+  accumulators are per-episode. An actuator pinned 90%, 95%, and 99% in successive episodes produced
+  one finding, at 90%.
+
+- **A 6 MB HDF5 file cost 70 seconds of CPU.** Row assembly filtered the whole chunk index per row —
+  `O(rows²)` for the one-chunk-per-row shape a per-step logger writes. The frame budget and
+  `MAX_CHUNKS_PER_DATASET` bound the two factors independently, so nothing bounded the product. A
+  12.5 MB file did not finish in eight minutes; both are now linear (0.12 s and 0.22 s).
+
+- **Five ways the front ends said less than the run knew.** `certify` exited 0 over a failing dataset
+  and printed only the grade. Python's `certify` took no `config` while the CLI auto-discovers
+  `veridex.toml`, so the two issued *different signed documents* for the same dataset and key.
+  Python's `check` had no `profile`, and its SARIF/HTML entry points ignored sampling. `check
+  --sarif` dropped the readiness block that every other output shape carries.
+
+- **Tests that could not fail.** A by-hand mutation pass ran 34 edits against production code; 10
+  survived with all tests green. The content-hash guard listed the fields the encoder gained most
+  recently and none it started with, so deleting `clock_kind` — the change the canonical version was
+  last bumped *for* — passed the suite. The findings sort could be cut to `check_id` alone;
+  `canonicalize_order`'s tie-breaks could be deleted outright; a crashed check could be made free.
+  And two budget tests timed themselves with an assertion placed *after* the call being timed, so on
+  the exact failure they name they do not go red — they hang, for 26 minutes. All now proven red
+  against the mutation they guard.
+
+- **The canonical encoding could change without anyone noticing.** Every hash test was *relative*, so
+  an edit to `encode` was self-consistent and invisible. `MediaStatus::Unreadable` did change while
+  `CANONICAL_VERSION` stayed at 6 — two builds both claiming encoding v6 disagreed about
+  byte-identical data, and `verify` reports that disagreement as tampering. A pinned golden vector
+  now fails on any encoding change until the version is bumped and the vector re-pinned in the same
+  commit.
+
 *The entries below close a **seven-agent audit** covering determinism and the content hash, the
 certificate and its signing, scoring/profiles/gates, untrusted-input resilience across all seven
 adapters, the CLI and Python front ends with their machine-readable outputs, and the documentation
@@ -519,7 +599,7 @@ fails without it.*
   each attests, plus `applicable` (is the dataset a sensor rig) and an overall `ready` flag. Honest by
   construction: a non-rig is `N/A`, never a vacuous pass, and the report claims nothing beyond the
   criteria listed. The block is signed like every other certificate field (verifies offline). See
-  [docs/profiles.md](../docs/profiles.md).
+  [docs/profiles.md](docs/profiles.md).
 - **Readiness certificates are readable offline, from both surfaces (A5)** — `veridex verify` now
   reports what a certificate *attests*, not merely that its signature checks out: the CDM hash it is
   bound to, the trust score and provenance coverage, and — for a certificate issued with

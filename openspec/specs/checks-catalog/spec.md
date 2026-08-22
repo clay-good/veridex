@@ -4,8 +4,12 @@
 
 This capability enumerates the concrete **families of checks** Veridex runs over a CDM. The
 `validation-engine` provides the framework; this catalog defines what is actually checked and why.
-Checks are grouped into six categories. Each requirement below defines a family; individual checks
-within a family carry stable IDs (e.g. `TEMPORAL.CLOCK_SKEW`) assigned in `design.md`.
+Checks are grouped into seven categories (structural, temporal, statistical, semantic, video,
+provenance, autonomy; the autonomy family is specified in `../autonomy-sensor-data/spec.md`). Each
+requirement below defines a family; individual checks carry stable ids (e.g. `temporal.clock-skew`)
+and emit stable finding codes (e.g. `TEMPORAL.CLOCK_SKEW`). The two are not interchangeable: config
+keys such as `only_checks` are validated against the *check id*, so naming a finding code there is
+rejected.
 
 The catalog's design bias: prioritize the failure modes that **silently corrupt training** and are
 **invisible in single-format tools** — above all, cross-stream time-synchronization and episode

@@ -69,12 +69,13 @@ veridex verify my-rig.mcap --certificate my-rig.veridex.json --key issuer.pub
 
 ```
 ✓ certificate verified
-  issuer key: 8f3c…
+  issuer key: 8f3c1d05be27a94f6021c8e3ab5d7f40912e6c8b3d0a5f7e14b9c26d8a03f5e1
   issued at:  1700000000
   dataset:    my-rig
   bound to:   4a1b9c2d7e5f0813…
   status:     pass (warnings)
   trust:      B (82)  [data 92 · provenance 66%]
+  issued by:  veridex 0.1.0
   world-model-ready profile: NOT READY
     ✓ autonomy.rig-sync — rig sensors within a 20 ms cross-sensor span drift
     ✗ autonomy.sequence-complete — no rig sensor dropping more than 5% of its frames

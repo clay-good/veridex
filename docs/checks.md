@@ -8,7 +8,9 @@ the finding codes it can emit (add `--json` for a machine-readable catalog) — 
 Checks are selected, disabled, or re-severitied via [`veridex.toml`](veridex.toml.example).
 Severities below are the defaults. Every numeric threshold named in this catalog has a
 [`veridex.toml`](veridex.toml.example) key — the *configurable* marker on some rows is redundant, not
-exclusive.
+exclusive — **except two fixed constants**: `structural.stuck-stream`'s 5-frame run and
+`temporal.episode-duration`'s 4-episode abstention floor. `TolerancesConfig` has twelve fields and
+neither is among them, so a config naming one is rejected.
 
 ## Structural — is the dataset shaped like trainable data?
 

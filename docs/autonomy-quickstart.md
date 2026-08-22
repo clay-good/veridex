@@ -50,8 +50,9 @@ cargo run -p veridex-cli -- check /tmp/av.mcap
               trigger/latency offsets before fusing.
 ```
 
-The rig checks are `AUTONOMY.RIG_SYNC`, `SEQUENCE_COMPLETE`, `EGO_POSE_CONTINUITY`,
-`CALIBRATION_INCOMPLETE`, and `SENSOR_FRAME_UNKNOWN` / `SENSOR_FRAME_UNRELATED` — see
+The rig checks emit `AUTONOMY.RIG_SYNC`, `SEQUENCE_COMPLETE`, `EGO_POSE_CONTINUITY`,
+`EGO_POSE_NON_FINITE`, `CALIBRATION_INCOMPLETE`, and `SENSOR_FRAME_UNKNOWN` /
+`SENSOR_FRAME_UNRELATED` / `SENSOR_FRAME_UNDECLARED` — see
 [checks.md](checks.md) for what each one catches and why it matters. On a rig, `RIG_SYNC` supersedes
 the pairwise `TEMPORAL.CLOCK_SKEW`.
 

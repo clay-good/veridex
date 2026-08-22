@@ -61,7 +61,7 @@ Thresholds for what counts as failure SHALL be configurable.
 #### Scenario: CI fails the build on an error verdict
 - **WHEN** `veridex check` runs in CI and the verdict status is `fail`
 - **THEN** the process exits with the documented failure code
-- **AND** `--format sarif` emits results a code-scanning system can ingest
+- **AND** `--sarif` emits results a code-scanning system can ingest
 
 #### Scenario: Warning threshold is configurable
 - **WHEN** a pipeline configures warnings to fail the build

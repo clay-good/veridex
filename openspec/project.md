@@ -134,11 +134,11 @@ The decision and its consequences are recorded as design D6a.
 
 - **License:** MIT (`LICENSE` at repo root). The open core is MIT; the eventual commercial layer is
   the hosted registry/service, not a license change.
-- **Local-only:** this repo is developed locally with no remote yet. A `.gitignore` at the root
+- **Repository:** GitHub, `clay-good/veridex`, with CI on every push (the README carries the badge).
+  A `.gitignore` at the root
   excludes build artifacts, Python/maturin outputs, secrets and signing keys (`*.key`, `*.pem`), and
   locally generated Veridex outputs (`*.veridex.json`, `reports/`). Do not commit keys or generated
   certificates.
 - **Names (resolved):** GitHub repo and crates.io crates use **`veridex`** (`veridex`, `veridex-core`,
   `veridex-cli`). The CLI binary and Python import module are **`veridex`**. The PyPI distribution is
-  **`veridex-data`** because the bare `veridex` PyPI name is already taken. The working directory is
-  currently `signals-engineering` and will be renamed to `veridex`.
+  **`veridex-data`** because the bare `veridex` PyPI name is already taken.

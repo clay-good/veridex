@@ -11,7 +11,7 @@ under.
 ## Requirements
 
 ### Requirement: Config file and precedence
-Veridex SHALL support a project config file (e.g. `.veridex.toml`) and SHALL apply configuration in
+Veridex SHALL support a project config file (e.g. `veridex.toml`) and SHALL apply configuration in
 a defined precedence order: built-in defaults, then config file, then environment, then explicit
 command-line flags, with later sources overriding earlier ones. The effective merged configuration
 SHALL be recorded in the verdict.

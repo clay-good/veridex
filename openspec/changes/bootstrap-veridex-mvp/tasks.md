@@ -149,9 +149,24 @@ the build plan.
       `veridex-data` wheel builds with maturin.
 
 ## M9 — Proof & anointer prep
-- [ ] End-to-end demo on a real LeRobot v3 Hub dataset and a real MCAP recording. (Synthetic
-      end-to-end demos work today for **both** formats via `examples/make_demo_mcap` and
-      `examples/make_demo_lerobot` + `veridex check`; real Hub datasets need network access.)
+- [~] End-to-end demo on a real LeRobot v3 Hub dataset and a real MCAP recording. **The LeRobot half
+      is done**, against `lerobot/svla_so101_pickplace` pulled from the Hub (50 episodes, 4 streams
+      each, 2 video features, 86 MB): `inspect` maps it to 50 episodes without a warning, `check`
+      returns `PASS (warnings)` / trust 74 (C) / `data 100 · provenance 16%`, and `certify` +
+      `verify` round-trip offline. The content hash was identical across a relative path, an
+      absolute path, and a run from *inside* the dataset directory; editing one field of
+      `meta/info.json` moved it and `verify` refused the certificate.
+
+      The run is notable for what it *declines* to say: the dataset ships one shared `.mp4` per
+      camera rather than one per episode, so the video checks abstain by name
+      (`VIDEO.MEDIA_UNATTRIBUTED`) instead of passing, and the video streams carry no per-frame
+      fingerprints, so `STRUCTURAL.UNFINGERPRINTED_CONTENT` records that the duplicate-episode and
+      stuck-stream checks had nothing to compare. Both are reported as unmeasured, not as clean —
+      which is the behavior the abstention work exists to produce, confirmed here on data nobody
+      wrote for us.
+
+      Still open: a **real MCAP recording** (the synthetic `examples/make_demo_mcap` rig covers the
+      format end-to-end, including the `av` five-sensor variant).
 - [~] Reproduce detection of a synthetic cross-stream skew (done: the demo MCAP triggers
       `TEMPORAL.CLOCK_SKEW` + `TEMPORAL.END_OFFSET`, and `make_demo_mcap -- <out> late-start` triggers
       `TEMPORAL.START_OFFSET`) and a corrupted episode boundary (covered by unit tests). A runnable
