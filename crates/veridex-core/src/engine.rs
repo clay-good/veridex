@@ -286,8 +286,12 @@ impl Verdict {
         cats
     }
 
-    /// Whether this run departed from the declared catalog — checks deselected, a severity
-    /// overridden, or a threshold moved.
+    /// Whether this run departed from the declared catalog in a way that could have *raised* its
+    /// score — checks deselected, a severity overridden, or a threshold loosened.
+    ///
+    /// A threshold moved to be *stricter* is not a narrowing: it measures the data harder than the
+    /// catalog asks. `--profile world-model-ready` does exactly that, so treating any moved
+    /// threshold as a narrowing made every readiness run report itself as one.
     ///
     /// Reads the [`SCOPE_CHECK_ID`] finding rather than re-deriving the condition, so there is one
     /// answer to "was this run narrowed" and every consumer gets the same one.
@@ -602,7 +606,7 @@ pub const SCOPE_CHECK_ID: &str = "veridex.scope";
 /// axis over, and it takes the same remedy: a finding, because findings are the only channel that
 /// reaches every renderer, the diff, and the certificate's own summary.
 ///
-/// A moved *threshold* is the third way, and it hid in the gap between the first two. Deselecting
+/// A *loosened* threshold is the third way, and it hid in the gap between the first two. Deselecting
 /// `temporal.clock-skew` fires this finding; setting `clock_skew_ms = 10000` does not deselect
 /// anything — the check runs, measures a real 210ms drift, and passes it — so the run looked
 /// complete on every count this function was watching. The terminal and HTML reports named the
@@ -612,6 +616,15 @@ pub const SCOPE_CHECK_ID: &str = "veridex.scope";
 /// --fail-on-regression` read the score's 13-point climb as an improvement. Same shape, same
 /// remedy.
 ///
+/// The direction is the whole test: this finding exists because narrowing a run *raises* the score,
+/// so only a threshold moved to be **looser** qualifies. A tightened one lowers the score, and
+/// disclosing it as a narrowing tells a reader the opposite of what happened. That is not a corner
+/// case — `--profile world-model-ready` tightens cross-sensor sync to 20 ms by construction, so a
+/// direction-blind test made the product's own readiness profile self-incriminating: every profile
+/// run emitted `SCOPE.NARROWED`, every profile certificate verified with a narrowing warning, and
+/// `--min-score` refused to gate the profile runs it is meant for. The reports still print every
+/// departure in either direction; only the disclosure is directional.
+///
 /// Info severity, for the reason coverage is: the run's scope is not a defect in the data, and
 /// saying so must not fail a dataset that is genuinely sound.
 fn scope_finding(
@@ -620,7 +633,7 @@ fn scope_finding(
     registered: usize,
     overridden: usize,
 ) -> Option<Finding> {
-    let loosened = crate::report::non_default_tolerances(&config.tolerances);
+    let loosened = crate::report::loosened_tolerances(&config.tolerances);
     if executed == registered && overridden == 0 && loosened.is_empty() {
         return None;
     }
@@ -659,7 +672,7 @@ fn scope_finding(
         clauses.push(format!("severity overridden: {}", pairs.join(", ")));
     }
     if !loosened.is_empty() {
-        clauses.push(format!("thresholds moved: {}", loosened.join(", ")));
+        clauses.push(format!("thresholds loosened: {}", loosened.join(", ")));
     }
 
     Some(

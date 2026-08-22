@@ -98,11 +98,13 @@ pub(crate) fn narrowing_clauses(cfg: &crate::engine::EffectiveConfig) -> Vec<Str
             .collect();
         out.push(format!("severity overridden: {}", pairs.join(", ")));
     }
-    // A moved threshold narrows a run without deselecting anything — the check runs, measures the
-    // defect, and passes it — so it belongs here beside the selections that remove checks outright.
-    let moved = crate::report::non_default_tolerances(&cfg.tolerances);
+    // A *loosened* threshold narrows a run without deselecting anything — the check runs, measures
+    // the defect, and passes it — so it belongs here beside the selections that remove checks
+    // outright. A tightened one does not: it can only lower the score, so a reader warned about it
+    // would be warned that the run was harder on the data than the catalog asks.
+    let moved = crate::report::loosened_tolerances(&cfg.tolerances);
     if !moved.is_empty() {
-        out.push(format!("thresholds moved: {}", moved.join(", ")));
+        out.push(format!("thresholds loosened: {}", moved.join(", ")));
     }
     out
 }

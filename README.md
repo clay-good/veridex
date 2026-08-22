@@ -149,10 +149,13 @@ warning`) or on the trust score directly (`--min-score 80` fails when the score 
 gate is a claim about the whole dataset, so it is **refused outright** — loudly, with exit `2` —
 over any run that cannot support that claim: `--metadata-only`, a `--sample-episodes` /
 `--sample-fraction` run (the episodes it skipped are where the defect would be), or a run narrowed
-by config (checks deselected, a severity overridden, or a tolerance moved). The data score starts at
+by config (checks deselected, a severity overridden, or a tolerance *loosened*). The data score starts at
 100 and only deducts, so anything that stops a check from measuring *raises* it — each of those is
-otherwise one flag away from a green gate on bad data. `check --profile world-model-ready` also
-prints the per-criterion readiness verdict it judged against; `certify` is what signs it.
+otherwise one flag away from a green gate on bad data. A profile is not a narrowing and does not
+block the gate: it may only *tighten* a threshold, which measures the data harder than the catalog
+asks, so `check --profile world-model-ready --min-score 80` is a valid CI gate. `check --profile
+world-model-ready` also prints the per-criterion readiness verdict it judged against; `certify` is
+what signs it.
 
 Drop a [`veridex.toml`](docs/veridex.toml.example) in your repo (or pass `--config`) to select
 categories, disable checks, override per-check severities, tune numeric tolerances (clock-skew,

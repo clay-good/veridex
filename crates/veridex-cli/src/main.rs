@@ -680,7 +680,7 @@ fn cmd_check(rest: &[String]) -> ExitCode {
             // data axis, and a moved tolerance, which passes data the default would have failed.
             Some(
                 "narrowed run — checks were deselected, a severity overridden, or a threshold \
-                 moved, so the score was earned within that selection and not over the catalog \
+                 loosened, so the score was earned within that selection and not over the catalog \
                  (see the SCOPE.NARROWED finding)"
                     .to_string(),
             )

@@ -207,62 +207,107 @@ fn trim_num(v: f64) -> String {
     }
 }
 
-/// The tolerances that differ from the built-in defaults, as short human labels. Empty when the run
-/// used every default.
+/// A tolerance that departs from the built-in defaults: its short human label, and whether the
+/// departure **loosened** the threshold.
 ///
-/// Shared with [`crate::engine`], which discloses the same departures as a finding: a threshold the
-/// operator moved is a way the run departed from the declared catalog, and the twelve comparisons
-/// below are the one place that knows which ones moved.
-pub(crate) fn non_default_tolerances(t: &crate::Tolerances) -> Vec<String> {
+/// The direction matters because the two consumers want opposite things. The reports print every
+/// departure, because an operator should see any threshold that is not the catalog's. Scope
+/// disclosure wants only the loosenings, because its whole premise is that narrowing a run *raises*
+/// the score — and a threshold moved to be stricter lowers it, which needs no warning.
+///
+/// Every one of the twelve is an upper bound on tolerated deviation, so the larger value is always
+/// the looser one. That includes `saturation_min_samples`, the sample count below which the check
+/// abstains: a larger one abstains on *more* streams, measuring less.
+pub(crate) struct ToleranceDeparture {
+    pub(crate) label: String,
+    pub(crate) loosened: bool,
+}
+
+/// Every tolerance that differs from the built-in default, tagged with its direction. Empty when the
+/// run used every default.
+///
+/// Shared with [`crate::engine`] and the certificate renderer: a threshold the operator moved is a
+/// way the run departed from the declared catalog, and the twelve comparisons below are the one
+/// place that knows which ones moved and which way.
+pub(crate) fn tolerance_departures(t: &crate::Tolerances) -> Vec<ToleranceDeparture> {
     let d = crate::Tolerances::default();
     let ms = |ns: i64| trim_num(ns as f64 / 1_000_000.0);
     let mut out = Vec::new();
-    if t.clock_skew_ns != d.clock_skew_ns {
-        out.push(format!("clock-skew {}ms", ms(t.clock_skew_ns)));
+    macro_rules! departure {
+        ($field:ident, $label:expr) => {
+            if t.$field != d.$field {
+                out.push(ToleranceDeparture {
+                    label: $label,
+                    loosened: t.$field > d.$field,
+                });
+            }
+        };
     }
-    if t.start_offset_ns != d.start_offset_ns {
-        out.push(format!("start-offset {}ms", ms(t.start_offset_ns)));
-    }
-    if t.end_offset_ns != d.end_offset_ns {
-        out.push(format!("end-offset {}ms", ms(t.end_offset_ns)));
-    }
-    if t.rate_deviation != d.rate_deviation {
-        out.push(format!("rate {}%", trim_num(t.rate_deviation * 100.0)));
-    }
-    if t.gap_factor != d.gap_factor {
-        out.push(format!("gap {}x", t.gap_factor));
-    }
-    if t.jitter_cv != d.jitter_cv {
-        out.push(format!("jitter cv {}", t.jitter_cv));
-    }
-    if t.episode_duration_factor != d.episode_duration_factor {
-        out.push(format!("episode-duration {}x", t.episode_duration_factor));
-    }
-    if t.saturation_fraction != d.saturation_fraction {
-        out.push(format!(
-            "saturation {}%",
-            trim_num(t.saturation_fraction * 100.0)
-        ));
-    }
-    if t.saturation_min_samples != d.saturation_min_samples {
-        out.push(format!(
-            "saturation min-samples {}",
-            t.saturation_min_samples
-        ));
-    }
-    if t.outlier_z != d.outlier_z {
-        out.push(format!("outlier {}σ", t.outlier_z));
-    }
-    if t.sequence_drop_fraction != d.sequence_drop_fraction {
-        out.push(format!(
+    departure!(
+        clock_skew_ns,
+        format!("clock-skew {}ms", ms(t.clock_skew_ns))
+    );
+    departure!(
+        start_offset_ns,
+        format!("start-offset {}ms", ms(t.start_offset_ns))
+    );
+    departure!(
+        end_offset_ns,
+        format!("end-offset {}ms", ms(t.end_offset_ns))
+    );
+    departure!(
+        rate_deviation,
+        format!("rate {}%", trim_num(t.rate_deviation * 100.0))
+    );
+    departure!(gap_factor, format!("gap {}x", t.gap_factor));
+    departure!(jitter_cv, format!("jitter cv {}", t.jitter_cv));
+    departure!(
+        episode_duration_factor,
+        format!("episode-duration {}x", t.episode_duration_factor)
+    );
+    departure!(
+        saturation_fraction,
+        format!("saturation {}%", trim_num(t.saturation_fraction * 100.0))
+    );
+    departure!(
+        saturation_min_samples,
+        format!("saturation min-samples {}", t.saturation_min_samples)
+    );
+    departure!(outlier_z, format!("outlier {}\u{3c3}", t.outlier_z));
+    departure!(
+        sequence_drop_fraction,
+        format!(
             "sequence drop {}%",
             trim_num(t.sequence_drop_fraction * 100.0)
-        ));
-    }
-    if t.ego_max_speed_mps != d.ego_max_speed_mps {
-        out.push(format!("ego max speed {} m/s", t.ego_max_speed_mps));
-    }
+        )
+    );
+    departure!(
+        ego_max_speed_mps,
+        format!("ego max speed {} m/s", t.ego_max_speed_mps)
+    );
     out
+}
+
+/// The tolerances that differ from the built-in defaults, as short human labels, in either
+/// direction. What the terminal and HTML reports print.
+pub(crate) fn non_default_tolerances(t: &crate::Tolerances) -> Vec<String> {
+    tolerance_departures(t)
+        .into_iter()
+        .map(|dep| dep.label)
+        .collect()
+}
+
+/// The tolerances the run **loosened** — the subset that narrows what the catalog measured.
+///
+/// A profile may only tighten ([`crate::profile::Profile::apply_tolerances`]), so this is empty for
+/// a profile run that moved nothing else: `--profile world-model-ready` cannot, by construction,
+/// narrow a run, and must not be disclosed as though it had.
+pub(crate) fn loosened_tolerances(t: &crate::Tolerances) -> Vec<String> {
+    tolerance_departures(t)
+        .into_iter()
+        .filter(|dep| dep.loosened)
+        .map(|dep| dep.label)
+        .collect()
 }
 
 /// Render a human-readable terminal report. `max_episodes` bounds the worst-episodes rollup.

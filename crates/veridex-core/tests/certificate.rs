@@ -468,7 +468,7 @@ fn a_narrowed_certificate_says_so_to_a_machine_reader() {
         .contains("temporal.clock-skew"));
     assert!(disabled_text.contains("⚠ narrowed run"));
 
-    // A moved threshold deselects nothing, so it slipped past the terminal warning too.
+    // A loosened threshold deselects nothing, so it slipped past the terminal warning too.
     let (moved, moved_text) = issue(&RunConfig {
         tolerances: veridex_core::Tolerances {
             clock_skew_ns: 10_000_000_000,
@@ -478,15 +478,38 @@ fn a_narrowed_certificate_says_so_to_a_machine_reader() {
     });
     assert_eq!(
         moved["narrowed"], true,
-        "a moved threshold is a narrowed run: the check ran, measured the defect, and passed it"
+        "a loosened threshold is a narrowed run: the check ran, measured the defect, and passed it"
     );
     assert!(moved["narrowing"][0]
         .as_str()
         .unwrap()
-        .contains("thresholds moved: clock-skew 10000ms"));
+        .contains("thresholds loosened: clock-skew 10000ms"));
     assert!(
         moved_text.contains("⚠ narrowed run"),
         "the terminal render missed the tolerance axis too: {moved_text}"
+    );
+
+    // ...but the *direction* is the whole test. A threshold moved to be stricter measures the data
+    // harder than the catalog asks, which can only lower the score — the opposite of what this
+    // disclosure warns about. Reporting it as a narrowing told the reader the reverse of what
+    // happened, and it was not a corner case: `--profile world-model-ready` tightens cross-sensor
+    // sync to 20 ms by construction, so every readiness certificate — the product's flagship
+    // artifact — verified carrying a warning that it was less trustworthy than a default run.
+    let (tightened, tightened_text) = issue(&RunConfig {
+        tolerances: veridex_core::Tolerances {
+            clock_skew_ns: 20_000_000,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    assert_eq!(
+        tightened["narrowed"], false,
+        "a tightened threshold narrows nothing: it passes less data, not more"
+    );
+    assert_eq!(tightened["narrowing"].as_array().unwrap().len(), 0);
+    assert!(
+        !tightened_text.contains("⚠ narrowed run"),
+        "a stricter run must not be warned about as though it were a looser one: {tightened_text}"
     );
 }
 

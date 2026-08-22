@@ -278,12 +278,16 @@ Coverage answers *how much of the dataset did we read*. **`SCOPE.NARROWED`** (in
 
 It is emitted whenever fewer checks ran than are registered — `categories`, `only_checks` or
 `disabled_checks` — a severity was overridden on a check that did run, or a **numeric tolerance was
-moved** off its default. That third axis hid in the gap between the first two: a moved threshold
-deselects nothing, so the check runs, measures the defect, and passes it, and the run looks complete
-on every count. On the demo MCAP two `[tolerances]` lines took a run from exit `20` carrying a real
+loosened** off its default. That third axis hid in the gap between the first two: a loosened
+threshold deselects nothing, so the check runs, measures the defect, and passes it, and the run looks
+complete on every count. The direction is part of the test: a tolerance moved to be *stricter*
+measures the data harder than the catalog asks and can only lower the score, so it is printed in the
+report's "Tolerances (non-default)" line but is **not** a narrowing. `--profile world-model-ready`
+tightens cross-sensor sync to 20 ms by construction, so a direction-blind test made every readiness
+run — and every readiness certificate — report itself as narrowed. On the demo MCAP two `[tolerances]` lines took a run from exit `20` carrying a real
 210 ms `TEMPORAL.CLOCK_SKEW` to exit `0` carrying neither it nor `TEMPORAL.END_OFFSET`, with no
 trace in the SARIF, while `diff --fail-on-regression` exited 0 calling the 13-point climb an
-improvement. The disclosure now names which thresholds moved and to what. Until it existed, a
+improvement. The disclosure now names which thresholds were loosened and to what. Until it existed, a
 `veridex.toml` carrying one line rewrote the verdict everywhere it mattered. On the demo MCAP,
 `only_checks = ["structural.episode-boundary"]` turned `FAIL / 76 / 5 findings` into
 `PASS / 89 / 0 findings`, with no trace of the narrowing in the terminal report, the HTML report,

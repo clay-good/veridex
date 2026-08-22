@@ -292,12 +292,12 @@ fn a_severity_override_is_disclosed_as_a_narrowed_scope() {
     assert!(!scope.message.contains("catalog checks ran"));
 }
 
-/// A moved threshold narrows the run without deselecting anything: the check runs, measures a real
-/// defect, and passes it. The terminal and HTML reports named the departure; SARIF and `diff` — the
-/// two consumers that gate CI — did not, so one `veridex.toml` line took a run from exit 20 to
+/// A loosened threshold narrows the run without deselecting anything: the check runs, measures a
+/// real defect, and passes it. The terminal and HTML reports named the departure; SARIF and `diff` —
+/// the two consumers that gate CI — did not, so one `veridex.toml` line took a run from exit 20 to
 /// exit 0 with no trace and `diff --fail-on-regression` read the score's climb as an improvement.
 #[test]
-fn a_moved_threshold_is_disclosed_as_a_narrowed_scope() {
+fn a_loosened_threshold_is_disclosed_as_a_narrowed_scope() {
     let d = ds(1);
     let engine = Engine::builder()
         .register(Box::new(FlagEpisodes {
@@ -327,7 +327,7 @@ fn a_moved_threshold_is_disclosed_as_a_narrowed_scope() {
     assert!(
         scope
             .message
-            .contains("thresholds moved: clock-skew 10000ms"),
+            .contains("thresholds loosened: clock-skew 10000ms"),
         "the disclosure must name which threshold moved and to what, got: {}",
         scope.message
     );
@@ -335,6 +335,47 @@ fn a_moved_threshold_is_disclosed_as_a_narrowed_scope() {
     // belongs here.
     assert!(!scope.message.contains("catalog checks ran"));
     assert!(!scope.message.contains("severity overridden"));
+}
+
+/// The mirror of the case above, and the one that matters in practice: a threshold moved to be
+/// *stricter* narrows nothing. It measures the data harder than the catalog asks, so it can only
+/// lower the score — while `SCOPE.NARROWED` exists to warn that a run's score was inflated by
+/// measuring less. Disclosing a tightening told the reader the opposite of what happened.
+///
+/// This was not hypothetical: `--profile world-model-ready` tightens `clock_skew_ns` to 20 ms by
+/// construction, so a direction-blind test made the product's own readiness profile look like a
+/// narrowed run — `--min-score` refused to gate it, and every readiness certificate verified with a
+/// warning attached.
+#[test]
+fn a_tightened_threshold_is_not_a_narrowed_scope() {
+    let d = ds(1);
+    let engine = Engine::builder()
+        .register(Box::new(FlagEpisodes {
+            id: "structural.x",
+            category: Category::Structural,
+            severity: Severity::Warning,
+        }))
+        .unwrap()
+        .build();
+
+    // 20 ms, the `world-model-ready` value: well inside the 50 ms default.
+    let cfg = RunConfig {
+        tolerances: veridex_core::Tolerances {
+            clock_skew_ns: 20_000_000,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let v = engine.run(&d, hash(&d), &cfg);
+
+    assert!(
+        !v.scope_narrowed(),
+        "a stricter threshold is not a narrowing: {:?}",
+        v.findings
+            .iter()
+            .find(|f| f.check_id == veridex_core::engine::SCOPE_CHECK_ID)
+            .map(|f| &f.message)
+    );
 }
 
 #[test]
