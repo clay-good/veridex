@@ -1,0 +1,471 @@
+{
+  "id": "golden-vector",
+  "metadata": [
+    [
+      "robot_type",
+      "so101"
+    ],
+    [
+      "codebase_version",
+      "v3.0"
+    ]
+  ],
+  "provenance": [
+    {
+      "scope": "dataset",
+      "elements": [
+        {
+          "key": "license",
+          "value": "apache-2.0",
+          "class": "known"
+        },
+        {
+          "key": "annotator",
+          "value": null,
+          "class": "unknown"
+        },
+        {
+          "key": "sensor",
+          "value": "realsense d435",
+          "class": "asserted"
+        }
+      ]
+    },
+    {
+      "scope": {
+        "stream": {
+          "episode": 0,
+          "stream": "action"
+        }
+      },
+      "elements": [
+        {
+          "key": "clock",
+          "value": "ptp",
+          "class": "known"
+        }
+      ]
+    }
+  ],
+  "episodes": [
+    {
+      "index": 0,
+      "start_ts": 0,
+      "end_ts": 66666666,
+      "streams": [
+        {
+          "name": "observation.images.front",
+          "modality": "video",
+          "declared_rate_hz": 30.0,
+          "clock_id": "rig",
+          "clock_kind": "measured",
+          "dtype": "video",
+          "shape": [
+            480,
+            640,
+            3
+          ],
+          "frames": [
+            {
+              "ts": 0,
+              "value_ref": {
+                "uri": "f0",
+                "byte_offset": 64,
+                "byte_len": 128,
+                "content_hash": [
+                  171,
+                  171,
+                  171,
+                  171,
+                  171,
+                  171,
+                  171,
+                  171,
+                  171,
+                  171,
+                  171,
+                  171,
+                  171,
+                  171,
+                  171,
+                  171,
+                  171,
+                  171,
+                  171,
+                  171,
+                  171,
+                  171,
+                  171,
+                  171,
+                  171,
+                  171,
+                  171,
+                  171,
+                  171,
+                  171,
+                  171,
+                  171
+                ]
+              }
+            },
+            {
+              "ts": 33333333,
+              "value_ref": {
+                "uri": "f1",
+                "byte_offset": 64,
+                "byte_len": 128,
+                "content_hash": null
+              }
+            },
+            {
+              "ts": 66666666,
+              "value_ref": {
+                "uri": "f2",
+                "byte_offset": 64,
+                "byte_len": 128,
+                "content_hash": [
+                  205,
+                  205,
+                  205,
+                  205,
+                  205,
+                  205,
+                  205,
+                  205,
+                  205,
+                  205,
+                  205,
+                  205,
+                  205,
+                  205,
+                  205,
+                  205,
+                  205,
+                  205,
+                  205,
+                  205,
+                  205,
+                  205,
+                  205,
+                  205,
+                  205,
+                  205,
+                  205,
+                  205,
+                  205,
+                  205,
+                  205,
+                  205
+                ]
+              }
+            }
+          ],
+          "stats": null,
+          "dim_stats": null,
+          "observed_stats": null,
+          "observed_saturation": null,
+          "observed_non_finite": 2,
+          "observed_dim_stats": null,
+          "point_fields": null,
+          "media": {
+            "uri": "videos/ep0.mp4",
+            "declared": {
+              "codec": "h264",
+              "width": 640,
+              "height": 480,
+              "fps": 30.0
+            },
+            "status": {
+              "kind": "read"
+            },
+            "observed": {
+              "codec": "avc1",
+              "width": 640,
+              "height": 480,
+              "fps": 29.97
+            },
+            "frame_count": 2
+          },
+          "frame_id": "cam_frame"
+        },
+        {
+          "name": "action",
+          "modality": "action",
+          "declared_rate_hz": 10.0,
+          "clock_id": "rig",
+          "clock_kind": "measured",
+          "dtype": "float32",
+          "shape": [
+            7
+          ],
+          "frames": [
+            {
+              "ts": 0,
+              "value_ref": {
+                "uri": "a0",
+                "byte_offset": 64,
+                "byte_len": 128,
+                "content_hash": [
+                  17,
+                  17,
+                  17,
+                  17,
+                  17,
+                  17,
+                  17,
+                  17,
+                  17,
+                  17,
+                  17,
+                  17,
+                  17,
+                  17,
+                  17,
+                  17,
+                  17,
+                  17,
+                  17,
+                  17,
+                  17,
+                  17,
+                  17,
+                  17,
+                  17,
+                  17,
+                  17,
+                  17,
+                  17,
+                  17,
+                  17,
+                  17
+                ]
+              }
+            }
+          ],
+          "stats": {
+            "min": -1.0,
+            "max": 1.0,
+            "mean": 0.0,
+            "std": 0.5
+          },
+          "dim_stats": [
+            {
+              "dim": 0,
+              "stats": {
+                "min": -1.0,
+                "max": 1.0,
+                "mean": 0.0,
+                "std": 0.5
+              }
+            },
+            {
+              "dim": 6,
+              "stats": {
+                "min": 0.0,
+                "max": 1.0,
+                "mean": 0.25,
+                "std": 0.1
+              }
+            }
+          ],
+          "observed_stats": {
+            "min": -0.9,
+            "max": 0.95,
+            "mean": 0.01,
+            "std": 0.49
+          },
+          "observed_saturation": {
+            "sample_count": 100,
+            "at_min": 3,
+            "at_max": 12,
+            "min": -1.0,
+            "max": 1.0,
+            "dim": 6
+          },
+          "observed_non_finite": 0,
+          "observed_dim_stats": [
+            {
+              "dim": 0,
+              "stats": {
+                "min": -0.9,
+                "max": 0.95,
+                "mean": 0.01,
+                "std": 0.49
+              }
+            }
+          ],
+          "point_fields": null,
+          "media": null,
+          "frame_id": "base_frame"
+        }
+      ],
+      "task": "pick up the block",
+      "labels": [
+        {
+          "key": "quality",
+          "value": "good",
+          "ts": 1000
+        },
+        {
+          "key": "operator",
+          "value": "kim",
+          "ts": null
+        }
+      ],
+      "ego_poses": [
+        {
+          "ts": 0,
+          "pose": {
+            "translation": [
+              1.5,
+              -2.25,
+              0.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        {
+          "ts": 33333333,
+          "pose": {
+            "translation": [
+              1.5,
+              -2.25,
+              0.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        }
+      ],
+      "declared_frame_count": 3
+    },
+    {
+      "index": 1,
+      "start_ts": 100,
+      "end_ts": null,
+      "streams": [
+        {
+          "name": "observation.state",
+          "modality": "scalar-state",
+          "declared_rate_hz": null,
+          "clock_id": "aux",
+          "clock_kind": "step-index",
+          "dtype": "float64",
+          "shape": null,
+          "frames": [
+            {
+              "ts": 100,
+              "value_ref": {
+                "uri": "s0",
+                "byte_offset": 64,
+                "byte_len": 128,
+                "content_hash": null
+              }
+            }
+          ],
+          "stats": null,
+          "dim_stats": null,
+          "observed_stats": null,
+          "observed_saturation": null,
+          "observed_non_finite": null,
+          "observed_dim_stats": null,
+          "point_fields": null,
+          "media": {
+            "uri": "videos/ep1.mp4",
+            "declared": {
+              "codec": null,
+              "width": null,
+              "height": null,
+              "fps": null
+            },
+            "status": {
+              "kind": "unreadable",
+              "reason": "moov atom not found"
+            },
+            "observed": {
+              "codec": null,
+              "width": null,
+              "height": null,
+              "fps": null
+            },
+            "frame_count": null
+          },
+          "frame_id": null
+        }
+      ],
+      "task": null,
+      "labels": [],
+      "ego_poses": null,
+      "declared_frame_count": null
+    }
+  ],
+  "calibration": {
+    "transforms": [
+      {
+        "parent_frame": "base_frame",
+        "child_frame": "cam_frame",
+        "pose": {
+          "translation": [
+            1.5,
+            -2.25,
+            0.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "valid_from": 0,
+        "valid_to": 1000000
+      },
+      {
+        "parent_frame": "base_frame",
+        "child_frame": "lidar_frame",
+        "pose": {
+          "translation": [
+            1.5,
+            -2.25,
+            0.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "valid_from": null,
+        "valid_to": null
+      }
+    ],
+    "intrinsics": [
+      {
+        "stream": "observation.images.front",
+        "fx": 615.0,
+        "fy": 615.5,
+        "cx": 320.0,
+        "cy": 240.0,
+        "distortion": [
+          0.1,
+          -0.2,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "valid_from": 0,
+        "valid_to": null
+      }
+    ]
+  }
+}
