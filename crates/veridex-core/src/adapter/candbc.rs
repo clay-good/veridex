@@ -504,6 +504,7 @@ impl Adapter for CanDbcAdapter {
         Ok(Ingested {
             dataset,
             report: IngestReport {
+                unread_sources: Vec::new(),
                 format_id: "candbc",
                 source_version: Some("dbc".into()),
                 coverage: Coverage::Full,

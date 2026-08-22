@@ -497,6 +497,7 @@ impl Adapter for ZarrAdapter {
                 calibration: None,
             },
             report: IngestReport {
+                unread_sources: Vec::new(),
                 format_id: FORMAT_ID,
                 source_version: Some("2".into()),
                 coverage,

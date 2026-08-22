@@ -265,10 +265,39 @@ fn a_shard_symlinked_out_of_the_dataset_is_not_read() {
     assert!(
         ingested
             .report
-            .unmapped_fields
+            .unread_sources
             .iter()
             .any(|f| f.note.contains("outside the dataset directory")),
         "the escape must be reported: {:?}",
-        ingested.report.unmapped_fields
+        ingested.report.unread_sources
+    );
+
+    // ...and the disclosure has to reach the verdict, which is the whole reason it is recorded.
+    // `unread_sources` used to share a vector with the benign "the CDM has no shape for this" notes,
+    // and that vector is rendered by `inspect` alone. `check`, `certify`, and `diff` all consume a
+    // `Verdict`, which never saw it — so a dataset with one of its two shards pointed out of the
+    // directory produced the same `coverage: Full`, the same findings, the same score, and a
+    // certifiable verdict naming the whole dataset over the half that was read.
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let hash = veridex_core::content_hash(&ingested.dataset);
+    let verdict = engine.run_over_with_unread(
+        &ingested.dataset,
+        hash,
+        &veridex_core::RunConfig::default(),
+        veridex_core::engine::CoverageNote::Full,
+        &ingested.report.unread_sources,
+    );
+    let unread = verdict
+        .findings
+        .iter()
+        .find(|f| f.code == "COVERAGE.SOURCE_UNREAD")
+        .expect(
+            "the unread shard must be a finding: findings are the only channel that reaches \
+                 SARIF, the diff, and the certificate",
+        );
+    assert!(
+        unread.message.contains(".parquet"),
+        "the finding must name the file that was not read: {}",
+        unread.message
     );
 }

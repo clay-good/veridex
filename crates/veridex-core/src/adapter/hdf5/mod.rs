@@ -456,6 +456,7 @@ impl Adapter for Hdf5Adapter {
         Ok(Ingested {
             dataset,
             report: IngestReport {
+                unread_sources: Vec::new(),
                 format_id: FORMAT_ID,
                 source_version: Some(format!("superblock v{}", file.superblock_version())),
                 coverage,

@@ -74,7 +74,13 @@ pub fn run_check_with(
             episodes_declared: *episodes_declared,
         },
     };
-    let verdict = engine.run_over(&ingested.dataset, hash, &run_config, coverage);
+    let verdict = engine.run_over_with_unread(
+        &ingested.dataset,
+        hash,
+        &run_config,
+        coverage,
+        &ingested.report.unread_sources,
+    );
     let trust = score(&verdict, &ProvenanceCoverage::of(&ingested.dataset));
 
     Ok(CheckOutput {

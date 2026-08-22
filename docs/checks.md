@@ -254,6 +254,20 @@ the certificate listed all five statistical checks under `checks_run` with `cate
 A run that read less than the whole dataset emits **`COVERAGE.SAMPLE`** or **`COVERAGE.METADATA_ONLY`**
 (info, check id `veridex.coverage`) alongside its findings.
 
+A run that read less than the whole dataset *without being asked to* emits
+**`COVERAGE.SOURCE_UNREAD`** (**warning**, same check id): the dataset declares a file that the
+adapter declined to read — today, a data shard that resolves outside the dataset directory. The
+verdict's `coverage` field cannot express this, because a `Coverage::Full` ingest is one that read
+everything it was *willing* to read, which is not the same as everything the dataset declared. Until
+this existed, a LeRobot dataset with one of its two Parquet shards symlinked out of the directory
+produced the same `coverage: Full`, the same findings, the same score, and a certifiable verdict
+naming the whole dataset over the half that was read; `diff` reported zero change between them.
+
+It is a warning where the other two are info, and the difference is who asked. A sampled or
+metadata-only run is narrow because the operator requested it, so the disclosure is a note about the
+request. Data unread because a shard points outside the dataset was requested by nobody — the
+dataset misrepresented itself, which is a defect in the data of the kind this tool exists to report.
+
 This is deliberately a *finding* and not only the verdict's `coverage` field. The field itself is
 rendered by the terminal report, the JSON, the HTML, and the `diff` — but **not** by SARIF, so a CI
 job gating on a code-scanning upload would see a partial run as a clean scan of the whole dataset.

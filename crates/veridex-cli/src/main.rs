@@ -902,8 +902,18 @@ fn cmd_inspect(rest: &[String]) -> ExitCode {
             );
         }
     }
-    if !ingested.report.unmapped_fields.is_empty() || !ingested.report.omitted_fields.is_empty() {
+    if !ingested.report.unmapped_fields.is_empty()
+        || !ingested.report.unread_sources.is_empty()
+        || !ingested.report.omitted_fields.is_empty()
+    {
         println!("  coverage notes:");
+        // Listed first, and under its own label: "unread" means there is data here that was not
+        // looked at, which is a hole in the run. "unmapped" means the CDM has no shape for a field,
+        // which costs the reader nothing. They shared one label until a dataset with half its
+        // shards unread was found to produce a verdict identical to the intact one.
+        for u in &ingested.report.unread_sources {
+            println!("      UNREAD:   {} ({})", u.source_path, u.note);
+        }
         for u in &ingested.report.unmapped_fields {
             println!("      unmapped: {} ({})", u.source_path, u.note);
         }

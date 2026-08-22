@@ -722,6 +722,7 @@ impl Adapter for McapAdapter {
         };
 
         let report = IngestReport {
+            unread_sources: Vec::new(),
             format_id: "mcap",
             source_version: Some("0".into()),
             coverage: Coverage::Full,

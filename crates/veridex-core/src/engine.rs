@@ -410,6 +410,26 @@ impl Engine {
         config: &RunConfig,
         coverage: CoverageNote,
     ) -> Verdict {
+        self.run_over_with_unread(dataset, cdm_hash, config, coverage, &[])
+    }
+
+    /// Like [`Engine::run_over`], but also discloses source data the adapter **declined to read**.
+    ///
+    /// `unread` is [`crate::adapter::IngestReport::unread_sources`]: a shard that resolved outside
+    /// the dataset directory, a file the adapter refused to follow. `coverage` cannot express it —
+    /// a `Coverage::Full` ingest is one that read everything it was *willing* to read, which is not
+    /// the same as everything the dataset declared — so without this the two runs were
+    /// indistinguishable. A LeRobot dataset with one of its two Parquet shards symlinked out of the
+    /// directory produced the same `coverage: Full`, the same findings, the same score, and a
+    /// certifiable verdict naming the whole dataset, over the half that was read.
+    pub fn run_over_with_unread(
+        &self,
+        dataset: &Dataset,
+        cdm_hash: ContentHash,
+        config: &RunConfig,
+        coverage: CoverageNote,
+        unread: &[crate::adapter::UnmappedField],
+    ) -> Verdict {
         let mut findings: Vec<Finding> = Vec::new();
         let mut errored_checks: Vec<ErroredCheck> = Vec::new();
         let mut executed_checks: Vec<ExecutedCheck> = Vec::new();
@@ -431,6 +451,11 @@ impl Engine {
         // pass. Info severity: this is a statement about the run's scope, not a defect in the data,
         // and it must not change the status of a dataset that is genuinely sound.
         if let Some(finding) = coverage_finding(&coverage) {
+            findings.push(finding);
+        }
+        // The other half of coverage, and the one `CoverageNote` cannot carry: data the adapter
+        // refused to read. See [`unread_sources_finding`].
+        if let Some(finding) = unread_sources_finding(unread) {
             findings.push(finding);
         }
 
@@ -584,6 +609,46 @@ fn coverage_finding(coverage: &CoverageNote) -> Option<Finding> {
         )
         .with_risk(risk)
         .with_remedy(remedy),
+    )
+}
+
+/// The finding that names source data the adapter declined to read, or `None` when it read all of
+/// it.
+///
+/// Warning, not the Info the rest of the `COVERAGE.*` family carries, and the difference is who
+/// asked. A sampled or metadata-only run is narrow because the *operator* requested it, so the
+/// disclosure is a note about the request. Data unread because a shard points outside the dataset
+/// directory was requested by nobody: the dataset misrepresented itself, and that is a defect in
+/// the data of exactly the kind this tool exists to report.
+fn unread_sources_finding(unread: &[crate::adapter::UnmappedField]) -> Option<Finding> {
+    if unread.is_empty() {
+        return None;
+    }
+    let mut named: Vec<&str> = unread.iter().map(|u| u.source_path.as_str()).collect();
+    named.sort_unstable();
+    Some(
+        Finding::new(
+            COVERAGE_CHECK_ID,
+            Category::Structural,
+            Severity::Warning,
+            crate::check::Location::Dataset,
+            "COVERAGE.SOURCE_UNREAD",
+            format!(
+                "{} source file(s) the dataset declares were not read ({}), so every result below \
+                 speaks for the part that was",
+                unread.len(),
+                named.join(", ")
+            ),
+        )
+        .with_risk(
+            "The data in those files was never opened, so no check measured it. A clean result over \
+             the remainder is not a clean result over the dataset, and read as one it waves through \
+             exactly the part Veridex could not see.",
+        )
+        .with_remedy(
+            "Re-export the dataset so every file it declares lives inside the dataset directory, \
+             then re-run. `veridex inspect` names each unread file and why it was skipped.",
+        ),
     )
 }
 

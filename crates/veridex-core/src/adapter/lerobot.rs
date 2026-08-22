@@ -1186,6 +1186,7 @@ fn ingest_metadata_only(
     }
 
     let report = IngestReport {
+        unread_sources: Vec::new(),
         format_id: "lerobot",
         source_version: info.codebase_version.clone(),
         coverage: Coverage::MetadataOnly {
@@ -1791,8 +1792,13 @@ impl Adapter for LeRobotAdapter {
         // asked Veridex to read somewhere it has no business reading, and a reader deciding whether
         // to trust this dataset should be told that outright. Without this the run would just look
         // like a dataset with fewer episodes than its manifest declares.
+        //
+        // Recorded as an *unread source* rather than an unmapped field. Both were once the same
+        // vector, and that vector reaches `inspect` alone -- so this notice, which is a hole in the
+        // run's coverage, never reached the verdict that `check`, `certify`, and `diff` read.
+        let mut unread_sources = Vec::new();
         for path in &escaped_shards {
-            unmapped_fields.push(UnmappedField {
+            unread_sources.push(UnmappedField {
                 source_path: path
                     .strip_prefix(dir)
                     .unwrap_or(path)
@@ -1834,6 +1840,7 @@ impl Adapter for LeRobotAdapter {
         }
 
         let report = IngestReport {
+            unread_sources,
             format_id: "lerobot",
             source_version: info.codebase_version.clone(),
             // Coverage is what was actually ingested, not what was asked for: an episode the manifest

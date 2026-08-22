@@ -38,6 +38,7 @@ impl Adapter for FakeAdapter {
                 episodes: vec![],
             },
             report: IngestReport {
+                unread_sources: Vec::new(),
                 format_id: "fake",
                 source_version: Some("1".into()),
                 coverage: Coverage::Full,

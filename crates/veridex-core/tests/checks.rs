@@ -1835,6 +1835,10 @@ fn docs_checks_md_lists_no_unknown_finding_codes() {
     let engine_emitted: std::collections::BTreeSet<&str> = [
         "COVERAGE.SAMPLE",
         "COVERAGE.METADATA_ONLY",
+        // Source the adapter declined to read. Also a property of the ingest, and the one the
+        // `coverage` field cannot express: a `Coverage::Full` ingest read everything it was
+        // *willing* to read, which is not everything the dataset declared.
+        "COVERAGE.SOURCE_UNREAD",
         // The scope disclosure, emitted by the engine for the same reason: whether the catalog was
         // narrowed is a property of the run's configuration, which no check can read from the CDM.
         "SCOPE.NARROWED",

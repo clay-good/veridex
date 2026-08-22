@@ -329,6 +329,19 @@ pub struct IngestReport {
     pub mapped_fields: Vec<String>,
     /// Source fields that existed but the CDM cannot represent.
     pub unmapped_fields: Vec<UnmappedField>,
+    /// Source data the adapter **declined to read** — a shard resolving outside the dataset
+    /// directory, a file it refused to follow.
+    ///
+    /// Distinct from [`Self::unmapped_fields`], which the two used to share. That vector means "the
+    /// CDM has no shape for this", which is a statement about Veridex and costs the reader nothing.
+    /// This one means "there is data here and I did not look at it", which is a hole in the run's
+    /// coverage — and coverage is the one thing a verdict must never overstate. Sharing a bag with
+    /// benign notes meant it reached `inspect` alone: `check`, `certify`, and `diff` all consume a
+    /// `Verdict`, which never saw it, so a dataset with half its shards unread produced a verdict
+    /// byte-identical to the intact one.
+    ///
+    /// Anything recorded here is disclosed as a `COVERAGE.SOURCE_UNREAD` finding.
+    pub unread_sources: Vec<UnmappedField>,
     /// Fields the source did not provide at all.
     pub omitted_fields: Vec<String>,
 }

@@ -1417,6 +1417,7 @@ impl Adapter for RldsAdapter {
         }
 
         let report = IngestReport {
+            unread_sources: Vec::new(),
             format_id: FORMAT_ID,
             source_version: Some(file_format.to_string()),
             coverage: match &selected {
