@@ -1845,6 +1845,9 @@ fn docs_checks_md_lists_no_unknown_finding_codes() {
         // A check that crashed. Emitted as a SARIF rule id by the reporter, so no registered check
         // declares it either.
         "VERIDEX.CHECK_ERRORED",
+        // A profile's readiness verdict, synthesized as a SARIF result for the same reason a
+        // crashed check is: results are the only channel a code-scanning system reads.
+        "VERIDEX.PROFILE_NOT_READY",
     ]
     .into();
 

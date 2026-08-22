@@ -244,6 +244,14 @@ reports name it, SARIF reports it as **`VERIDEX.CHECK_ERRORED`**, and the certif
 crashed as a regression, because a crash costs the score less (10 points) than the error finding it
 suppressed (15) — so without that, a check panicking instead of reporting looked like a fix.
 
+A fifth comes from the same place. When a run is judged against a policy profile (`--profile`), the
+readiness verdict is reported to every output shape — and SARIF reports it as
+**`VERIDEX.PROFILE_NOT_READY`**, at `error` level when the profile applies and a criterion is
+unsatisfied, `note` otherwise. A profile that does not apply, or a criterion whose check did not run,
+is not a pass; it is an absence of judgement, and a code-scanning gate reading the SARIF alone could
+not previously tell the difference — that branch was the one output shape rendered without the
+readiness block.
+
 All three catalog checks are **informational**: a dataset is not worse for the container it was
 published in. What they change is what a passing verdict is evidence *of*. Without them, a CAN log with a wheel speed
 pinned at its rail for 70% of the recording reported `data 100` with no statistical findings — and

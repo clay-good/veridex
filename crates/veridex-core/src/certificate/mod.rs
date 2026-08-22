@@ -16,6 +16,8 @@ pub use document::{
     Certificate, CriterionResult, FindingsSummary, Issuance, ReadinessReport,
     CERTIFICATE_SCHEMA_VERSION,
 };
-pub use render::{readiness_verdict, render_readiness, render_verified, verified_json};
+pub use render::{
+    readiness_verdict, render_readiness, render_verified, status_label, verified_json,
+};
 pub use score::{score, Grade, TrustScore, RUBRIC_VERSION};
 pub use signing::{sign, verify, CertError, SignedCertificate, SigningKeypair, Verified};

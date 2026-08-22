@@ -221,10 +221,18 @@ fn full_keygen_certify_verify_flow() {
         assert_eq!(mode & 0o777, 0o600, "secret key must be 0600, got {mode:o}");
     }
 
-    // certify signs the verdict into a content-bound certificate.
+    // certify signs the verdict into a content-bound certificate. Its exit code is the *verdict's*
+    // — this fixture fails, so `20` — because `certify && publish` would otherwise be a green
+    // pipeline over a dataset that failed validation. The certificate is still written: a signed
+    // record of a failing dataset is as useful as one of a passing dataset, and withholding it
+    // would hide the result rather than report it.
     let (code, stdout, _) = run(&["certify", &dataset, "--key", key_s, "--out", cert_s]);
-    assert_eq!(code, 0, "certify must succeed");
+    assert_eq!(code, 20, "certify reports the verdict it signed");
     assert!(stdout.contains("certified"));
+    assert!(
+        stdout.contains("fail"),
+        "the issuing side must say what it signed, not only the grade: {stdout}"
+    );
     assert!(cert.exists());
 
     // verify accepts the certificate against the same dataset and the trusted public key.
@@ -278,7 +286,8 @@ fn a_readiness_certificate_is_issued_and_read_back_by_verify() {
         "--profile",
         "world-model-ready",
     ]);
-    assert_eq!(code, 0, "certify --profile must succeed");
+    // Same contract as above: the exit code is the verdict's, and this fixture fails.
+    assert_eq!(code, 20, "certify --profile reports the verdict it signed");
     assert!(stdout.contains("world-model-ready profile"), "{stdout}");
 
     // Terminal verification reports the profile verdict and every criterion.
@@ -750,7 +759,16 @@ fn a_metadata_only_check_reports_its_coverage_and_cannot_be_certified() {
     // `inspect` honors it too — the same partial CDM, rendered rather than checked.
     let (code, stdout, _) = run(&["inspect", path, "--metadata-only", "--json"]);
     assert_eq!(code, 0);
-    let cdm: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON CDM");
+    let doc: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON CDM");
+    // The caveat travels with the CDM. Without it every stream reads `0 frame(s)`, which is
+    // indistinguishable from a dataset whose episodes are genuinely empty — the exact defect
+    // `STRUCTURAL.EMPTY_STREAM` exists to report. The terminal render says so; the machine one
+    // used to dump the bare CDM and drop it.
+    assert_eq!(
+        doc["coverage"]["kind"], "metadata_only",
+        "a machine reader must be told the zeros are the request, not the data: {stdout}"
+    );
+    let cdm = &doc["dataset"];
     assert!(cdm["episodes"].as_array().is_some_and(|e| !e.is_empty()));
     assert_eq!(
         cdm["episodes"][0]["streams"][0]["frames"]

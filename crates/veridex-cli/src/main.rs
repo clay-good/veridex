@@ -624,7 +624,11 @@ fn cmd_check(rest: &[String]) -> ExitCode {
     } else if args.sarif {
         println!(
             "{}",
-            serde_json::to_string_pretty(&veridex_core::render_sarif(&out.verdict)).unwrap()
+            serde_json::to_string_pretty(&veridex_core::render_sarif_with_readiness(
+                &out.verdict,
+                readiness.as_ref()
+            ))
+            .unwrap()
         );
     } else if args.json {
         println!(
@@ -838,14 +842,11 @@ fn cmd_inspect(rest: &[String]) -> ExitCode {
     let d = &ingested.dataset;
 
     if args.json {
-        // Reuse the CDM's own serialization for a machine-readable summary.
-        match serde_json::to_string_pretty(d) {
-            Ok(s) => println!("{s}"),
-            Err(e) => {
-                eprintln!("veridex: {e}");
-                return ExitCode::from(EXIT_TOOL_ERROR);
-            }
-        }
+        // The CDM plus what the ingest covered, rendered by the shared core helper the Python
+        // binding calls -- so the two front-ends are byte-identical by construction. A bare CDM
+        // dump dropped the coverage caveat the terminal render prints, and those zeros are the
+        // request, not the data.
+        println!("{}", veridex_core::render_inspect_json(&ingested));
         return ExitCode::SUCCESS;
     }
 
@@ -1181,9 +1182,14 @@ fn cmd_certify(rest: &[String]) -> ExitCode {
         eprintln!("veridex: cannot write {out_path}: {e}");
         return ExitCode::from(EXIT_TOOL_ERROR);
     }
+    // The status belongs on this line. The certificate records it honestly and `verify` prints it,
+    // but the *issuing* side printed only the grade — so an operator saw "certified … grade D (69)"
+    // with no signal that the dataset had failed validation, and `veridex certify … && publish`
+    // published on a green exit.
     println!(
-        "certified {} — grade {} ({}), bound to {}",
+        "certified {} — {}, grade {} ({}), bound to {}",
         signed.certificate.dataset_id,
+        veridex_core::status_label(signed.certificate.status),
         signed.certificate.trust_score.grade.letter(),
         signed.certificate.trust_score.score,
         &signed.certificate.cdm_content_hash[..16]
@@ -1194,7 +1200,12 @@ fn cmd_certify(rest: &[String]) -> ExitCode {
         print!("{}", veridex_core::render_readiness(r, "  "));
     }
     println!("wrote {out_path}");
-    ExitCode::SUCCESS
+    // The certificate is written either way -- a signed record of a failing dataset is exactly as
+    // useful as one of a passing dataset, and refusing to issue it would hide the result rather
+    // than report it. But the exit code is the part CI reads, and `20` is the documented code for
+    // "fail". Returning SUCCESS over a failing verdict made `certify && publish` a green pipeline.
+    // `certify` takes no `--fail-on`, so warnings stay warnings: exit `10`, not `20`.
+    ExitCode::from(exit_code_for_status(out.verdict.status, false))
 }
 
 /// Resolve a `--key` argument to a trusted issuer public key. The argument is either a 64-char hex

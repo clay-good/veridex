@@ -99,7 +99,8 @@ fn ingest_options_from(
 /// provenance are checked without reading any stream payload. The report carries
 /// `"coverage": {"kind": "metadata_only", …}`, and it cannot be certified either.
 #[pyfunction]
-#[pyo3(signature = (path, format=None, config=None, sample_episodes=None, sample_fraction=None, sample_seed=0, metadata_only=false))]
+#[pyo3(signature = (path, format=None, config=None, sample_episodes=None, sample_fraction=None, sample_seed=0, metadata_only=false, profile=None))]
+#[allow(clippy::too_many_arguments)]
 fn check(
     path: &str,
     format: Option<&str>,
@@ -108,14 +109,44 @@ fn check(
     sample_fraction: Option<f64>,
     sample_seed: u64,
     metadata_only: bool,
+    profile: Option<&str>,
 ) -> PyResult<String> {
     let registry = veridex_core::default_registry();
-    let run_config = run_config_from(config)?;
+    let mut run_config = run_config_from(config)?;
+    // `veridex check --profile <p>` had no Python equivalent at all, even though
+    // `veridex.certify(profile=...)` did — so Python could *sign* a readiness certificate but not
+    // produce the readiness report that justifies one.
+    let profile = profile_by_name(profile)?;
+    if let Some(p) = &profile {
+        run_config.tolerances = p.apply_tolerances(run_config.tolerances);
+    }
     let opts = ingest_options_from(sample_episodes, sample_fraction, sample_seed, metadata_only)?;
     let out =
         veridex_core::run_check_with(&registry, &source_for(path), format, &opts, &run_config)
             .map_err(to_py_err)?;
-    Ok(veridex_core::render_json(&out.verdict, Some(out.trust)))
+    let readiness = profile.as_ref().map(|p| {
+        veridex_core::certificate::ReadinessReport::evaluate(p, &out.verdict, &out.ingested.dataset)
+    });
+    Ok(veridex_core::render_json_with_readiness(
+        &out.verdict,
+        Some(out.trust),
+        readiness.as_ref(),
+    ))
+}
+
+/// Resolve a profile name, refusing an unknown one rather than silently ignoring it — a result that
+/// claimed less than the caller asked for would be worse than an error.
+fn profile_by_name(name: Option<&str>) -> PyResult<Option<veridex_core::profile::Profile>> {
+    match name {
+        None => Ok(None),
+        Some(name) => Ok(Some(veridex_core::profile::by_name(name).ok_or_else(
+            || {
+                PyValueError::new_err(format!(
+                    "unknown profile `{name}` (known: world-model-ready)"
+                ))
+            },
+        )?)),
+    }
 }
 
 /// Parse optional `veridex.toml` contents into a [`RunConfig`], validating every check id it names.
@@ -203,9 +234,11 @@ fn inspect(
         None => registry.ingest(&source, &opts),
     }
     .map_err(to_py_err)?;
-    let mut dataset = ingested.dataset;
-    dataset.canonicalize_order();
-    serde_json::to_string_pretty(&dataset).map_err(to_py_err)
+    let mut ingested = ingested;
+    ingested.dataset.canonicalize_order();
+    // The shared core renderer, so this is byte-identical to `veridex inspect --json` by
+    // construction rather than by two call sites happening to agree.
+    Ok(veridex_core::render_inspect_json(&ingested))
 }
 
 /// `veridex.provenance(path, emit="croissant", format=None) -> str`
@@ -258,13 +291,14 @@ fn keygen() -> (String, String) {
 /// (e.g. `world-model-ready`), which applies the profile's tolerances and attaches the signed
 /// per-criterion `readiness` block — exactly as `veridex certify --profile` does.
 #[pyfunction]
-#[pyo3(signature = (path, secret_key_hex, timestamp=None, format=None, profile=None))]
+#[pyo3(signature = (path, secret_key_hex, timestamp=None, format=None, profile=None, config=None))]
 fn certify(
     path: &str,
     secret_key_hex: &str,
     timestamp: Option<&str>,
     format: Option<&str>,
     profile: Option<&str>,
+    config: Option<&str>,
 ) -> PyResult<String> {
     let keypair = veridex_core::SigningKeypair::from_secret_hex(secret_key_hex)
         .ok_or_else(|| PyValueError::new_err("secret_key_hex is not a valid 32-byte hex key"))?;
@@ -279,11 +313,19 @@ fn certify(
         })?),
     };
     let registry = veridex_core::default_registry();
-    // A profile applies its own tolerances to the run (e.g. tighter cross-sensor sync).
-    let run_config = veridex_core::RunConfig {
-        tolerances: profile.as_ref().map(|p| p.tolerances).unwrap_or_default(),
-        ..veridex_core::RunConfig::default()
-    };
+    // The config the caller passed, then the profile laid over it. This function used to take no
+    // `config` at all while `check`, `check_sarif`, and `check_html` all did — and it is the one
+    // that *signs*. The CLI's `certify` loads `--config`, or auto-discovers `./veridex.toml`, so
+    // with a config present the two front-ends issued different signed documents for the same
+    // dataset, key, and timestamp: a `disabled_checks` line produced `pass` from the CLI and `fail`
+    // from Python, against this module's own promise that certificates are identical across them.
+    let mut run_config = run_config_from(config)?;
+    // A profile applies its own tolerances to the run (e.g. tighter cross-sensor sync) — through
+    // `apply_tolerances`, which merges tighten-only, rather than by replacing the caller's whole
+    // tolerance set with the profile's.
+    if let Some(p) = &profile {
+        run_config.tolerances = p.apply_tolerances(run_config.tolerances);
+    }
     let out = veridex_core::run_check_with(
         &registry,
         &source_for(path),
@@ -402,18 +444,25 @@ fn diff(old_report_json: &str, new_report_json: &str) -> PyResult<String> {
 /// Validate a dataset and return the report as SARIF 2.1.0 JSON, byte-identical to
 /// `veridex check --sarif`. For CI code-scanning pipelines driven from Python.
 #[pyfunction]
-#[pyo3(signature = (path, format=None, config=None))]
-fn check_sarif(path: &str, format: Option<&str>, config: Option<&str>) -> PyResult<String> {
+#[pyo3(signature = (path, format=None, config=None, sample_episodes=None, sample_fraction=None, sample_seed=0, metadata_only=false))]
+fn check_sarif(
+    path: &str,
+    format: Option<&str>,
+    config: Option<&str>,
+    sample_episodes: Option<u64>,
+    sample_fraction: Option<f64>,
+    sample_seed: u64,
+    metadata_only: bool,
+) -> PyResult<String> {
     let registry = veridex_core::default_registry();
     let run_config = run_config_from(config)?;
-    let out = veridex_core::run_check_with(
-        &registry,
-        &source_for(path),
-        format,
-        &IngestOptions::default(),
-        &run_config,
-    )
-    .map_err(to_py_err)?;
+    // `veridex check --sarif` honors the sampling and metadata-only flags; this hardcoded
+    // `IngestOptions::default()`, so a Python CI pipeline could not produce SARIF or HTML for a
+    // partial run at all — and the coverage finding those runs emit had nowhere to appear.
+    let opts = ingest_options_from(sample_episodes, sample_fraction, sample_seed, metadata_only)?;
+    let out =
+        veridex_core::run_check_with(&registry, &source_for(path), format, &opts, &run_config)
+            .map_err(to_py_err)?;
     Ok(
         serde_json::to_string_pretty(&veridex_core::render_sarif(&out.verdict))
             .expect("sarif serializes"),
@@ -425,18 +474,22 @@ fn check_sarif(path: &str, format: Option<&str>, config: Option<&str>) -> PyResu
 /// Validate a dataset and return the self-contained HTML report, byte-identical to
 /// `veridex check --html`.
 #[pyfunction]
-#[pyo3(signature = (path, format=None, config=None))]
-fn check_html(path: &str, format: Option<&str>, config: Option<&str>) -> PyResult<String> {
+#[pyo3(signature = (path, format=None, config=None, sample_episodes=None, sample_fraction=None, sample_seed=0, metadata_only=false))]
+fn check_html(
+    path: &str,
+    format: Option<&str>,
+    config: Option<&str>,
+    sample_episodes: Option<u64>,
+    sample_fraction: Option<f64>,
+    sample_seed: u64,
+    metadata_only: bool,
+) -> PyResult<String> {
     let registry = veridex_core::default_registry();
     let run_config = run_config_from(config)?;
-    let out = veridex_core::run_check_with(
-        &registry,
-        &source_for(path),
-        format,
-        &IngestOptions::default(),
-        &run_config,
-    )
-    .map_err(to_py_err)?;
+    let opts = ingest_options_from(sample_episodes, sample_fraction, sample_seed, metadata_only)?;
+    let out =
+        veridex_core::run_check_with(&registry, &source_for(path), format, &opts, &run_config)
+            .map_err(to_py_err)?;
     Ok(veridex_core::render_html(&out.verdict, Some(out.trust)))
 }
 

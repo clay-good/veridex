@@ -18,6 +18,54 @@ use crate::engine::{CheckInfo, Status, Verdict};
 /// The versioned JSON report schema id. Stable and additive within a major version.
 pub const REPORT_SCHEMA_VERSION: &str = "veridex.report/1";
 
+/// Schema tag for `inspect --json`.
+pub const INSPECT_SCHEMA_VERSION: &str = "veridex.inspect/1";
+
+/// The machine-readable form of `veridex inspect`: the CDM, plus what the ingest actually covered.
+///
+/// Shared by both front-ends so they cannot drift — the parity the Python module promises should be
+/// by construction, not by two call sites happening to agree.
+///
+/// The CDM used to be dumped bare, and the caveat the terminal render prints was dropped. That
+/// caveat is not decoration: under `--metadata-only` every stream reports `0 frame(s)`, which is
+/// indistinguishable from a dataset whose episodes are genuinely empty — the exact defect
+/// `STRUCTURAL.EMPTY_STREAM` exists to report. The zeros are the shape of the request, not the data,
+/// and a machine reader had no way to tell. A sampled inspect had the same problem: it returned a
+/// one-episode CDM with nothing saying the rest were never opened.
+pub fn render_inspect_json(ingested: &crate::adapter::Ingested) -> String {
+    let coverage = match &ingested.report.coverage {
+        crate::adapter::Coverage::Full => json!({ "kind": "full" }),
+        crate::adapter::Coverage::Sample {
+            sample,
+            episodes_ingested,
+        } => json!({
+            "kind": "sample",
+            "request": sample.describe(),
+            "episodes_ingested": episodes_ingested,
+        }),
+        crate::adapter::Coverage::MetadataOnly { episodes_declared } => json!({
+            "kind": "metadata_only",
+            "episodes_declared": episodes_declared,
+        }),
+    };
+    let doc = json!({
+        "schema": INSPECT_SCHEMA_VERSION,
+        "format": ingested.report.format_id,
+        "cdm_content_hash": crate::content_hash(&ingested.dataset).to_hex(),
+        "coverage": coverage,
+        // Source the adapter declined to read. Same reasoning as `coverage`: a reader comparing two
+        // inspections must be able to see that one of them skipped a shard.
+        "unread_sources": ingested
+            .report
+            .unread_sources
+            .iter()
+            .map(|u| json!({ "source_path": u.source_path, "note": u.note }))
+            .collect::<Vec<_>>(),
+        "dataset": ingested.dataset,
+    });
+    serde_json::to_string_pretty(&doc).expect("inspect summary serializes")
+}
+
 /// The machine-readable JSON report envelope.
 #[derive(Debug, Clone, Serialize)]
 pub struct JsonReport<'a> {
@@ -597,6 +645,9 @@ pub fn render_html_with_readiness(
 /// The SARIF rule id reported for a check that failed to run.
 const CHECK_ERRORED_RULE: &str = "VERIDEX.CHECK_ERRORED";
 
+/// The SARIF rule id under which a profile's readiness verdict is reported.
+const PROFILE_RULE: &str = "VERIDEX.PROFILE_NOT_READY";
+
 /// SARIF severity level for a finding.
 fn sarif_level(sev: Severity) -> &'static str {
     match sev {
@@ -610,6 +661,23 @@ fn sarif_level(sev: Severity) -> &'static str {
 /// (e.g. GitHub code scanning). Rules are the distinct finding codes; results carry the message and
 /// a logical location (dataset / episode / stream), since Veridex findings are not file positions.
 pub fn render_sarif(verdict: &Verdict) -> Value {
+    render_sarif_with_readiness(verdict, None)
+}
+
+/// Like [`render_sarif`], but also reports a profile's readiness verdict.
+///
+/// Readiness is rendered for *every* output shape by design — a profile is what the run is judged
+/// against, and a CI consumer is precisely who reads SARIF. The `--sarif` branch was the one that
+/// called the readiness-free renderer, so terminal, JSON, and HTML all reported the profile verdict
+/// and a code-scanning gate on the SARIF alone could not see that the profile did not apply, that a
+/// criterion abstained, or that the rig was not ready.
+///
+/// Synthesized as a result the way a crashed check is, for the same reason: findings and results
+/// are the only channel a code-scanning system reads.
+pub fn render_sarif_with_readiness(
+    verdict: &Verdict,
+    readiness: Option<&crate::certificate::ReadinessReport>,
+) -> Value {
     // Distinct rule ids (finding codes), sorted for determinism.
     let mut rule_ids: Vec<&str> = verdict.findings.iter().map(|f| f.code.as_str()).collect();
     rule_ids.sort_unstable();
@@ -645,6 +713,64 @@ pub fn render_sarif(verdict: &Verdict) -> Value {
         }));
     }
 
+    if readiness.is_some() {
+        rules.push(json!({
+            "id": PROFILE_RULE,
+            "name": PROFILE_RULE,
+            "shortDescription": { "text": "A policy profile's readiness verdict" },
+            "fullDescription": { "text": "The dataset was judged against a named policy profile. A profile that does not apply, or a criterion whose check did not run, is not a pass — it is an absence of judgement." },
+            "helpUri": "https://github.com/clay-good/veridex/blob/main/docs/profiles.md"
+        }));
+    }
+
+    // The readiness verdict, as one result. `ready` is reported at `error` level and anything else
+    // at `note`, so a code-scanning gate can act on it.
+    let readiness_results = readiness.into_iter().map(|r| {
+        let (level, text) = match (r.applicable, r.ready) {
+            (false, _) => (
+                "note",
+                format!(
+                    "`{}` profile: N/A (profile does not apply to this dataset, or the run was \
+                     partial or narrowed) — this is not a pass",
+                    r.profile
+                ),
+            ),
+            (true, true) => (
+                "note",
+                format!(
+                    "`{}` profile: READY ({} criteria)",
+                    r.profile,
+                    r.criteria.len()
+                ),
+            ),
+            (true, false) => {
+                let failed: Vec<&str> = r
+                    .criteria
+                    .iter()
+                    .filter(|c| !c.passed)
+                    .map(|c| c.check_id.as_str())
+                    .collect();
+                (
+                    "error",
+                    format!(
+                        "`{}` profile: NOT READY — {} of {} criteria unsatisfied ({})",
+                        r.profile,
+                        failed.len(),
+                        r.criteria.len(),
+                        failed.join(", ")
+                    ),
+                )
+            }
+        };
+        json!({
+            "ruleId": PROFILE_RULE,
+            "level": level,
+            "message": { "text": text },
+            "locations": [{ "logicalLocations": [{ "name": "dataset" }] }],
+            "properties": { "profile": r.profile, "applicable": r.applicable, "ready": r.ready }
+        })
+    });
+
     // One result per errored check, so a CI job gating on SARIF cannot read a crashed check as a
     // clean pass.
     let errored_results = verdict.errored_checks.iter().map(|e| {
@@ -677,6 +803,7 @@ pub fn render_sarif(verdict: &Verdict) -> Value {
             })
         })
         .chain(errored_results)
+        .chain(readiness_results)
         .collect();
 
     json!({

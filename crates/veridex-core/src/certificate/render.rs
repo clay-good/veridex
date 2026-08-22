@@ -55,7 +55,9 @@ pub fn render_readiness(report: &ReadinessReport, indent: &str) -> String {
 }
 
 /// The status label used in certificate rendering.
-fn status_label(status: Status) -> &'static str {
+/// The certificate's own wording for a verdict status, shared so the issuing side, the verifying
+/// side, and the terminal all say the same word about the same result.
+pub fn status_label(status: Status) -> &'static str {
     match status {
         Status::Pass => "pass",
         Status::PassWithWarnings => "pass (warnings)",

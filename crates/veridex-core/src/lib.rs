@@ -37,9 +37,9 @@ pub use adapter::{
 };
 pub use canonical::{content_hash, ContentHash, CANONICAL_VERSION};
 pub use certificate::{
-    readiness_verdict, render_readiness, render_verified, score, sign, verified_json, verify,
-    CertError, Certificate, Grade, Issuance, ProvenanceCoverage, SignedCertificate, SigningKeypair,
-    TrustScore, Verified, RUBRIC_VERSION,
+    readiness_verdict, render_readiness, render_verified, score, sign, status_label, verified_json,
+    verify, CertError, Certificate, Grade, Issuance, ProvenanceCoverage, SignedCertificate,
+    SigningKeypair, TrustScore, Verified, RUBRIC_VERSION,
 };
 pub use check::{Category, Check, Finding, Location, Scope, Severity};
 pub use config::{CheckConfig, ConfigError, FailOn};
@@ -50,8 +50,9 @@ pub use engine::{
 };
 pub use pipeline::{run_check, run_check_with, CheckOutput};
 pub use report::{
-    render_catalog_json, render_html, render_html_with_readiness, render_json,
-    render_json_with_readiness, render_sarif, render_terminal, REPORT_SCHEMA_VERSION,
+    render_catalog_json, render_html, render_html_with_readiness, render_inspect_json, render_json,
+    render_json_with_readiness, render_sarif, render_sarif_with_readiness, render_terminal,
+    INSPECT_SCHEMA_VERSION, REPORT_SCHEMA_VERSION,
 };
 
 /// The version of `veridex-core`, from Cargo.
