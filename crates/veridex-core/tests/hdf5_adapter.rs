@@ -1339,3 +1339,39 @@ fn a_file_supplied_size_that_overflows_is_refused_not_a_panic() {
         }
     }
 }
+
+/// Assembling rows must not cost `O(rows x chunks)`.
+///
+/// `chunked_row` found the chunks covering a row by filtering the *entire* chunk index, once per
+/// row. For a dataset chunked one row at a time — `chunks=(1, ...)`, the ordinary shape a per-step
+/// robot logger writes — the chunk count scales with the row count, so that is quadratic. The two
+/// bounds meant to contain it, the frame budget on rows and `MAX_CHUNKS_PER_DATASET` on chunks,
+/// bound them independently: nothing bounded the product, and nothing bounds CPU time at all.
+///
+/// Measured on the release binary before the fix: a 6.3 MB file (100,000 rows, 100,000 chunks) cost
+/// **70 seconds** of CPU, and 12.5 MB did not finish in eight minutes. After: 0.12 s and 0.22 s —
+/// linear, because the index is a `BTreeMap` keyed by origin and the covering origins are a
+/// contiguous range in it.
+///
+/// This fixture is 16,000 rows and 16,000 chunks, sized so the quadratic version blows the ceiling
+/// by a wide margin in a debug test build while staying small enough to be a unit test. A 4,000-row
+/// fixture did *not* discriminate — the old code read it in 2.4 s, comfortably inside any ceiling
+/// that would not flake — which is the trap a timing test of this kind sets for itself.
+#[test]
+fn a_dataset_chunked_one_row_at_a_time_reads_in_linear_time() {
+    let started = std::time::Instant::now();
+    let ingested = ingest("many_chunks.h5", IngestOptions::default());
+    let elapsed = started.elapsed();
+
+    let stream = ingested.dataset.episodes[0]
+        .streams
+        .iter()
+        .find(|s| s.name == "actions")
+        .expect("the actions stream");
+    assert_eq!(stream.frames.len(), 16_000, "every row is read");
+
+    assert!(
+        elapsed < std::time::Duration::from_secs(20),
+        "reading 16,000 one-row chunks took {elapsed:?} — the per-row rescan is back"
+    );
+}

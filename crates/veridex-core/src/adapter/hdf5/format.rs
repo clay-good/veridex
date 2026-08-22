@@ -1650,16 +1650,29 @@ impl<'a> RowReader<'a> {
         let mut row = self.filled_row();
         // Every chunk holding part of this row: its first-dimension extent covers `index`, and the
         // other dimensions are visited in full.
-        let origins: Vec<Vec<u64>> = self
-            .chunks
-            .keys()
-            .filter(|origin| {
-                origin.len() == rank + 1
-                    && origin[0] <= index
-                    && index < origin[0].saturating_add(chunk_dims[0])
-            })
-            .cloned()
-            .collect();
+        //
+        // Found by *range*, not by rescanning the index. `chunks` is a `BTreeMap` keyed by chunk
+        // origin, so it is already ordered by first dimension, and the origins that can cover row
+        // `index` are exactly those with `index - (c0 - 1) <= origin[0] <= index`. Filtering the
+        // whole index once per row made this `O(rows x chunks)`, and the two bounds that were
+        // supposed to contain it -- the frame budget on `rows` and `MAX_CHUNKS_PER_DATASET` on
+        // `chunks` -- bound them independently, so nothing bounded the product and nothing bounded
+        // CPU time at all. For the ordinary per-step logger shape (`chunks=(1, ...)`, one chunk per
+        // row) that is quadratic: a 385 KB file cost 3.3 s of CPU and a 770 KB one did not finish
+        // in two minutes, while the default frame ceiling permits vastly larger.
+        let c0 = chunk_dims[0];
+        let origins: Vec<Vec<u64>> = if c0 == 0 {
+            // A zero-extent chunk covers nothing; the filter this replaces agreed.
+            Vec::new()
+        } else {
+            let lo = index.saturating_sub(c0 - 1);
+            self.chunks
+                .range(vec![lo]..vec![index.saturating_add(1)])
+                .map(|(origin, _)| origin)
+                .filter(|origin| origin.len() == rank + 1)
+                .cloned()
+                .collect()
+        };
         // No chunk covering the row is not a corrupt index: it is what a partly-written dataset
         // looks like, and it is the single most common shape a robot logger produces — pre-allocate
         // N steps, write fewer. h5py reads those rows as the fill value. Refusing the whole file and
