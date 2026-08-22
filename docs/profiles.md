@@ -34,6 +34,16 @@ Three rules keep that honest:
   exactly as you configured them. So `--profile world-model-ready` cannot relax a limit you set
   deliberately — asking for `clock_skew_ms = 5.0` keeps 5 ms rather than being loosened to the
   profile's 20 ms, and the readiness criterion still holds, since 5 ms is stricter than it requires.
+- **A narrowed run is never ready.** The profile names only one threshold, so the rest of the
+  criteria's limits come from your `veridex.toml`. Loosening one of *those* would otherwise buy a
+  READY verdict whose criterion line still quoted the default: one `sequence_drop_fraction = 0.9`
+  line took a rig dropping a seventh of its LiDAR frames to a signed `ready: true` beside "no rig
+  sensor dropping more than 5% of its frames". So readiness is **not applicable** over any run that
+  loosened a threshold, deselected a check, or overrode a severity — the same runs `--min-score`
+  refuses. A profile that *tightens* is not a narrowing and is unaffected.
+- **A profile run can carry `--min-score`.** Tightening measures the data harder than the catalog
+  asks, so it does not narrow the run and does not block the gate:
+  `check --profile world-model-ready --min-score 80` is a valid CI gate.
 
 | Criterion | Check | Passes when |
 |---|---|---|

@@ -162,8 +162,24 @@ impl ReadinessReport {
         // this is not reachable through a certificate — but readiness is evaluated before that
         // refusal and is printed by other callers, and the guard belongs where the judgement is
         // made rather than at one of the places it is used.
-        let applicable =
-            verdict.coverage == crate::engine::CoverageNote::Full && (profile.applies_to)(dataset);
+        //
+        // A *narrowed* run cannot judge readiness either, and for a sharper reason. The profile
+        // names only `clock_skew_ns`, so every other tolerance its criteria depend on passes
+        // through from `veridex.toml` however loose — and each criterion's `threshold` is static
+        // prose, unrelated to the tolerance actually used. One line, `sequence_drop_fraction = 0.9`
+        // (accepted: `validate` only bounds it to `[0.0, 1.0)`), turned a rig dropping 14% of its
+        // LiDAR frames from `ready: false` into a signed `ready: true` whose criterion read "no rig
+        // sensor dropping more than 5% of its frames". The signature covered a sentence that was
+        // false about the run it described.
+        //
+        // `scope_narrowed` is the right test now that it is directional: it means a threshold was
+        // *loosened*, a check deselected, or a severity overridden — never that a profile tightened
+        // something — so this blocks the attack without blocking the profile runs readiness exists
+        // for. Readiness is the strongest claim the document makes, and it already yields to
+        // `status: fail` for exactly this reason.
+        let applicable = verdict.coverage == crate::engine::CoverageNote::Full
+            && !verdict.scope_narrowed()
+            && (profile.applies_to)(dataset);
         let criteria: Vec<CriterionResult> = profile
             .criteria
             .iter()

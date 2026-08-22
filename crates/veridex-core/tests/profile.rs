@@ -631,3 +631,69 @@ fn a_profile_still_tightens_over_the_defaults() {
         veridex_core::Tolerances::default().ego_max_speed_mps
     );
 }
+
+/// Loosening a threshold the profile does not name must not buy a READY verdict.
+///
+/// `world-model-ready` names exactly one tolerance, `clock_skew_ns`. Every other threshold its
+/// criteria depend on passes through from `veridex.toml` however loose, and each criterion's
+/// `threshold` is static prose unrelated to the tolerance actually used. So one config line took a
+/// rig that drops a seventh of its LiDAR frames from `ready: false` to a signed `ready: true` whose
+/// criterion still read "no rig sensor dropping more than 5% of its frames" — a signature over a
+/// sentence that was false about the run it described.
+///
+/// The guard is `scope_narrowed`, which is meaningful precisely because it is directional: it means
+/// a threshold was *loosened*, a check deselected, or a severity overridden — never that the profile
+/// tightened something. So it blocks this without blocking the profile runs readiness exists for,
+/// which `a_healthy_rig_is_world_model_ready` holds down.
+#[test]
+fn a_loosened_threshold_cannot_buy_a_ready_verdict() {
+    let p = profile::world_model_ready();
+    let mut d = healthy_rig();
+
+    // Drop ~14% of the LiDAR's frames: enough to fail `autonomy.sequence-complete` at its default.
+    for ep in &mut d.episodes {
+        for s in &mut ep.streams {
+            if s.modality == Modality::PointCloud {
+                let keep = s.frames.len() * 6 / 7;
+                s.frames.truncate(keep.max(1));
+            }
+        }
+    }
+    d.canonicalize_order();
+    let hash = content_hash(&d);
+
+    // The honest run: the criterion fires, so the rig is not ready.
+    let strict = RunConfig {
+        tolerances: p.apply_tolerances(veridex_core::Tolerances::default()),
+        ..RunConfig::default()
+    };
+    let engine_strict = veridex_core::checks::default_engine_with(&strict.tolerances).unwrap();
+    let v_strict = engine_strict.run(&d, hash, &strict);
+    assert!(
+        !ReadinessReport::evaluate(&p, &v_strict, &d).ready,
+        "a rig dropping a seventh of its LiDAR frames is not world-model ready"
+    );
+
+    // Now the attack: loosen the threshold the profile never names, and apply the profile on top.
+    let loose_base = veridex_core::Tolerances {
+        sequence_drop_fraction: 0.9,
+        ..veridex_core::Tolerances::default()
+    };
+    let loose = RunConfig {
+        tolerances: p.apply_tolerances(loose_base),
+        ..RunConfig::default()
+    };
+    let engine_loose = veridex_core::checks::default_engine_with(&loose.tolerances).unwrap();
+    let v_loose = engine_loose.run(&d, hash, &loose);
+
+    let report = ReadinessReport::evaluate(&p, &v_loose, &d);
+    assert!(
+        !report.ready,
+        "a run that loosened its way past the criterion is not ready: {:?}",
+        report.criteria
+    );
+    assert!(
+        !report.applicable,
+        "readiness cannot be judged at all over a narrowed run: {report:?}"
+    );
+}
