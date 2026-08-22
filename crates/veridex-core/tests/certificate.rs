@@ -619,3 +619,85 @@ fn a_reencoded_certificate_still_verifies_because_content_is_what_is_signed() {
         "altering a signed field must break the signature"
     );
 }
+
+/// A crashed check must cost the trust score, not only the verdict status.
+///
+/// The status is guarded (`a_run_in_which_every_check_crashed_is_not_a_pass`) and SARIF is guarded,
+/// but the *score* — the number `--min-score` gates on, and the number printed on the certificate —
+/// was not. A mutation audit zeroed the errored-check penalty and all 692 tests passed, so a check
+/// that panicked was free.
+///
+/// It must not be free, and by more than pedantry: a crash suppresses whatever the check would have
+/// found. If crashing cost nothing while the finding it hid costs 15, a check that panics instead
+/// of reporting would *raise* the score — the shape `diff --fail-on-regression` already treats as a
+/// regression for exactly this reason.
+#[test]
+fn a_crashed_check_costs_the_trust_score() {
+    use veridex_core::check::{Category, Check, Finding, Scope, Severity};
+
+    struct Quiet(bool);
+    impl Check for Quiet {
+        fn id(&self) -> &'static str {
+            "test.quiet"
+        }
+        fn title(&self) -> &'static str {
+            "finds nothing, or dies trying"
+        }
+        fn category(&self) -> Category {
+            Category::Video
+        }
+        fn default_severity(&self) -> Severity {
+            Severity::Error
+        }
+        fn scope(&self) -> Scope {
+            Scope::Dataset
+        }
+        fn version(&self) -> &'static str {
+            "1"
+        }
+        fn finding_codes(&self) -> &'static [&'static str] {
+            &["TEST.QUIET"]
+        }
+        fn run(&self, _dataset: &Dataset) -> Vec<Finding> {
+            if self.0 {
+                panic!("boom");
+            }
+            Vec::new()
+        }
+    }
+
+    let d = dataset(vec![stream("s", "c", &[0, 1_000_000])]);
+    let hash = content_hash(&d);
+    let coverage = ProvenanceCoverage::of(&d);
+    let run = |crashes: bool| {
+        veridex_core::engine::Engine::builder()
+            .register(Box::new(Quiet(crashes)))
+            .unwrap()
+            .build()
+            .run(&d, hash, &RunConfig::default())
+    };
+
+    let clean = run(false);
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let crashed = run(true);
+    std::panic::set_hook(prev);
+
+    assert!(
+        !crashed.errored_checks.is_empty(),
+        "the fixture must actually crash a check"
+    );
+    assert_eq!(
+        crashed.findings.len(),
+        clean.findings.len(),
+        "both runs produce no findings, so only the crash itself differs"
+    );
+    let (a, b) = (
+        score(&crashed, &coverage).data_score,
+        score(&clean, &coverage).data_score,
+    );
+    assert!(
+        a < b,
+        "a check that measured nothing must not be free: {a} vs {b}"
+    );
+}

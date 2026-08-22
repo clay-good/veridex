@@ -3528,3 +3528,85 @@ fn extreme_outlier_scans_the_sources_stored_per_dimension_stats() {
         f[0].message
     );
 }
+
+/// The same invariant where the primary sort key *ties*, which is the case that was untested.
+///
+/// `canonicalize_order`'s own comment says episodes and streams tie-break on full content "because
+/// neither `index` nor `name` is guaranteed unique — duplicates of both are faults Veridex reports,
+/// so the ordering cannot assume they are absent". Every existing order-independence test used
+/// distinct indices and distinct names, so the primary key alone decided and the tie-break never
+/// ran. A mutation audit deleted both tie-breaks and all 692 tests passed.
+///
+/// That matters because the encoder sorts independently, with the tie-breaks intact. So the hash
+/// stays order-independent while the *checks* — which read the canonicalized sequence — see a
+/// different order for the same bytes. Two datasets share a content hash and produce different
+/// verdicts, which is precisely what would let a certificate attest a hash that also matches a
+/// dataset that fails.
+#[test]
+fn canonical_order_is_total_when_the_primary_key_ties() {
+    let build = |episodes: Vec<Episode>| {
+        let mut d = dataset(episodes);
+        d.canonicalize_order();
+        d
+    };
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let run = |d: &Dataset| {
+        let v = engine.run(d, veridex_core::content_hash(d), &Default::default());
+        (
+            v.result_content_hash.clone(),
+            veridex_core::render_json(&v, None),
+        )
+    };
+
+    // Two episodes sharing an index, and within one of them two streams sharing a name — both
+    // faults Veridex reports, so both must still order totally.
+    let dup_a = episode(
+        0,
+        vec![
+            shaped("action", Some("float32"), Some(vec![6]), &[0]),
+            shaped("action", Some("int32"), Some(vec![9]), &[0, 1]),
+        ],
+    );
+    let dup_b = episode(
+        0,
+        vec![shaped("action", Some("float64"), Some(vec![7]), &[0])],
+    );
+
+    let forward = build(vec![dup_a.clone(), dup_b.clone()]);
+    let reversed = build(vec![dup_b, dup_a]);
+
+    assert_eq!(
+        veridex_core::content_hash(&forward),
+        veridex_core::content_hash(&reversed),
+        "the encoder's order must not depend on input order when indices tie"
+    );
+    let (hash_f, json_f) = run(&forward);
+    let (hash_r, json_r) = run(&reversed);
+    assert_eq!(
+        hash_f, hash_r,
+        "the verdict hash must not depend on input order when indices tie"
+    );
+    assert_eq!(
+        json_f, json_r,
+        "the whole report must not depend on input order when indices tie"
+    );
+}
+
+/// `STATISTICAL.NEGATIVE_STD` is declared by the check and was produced by no test.
+///
+/// The only fixture with a negative standard deviation also set a NaN, and the non-finite rule
+/// returns first — so the rule could be deleted outright and the suite stayed green. A standard
+/// deviation is a root of a sum of squares and cannot be negative; one that is means the stored
+/// statistics were written by something that was not measuring the data.
+#[test]
+fn a_negative_standard_deviation_is_reported_on_its_own() {
+    // Every number finite, so nothing earlier in the rule order can claim this first.
+    let d = dataset(vec![episode(
+        0,
+        vec![stream_with_stats("action", stats(-1.0, 1.0, 0.0, -3.0))],
+    )]);
+
+    let f = statistical::RangeSanity.run(&d);
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "STATISTICAL.NEGATIVE_STD");
+}

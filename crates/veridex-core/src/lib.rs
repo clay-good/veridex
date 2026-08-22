@@ -327,11 +327,16 @@ mod tests {
     }
 
     #[test]
-    fn every_stream_stats_field_binds_into_the_hash() {
+    fn every_stream_field_binds_into_the_hash() {
         // Guards against the hand-written canonical encoder drifting from the `Stream` struct: each
-        // content-bearing stats field, when populated, must change the content hash. `dim_stats` in
+        // content-bearing field, when changed, must change the content hash. `dim_stats` in
         // particular is stored source content (parallel to `stats`); omitting it once let two
         // datasets with different corrupted per-joint stats collide.
+        //
+        // The table covered the fields the encoder had *most recently* gained and none of the ones
+        // it started with, so deleting `clock_kind` from the encoder — the change `CANONICAL_VERSION`
+        // was last bumped *for* — passed the whole suite. A `Stream` is destructured below so a new
+        // field is a compile error here rather than a silent omission.
         let stats = StreamStats {
             min: -1.0,
             max: 1.0,
@@ -349,7 +354,38 @@ mod tests {
         };
         let base = content_hash(&sample_dataset());
         type Mutator = fn(&mut Stream);
-        let mutate: [(&str, Mutator); 18] = [
+        let mutate: [(&str, Mutator); 27] = [
+            // The fields the encoder has carried from the beginning. Absent from this table until a
+            // mutation audit deleted `clock_kind` from `encode` and watched 692 tests pass: a
+            // stream's frames are a synchronized rig under one value and an unmeasurable timeline
+            // under the other, so two datasets that grade differently hashed identically.
+            ("name", |s| s.name = "observation.state.v2".into()),
+            ("modality", |s| s.modality = Modality::Audio),
+            ("declared_rate_hz", |s| s.declared_rate_hz = Some(19.5)),
+            ("clock_id", |s| s.clock_id = "gps".into()),
+            ("clock_kind", |s| s.clock_kind = ClockKind::StepIndex),
+            ("dtype", |s| s.dtype = Some("int16".into())),
+            ("shape", |s| s.shape = Some(vec![3, 4, 5])),
+            ("stats", |s| {
+                s.stats = Some(StreamStats {
+                    min: -7.0,
+                    max: 7.0,
+                    mean: 0.7,
+                    std: 1.7,
+                })
+            }),
+            ("point_fields", |s| {
+                s.point_fields = Some(vec![
+                    crate::cdm::PointField {
+                        name: "x".into(),
+                        dtype: Some("float32".into()),
+                    },
+                    crate::cdm::PointField {
+                        name: "intensity".into(),
+                        dtype: Some("uint16".into()),
+                    },
+                ])
+            }),
             // The sensor's coordinate frame: `autonomy.sensor-frame-resolution` fails a stream on it,
             // so a rig whose LiDAR names a frame the TF tree relates and one whose LiDAR does not
             // must not hash alike.
@@ -458,6 +494,34 @@ mod tests {
                 s.media = Some(m);
             }),
         ];
+
+        // A compile-time census. Adding a field to `Stream` breaks this destructuring, which is the
+        // point: the author is then forced to decide whether it belongs in the hash and to add a
+        // row above. `frames` is the one field with no row — it is covered exhaustively by the
+        // frame/`ValueRef` tests, and mutating it here would only restate them.
+        {
+            let s = sample_dataset().episodes[0].streams[0].clone();
+            let Stream {
+                name: _,
+                modality: _,
+                declared_rate_hz: _,
+                clock_id: _,
+                clock_kind: _,
+                dtype: _,
+                shape: _,
+                frames: _,
+                stats: _,
+                dim_stats: _,
+                observed_stats: _,
+                observed_saturation: _,
+                observed_non_finite: _,
+                observed_dim_stats: _,
+                point_fields: _,
+                media: _,
+                frame_id: _,
+            } = s;
+        }
+
         for (field, apply) in mutate {
             let mut d = sample_dataset();
             // Seed baseline stats so the mutation is a change, not a None→Some appearance alone.

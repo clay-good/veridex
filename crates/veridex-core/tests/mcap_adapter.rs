@@ -1296,6 +1296,28 @@ fn an_absurdly_long_frame_name_is_declined_rather_than_retained() {
     );
 }
 
+/// Run `f` on a worker thread, failing the test if it does not finish within `secs`.
+///
+/// The two budget tests below timed themselves with an `Instant::elapsed()` assertion placed
+/// *after* the call they were timing. That assertion can only fire once the call returns — so on
+/// the exact failure it names, a refusal that never comes because the process is busy growing, it
+/// never runs at all. The test does not go red; it hangs. Removing the budget charge made one of
+/// them run 26 minutes of CPU without returning. In CI that is a job that burns its whole time
+/// budget and reports a timeout, which is not a failure anyone can read back to a cause.
+fn within<T: Send + 'static>(secs: u64, what: &str, f: impl FnOnce() -> T + Send + 'static) -> T {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    match rx.recv_timeout(std::time::Duration::from_secs(secs)) {
+        Ok(v) => v,
+        // The worker is left running; the test process is failing and about to exit anyway.
+        Err(_) => panic!(
+            "{what} did not finish within {secs}s — the bound this test exists to prove is gone"
+        ),
+    }
+}
+
 #[test]
 fn a_corrupt_chunk_stream_is_refused_rather_than_unpacked_forever() {
     // The chunk *record header* declares an uncompressed size, and the decompression budget charges
@@ -1336,14 +1358,11 @@ fn a_corrupt_chunk_stream_is_refused_rather_than_unpacked_forever() {
     let bad = dir.path().join("bad.mcap");
     std::fs::write(&bad, &patched).unwrap();
 
-    let started = std::time::Instant::now();
-    let err = default_registry()
-        .ingest(&Source::Local(bad), &IngestOptions::default())
-        .expect_err("a chunk whose stream outruns its own declaration must be refused");
-    assert!(
-        started.elapsed() < std::time::Duration::from_secs(30),
-        "the refusal must be prompt, not the result of exhausting memory"
-    );
+    let err = within(30, "the refusal", move || {
+        default_registry()
+            .ingest(&Source::Local(bad), &IngestOptions::default())
+            .expect_err("a chunk whose stream outruns its own declaration must be refused")
+    });
     match err {
         IngestError::Parse { message, .. } => assert!(
             message.contains("chunk") && (message.contains("corrupt") || message.contains("more")),
@@ -1422,14 +1441,11 @@ fn a_chunk_behind_a_malformed_record_is_still_charged_to_the_budget() {
     let hidden = dir.path().join("hidden.mcap");
     std::fs::write(&hidden, &bytes).unwrap();
 
-    let started = std::time::Instant::now();
-    let err = default_registry()
-        .ingest(&Source::Local(hidden), &IngestOptions::default())
-        .expect_err("a malformed leading record must not buy the chunks behind it a free pass");
-    assert!(
-        started.elapsed() < std::time::Duration::from_secs(30),
-        "the refusal must come from the bound, not from decompressing to the file's own number"
-    );
+    let err = within(30, "the refusal", move || {
+        default_registry()
+            .ingest(&Source::Local(hidden), &IngestOptions::default())
+            .expect_err("a malformed leading record must not buy the chunks behind it a free pass")
+    });
     assert!(
         matches!(err, IngestError::DecompressionBudgetExceeded { .. }),
         "the chunk behind the malformed record must still be charged, got {err:?}"

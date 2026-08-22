@@ -524,3 +524,135 @@ fn findings_are_sorted_deterministically_regardless_of_registration_order() {
     sorted.sort();
     assert_eq!(ids, sorted, "findings must be in a stable total order");
 }
+
+/// A check emitting several findings at one location, in a deliberately unstable order.
+///
+/// The findings differ only in the fields *after* `check_id` and `location` in the sort key, which
+/// is exactly the region no test exercised.
+struct MultiFinding {
+    /// Emit in reverse, so the two instances disagree about execution order.
+    reversed: bool,
+}
+
+impl Check for MultiFinding {
+    fn id(&self) -> &'static str {
+        "structural.multi"
+    }
+    fn title(&self) -> &'static str {
+        "emit several findings at one location"
+    }
+    fn category(&self) -> Category {
+        Category::Structural
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Warning
+    }
+    fn scope(&self) -> Scope {
+        Scope::Episode
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["MULTI.A", "MULTI.B"]
+    }
+    fn run(&self, _dataset: &Dataset) -> Vec<Finding> {
+        let at = || Location::Episode { episode: 0 };
+        let mut out = vec![
+            // Same check, same location, same code — differing only in `message`.
+            Finding::new(
+                self.id(),
+                Category::Structural,
+                Severity::Warning,
+                at(),
+                "MULTI.A",
+                "alpha",
+            )
+            .with_risk("r")
+            .with_remedy("m"),
+            Finding::new(
+                self.id(),
+                Category::Structural,
+                Severity::Warning,
+                at(),
+                "MULTI.A",
+                "beta",
+            )
+            .with_risk("r")
+            .with_remedy("m"),
+            // Same check, same location, same message — differing only in `code`.
+            Finding::new(
+                self.id(),
+                Category::Structural,
+                Severity::Warning,
+                at(),
+                "MULTI.B",
+                "alpha",
+            )
+            .with_risk("r")
+            .with_remedy("m"),
+            // Same again, differing only in `severity`.
+            Finding::new(
+                self.id(),
+                Category::Structural,
+                Severity::Info,
+                at(),
+                "MULTI.B",
+                "alpha",
+            )
+            .with_risk("r")
+            .with_remedy("m"),
+            // ...and only in `risk`.
+            Finding::new(
+                self.id(),
+                Category::Structural,
+                Severity::Info,
+                at(),
+                "MULTI.B",
+                "alpha",
+            )
+            .with_risk("different risk")
+            .with_remedy("m"),
+        ];
+        if self.reversed {
+            out.reverse();
+        }
+        out
+    }
+}
+
+/// Findings from *one* check must order totally, not just findings from different checks.
+///
+/// `findings_are_sorted_deterministically_regardless_of_registration_order` registers two checks
+/// with different ids and asserts only that the `check_id`s come out sorted, so every key after
+/// `check_id` was untested. A mutation audit cut the sort down to `check_id` alone — twice, once
+/// dropping `location`/`code`/`message` and once dropping `severity`/`category`/`risk`/`remedy` —
+/// and all 692 tests passed both times.
+///
+/// `result_content_hash` is computed over this sequence. A sort that ties on non-identical content
+/// falls through to `Vec` order, which is execution order — so the same findings emitted in either
+/// order would hash differently, and the determinism the verdict hash rests on would be gone.
+#[test]
+fn findings_from_one_check_order_totally() {
+    let d = ds(1);
+    let run = |reversed: bool| {
+        let engine = Engine::builder()
+            .register(Box::new(MultiFinding { reversed }))
+            .unwrap()
+            .build();
+        engine.run(&d, hash(&d), &RunConfig::default())
+    };
+
+    let forward = run(false);
+    let backward = run(true);
+
+    assert_eq!(forward.findings.len(), 5, "all five findings are distinct");
+    assert_eq!(
+        forward.findings, backward.findings,
+        "findings from one check must not depend on the order the check emitted them"
+    );
+    assert_eq!(
+        forward.result_content_hash, backward.result_content_hash,
+        "the verdict hash is computed over this sequence, so it must not depend on emission order"
+    );
+}

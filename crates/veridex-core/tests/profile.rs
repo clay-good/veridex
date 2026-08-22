@@ -697,3 +697,44 @@ fn a_loosened_threshold_cannot_buy_a_ready_verdict() {
         "readiness cannot be judged at all over a narrowed run: {report:?}"
     );
 }
+
+/// Every autonomy check in the catalog must be a criterion of `world-model-ready`.
+///
+/// The profile's own doc says so: "Every autonomy check that can fail a rig belongs here. A check
+/// missing from this list is a check the profile does not judge, so a defect that moves from a
+/// listed check to an unlisted one becomes invisible to `ready` while still failing the verdict."
+///
+/// The existing tests assert `criteria.len() == 5`, which catches *removing* a criterion and not
+/// adding a sixth autonomy check without one — the count still reads 5 and the profile silently
+/// stops judging the new check. Asserting against the live catalog closes that direction.
+#[test]
+fn every_autonomy_check_is_a_world_model_ready_criterion() {
+    let p = profile::world_model_ready();
+    let engine = veridex_core::checks::default_engine().expect("unique check ids");
+
+    let judged: std::collections::BTreeSet<&str> = p.criteria.iter().map(|(id, _)| *id).collect();
+    let autonomy: Vec<&str> = engine
+        .catalog()
+        .iter()
+        .filter(|c| c.category == veridex_core::Category::Autonomy)
+        .map(|c| c.id)
+        .collect();
+
+    assert!(!autonomy.is_empty(), "the catalog has autonomy checks");
+    for id in &autonomy {
+        assert!(
+            judged.contains(id),
+            "`{id}` can fail a rig but is not a `world-model-ready` criterion, so a rig failing it \
+             would still certify as ready"
+        );
+    }
+    // ...and the reverse, so a criterion cannot name a check that no longer exists.
+    let catalog: std::collections::BTreeSet<&str> = engine.catalog().iter().map(|c| c.id).collect();
+    for (id, _) in p.criteria {
+        assert!(
+            catalog.contains(id),
+            "the profile judges `{id}`, which is not in the catalog — it can never run, and a \
+             criterion that never runs blocks `ready` forever"
+        );
+    }
+}
