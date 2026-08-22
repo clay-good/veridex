@@ -366,35 +366,35 @@ impl Check for MediaConformance {
                                     if delta < 0 { "shorter" } else { "longer" }
                                 ),
                             );
-                            continue;
-                        }
-                        findings.push(
-                            Finding::new(
-                                self.id(),
-                                Category::Video,
-                                Severity::Error,
-                                Location::Stream {
-                                    episode: ep.index,
-                                    stream: s.name.clone(),
-                                },
-                                "VIDEO.FRAME_COUNT_MISMATCH",
-                                format!(
-                                    "episode {} stream `{}`: `{}` holds {container_frames} frames \
-                                     but the episode records {data_frames}",
-                                    ep.index, s.name, media.uri
+                        } else {
+                            findings.push(
+                                Finding::new(
+                                    self.id(),
+                                    Category::Video,
+                                    Severity::Error,
+                                    Location::Stream {
+                                        episode: ep.index,
+                                        stream: s.name.clone(),
+                                    },
+                                    "VIDEO.FRAME_COUNT_MISMATCH",
+                                    format!(
+                                        "episode {} stream `{}`: `{}` holds {container_frames} frames \
+                                         but the episode records {data_frames}",
+                                        ep.index, s.name, media.uri
+                                    ),
+                                )
+                                .with_risk(
+                                    "A loader pairs video frame i with data row i. When the two lengths \
+                                     differ, every pair past the shorter one is wrong or absent — the \
+                                     policy learns actions against images from a different moment.",
+                                )
+                                .with_remedy(
+                                    "Re-export the episode so the video and the data table are written \
+                                     from the same run; a video shorter than the table is usually an \
+                                     encode that stopped early.",
                                 ),
-                            )
-                            .with_risk(
-                                "A loader pairs video frame i with data row i. When the two lengths \
-                                 differ, every pair past the shorter one is wrong or absent — the \
-                                 policy learns actions against images from a different moment.",
-                            )
-                            .with_remedy(
-                                "Re-export the episode so the video and the data table are written \
-                                 from the same run; a video shorter than the table is usually an \
-                                 encode that stopped early.",
-                            ),
-                        );
+                            );
+                        }
                     }
                 }
 

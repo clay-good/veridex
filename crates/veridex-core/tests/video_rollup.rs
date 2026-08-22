@@ -198,3 +198,60 @@ fn a_clean_measured_episode_defeats_the_roll_up() {
         assert!(!f.message.contains("every episode"), "{}", f.message);
     }
 }
+
+/// The roll-up must not switch off the rest of the check.
+///
+/// Once a stream's frame-count delta was recognized as systematic, the roll-up was recorded and the
+/// loop `continue`d — which skipped the remainder of the per-stream body, where the resolution,
+/// codec, and fps comparisons live. So a stream whose videos were *both* systematically off by a
+/// constant and re-encoded at the wrong resolution reported only the length defect, and the
+/// re-encode was never looked for.
+///
+/// That is the realistic pairing rather than a contrived one: an off-by-one converter and a
+/// re-encode come out of the same bad export pass.
+#[test]
+fn a_systematic_length_delta_does_not_hide_a_re_encode() {
+    let mut media_a = read("ep0.mp4", 99);
+    let mut media_b = read("ep1.mp4", 99);
+    let declared = MediaParams {
+        codec: Some("h264".into()),
+        width: Some(640),
+        height: Some(480),
+        fps: Some(30.0),
+    };
+    // What the container actually holds: a different codec, size, and rate.
+    let observed = MediaParams {
+        codec: Some("av01".into()),
+        width: Some(320),
+        height: Some(240),
+        fps: Some(60.0),
+    };
+    media_a.declared = declared.clone();
+    media_a.observed = observed.clone();
+    media_b.declared = declared;
+    media_b.observed = observed;
+
+    // Both episodes are exactly one frame short: a systematic delta.
+    let d = dataset(vec![
+        episode(0, video_stream(100, media_a)),
+        episode(1, video_stream(100, media_b)),
+    ]);
+
+    let f = run(&d);
+    let codes: Vec<&str> = f.iter().map(|f| f.code.as_str()).collect();
+    assert_eq!(
+        length_findings(&f).len(),
+        1,
+        "the length defect is still charged once for the export: {codes:?}"
+    );
+    for expected in [
+        "VIDEO.CODEC_MISMATCH",
+        "VIDEO.RESOLUTION_MISMATCH",
+        "VIDEO.FPS_MISMATCH",
+    ] {
+        assert!(
+            codes.contains(&expected),
+            "a systematic length delta must not suppress {expected}: {codes:?}"
+        );
+    }
+}

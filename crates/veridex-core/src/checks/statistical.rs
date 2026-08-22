@@ -277,10 +277,22 @@ impl Check for RangeSanity {
                     .flatten()
                     .map(|d| (Some(d.dim), d.stats));
                 let scalar = stream.stats.map(|s| (None, s));
+                // The *most severe* across the scan, not the first. `evaluate` orders its rules
+                // from "the numbers are corrupt" to "the numbers are fine but degenerate" because
+                // later rules restate the same defect -- but that reasoning holds *within* one
+                // dimension's stats, not across dimensions, and element 0 is scanned first. So a
+                // constant element 0 -- a locked DoF or a gripper at rest, the ordinary case in
+                // robot data -- emitted its Warning and the per-dimension stats were never examined
+                // at all. An inverted range or a NaN on any other axis went unreported, and because
+                // max severity drives the run's status, a corrupt dataset came back
+                // pass-with-warnings instead of fail.
                 let Some(finding) = scalar
                     .into_iter()
                     .chain(per_dim)
-                    .find_map(|(dim, stats)| self.evaluate(stream, ep.index, &stats, dim))
+                    .filter_map(|(dim, stats)| self.evaluate(stream, ep.index, &stats, dim))
+                    // `reduce`, not `max_by_key`: ties keep the *first*, so the lowest dimension is
+                    // the one named, and the scan order stays the reported order.
+                    .reduce(|a, b| if b.severity > a.severity { b } else { a })
                 else {
                     continue;
                 };
@@ -733,7 +745,19 @@ impl Check for ExtremeOutlier {
                 // For a multi-DoF feature, scan every dimension and keep the most extreme outlier, so
                 // a spike in a non-first joint is caught and named. Otherwise fall back to the stream's
                 // scalar summary (Veridex's recompute if present, else the source's stats).
-                let hit = if let Some(dims) = &stream.observed_dim_stats {
+                // Veridex's recompute if present, else the source's stored arrays -- the same
+                // precedence the scalar path below uses. Reading only `observed_dim_stats` meant
+                // that under `--metadata-only`, where nothing is recomputed and only the source's
+                // `dim_stats` exist, the scan fell through to element 0 and every non-first joint
+                // went unexamined -- while the docs promise this check "scans every dimension and
+                // names the outlying one" and list metadata-only as covering every stored-statistics
+                // check. `range-sanity` consults `dim_stats` already; the two disagreed on what
+                // they read.
+                let dims = stream
+                    .observed_dim_stats
+                    .as_ref()
+                    .or(stream.dim_stats.as_ref());
+                let hit = if let Some(dims) = dims {
                     dims.iter()
                         .filter_map(|d| {
                             self.check_stats(&d.stats).map(|(z, v, e)| (z, v, e, d.dim))

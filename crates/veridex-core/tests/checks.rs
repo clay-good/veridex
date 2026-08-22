@@ -3448,3 +3448,76 @@ fn a_stream_that_really_dropped_frames_is_still_caught() {
         "a real 20% drop rate must still be reported: {f:?}"
     );
 }
+
+/// A constant element 0 must not hide a corrupt range on a higher dimension.
+///
+/// `evaluate` orders its rules "the numbers are corrupt" first and "the numbers are fine but
+/// degenerate" last, because later rules restate the same defect. That reasoning holds within one
+/// dimension's stats — but the scan ran element 0 first and kept the *first* firing rule across the
+/// whole chain. A locked DoF or a gripper at rest is constant, which is the ordinary case in robot
+/// data, so its `DEGENERATE` warning fired and the per-dimension arrays were never examined.
+///
+/// Because max severity drives the run's status, the dataset came back pass-with-warnings instead
+/// of fail, and the score deducted a warning rather than an error.
+#[test]
+fn a_constant_first_dimension_does_not_suppress_an_inverted_range_above_it() {
+    let mut s = stream_with_stats("action", stats(0.0, 0.0, 0.0, 0.0));
+    s.dim_stats = Some(vec![
+        veridex_core::cdm::DimStats {
+            dim: 0,
+            stats: stats(0.0, 0.0, 0.0, 0.0),
+        },
+        veridex_core::cdm::DimStats {
+            dim: 3,
+            stats: stats(5.0, -5.0, 0.0, 1.0),
+        },
+    ]);
+    let d = dataset(vec![episode(0, vec![s])]);
+
+    let f = statistical::RangeSanity.run(&d);
+    assert_eq!(f.len(), 1);
+    assert_eq!(
+        f[0].code, "STATISTICAL.RANGE_INVERTED",
+        "the inverted range on dim 3 outranks a constant element 0, got {}: {}",
+        f[0].code, f[0].message
+    );
+    assert_eq!(f[0].severity, Severity::Error);
+}
+
+/// `extreme-outlier` promises to scan every dimension. It read only `observed_dim_stats` — Veridex's
+/// own recompute — and fell back to element 0 when that was absent.
+///
+/// Under `--metadata-only` nothing is recomputed: only the source's stored `dim_stats` exist. So the
+/// check the docs list as covering "every stored-statistics check" quietly examined one joint of
+/// seven. `range-sanity` consults `dim_stats` already, so the two stored-stats checks disagreed on
+/// what they read.
+#[test]
+fn extreme_outlier_scans_the_sources_stored_per_dimension_stats() {
+    let mut s = stream_with_stats("action", stats(-1.0, 1.0, 0.0, 0.5));
+    s.dim_stats = Some(vec![
+        veridex_core::cdm::DimStats {
+            dim: 0,
+            stats: stats(-1.0, 1.0, 0.0, 0.5),
+        },
+        // A ~1000σ spike in the gripper, present only in the stored arrays.
+        veridex_core::cdm::DimStats {
+            dim: 6,
+            stats: stats(0.0, 1000.0, 0.1, 1.0),
+        },
+    ]);
+    let d = dataset(vec![episode(0, vec![s])]);
+
+    let f = statistical::ExtremeOutlier::default().run(&d);
+    assert_eq!(
+        f.len(),
+        1,
+        "the spike lives in the stored per-dimension stats, which a metadata-only run is all that \
+         exists: {f:?}"
+    );
+    assert_eq!(f[0].code, "STATISTICAL.OUTLIER");
+    assert!(
+        f[0].message.contains("dimension 6"),
+        "the finding must name the outlying dimension: {}",
+        f[0].message
+    );
+}
