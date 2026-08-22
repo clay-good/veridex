@@ -1481,3 +1481,106 @@ fn a_record_declaring_a_merely_huge_length_does_not_abort_the_run() {
         )
         .is_err());
 }
+
+/// A record length prefix hidden *inside* a compressed chunk aborted the whole process.
+///
+/// The outer framing walk refuses a record claiming more bytes than the file holds, because the
+/// `mcap` reader sizes a buffer from that number before checking the bytes exist. The same number
+/// inside a chunk was read from decompressed bytes and bounded by nothing: of the crate's reader
+/// constructors, only `LinearReader`'s sets `with_record_length_limit`, and the chain Veridex reads
+/// messages through — `MessageStream` → `RawMessageStream` → `ChunkFlattener` — is the one that
+/// omits it. So the length reached `RwBuf::reserve_exact` unchecked and the allocator aborted.
+///
+/// This file is 182 bytes and its chunk header is *honest* — 76 declared uncompressed bytes, which
+/// passes the decompression budget and the declared-size agreement check. Only the framing inside
+/// is a lie. The abort happened with `--max-frames 1 --max-decompression-ratio 1` set, before any
+/// budget was consulted: the process died with no finding, no exit code a CI gate could read, and
+/// nothing said about the file that did it.
+#[test]
+fn a_record_length_inside_a_chunk_cannot_abort_the_run() {
+    fn put_u64(v: &mut Vec<u8>, x: u64) {
+        v.extend_from_slice(&x.to_le_bytes());
+    }
+    fn put_u32(v: &mut Vec<u8>, x: u32) {
+        v.extend_from_slice(&x.to_le_bytes());
+    }
+    fn rec(out: &mut Vec<u8>, op: u8, data: &[u8]) {
+        out.push(op);
+        put_u64(out, data.len() as u64);
+        out.extend_from_slice(data);
+    }
+
+    // The chunk's contents: a Schema and Channel that parse, then a Message whose length prefix
+    // claims ~117 TB. The bytes that follow it are 16 bytes of nothing — the reader allocates from
+    // the prefix long before it discovers that.
+    let mut inner = Vec::new();
+    {
+        let mut d = Vec::new();
+        d.extend_from_slice(&1u16.to_le_bytes());
+        put_u32(&mut d, 1);
+        d.push(b's');
+        put_u32(&mut d, 0);
+        put_u32(&mut d, 0);
+        rec(&mut inner, 0x03, &d);
+    }
+    {
+        let mut d = Vec::new();
+        d.extend_from_slice(&1u16.to_le_bytes());
+        d.extend_from_slice(&1u16.to_le_bytes());
+        put_u32(&mut d, 2);
+        d.extend_from_slice(b"/t");
+        put_u32(&mut d, 0);
+        put_u32(&mut d, 0);
+        rec(&mut inner, 0x04, &d);
+    }
+    inner.push(0x05);
+    put_u64(&mut inner, 117_647_744_172_064);
+    inner.extend_from_slice(&[0u8; 16]);
+
+    let uncompressed_size = inner.len() as u64;
+    let compressed = zstd::stream::encode_all(&inner[..], 3).unwrap();
+
+    let mut chunk = Vec::new();
+    put_u64(&mut chunk, 0);
+    put_u64(&mut chunk, 0);
+    put_u64(&mut chunk, uncompressed_size); // honest, and small enough to pass every budget
+    put_u32(&mut chunk, 0);
+    put_u32(&mut chunk, 4);
+    chunk.extend_from_slice(b"zstd");
+    put_u64(&mut chunk, compressed.len() as u64);
+    chunk.extend_from_slice(&compressed);
+
+    let mut f = b"\x89MCAP0\r\n".to_vec();
+    {
+        let mut d = Vec::new();
+        put_u32(&mut d, 0);
+        put_u32(&mut d, 0);
+        rec(&mut f, 0x01, &d);
+    }
+    rec(&mut f, 0x06, &chunk);
+    {
+        let mut d = Vec::new();
+        put_u32(&mut d, 0);
+        rec(&mut f, 0x0f, &d);
+    }
+    {
+        let mut d = Vec::new();
+        put_u64(&mut d, 0);
+        put_u64(&mut d, 0);
+        put_u32(&mut d, 0);
+        rec(&mut f, 0x02, &d);
+    }
+    f.extend_from_slice(b"\x89MCAP0\r\n");
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("bomb.mcap");
+    fs::write(&path, &f).unwrap();
+
+    let err = McapAdapter
+        .ingest(&Source::Local(path), &IngestOptions::default())
+        .expect_err("a record longer than the chunk that holds it is corrupt framing");
+    assert!(
+        err.to_string().contains("framing is corrupt"),
+        "the refusal must name the corrupt framing rather than abort: {err}"
+    );
+}

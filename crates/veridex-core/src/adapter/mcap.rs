@@ -236,7 +236,9 @@ fn validate_one_chunk(
     );
 
     let produced = match name {
-        b"" => return Ok(()), // Stored uncompressed; its length is bounded by the file itself.
+        // Stored uncompressed; its length is bounded by the file itself, and the outer walk in
+        // `validate_chunks` already framed every record against the file size.
+        b"" => return validate_inner_records(records, declared, refuse),
         b"zstd" => drain(
             zstd::stream::Decoder::new(records)
                 .map_err(|e| refuse(format!("a chunk's zstd stream could not be opened: {e}")))?,
@@ -251,22 +253,81 @@ fn validate_one_chunk(
         }
     };
     match produced {
-        Ok(n) if n > declared => Err(refuse(format!(
+        Ok((n, _)) if n > declared => Err(refuse(format!(
             "a chunk declares {declared} uncompressed bytes but its compressed stream produces \
              more; the chunk is corrupt and decompressing it would not terminate at the declared \
              size"
         ))),
-        Ok(_) => Ok(()),
+        Ok((_, unpacked)) => validate_inner_records(&unpacked, declared, refuse),
         Err(e) => Err(refuse(format!(
             "a chunk's compressed stream is corrupt and could not be decompressed: {e}"
         ))),
     }
 }
 
+/// Frame-check the records *inside* a chunk, the way [`validate_chunks`] frames the records outside
+/// one.
+///
+/// The outer walk refuses a record whose declared payload exceeds the file, because the `mcap`
+/// reader sizes a buffer from that number before checking the bytes exist. Inside a chunk the same
+/// number is read from decompressed bytes, and there the reader has no bound at all: of the crate's
+/// four reader constructors only `LinearReader`'s sets `with_record_length_limit`, and the one
+/// Veridex reads messages through -- `MessageStream` -> `RawMessageStream` -> `ChunkFlattener` --
+/// is the one that omits it. So a `u64` length prefix hidden in a chunk's compressed body reaches
+/// `RwBuf::reserve_exact` unchecked, and the allocator aborts the whole process: a 182-byte file
+/// declaring a 117 TB record killed the run with SIGABRT, before any budget was consulted, and with
+/// `--max-frames 1 --max-decompression-ratio 1` set. An abort is worse than a refusal in the way
+/// that matters most here -- the process dies with no finding, no exit code a CI gate can read, and
+/// nothing said about the file that did it.
+///
+/// The chunk's own declared uncompressed size is the bound: a record inside it cannot be longer
+/// than the chunk that contains it. A merely truncated record -- plausible length, runs off the end
+/// -- is still left to the reader, which describes it better than this walk can.
+fn validate_inner_records(
+    records: &[u8],
+    declared: u64,
+    refuse: &dyn Fn(String) -> IngestError,
+) -> Result<(), IngestError> {
+    let mut at = 0usize;
+    while at + 9 <= records.len() {
+        let opcode = records[at];
+        let len = u64::from_le_bytes(records[at + 1..at + 9].try_into().expect("9 bytes read"));
+        if len > declared {
+            return Err(refuse(format!(
+                "a record inside a chunk declares a {len}-byte payload, but the chunk holds only \
+                 {declared} uncompressed bytes; its framing is corrupt"
+            )));
+        }
+        let _ = opcode;
+        // Checked, not `+`: a length just under `declared` on a huge chunk still overflows the
+        // addition rather than failing the bound above.
+        let Some(end) = at
+            .checked_add(9)
+            .and_then(|start| start.checked_add(len as usize))
+        else {
+            return Ok(());
+        };
+        if end > records.len() {
+            return Ok(()); // Truncated: the reader reports it, and stops here.
+        }
+        at = end;
+    }
+    Ok(())
+}
+
 /// Read at most `cap` bytes out of `reader`, returning how many arrived. The bound is the point: a
 /// corrupt stream is stopped by it rather than by exhausting memory.
-fn drain(reader: impl std::io::Read, cap: u64) -> std::io::Result<u64> {
-    std::io::copy(&mut std::io::Read::take(reader, cap), &mut std::io::sink())
+/// Unpack at most `cap` bytes, returning how many were produced and the bytes themselves.
+///
+/// The bytes are kept rather than sunk because [`validate_inner_records`] has to read the record
+/// framing they carry. `cap` is the chunk's declared size (plus one, to catch a stream that
+/// overruns its own declaration) intersected with what the decompression budget has left, and the
+/// budget was charged before a byte was unpacked -- so this materializes no more than the caller
+/// already accounted for, and no more than the reader itself is about to.
+fn drain(reader: impl std::io::Read, cap: u64) -> std::io::Result<(u64, Vec<u8>)> {
+    let mut out = Vec::new();
+    let n = std::io::copy(&mut std::io::Read::take(reader, cap), &mut out)?;
+    Ok((n, out))
 }
 
 /// Read the header, Metadata records, and Attachment summaries in a single linear pass. Absent or
