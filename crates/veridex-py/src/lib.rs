@@ -279,7 +279,10 @@ fn catalog() -> PyResult<String> {
 #[pyfunction]
 fn keygen() -> (String, String) {
     let kp = veridex_core::SigningKeypair::generate();
-    (kp.secret_hex(), kp.public_hex())
+    // Python strings are immutable and immortal until collected, so this copy cannot be scrubbed
+    // once it crosses the boundary -- the caller owns that risk, as they do for any secret they
+    // ask a library to hand back. The Rust-side copy is still scrubbed on drop.
+    (kp.secret_hex().to_string(), kp.public_hex())
 }
 
 /// `veridex.certify(path, secret_key_hex, timestamp=None, format=None, profile=None) -> str`

@@ -69,6 +69,9 @@ pub enum CertError {
     },
 }
 
+use zeroize::Zeroize;
+pub use zeroize::Zeroizing;
+
 /// The only signature algorithm v0.1 issues and verifies.
 const ALGORITHM: &str = "ed25519";
 
@@ -79,14 +82,21 @@ pub struct SigningKeypair {
 
 impl SigningKeypair {
     /// Construct from a 32-byte seed (deterministic; useful for tests and reproducible issuance).
-    pub fn from_seed(seed: [u8; 32]) -> Self {
-        SigningKeypair {
-            key: SigningKey::from_bytes(&seed),
-        }
+    ///
+    /// The seed is taken by value and scrubbed before returning, so this function leaves no copy of
+    /// it behind. `ed25519-dalek` is built with its `zeroize` feature, so the `SigningKey` itself is
+    /// scrubbed on drop; it was the wrappers around it that kept plaintext copies alive.
+    pub fn from_seed(mut seed: [u8; 32]) -> Self {
+        let key = SigningKey::from_bytes(&seed);
+        seed.zeroize();
+        SigningKeypair { key }
     }
 
     /// Construct from a 64-character hex secret seed, trimming surrounding whitespace. Returns
     /// `None` if the input is not exactly 32 hex-encoded bytes.
+    ///
+    /// The decoded seed is scrubbed by [`Self::from_seed`]. The caller's `hex` is theirs to scrub —
+    /// [`crate::certificate::Zeroizing`] is re-exported for that.
     pub fn from_secret_hex(hex: &str) -> Option<Self> {
         let seed: [u8; 32] = from_hex(hex.trim())?;
         Some(SigningKeypair::from_seed(seed))
@@ -96,12 +106,21 @@ impl SigningKeypair {
     pub fn generate() -> Self {
         let mut seed = [0u8; 32];
         getrandom::getrandom(&mut seed).expect("OS randomness");
-        SigningKeypair::from_seed(seed)
+        let key = SigningKeypair::from_seed(seed);
+        seed.zeroize();
+        key
     }
 
     /// The 32-byte secret seed, hex-encoded. Store this secret; never commit it.
-    pub fn secret_hex(&self) -> String {
-        to_hex(self.key.to_bytes().as_slice())
+    ///
+    /// Returned in a [`Zeroizing`] wrapper so the plaintext is scrubbed when the caller drops it
+    /// rather than left in a freed heap allocation. It derefs to `str`, so it is still usable
+    /// anywhere the bare `String` was — what it prevents is a copy outliving its use.
+    pub fn secret_hex(&self) -> Zeroizing<String> {
+        let mut bytes = self.key.to_bytes();
+        let hex = to_hex(bytes.as_slice());
+        bytes.zeroize();
+        Zeroizing::new(hex)
     }
 
     /// The public verifying key, hex-encoded. This is the issuer key id.

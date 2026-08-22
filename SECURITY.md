@@ -68,6 +68,14 @@ document states what Veridex guarantees, what it does **not**, and how signing k
   cannot read it.
 - Rotating an issuer key invalidates trust in future certificates signed by the old key; already
   issued certificates remain verifiable against the public key they embed.
+- **In memory**, secret key material is scrubbed rather than left in freed allocations: the
+  `SigningKey` itself through `ed25519-dalek`'s `zeroize` feature, and the wrappers around it — the
+  decoded seed, the hex encoding, and the key file's contents as read by the CLI — through
+  `Zeroizing`. This is defense in depth against a core dump or a swapped page, not a defense against
+  an attacker who can already read the process's memory as it runs. One copy is deliberately outside
+  it: `veridex.keygen()` returns the secret to Python, where strings are immutable and cannot be
+  scrubbed. A caller who needs that guarantee should use the CLI, which writes the key to a `0600`
+  file and scrubs its own copies.
 
 ## Reporting a vulnerability
 

@@ -1050,7 +1050,9 @@ fn cmd_certify(rest: &[String]) -> ExitCode {
         eprintln!("veridex: certify requires --key <secret-key-file>");
         return ExitCode::from(EXIT_TOOL_ERROR);
     };
-    let secret = match std::fs::read_to_string(key_path) {
+    // Wrapped on read: the key file's plaintext lives to the end of this function otherwise, and
+    // is then dropped un-scrubbed into a freed heap allocation.
+    let secret = match std::fs::read_to_string(key_path).map(veridex_core::Zeroizing::new) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("veridex: cannot read key {key_path}: {e}");
@@ -1415,7 +1417,10 @@ fn cmd_keygen(rest: &[String]) -> ExitCode {
         }
     }
     let keypair = SigningKeypair::generate();
-    if let Err(e) = write_secret_key(path, &format!("{}\n", keypair.secret_hex())) {
+    // The line handed to the writer is itself scrubbed on drop, so the plaintext key does not
+    // outlive the write in a freed heap allocation.
+    let secret_line = veridex_core::Zeroizing::new(format!("{}\n", *keypair.secret_hex()));
+    if let Err(e) = write_secret_key(path, &secret_line) {
         eprintln!("veridex: cannot write {path}: {e}");
         return ExitCode::from(EXIT_TOOL_ERROR);
     }

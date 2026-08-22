@@ -39,7 +39,7 @@ pub use canonical::{content_hash, ContentHash, CANONICAL_VERSION};
 pub use certificate::{
     readiness_verdict, render_readiness, render_verified, score, sign, status_label, verified_json,
     verify, CertError, Certificate, Grade, Issuance, ProvenanceCoverage, SignedCertificate,
-    SigningKeypair, TrustScore, Verified, RUBRIC_VERSION,
+    SigningKeypair, TrustScore, Verified, Zeroizing, RUBRIC_VERSION,
 };
 pub use check::{Category, Check, Finding, Location, Scope, Severity};
 pub use config::{CheckConfig, ConfigError, FailOn};
