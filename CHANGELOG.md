@@ -94,6 +94,29 @@ reproduced before it was fixed.*
 
 ### Added
 
+- **A corruption sweep over every binary fixture, in both ingest paths.** Veridex reads files it did
+  not write, and the failure that matters is not a wrong verdict — a corrupt file has no right
+  verdict — but a **panic**, which is not a finding, not an exit code, and not something a CI gate
+  can read. Four of them have been found and fixed here already (an MCAP length prefix inside a
+  chunk, two HDF5 sizes that overflowed the arithmetic reading them, a vacuous `all()` over an empty
+  collection), each one a real file away from a real crash.
+
+  Every committed HDF5 fixture, the MCAP fixture, and every member file of a Zarr *store* is now
+  truncated at four points, flipped at six deterministic offsets, size-maxed at four, and — the part
+  that turned out to matter — damaged at its header and its trailer, where format detection, the
+  magic number, the superblock and MCAP's footer live. Random offsets in a 100 KB file almost never
+  land there.
+
+  Each mutation is ingested twice: once with detection, once with the format **forced**. That
+  distinction is the difference between a sweep that can fail and one that cannot. With a destroyed
+  header, detection declines the file and no parser ever runs — correct behavior, and it means the
+  parsing code is never reached. Forcing the format is what a user does when detection is ambiguous,
+  and it is where all four historical crashes lived: a panic planted in the HDF5 superblock scan is
+  invisible to the detected path and caught immediately by the forced one.
+
+  It found nothing today. That is the expected outcome for a regression guard, and the reason to have
+  it is that the next one is caught by CI rather than by whoever is holding the file.
+
 - **The crates can actually be published.** None of the three artifacts has shipped yet, and two of
   them could not have: `veridex-cli` and `veridex-py` depended on `veridex-core` by *path only*, and
   `cargo publish` refuses a dependency without a version requirement — so a release attempt would
