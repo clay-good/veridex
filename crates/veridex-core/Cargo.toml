@@ -5,7 +5,16 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+categories.workspace = true
 rust-version.workspace = true
+readme = "README.md"
+# Test fixtures are 2.3 MiB of binary Zarr/HDF5 stores that only this repo's tests read. They stay in
+# git and out of the published crate, which downstream users compile rather than test.
+exclude = ["tests/fixtures/**"]
+
 
 [dependencies]
 sha2.workspace = true

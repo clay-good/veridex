@@ -5,14 +5,20 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+categories.workspace = true
 rust-version.workspace = true
+readme = "README.md"
+
 
 [[bin]]
 name = "veridex"
 path = "src/main.rs"
 
 [dependencies]
-veridex-core = { path = "../veridex-core" }
+veridex-core = { path = "../veridex-core", version = "0.1.0" }
 serde_json.workspace = true
 
 # Only to put SIGPIPE back to its default disposition, which Rust's runtime turns off. Already in

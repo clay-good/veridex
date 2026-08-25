@@ -82,6 +82,24 @@ reproduced before it was fixed.*
 
 ### Added
 
+- **The crates can actually be published.** None of the three artifacts has shipped yet, and two of
+  them could not have: `veridex-cli` and `veridex-py` depended on `veridex-core` by *path only*, and
+  `cargo publish` refuses a dependency without a version requirement — so a release attempt would
+  have failed at the second step, after the first was already irreversible on crates.io. Both now
+  carry `version = "0.1.0"` beside the path.
+
+  The manifests also carried nothing crates.io shows a visitor: no keywords, no categories, no
+  README, no homepage — and a `repository` pointing at `github.com/veridex/veridex`, which is not
+  this repository. Each crate now has a README of its own (the workspace README lives above the
+  package directory and cannot be packaged), and `veridex-core` excludes 2.3 MiB of binary test
+  fixtures that only this repo's tests read, taking the package from 346 files to 86.
+
+  The core README's usage example is compiled as a doctest on the crate's own docs, so the first
+  code a visitor reads cannot drift from the API. [docs/releasing.md](docs/releasing.md) records the
+  publish order, the checklist, and the one confusing part: `cargo publish --dry-run -p veridex-cli`
+  *cannot* succeed until `veridex-core` is on crates.io, because Cargo resolves the version
+  requirement it just substituted for the path.
+
 - **Rollups: by category, by episode, by stream — and in the machine-readable report at all.** The
   reporting spec asks for findings summarized at dataset, episode and stream scope, by severity *and
   category*. What existed was a worst-episodes ranking in the terminal and HTML reports. Two slices

@@ -420,6 +420,13 @@ caller already owns their own loop.
 Build the extension locally with [maturin](https://github.com/PyO3/maturin):
 `maturin develop -m crates/veridex-py/Cargo.toml`.
 
+## Releasing
+
+`veridex-core` and `veridex-cli` publish to crates.io and `veridex-data` to PyPI, in that order —
+each depends on the one before it. The checklist, the ordering constraint, and what the published
+crate excludes are in [docs/releasing.md](docs/releasing.md). Nothing has shipped yet; v0.1.0 is the
+first.
+
 ## Build & test
 
 ```sh

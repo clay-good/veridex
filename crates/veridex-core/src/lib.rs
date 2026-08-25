@@ -1,6 +1,6 @@
 //! # veridex-core
 //!
-//! The Rust core of [Veridex](https://github.com/veridex/veridex) — the open, cross-format trust
+//! The Rust core of [Veridex](https://github.com/clay-good/veridex) — the open, cross-format trust
 //! layer for physical-AI data.
 //!
 //! This crate owns the [Canonical Dataset Model](cdm) (the neutrality substrate every adapter
@@ -9,6 +9,21 @@
 //!
 //! Determinism is a first-class contract: the same dataset bytes and the same Veridex version
 //! always canonicalize to the same [`ContentHash`](canonical::ContentHash).
+//!
+//! ```no_run
+//! use veridex_core::{default_registry, run_check, status_label, IngestOptions, Source};
+//!
+//! let registry = default_registry();
+//! let source = Source::Local("my-dataset".into());
+//! let out = run_check(&registry, &source, None, &IngestOptions::default())?;
+//! println!(
+//!     "{} ({}) — {}",
+//!     out.trust.score,
+//!     out.trust.grade.letter(),
+//!     status_label(out.verdict.status)
+//! );
+//! # Ok::<(), veridex_core::IngestError>(())
+//! ```
 
 #![forbid(unsafe_code)]
 
