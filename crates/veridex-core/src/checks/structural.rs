@@ -805,7 +805,7 @@ impl DuplicateEpisode {
     /// episodes with equal `Some` signatures are byte-for-byte equivalent in every field a duplicate
     /// shares, frame contents included. Floats are captured by their bit pattern so equality is exact
     /// (and `NaN`-stable); the modality enum is captured by its `Debug` form.
-    fn signature(ep: &crate::cdm::Episode) -> Option<String> {
+    pub(crate) fn signature(ep: &crate::cdm::Episode) -> Option<String> {
         use std::fmt::Write as _;
         // An episode with no streams carries no content to compare — leave it to DegenerateEpisode.
         if ep.streams.is_empty() {
@@ -943,6 +943,296 @@ impl Check for DuplicateEpisode {
     }
 }
 
+/// The streams of one episode that can evidence duplication: stream name → its distinct frame
+/// hashes. See [`NearDuplicateEpisode::evidence`] for what qualifies.
+type EvidenceStreams<'a> = BTreeMap<&'a str, BTreeSet<[u8; 32]>>;
+
+/// Near-duplicate episodes: two episodes built largely from the **same frames**.
+///
+/// [`DuplicateEpisode`] proves *exact* duplication — same streams, same timestamps, same stored
+/// statistics, same frame bytes. The catalog also owes the case one step to the side, which is the
+/// common one in a real corpus: an episode re-uploaded with its tail trimmed, a merge that pulled
+/// the same recording in twice under different indices, one episode wholly contained in a longer
+/// one. Every frame of the overlap is byte-identical; the episodes are not, so the exact check is
+/// silent and the redundancy trains twice.
+///
+/// The evidence is set overlap over frame `content_hash`es — no payload is decoded, so nothing here
+/// depends on understanding the data. What that buys and what it does not, stated plainly: this
+/// catches re-uploads and partial copies, and it does **not** catch a re-encoded or perturbed copy,
+/// whose bytes differ in every frame. That half needs payload similarity and remains out of scope.
+///
+/// Three guards keep it from firing on honest data, which is the whole difficulty of a
+/// similarity check:
+///
+/// - **Only distinctive streams are evidence.** A stream is evidence only if every frame carries a
+///   hash, it has at least [`NearDuplicateEpisode::MIN_FRAMES`] frames, and at least
+///   [`NearDuplicateEpisode::MIN_DISTINCT_FRACTION`] of those frames are distinct from one another.
+///   An arm at rest, a locked joint, or a quantized channel repeats a handful of values across every
+///   episode of a dataset; overlap there is a fact about the sensor, not about duplication.
+/// - **Every shared stream must agree.** A pair's overlap is the *minimum* across the streams both
+///   episodes carry as evidence, so one coincidentally-similar channel cannot carry the claim while
+///   the camera disagrees.
+/// - **A frame that everyone has is not evidence.** A hash appearing in more than
+///   [`NearDuplicateEpisode::MAX_EPISODES_PER_HASH`] episodes is boilerplate — a calibration frame,
+///   a home position — and is skipped. This also bounds the work: without it the pair counting is
+///   quadratic in the episode count.
+///
+/// Pairs that [`DuplicateEpisode`] reports are suppressed here, using *its* signature function, so
+/// the suppression can never be broader than what the other check actually says (a narrower
+/// suppression would report twice; a broader one would report zero times, which is the dangerous
+/// direction).
+pub struct NearDuplicateEpisode {
+    /// Minimum shared fraction of frames — over `min(|a|, |b|)`, so containment counts as full
+    /// overlap — at which a pair is reported. Configurable as `near_duplicate_fraction`.
+    pub min_overlap: f64,
+}
+
+impl NearDuplicateEpisode {
+    /// Fewest frames a stream needs before its overlap means anything.
+    pub const MIN_FRAMES: usize = 8;
+    /// Fraction of a stream's frames that must be distinct from one another for it to be evidence.
+    pub const MIN_DISTINCT_FRACTION: f64 = 0.8;
+    /// A hash in more episodes than this is boilerplate, not evidence.
+    pub const MAX_EPISODES_PER_HASH: usize = 32;
+    /// Ceiling on candidate pairs held at once. Past it the check abstains, loudly.
+    pub const MAX_TRACKED_PAIRS: usize = 200_000;
+
+    /// The evidence streams of one episode: stream name → its distinct frame hashes.
+    fn evidence(ep: &crate::cdm::Episode) -> EvidenceStreams<'_> {
+        let mut out = BTreeMap::new();
+        for stream in &ep.streams {
+            if stream.frames.len() < Self::MIN_FRAMES {
+                continue;
+            }
+            let mut hashes = BTreeSet::new();
+            let mut all_hashed = true;
+            for frame in &stream.frames {
+                match frame.value_ref.content_hash {
+                    Some(h) => {
+                        hashes.insert(h);
+                    }
+                    None => {
+                        all_hashed = false;
+                        break;
+                    }
+                }
+            }
+            if !all_hashed {
+                continue;
+            }
+            let distinct = hashes.len() as f64 / stream.frames.len() as f64;
+            if distinct < Self::MIN_DISTINCT_FRACTION {
+                continue;
+            }
+            out.insert(stream.name.as_str(), hashes);
+        }
+        out
+    }
+}
+
+impl Check for NearDuplicateEpisode {
+    fn id(&self) -> &'static str {
+        "structural.near-duplicate-episode"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &[
+            "STRUCTURAL.NEAR_DUPLICATE_EPISODE",
+            "STRUCTURAL.NEAR_DUPLICATE_UNCHECKED",
+        ]
+    }
+    fn title(&self) -> &'static str {
+        "Near-duplicate episodes"
+    }
+    fn category(&self) -> Category {
+        Category::Structural
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Warning
+    }
+    fn scope(&self) -> Scope {
+        Scope::Dataset
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        // Evidence per episode, keyed by the episode's position so pairs are cheap to name.
+        let evidence: Vec<(u64, EvidenceStreams<'_>)> = dataset
+            .episodes
+            .iter()
+            .map(|ep| (ep.index, Self::evidence(ep)))
+            .filter(|(_, streams)| !streams.is_empty())
+            .collect();
+        if evidence.len() < 2 {
+            return Vec::new();
+        }
+
+        // Shared-hash counts per (pair, stream). Built through an inverted index so the cost is
+        // linear in frames rather than quadratic in episodes.
+        let mut shared: BTreeMap<(usize, usize), BTreeMap<&str, usize>> = BTreeMap::new();
+        let mut stream_names: BTreeSet<&str> = BTreeSet::new();
+        for (_, streams) in &evidence {
+            stream_names.extend(streams.keys().copied());
+        }
+        let mut overflowed = false;
+        for name in &stream_names {
+            let mut index: HashMap<[u8; 32], Vec<usize>> = HashMap::new();
+            for (position, (_, streams)) in evidence.iter().enumerate() {
+                if let Some(hashes) = streams.get(name) {
+                    for h in hashes {
+                        index.entry(*h).or_default().push(position);
+                    }
+                }
+            }
+            for (_, holders) in index {
+                if holders.len() < 2 || holders.len() > Self::MAX_EPISODES_PER_HASH {
+                    continue;
+                }
+                for (i, a) in holders.iter().enumerate() {
+                    for b in &holders[i + 1..] {
+                        if shared.len() >= Self::MAX_TRACKED_PAIRS
+                            && !shared.contains_key(&(*a, *b))
+                        {
+                            overflowed = true;
+                            continue;
+                        }
+                        *shared.entry((*a, *b)).or_default().entry(name).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+
+        if overflowed {
+            // Abstention is a finding: a check that ran out of room and said nothing is
+            // indistinguishable from a check that looked and found nothing.
+            return vec![Finding::new(
+                self.id(),
+                Category::Structural,
+                Severity::Info,
+                Location::Dataset,
+                "STRUCTURAL.NEAR_DUPLICATE_UNCHECKED",
+                format!(
+                    "near-duplicate detection abstained: more than {} episode pairs share frames, \
+                     which is past what this check will hold at once",
+                    Self::MAX_TRACKED_PAIRS
+                ),
+            )
+            .with_risk(
+                "This dataset was not checked for near-duplicate episodes. A re-uploaded or \
+                 partially copied episode in it is not absent from this report, it was never \
+                 looked for.",
+            )
+            .with_remedy(
+                "Check the dataset in parts (each shard or split on its own), where the pair count \
+                 is within reach.",
+            )];
+        }
+
+        // Pairs the exact check already speaks for. Computed with its own signature so this
+        // suppression is exactly as wide as what it reports — never wider.
+        let signatures: Vec<Option<String>> = evidence
+            .iter()
+            .map(|(index, _)| {
+                dataset
+                    .episodes
+                    .iter()
+                    .find(|ep| ep.index == *index)
+                    .and_then(DuplicateEpisode::signature)
+            })
+            .collect();
+
+        // Flag the pairs whose weakest shared stream still clears the threshold.
+        let mut flagged: Vec<(usize, usize, f64)> = Vec::new();
+        for ((a, b), per_stream) in &shared {
+            let (index_a, streams_a) = &evidence[*a];
+            let (index_b, streams_b) = &evidence[*b];
+            let _ = (index_a, index_b);
+            // Every stream both carry as evidence must agree, including one with no shared frames
+            // at all — which is why the iteration is over the shared *names*, not the counted ones.
+            let common: Vec<&str> = streams_a
+                .keys()
+                .filter(|n| streams_b.contains_key(*n))
+                .copied()
+                .collect();
+            if common.is_empty() {
+                continue;
+            }
+            let mut weakest = f64::INFINITY;
+            for name in common {
+                let count = per_stream.get(name).copied().unwrap_or(0) as f64;
+                let denominator = streams_a[name].len().min(streams_b[name].len()) as f64;
+                weakest = weakest.min(count / denominator);
+            }
+            if weakest >= self.min_overlap
+                && !(signatures[*a].is_some() && signatures[*a] == signatures[*b])
+            {
+                flagged.push((*a, *b, weakest));
+            }
+        }
+        if flagged.is_empty() {
+            return Vec::new();
+        }
+
+        // Cluster the flagged pairs, so a group of three near-identical episodes is one finding
+        // rather than three: the score deducts per finding, and this is one root cause.
+        let mut group_of: Vec<usize> = (0..evidence.len()).collect();
+        fn root(group_of: &mut [usize], mut x: usize) -> usize {
+            while group_of[x] != x {
+                group_of[x] = group_of[group_of[x]];
+                x = group_of[x];
+            }
+            x
+        }
+        for (a, b, _) in &flagged {
+            let (ra, rb) = (root(&mut group_of, *a), root(&mut group_of, *b));
+            if ra != rb {
+                group_of[ra.max(rb)] = ra.min(rb);
+            }
+        }
+        let mut groups: BTreeMap<usize, (BTreeSet<u64>, f64)> = BTreeMap::new();
+        for (a, b, overlap) in &flagged {
+            let entry = groups
+                .entry(root(&mut group_of, *a))
+                .or_insert_with(|| (BTreeSet::new(), 1.0));
+            entry.0.insert(evidence[*a].0);
+            entry.0.insert(evidence[*b].0);
+            entry.1 = entry.1.min(*overlap);
+        }
+
+        groups
+            .into_values()
+            .map(|(indices, overlap)| {
+                let list = indices
+                    .iter()
+                    .map(u64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Finding::new(
+                    self.id(),
+                    Category::Structural,
+                    Severity::Warning,
+                    Location::Dataset,
+                    "STRUCTURAL.NEAR_DUPLICATE_EPISODE",
+                    format!(
+                        "episodes {list} are near-duplicates: they share at least {:.0}% of their \
+                         frames byte-for-byte in every stream compared, without being exact copies",
+                        overlap * 100.0
+                    ),
+                )
+                .with_risk(
+                    "A re-uploaded or partially copied episode trains its trajectory twice, \
+                     over-weighting it and inflating the apparent size of the dataset — and unlike \
+                     an exact duplicate it survives de-duplication by content hash.",
+                )
+                .with_remedy(
+                    "Compare these episodes at the source: keep the longest or the original \
+                     recording and drop the copies, or record why the overlap is intentional.",
+                )
+            })
+            .collect()
+    }
+}
+
 /// Frozen/stuck video stream. A camera whose feed freezes keeps emitting **byte-identical** frames
 /// while its timestamps keep advancing — so every timestamp-based temporal check (monotonicity, rate,
 /// gaps, skew) passes, yet the observations are stale garbage. Real camera frames are never
@@ -1047,11 +1337,13 @@ impl Check for StuckStream {
 /// could not compare.
 ///
 /// The third of the family that
-/// [`ClockMeasurability`](crate::checks::temporal::ClockMeasurability) started. Two checks in this
+/// [`ClockMeasurability`](crate::checks::temporal::ClockMeasurability) started. Three checks in this
 /// module prove things about frame *content*: `structural.duplicate-episode` (two episodes holding
-/// byte-identical frames — a re-upload or a bad merge) and `structural.stuck-stream` (a camera
-/// repeating a byte-identical frame while timestamps advance — a freeze no timestamp check can see).
-/// Both are sound-only by design: they compare `content_hash`, and abstain on any frame without one.
+/// byte-identical frames — a re-upload or a bad merge), `structural.near-duplicate-episode` (two
+/// episodes built largely from the same frames — a partial copy), and `structural.stuck-stream` (a
+/// camera repeating a byte-identical frame while timestamps advance — a freeze no timestamp check
+/// can see). All three are sound-only by design: they compare `content_hash`, and abstain on any
+/// frame without one.
 ///
 /// That abstention was silent, and it is not a rare corner. A LeRobot video feature's pixels live in
 /// `.mp4` files outside the Parquet, so its frames carry no hash — and `duplicate-episode` aborts the
@@ -1134,8 +1426,8 @@ impl Check for ContentMeasurability {
             Location::Dataset,
             "STRUCTURAL.UNFINGERPRINTED_CONTENT",
             format!(
-                "{} stream(s) carry frames with no content fingerprint, so the stuck-stream check \
-                 could not inspect them ({listed}); {duplicate_note}",
+                "{} stream(s) carry frames with no content fingerprint, so the stuck-stream and \
+                 near-duplicate checks could not inspect them ({listed}); {duplicate_note}",
                 names.len(),
             ),
         )
@@ -1145,8 +1437,9 @@ impl Check for ContentMeasurability {
              in these streams is not absent from this report, it was never looked for.",
         )
         .with_remedy(
-            "Treat duplicate-episode and stuck-stream as unverified for these streams. For a \
-             LeRobot dataset this is the video features, whose pixels live outside the Parquet.",
+            "Treat duplicate-episode, near-duplicate-episode and stuck-stream as unverified for \
+             these streams. For a LeRobot dataset this is the video features, whose pixels live \
+             outside the Parquet.",
         )]
     }
 }

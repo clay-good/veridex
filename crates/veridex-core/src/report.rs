@@ -333,6 +333,13 @@ pub(crate) fn tolerance_departures(t: &crate::Tolerances) -> Vec<ToleranceDepart
         ego_max_speed_mps,
         format!("ego max speed {} m/s", t.ego_max_speed_mps)
     );
+    departure!(
+        near_duplicate_fraction,
+        format!(
+            "near-duplicate {}%",
+            trim_num(t.near_duplicate_fraction * 100.0)
+        )
+    );
     out
 }
 

@@ -61,6 +61,9 @@ pub struct Tolerances {
     /// `AUTONOMY.EGO_POSE_CONTINUITY` fires on an ego-trajectory step implying a speed above this,
     /// in metres per second — a teleport rather than motion.
     pub ego_max_speed_mps: f64,
+    /// `STRUCTURAL.NEAR_DUPLICATE_EPISODE` fires on two episodes sharing at least this fraction of
+    /// their frames byte-for-byte, in every stream compared (0.80 = four frames in five).
+    pub near_duplicate_fraction: f64,
 }
 
 impl Tolerances {
@@ -81,6 +84,7 @@ impl Tolerances {
             outlier_z: fix(self.outlier_z, d.outlier_z),
             sequence_drop_fraction: fix(self.sequence_drop_fraction, d.sequence_drop_fraction),
             ego_max_speed_mps: fix(self.ego_max_speed_mps, d.ego_max_speed_mps),
+            near_duplicate_fraction: fix(self.near_duplicate_fraction, d.near_duplicate_fraction),
             ..self
         }
     }
@@ -101,6 +105,7 @@ impl Default for Tolerances {
             outlier_z: 10.0,
             sequence_drop_fraction: 0.05, // 5%
             ego_max_speed_mps: 100.0,
+            near_duplicate_fraction: 0.8, // four frames in five
         }
     }
 }

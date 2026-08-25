@@ -37,7 +37,9 @@ fn every_config_key_has_an_environment_twin() {
         .iter()
         .map(|k| {
             let value = match *k {
-                "saturation_fraction" | "sequence_drop_fraction" => "0.5",
+                "saturation_fraction" | "sequence_drop_fraction" | "near_duplicate_fraction" => {
+                    "0.5"
+                }
                 _ => "2",
             };
             (format!("VERIDEX_TOLERANCE_{}", k.to_uppercase()), value)

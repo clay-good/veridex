@@ -289,6 +289,13 @@ pub fn settings(inputs: &Inputs<'_>) -> Vec<Setting> {
             trim(f.ego_max_speed_mps),
             trim(c.ego_max_speed_mps),
         ),
+        (
+            "near_duplicate_fraction",
+            t.near_duplicate_fraction.is_some(),
+            f.near_duplicate_fraction == c.near_duplicate_fraction,
+            trim(f.near_duplicate_fraction),
+            trim(c.near_duplicate_fraction),
+        ),
     ];
     for (key, set_in_file, unchanged, value, file_value) in tolerances {
         let (origin, note) = if unchanged {

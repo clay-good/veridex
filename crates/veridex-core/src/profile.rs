@@ -50,9 +50,11 @@ impl Profile {
     /// tighter than the one the readiness criterion requires, so the criterion still holds — while
     /// never relaxing a limit the operator set deliberately.
     ///
-    /// Every tolerance is an upper bound on tolerated deviation, so for all twelve "stricter" is
+    /// Every tolerance is an upper bound on tolerated deviation, so for all thirteen "stricter" is
     /// simply the smaller value. That includes `saturation_min_samples`, which is the sample count
-    /// below which the check abstains: a smaller one abstains on fewer streams.
+    /// below which the check abstains: a smaller one abstains on fewer streams, and
+    /// `near_duplicate_fraction`, which is the overlap at which a pair is reported: a smaller one
+    /// reports more pairs.
     pub fn apply_tolerances(&self, base: Tolerances) -> Tolerances {
         let d = Tolerances::default();
         let p = self.tolerances;
@@ -91,6 +93,7 @@ impl Profile {
             outlier_z,
             sequence_drop_fraction,
             ego_max_speed_mps,
+            near_duplicate_fraction,
         )
     }
 }

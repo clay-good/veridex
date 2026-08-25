@@ -597,6 +597,193 @@ fn duplicate_episode_indices_do_not_produce_a_malformed_presence_finding() {
     assert!(structural::StreamPresence.run(&d).is_empty());
 }
 
+// ---- near-duplicate episodes ----
+
+/// A ten-frame stream whose contents are the given bytes, at 100 ms spacing from `start`.
+fn near_stream(name: &str, start: i64, contents: &[u8]) -> veridex_core::cdm::Stream {
+    let ts: Vec<i64> = (0..contents.len() as i64)
+        .map(|i| start + i * 100_000_000)
+        .collect();
+    stream_hashed(name, "c", &ts, contents)
+}
+
+/// The check under test, at its default threshold.
+fn near_duplicate() -> structural::NearDuplicateEpisode {
+    structural::NearDuplicateEpisode { min_overlap: 0.8 }
+}
+
+#[test]
+fn an_episode_re_uploaded_with_its_tail_trimmed_is_a_near_duplicate() {
+    // The case the exact check cannot see: same recording, fewer frames, different timestamps.
+    let original: Vec<u8> = (0..12).collect();
+    let trimmed: Vec<u8> = (0..10).collect();
+    let d = dataset(vec![
+        episode(0, vec![near_stream("s", 0, &original)]),
+        episode(1, vec![near_stream("s", 5_000_000_000, &trimmed)]),
+    ]);
+    // The exact check is silent, which is why this one has to speak.
+    assert!(structural::DuplicateEpisode.run(&d).is_empty());
+
+    let f = near_duplicate().run(&d);
+    assert_eq!(f.len(), 1, "one root cause, one finding: {f:?}");
+    assert_eq!(f[0].code, "STRUCTURAL.NEAR_DUPLICATE_EPISODE");
+    assert_eq!(f[0].severity, Severity::Warning);
+    assert!(f[0].message.contains("0, 1"), "{}", f[0].message);
+    assert!(!f[0].risk.is_empty() && !f[0].remedy.is_empty());
+}
+
+#[test]
+fn two_genuinely_different_episodes_are_not_near_duplicates() {
+    let a: Vec<u8> = (0..12).collect();
+    let b: Vec<u8> = (100..112).collect();
+    let d = dataset(vec![
+        episode(0, vec![near_stream("s", 0, &a)]),
+        episode(1, vec![near_stream("s", 5_000_000_000, &b)]),
+    ]);
+    assert!(near_duplicate().run(&d).is_empty());
+
+    // And a pair that overlaps, but not enough: 6 of 12 frames is half, under the 0.8 default.
+    let half: Vec<u8> = (0..6).chain(200..206).collect();
+    let d = dataset(vec![
+        episode(0, vec![near_stream("s", 0, &a)]),
+        episode(1, vec![near_stream("s", 5_000_000_000, &half)]),
+    ]);
+    assert!(
+        near_duplicate().run(&d).is_empty(),
+        "half an episode is not a copy of it"
+    );
+}
+
+#[test]
+fn a_stream_that_repeats_itself_is_not_evidence_of_anything() {
+    // The false-positive class this check would otherwise fall into: an arm at rest, a locked
+    // joint, a quantized channel. Every episode of the dataset shares those values, and that is a
+    // fact about the sensor, not about duplication.
+    let resting = [7u8; 12];
+    let d = dataset(vec![
+        episode(0, vec![near_stream("joint", 0, &resting)]),
+        episode(1, vec![near_stream("joint", 5_000_000_000, &resting)]),
+    ]);
+    assert!(
+        near_duplicate().run(&d).is_empty(),
+        "a stream with one distinct value cannot evidence duplication"
+    );
+
+    // A short stream is not evidence either: two three-frame episodes coinciding is a coincidence.
+    let short: Vec<u8> = (0..4).collect();
+    let d = dataset(vec![
+        episode(0, vec![near_stream("s", 0, &short)]),
+        episode(1, vec![near_stream("s", 5_000_000_000, &short)]),
+    ]);
+    assert!(near_duplicate().run(&d).is_empty());
+}
+
+#[test]
+fn one_agreeing_stream_cannot_outvote_a_disagreeing_one() {
+    // Two episodes whose proprioception happens to repeat, and whose camera does not. The camera is
+    // the evidence that these are different recordings, and it must win.
+    let same: Vec<u8> = (0..12).collect();
+    let different: Vec<u8> = (100..112).collect();
+    let d = dataset(vec![
+        episode(
+            0,
+            vec![near_stream("state", 0, &same), near_stream("cam", 0, &same)],
+        ),
+        episode(
+            1,
+            vec![
+                near_stream("state", 5_000_000_000, &same),
+                near_stream("cam", 5_000_000_000, &different),
+            ],
+        ),
+    ]);
+    assert!(
+        near_duplicate().run(&d).is_empty(),
+        "the weakest shared stream decides"
+    );
+}
+
+#[test]
+fn an_exact_duplicate_is_reported_once_by_the_check_that_proves_it() {
+    // Both checks look at the same pair. The exact one proves more, so it speaks; this one must not
+    // double the deduction — and the suppression is computed from the exact check's own signature,
+    // so it can never be wider than what that check actually reports.
+    let contents: Vec<u8> = (0..12).collect();
+    let d = dataset(vec![
+        episode(0, vec![near_stream("s", 0, &contents)]),
+        episode(1, vec![near_stream("s", 0, &contents)]),
+    ]);
+    assert_eq!(structural::DuplicateEpisode.run(&d).len(), 1);
+    assert!(
+        near_duplicate().run(&d).is_empty(),
+        "the exact check speaks for this pair"
+    );
+
+    // Same frames, *different* timestamps: the exact check is silent (its signature includes the
+    // time base), so this one must not be silent too — that is the direction that loses a defect.
+    let d = dataset(vec![
+        episode(0, vec![near_stream("s", 0, &contents)]),
+        episode(1, vec![near_stream("s", 5_000_000_000, &contents)]),
+    ]);
+    assert!(structural::DuplicateEpisode.run(&d).is_empty());
+    assert_eq!(near_duplicate().run(&d).len(), 1);
+}
+
+#[test]
+fn three_copies_of_one_recording_are_one_finding() {
+    // The score deducts per finding, so a group of near-identical episodes must not be charged once
+    // per pair.
+    let contents: Vec<u8> = (0..12).collect();
+    let d = dataset(vec![
+        episode(0, vec![near_stream("s", 0, &contents)]),
+        episode(1, vec![near_stream("s", 1_000_000_000, &contents[..11])]),
+        episode(2, vec![near_stream("s", 2_000_000_000, &contents[..10])]),
+    ]);
+    let f = near_duplicate().run(&d);
+    assert_eq!(f.len(), 1, "three pairs, one group, one finding: {f:?}");
+    assert!(f[0].message.contains("0, 1, 2"), "{}", f[0].message);
+}
+
+#[test]
+fn an_unhashed_stream_is_not_read_as_agreement() {
+    // Without hashes there is no evidence either way, and "no evidence" must not read as "no
+    // overlap" *or* as overlap. The dataset-level abstention is disclosed by
+    // `structural.content-measurability`.
+    let contents: Vec<u8> = (0..12).collect();
+    let ts: Vec<i64> = (0..12).map(|i| i * 100_000_000).collect();
+    let d = dataset(vec![
+        episode(
+            0,
+            vec![
+                near_stream("s", 0, &contents),
+                stream("video", "c", None, &ts),
+            ],
+        ),
+        episode(
+            1,
+            vec![
+                near_stream("s", 5_000_000_000, &contents),
+                stream("video", "c", None, &ts),
+            ],
+        ),
+    ]);
+    // The hashed stream still carries the claim; the unhashed one neither helps nor blocks it.
+    assert_eq!(near_duplicate().run(&d).len(), 1);
+}
+
+#[test]
+fn the_threshold_is_the_one_the_run_was_configured_with() {
+    let a: Vec<u8> = (0..12).collect();
+    let half: Vec<u8> = (0..6).chain(200..206).collect();
+    let d = dataset(vec![
+        episode(0, vec![near_stream("s", 0, &a)]),
+        episode(1, vec![near_stream("s", 5_000_000_000, &half)]),
+    ]);
+    assert!(near_duplicate().run(&d).is_empty());
+    let sensitive = structural::NearDuplicateEpisode { min_overlap: 0.5 };
+    assert_eq!(sensitive.run(&d).len(), 1, "half clears a half threshold");
+}
+
 // ---- temporal ----
 
 #[test]
@@ -1106,7 +1293,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 38);
+    assert_eq!(verdict.executed_checks.len(), 39);
 }
 
 #[test]

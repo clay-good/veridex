@@ -31,6 +31,36 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **`STRUCTURAL.NEAR_DUPLICATE_EPISODE` — the partial copy the exact check cannot see.** The catalog
+  owed the duplicate requirement its other half: an episode re-uploaded with its tail trimmed, a
+  merge that pulled one recording in twice, an episode wholly contained in a longer one. Every frame
+  of the overlap is byte-identical and the episodes are not, so `STRUCTURAL.DUPLICATE_EPISODE` was
+  silent while the redundancy trained twice.
+
+  The evidence is set overlap over per-frame `content_hash`es — no payload is decoded — reported when
+  the *weakest* shared stream still clears `near_duplicate_fraction` (default 0.80, over
+  `min(|a|, |b|)`, so containment counts as full overlap). A similarity check's whole difficulty is
+  not firing on honest data, so three guards decide what counts as evidence: a stream qualifies only
+  if every frame is hashed, it runs at least 8 frames, and at least 80% of those frames are distinct
+  from one another (an arm at rest or a quantized channel repeats a handful of values across every
+  episode in a dataset — overlap there is a fact about the sensor); every stream both episodes carry
+  must agree, so one coincidentally-similar channel cannot carry a claim the camera contradicts; and
+  a hash held by more than 32 episodes is boilerplate, skipped, which also keeps the pair counting
+  linear in frames rather than quadratic in episodes.
+
+  Pairs the exact check reports are suppressed using *its own* signature function, so the
+  suppression can never be wider than what that check actually says — the direction that loses a
+  defect. Same frames with a different time base, which the exact check does not report, is reported
+  here. A group of near-identical episodes is one finding, not one per pair, because the score
+  deducts per finding and it is one root cause. Past 200,000 candidate pairs the check abstains with
+  `STRUCTURAL.NEAR_DUPLICATE_UNCHECKED` rather than silently, and the unfingerprinted-content
+  disclosure now names this check alongside the two it already named.
+
+  Still out of scope, and now said in one place instead of implied: a **re-encoded or perturbed**
+  copy shares no bytes at all, so only payload similarity could find it. Proven end-to-end through
+  the real LeRobot adapter (`make_demo_lerobot -- <dir> near-duplicate`), with the false-positive
+  case — two honest takes of one task — asserted clean.
+
 - **The environment layer the configuration spec's precedence names.** Configuration was defaults →
   file → flags; the spec's order is defaults → file → **environment** → flags, and the middle layer
   did not exist. It is the layer a container or a CI job can set without writing a file, which is
@@ -394,7 +424,7 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 - **Validation engine** — check registry with duplicate-id rejection, category/id selection,
   severity overrides, deterministic stably-ordered verdicts with a result content hash, fault
   isolation for panicking checks, and reproducibility metadata.
-- **Checks catalog** — 38 checks across seven families (the seventh, **autonomy**, is described in its
+- **Checks catalog** — 39 checks across seven families (the seventh, **autonomy**, is described in its
   own entries below), each finding carrying a training **risk** and a **remedy** and located to the exact
   episode / stream / frame:
   - **Structural** — episode-boundary integrity (the lerobot#4143 class: a per-episode declared

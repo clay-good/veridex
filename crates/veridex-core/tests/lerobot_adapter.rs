@@ -585,7 +585,7 @@ fn lerobot_dataset_flows_through_the_full_check_pipeline() {
     let verdict = engine.run(&d, hash, &veridex_core::RunConfig::default());
 
     // Every standard check ran, none errored, and clean data yields no failing findings.
-    assert_eq!(verdict.executed_checks.len(), 38);
+    assert_eq!(verdict.executed_checks.len(), 39);
     assert!(
         verdict.errored_checks.is_empty(),
         "no check should error on a well-formed dataset"
@@ -830,6 +830,76 @@ fn duplicate_episodes_are_detected_end_to_end_via_lerobot_content_hashes() {
     assert_eq!(dup.len(), 1, "the re-uploaded episode pair is flagged once");
     assert!(dup[0].message.contains('0') && dup[0].message.contains('2'));
     assert!(!dup[0].message.contains('1'));
+}
+
+#[test]
+fn a_partially_re_uploaded_episode_is_caught_end_to_end() {
+    // The case the exact check cannot see, through the real adapter: episode 1 is episode 0 with its
+    // last frame dropped and its first replaced — a partial re-upload or a bad merge. Every shared
+    // frame is byte-identical (the adapter hashes each feature cell), the episodes are not, so
+    // DUPLICATE_EPISODE stays silent and NEAR_DUPLICATE_EPISODE has to speak.
+    let dir = tempfile::tempdir().unwrap();
+    let mut rows: Vec<(i64, f64, f32)> = Vec::new();
+    for f in 0..12 {
+        rows.push((0, f as f64 / 10.0, f as f32));
+    }
+    rows.push((1, 0.0, 100.0));
+    for f in 1..12 {
+        rows.push((1, f as f64 / 10.0, f as f32));
+    }
+    write_lerobot_with_values(dir.path(), "observation.state", 10.0, &rows);
+
+    let d = ingest_lerobot(dir.path());
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let hash = veridex_core::content_hash(&d);
+    let verdict = engine.run(&d, hash, &veridex_core::RunConfig::default());
+
+    assert!(
+        !verdict
+            .findings
+            .iter()
+            .any(|f| f.code == "STRUCTURAL.DUPLICATE_EPISODE"),
+        "these episodes are not exact copies"
+    );
+    let near: Vec<_> = verdict
+        .findings
+        .iter()
+        .filter(|f| f.code == "STRUCTURAL.NEAR_DUPLICATE_EPISODE")
+        .collect();
+    assert_eq!(near.len(), 1, "one pair, one finding: {near:?}");
+    assert!(
+        near[0].message.contains('0') && near[0].message.contains('1'),
+        "{}",
+        near[0].message
+    );
+}
+
+#[test]
+fn two_ordinary_episodes_of_the_same_task_are_not_near_duplicates() {
+    // The false-positive risk this check carries: episodes of one task look alike. They do not share
+    // byte-identical frames, and only byte-identical frames are evidence here.
+    let dir = tempfile::tempdir().unwrap();
+    let mut rows: Vec<(i64, f64, f32)> = Vec::new();
+    for episode in 0..2i64 {
+        for f in 0..12 {
+            // Same shape of trajectory, different values — two takes of one task.
+            rows.push((episode, f as f64 / 10.0, f as f32 + episode as f32 * 0.5));
+        }
+    }
+    write_lerobot_with_values(dir.path(), "observation.state", 10.0, &rows);
+
+    let d = ingest_lerobot(dir.path());
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let hash = veridex_core::content_hash(&d);
+    let verdict = engine.run(&d, hash, &veridex_core::RunConfig::default());
+    assert!(
+        !verdict
+            .findings
+            .iter()
+            .any(|f| f.code.starts_with("STRUCTURAL.NEAR_DUPLICATE")),
+        "two honest takes of one task must not be called copies: {:?}",
+        verdict.findings
+    );
 }
 
 #[test]

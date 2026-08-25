@@ -58,6 +58,7 @@ enum Mode {
     Jitter,
     ShortEpisode,
     Duplicate,
+    NearDuplicate,
     Saturated,
     Spike,
     Nan,
@@ -89,6 +90,7 @@ fn main() {
         Some("jitter") => Mode::Jitter,
         Some("short-episode") => Mode::ShortEpisode,
         Some("duplicate") => Mode::Duplicate,
+        Some("near-duplicate") => Mode::NearDuplicate,
         Some("saturated") => Mode::Saturated,
         Some("spike") => Mode::Spike,
         Some("nan") => Mode::Nan,
@@ -104,7 +106,8 @@ fn main() {
         Some(other) => {
             eprintln!(
                 "unknown variant `{other}` — known: clean, truncated, boundary, jitter, \
-                 short-episode, duplicate, saturated, spike, nan, multi-joint, video, \
+                 short-episode, duplicate, near-duplicate, saturated, spike, nan, multi-joint, \
+                 video, \
                  video-desync, video-missing, video-reencoded (omit for the default \
                  non-monotonic dataset)"
             );
@@ -129,6 +132,10 @@ fn main() {
         }
         Mode::ShortEpisode => {
             "short-episode (episode 4 was cut short right after it began → TEMPORAL.EPISODE_DURATION_OUTLIER)"
+        }
+        Mode::NearDuplicate => {
+            "near-duplicate (episode 1 re-uploads 11 of episode 0's 12 frames → \
+             STRUCTURAL.NEAR_DUPLICATE_EPISODE)"
         }
         Mode::Duplicate => {
             "duplicate (episode 1 is a byte-for-byte re-upload of episode 0 → STRUCTURAL.DUPLICATE_EPISODE)"
@@ -319,6 +326,25 @@ type DemoRow = (i64, f64, f32);
 /// declare. All variants but `truncated` declare exactly what they write; `truncated` deliberately
 /// over-declares so the declared/actual mismatch fires.
 fn build_rows(mode: Mode, fps: f64) -> (Vec<DemoRow>, u64, u64) {
+    if mode == Mode::NearDuplicate {
+        // Episode 1 is episode 0 re-uploaded with its last frame dropped and its first one replaced
+        // — the shape of a bad merge or a partial re-upload. 11 of 12 frames are byte-identical, so
+        // the frame sets overlap 11/11 = 100% over the shorter episode, well past the 0.80 default,
+        // while the episodes differ, so STRUCTURAL.DUPLICATE_EPISODE stays silent. Twelve distinct
+        // values per episode also clear the distinctiveness guard that keeps a resting joint from
+        // evidencing duplication.
+        let mut rows: Vec<DemoRow> = Vec::new();
+        for f in 0..12i64 {
+            rows.push((0, f as f64 / fps, f as f32));
+        }
+        // The copy: episode 0's frames 1..12, with one value of its own so the two are not exact.
+        rows.push((1, 0.0, 100.0));
+        for f in 1..12i64 {
+            rows.push((1, f as f64 / fps, f as f32));
+        }
+        return (rows, 2, 24);
+    }
+
     if mode == Mode::Duplicate {
         // Two episodes with byte-for-byte identical content: same timestamps AND same feature values.
         // A re-upload or a bad merge. Only STRUCTURAL.DUPLICATE_EPISODE fires.

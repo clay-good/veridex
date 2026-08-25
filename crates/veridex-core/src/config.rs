@@ -63,6 +63,9 @@ pub struct TolerancesConfig {
     /// `AUTONOMY.EGO_POSE_CONTINUITY` maximum plausible ego speed, in metres per second; a step
     /// implying more than this is a teleport.
     pub ego_max_speed_mps: Option<f64>,
+    /// `STRUCTURAL.NEAR_DUPLICATE_EPISODE` shared-frame fraction at which two episodes are reported
+    /// as near-duplicates. Must be within (0.0, 1.0]: at 0 every pair matches.
+    pub near_duplicate_fraction: Option<f64>,
 }
 
 /// A parsed `veridex.toml`.
@@ -218,6 +221,13 @@ impl TolerancesConfig {
                 )));
             }
         }
+        if let Some(f) = self.near_duplicate_fraction {
+            if !f.is_finite() || f <= 0.0 || f > 1.0 {
+                return Err(ConfigError::Parse(format!(
+                    "near_duplicate_fraction must be a finite number in (0.0, 1.0], got {f}"
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -253,6 +263,9 @@ impl TolerancesConfig {
                 .sequence_drop_fraction
                 .unwrap_or(d.sequence_drop_fraction),
             ego_max_speed_mps: self.ego_max_speed_mps.unwrap_or(d.ego_max_speed_mps),
+            near_duplicate_fraction: self
+                .near_duplicate_fraction
+                .unwrap_or(d.near_duplicate_fraction),
         }
     }
 }
@@ -297,6 +310,7 @@ pub mod env {
         "outlier_z",
         "sequence_drop_fraction",
         "ego_max_speed_mps",
+        "near_duplicate_fraction",
     ];
 
     /// Merge the environment onto `base`, returning the merged config and the `veridex.toml` keys
@@ -473,6 +487,7 @@ pub mod env {
             "outlier_z" => t.outlier_z = Some(number()?),
             "sequence_drop_fraction" => t.sequence_drop_fraction = Some(number()?),
             "ego_max_speed_mps" => t.ego_max_speed_mps = Some(number()?),
+            "near_duplicate_fraction" => t.near_duplicate_fraction = Some(number()?),
             other => unreachable!("unmapped tolerance key {other}"),
         }
         Ok(())
