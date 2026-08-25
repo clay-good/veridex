@@ -652,11 +652,8 @@ fn ingest_data_group(
         let locate = |name: &str| format!("##DG[{group_index}].##CG[{cg_index}].{name}");
         // A group materializes channels × records frames; charge that before decoding.
         let decodable = channels.iter().filter(|c| c.is_decodable()).count() as u64;
-        let available = if record_len == 0 {
-            0
-        } else {
-            (records.len() / record_len) as u64
-        };
+        // A zero-length record divides into no frames at all (and must not divide by zero).
+        let available = records.len().checked_div(record_len).unwrap_or(0) as u64;
         let planned = if cycle_count == 0 {
             available
         } else {

@@ -115,13 +115,10 @@ fn parse_sg(rest: &str) -> Option<DbcSignal> {
     let mux = match name_parts.next() {
         None => Mux::Plain,
         Some("M") => Mux::Selector,
-        Some(tag) => match tag.strip_prefix('m').and_then(|n| n.parse::<u64>().ok()) {
-            Some(n) => Mux::On(n),
-            // An indicator this parser does not understand is not treated as "present always" --
-            // that is the assumption that fabricated values. Refuse the signal so it is absent from
-            // the CDM rather than wrong in it.
-            None => return None,
-        },
+        // An indicator this parser does not understand is not treated as "present always" -- that
+        // is the assumption that fabricated values. Refuse the signal so it is absent from the CDM
+        // rather than wrong in it.
+        Some(tag) => Mux::On(tag.strip_prefix('m').and_then(|n| n.parse::<u64>().ok())?),
     };
     let after = after.trim();
     // `<start>|<len>@<order><sign>` then a space then `(factor,offset)`.

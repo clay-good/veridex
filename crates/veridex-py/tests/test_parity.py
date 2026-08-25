@@ -146,10 +146,15 @@ def test_cli_and_python_certify_and_verify_agree(tmp_path):
     keyfile = tmp_path / "issuer"
     keyfile.write_text(secret + "\n")
     out = tmp_path / "cert.json"
-    subprocess.run(
+    # `certify` exits with the verdict's own code (the demo carries a clock-skew error, so 20): a
+    # certificate attests a verdict, including a failing one, and the exit code says which. It still
+    # writes the certificate — that is the document being compared here.
+    result = subprocess.run(
         [binary, "certify", str(dataset), "--key", str(keyfile), "--timestamp", ts, "--out", str(out)],
-        check=True,
+        capture_output=True,
+        text=True,
     )
+    assert result.returncode == 20, f"certify must report the verdict it signed: {result.stderr}"
     assert json.loads(py_cert) == json.loads(out.read_text()), "Python and CLI must issue the identical certificate"
 
     # Python verify accepts the certificate against the same dataset and a trusted issuer key.
@@ -188,11 +193,13 @@ def test_cli_and_python_readiness_certificates_agree(tmp_path):
     keyfile = tmp_path / "issuer"
     keyfile.write_text(secret + "\n")
     out = tmp_path / "cert.json"
-    subprocess.run(
+    result = subprocess.run(
         [binary, "certify", str(dataset), "--key", str(keyfile), "--timestamp", ts,
          "--out", str(out), "--profile", "world-model-ready"],
-        check=True,
+        capture_output=True,
+        text=True,
     )
+    assert result.returncode == 20, f"certify must report the verdict it signed: {result.stderr}"
     assert json.loads(py_cert) == json.loads(out.read_text()), "profiled certificates must match"
 
     # Verification summaries must match too, readiness block included.
@@ -306,8 +313,12 @@ def test_cli_and_python_metadata_only_checks_agree(tmp_path):
         text=True,
     )
     assert py_cdm == json.loads(result.stdout)
-    assert py_cdm["episodes"], "the declared episodes are still present"
-    assert py_cdm["episodes"][0]["streams"][0]["frames"] == []
+    assert py_cdm["schema"] == "veridex.inspect/1"
+    # The CDM sits under `dataset`, beside what the run actually covered — the whole point of a
+    # metadata-only inspect is that those two are read together.
+    assert py_cdm["coverage"]["kind"] == "metadata_only"
+    assert py_cdm["dataset"]["episodes"], "the declared episodes are still present"
+    assert py_cdm["dataset"]["episodes"][0]["streams"][0]["frames"] == []
 
 
 def test_python_refuses_a_metadata_only_sample(tmp_path):
