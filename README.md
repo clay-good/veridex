@@ -107,6 +107,7 @@ veridex provenance <dataset> --emit croissant                     # extract + em
 veridex inspect    <dataset>                                      # summarize the dataset
 veridex checks                                                    # list the built-in check catalog
 veridex diff       <old.json> <new.json>                         # diff two report JSONs
+veridex watch      <dataset> [--interval <secs>] [--iterations <n>]  # re-validate as it records
 veridex keygen     issuer                                        # write issuer (secret) + issuer.pub
 ```
 
@@ -133,6 +134,9 @@ cargo run -p veridex-cli -- inspect /tmp/demo.mcap
 # machine-readable output
 cargo run -p veridex-cli -- check --json /tmp/demo.mcap
 
+# re-validate a dataset while it is still being recorded (Ctrl-C to stop)
+cargo run -p veridex-cli -- watch /tmp/demo.mcap --interval 2
+
 # issue a signed, content-bound trust certificate and verify it offline
 cargo run -p veridex-cli -- keygen /tmp/issuer
 cargo run -p veridex-cli -- certify /tmp/demo.mcap --key /tmp/issuer --out /tmp/demo.veridex.json
@@ -156,6 +160,16 @@ block the gate: it may only *tighten* a threshold, which measures the data harde
 asks, so `check --profile world-model-ready --min-score 80` is a valid CI gate. `check --profile
 world-model-ready` also prints the per-criterion readiness verdict it judged against; `certify` is
 what signs it.
+
+`watch` runs that same check on a **dataset that is still being recorded**. Each tick it fingerprints
+the dataset's files (names, sizes, modification times — nothing is opened, and a symlink out of the
+dataset is never followed), and re-validates only when something moved. The first pass prints the
+full report; after that it prints just what changed — findings introduced, findings resolved, and how
+the trust score moved — so a long recording stays readable. A half-written shard is an ordinary
+moment in a recording, not a reason to quit: the read error is printed and the watch continues. Bound
+it with `--iterations <n>` to make it a CI step (the exit code is the last completed validation's,
+under the same `--fail-on` threshold as `check`), or use `--json` for one JSON document per line as
+the recording proceeds. Like every other command, it only reads: nothing is written to the dataset.
 
 Drop a [`veridex.toml`](docs/veridex.toml.example) in your repo (or pass `--config`) to select
 categories, disable checks, override per-check severities, tune numeric tolerances (clock-skew,
@@ -367,6 +381,10 @@ manifest = json.loads(veridex.check("my-dataset/", metadata_only=True))
 print(manifest["verdict"]["coverage"])
 ```
 
+Python mirrors the CLI's *operations* — `check`, `certify`, `verify`, `provenance`, `inspect`, `diff`.
+`watch` is not among them by design: it is a loop around `check`, not an operation, and a Python
+caller already owns their own loop.
+
 Build the extension locally with [maturin](https://github.com/PyO3/maturin):
 `maturin develop -m crates/veridex-py/Cargo.toml`.
 
@@ -396,7 +414,7 @@ neutrality gate (the same logical dataset yields equivalent CDMs as LeRobot v3 a
 reference extraction** (OpenSCENARIO / OpenDRIVE / OSI / simulator, with the version read from the
 referenced sidecar's own ASAM header); Croissant + W3C PROV provenance emit; Ed25519 **certificate signing with
 offline verification** (tamper + transplant rejection); a working CLI (`check`, `inspect`, `checks`,
-`certify`, `verify`, `provenance`, `keygen`, `diff`) — see the [Quickstart](#quickstart); and **Python
+`certify`, `verify`, `provenance`, `keygen`, `diff`, `watch`) — see the [Quickstart](#quickstart); and **Python
 bindings** (`import veridex`, exposing `check`/`check_sarif`/`check_html`/`inspect`/`content_hash`/`catalog`/`provenance`/`diff`/`keygen`/`certify`/`verify`/`version`) that call the same
 core pipeline, with a CLI⇄Python parity test run in CI; and **sampled ingestion** (`--sample-episodes`
 / `--sample-fraction`), resolved before any data is read and reported as partial coverage everywhere

@@ -136,8 +136,10 @@ the build plan.
 - [x] Versioned JSON output (`veridex.report/1`).
 
 ## M8 — CLI + Python parity
-- [x] `veridex check | inspect | checks | certify | verify | provenance | keygen | diff` implemented
-      end-to-end (`checks` lists the built-in catalog as text or `--json`).
+- [x] `veridex check | inspect | checks | certify | verify | provenance | keygen | diff | watch`
+      implemented end-to-end (`checks` lists the built-in catalog as text or `--json`; `watch`
+      re-validates a dataset as it is recorded, printing the delta after the first pass and bounded
+      by `--iterations` so it is a CI step as well as an interactive one).
 - [x] Format autodetect + `--format` override; ambiguity is `IngestError::AmbiguousFormat`, not a
       silent guess.
 - [x] CI exit codes (0 pass · 10 warnings · 20 fail · 2 tool-error) with a configurable failure

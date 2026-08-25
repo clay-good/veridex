@@ -2,8 +2,9 @@
 //!
 //! All commands are wired end-to-end over `veridex-core`: `check` / `inspect` ingest and validate,
 //! `certify` / `verify` / `keygen` handle signed certificates, `provenance` emits Croissant / PROV,
-//! and `diff` compares two reports. `check` and `certify` share the exact `run_check` pipeline the
-//! Python bindings use, so their output is identical.
+//! `diff` compares two reports, and `watch` re-runs the check as a dataset is recorded. `check`,
+//! `certify` and `watch` share the exact `run_check` pipeline the Python bindings use, so their
+//! output is identical.
 //!
 //! Exit codes (documented, CI-friendly):
 //! - `0`  pass
@@ -52,6 +53,10 @@ const COMMANDS: &[(&str, &str)] = &[
         "inspect",
         "summarize the Canonical Dataset Model of a dataset",
     ),
+    (
+        "watch",
+        "re-validate a dataset as it is recorded (--interval <secs>, --iterations <n>)",
+    ),
     ("checks", "list the built-in check catalog"),
 ];
 
@@ -80,6 +85,8 @@ struct Args {
     metadata_only: bool,
     profile: Option<String>,
     fail_on_regression: bool,
+    interval: Option<String>,
+    iterations: Option<String>,
     /// Every positional argument, in order. `path` is the first; `diff` takes two.
     positionals: Vec<String>,
 }
@@ -97,7 +104,7 @@ impl Args {
     /// The single source of truth for [`reject_flags_except`]. Adding a flag to the parser without
     /// adding it here means it is never checked, so the two lists are kept adjacent, and a test
     /// asserts this covers the parser's whole flag set.
-    fn given_flags(&self) -> [(&'static str, bool); 22] {
+    fn given_flags(&self) -> [(&'static str, bool); 24] {
         [
             ("--json", self.json),
             ("--sarif", self.sarif),
@@ -124,6 +131,8 @@ impl Args {
             ("--sample-fraction", self.sample_fraction.is_some()),
             ("--sample-seed", self.sample_seed.is_some()),
             ("--metadata-only", self.metadata_only),
+            ("--interval", self.interval.is_some()),
+            ("--iterations", self.iterations.is_some()),
         ]
     }
 }
@@ -165,6 +174,8 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
     let mut metadata_only = false;
     let mut profile = None;
     let mut fail_on_regression = false;
+    let mut interval = None;
+    let mut iterations = None;
     let mut positionals: Vec<String> = Vec::new();
     let mut it = rest.iter();
     while let Some(arg) = it.next() {
@@ -209,6 +220,8 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
             "--sample-episodes" => sample_episodes = Some(value("--sample-episodes")?),
             "--sample-fraction" => sample_fraction = Some(value("--sample-fraction")?),
             "--sample-seed" => sample_seed = Some(value("--sample-seed")?),
+            "--interval" => interval = Some(value("--interval")?),
+            "--iterations" => iterations = Some(value("--iterations")?),
             other if other.starts_with('-') => return Err(format!("unknown option `{other}`")),
             other => positionals.push(other.to_string()),
         }
@@ -238,6 +251,8 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
         metadata_only,
         profile,
         fail_on_regression,
+        interval,
+        iterations,
         positionals,
     })
 }
@@ -343,6 +358,7 @@ fn main() -> ExitCode {
         Some("verify") => cmd_verify(&args[1..]),
         Some("keygen") => cmd_keygen(&args[1..]),
         Some("diff") => cmd_diff(&args[1..]),
+        Some("watch") => cmd_watch(&args[1..]),
         Some("provenance") => cmd_provenance(&args[1..]),
         Some(cmd) => {
             eprintln!("veridex: unknown command `{cmd}`.");
@@ -1494,6 +1510,219 @@ fn is_regression(diff: &veridex_core::ReportDiff) -> bool {
         || diff.score_delta().is_some_and(|d| d < 0)
 }
 
+/// How often `veridex watch` looks for a change when `--interval` is not given.
+const DEFAULT_WATCH_INTERVAL_SECS: f64 = 2.0;
+
+/// The schema tag on each line of `veridex watch --json`.
+const WATCH_SCHEMA_VERSION: &str = "veridex.watch/1";
+
+/// `veridex watch` — re-validate a dataset while it is being recorded, read-only.
+///
+/// The loop is: fingerprint the dataset on disk ([`veridex_core::watch::fingerprint`] — metadata
+/// only, no file is opened), and when it moves, run the same `check` pipeline again and report what
+/// *changed* rather than reprinting the whole report. The first pass prints the full report, because
+/// there is nothing yet to compare it against.
+///
+/// Two things a recording dataset does that a finished one does not, both handled here:
+///
+/// - **It is unreadable part of the time.** A half-written shard, a manifest being rewritten, a log
+///   whose index is not yet flushed — every one of these is a normal moment in a recording, so an
+///   ingest error prints and the watch continues. Aborting would mean `watch` exits within seconds
+///   of a real recording starting.
+/// - **It never ends on its own.** The loop runs until interrupted; `--iterations <n>` bounds it to
+///   `n` polling ticks, which is what makes it scriptable (and testable) rather than only interactive.
+///
+/// The exit code is the last completed validation's, under the same `--fail-on` threshold as
+/// `check`, so a bounded watch is a CI gate. A watch that never managed one validation is a tool
+/// error, not a pass.
+fn cmd_watch(rest: &[String]) -> ExitCode {
+    use std::io::Write as _;
+
+    let args = match parse_args_or_exit(rest) {
+        Ok(a) => a,
+        Err(code) => return code,
+    };
+    // `watch` ingests and reports; it does not sign, emit, sample, or gate on a score. Sampling is
+    // excluded deliberately: the point of a watch is the data arriving now, which is exactly what a
+    // sample of the first N episodes does not look at.
+    if let Err(code) = reject_flags_except(
+        "watch",
+        &args,
+        &[
+            &[
+                "--json",
+                "--config",
+                "--fail-on",
+                "--interval",
+                "--iterations",
+            ],
+            INGEST_FLAGS,
+        ],
+    ) {
+        return code;
+    }
+    if let Err(code) = reject_extra_positionals("watch", &args, "dataset path") {
+        return code;
+    }
+    let Some(path) = &args.path else {
+        eprintln!("veridex: missing dataset path");
+        return ExitCode::from(EXIT_TOOL_ERROR);
+    };
+
+    // Same up-front validation as `check`: a `--fail-on warn` typo must not quietly relax the gate.
+    if let Some(v) = args.fail_on.as_deref() {
+        if v != "error" && v != "warning" {
+            eprintln!("veridex: invalid --fail-on `{v}` (expected `error` or `warning`)");
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
+    }
+    let interval = match args.interval.as_deref() {
+        None => DEFAULT_WATCH_INTERVAL_SECS,
+        Some(v) => match v.parse::<f64>() {
+            Ok(secs) if secs.is_finite() && secs >= 0.0 => secs,
+            _ => {
+                eprintln!("veridex: invalid --interval `{v}` (expected seconds, e.g. 2 or 0.5)");
+                return ExitCode::from(EXIT_TOOL_ERROR);
+            }
+        },
+    };
+    let max_ticks = match args.iterations.as_deref() {
+        None => None,
+        Some(v) => match v.parse::<u64>() {
+            Ok(n) if n > 0 => Some(n),
+            _ => {
+                eprintln!("veridex: invalid --iterations `{v}` (expected a positive integer)");
+                return ExitCode::from(EXIT_TOOL_ERROR);
+            }
+        },
+    };
+
+    let config = match load_config(args.config.as_deref()) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("veridex: {e}");
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
+    };
+    let engine = match veridex_core::checks::default_engine() {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("veridex: {e}");
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
+    };
+    if let Err(e) = config.validate_check_ids(engine.check_ids()) {
+        eprintln!("veridex: {e}");
+        return ExitCode::from(EXIT_TOOL_ERROR);
+    }
+    let ingest_opts = match ingest_options(&args) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("veridex: {e}");
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
+    };
+    let run_config = config.to_run_config();
+    let registry = veridex_core::default_registry();
+    let source = Source::Local(PathBuf::from(path));
+    let watched = std::path::Path::new(path);
+
+    if !args.json {
+        println!("Watching {path} — polling every {interval}s. Nothing is written to the dataset.");
+    }
+
+    let mut previous: Option<serde_json::Value> = None;
+    let mut last_fingerprint: Option<String> = None;
+    let mut last_status: Option<Status> = None;
+    let mut tick: u64 = 0;
+    loop {
+        tick += 1;
+        let current = match veridex_core::watch::fingerprint(watched) {
+            Ok(f) => Some(f),
+            Err(e) => {
+                // The path can legitimately vanish mid-watch (a recorder rotating a directory).
+                // Say so and keep watching; the next tick may find it back.
+                eprintln!("veridex: cannot read {path}: {e}");
+                None
+            }
+        };
+        let changed = current.is_some() && current != last_fingerprint;
+        if changed {
+            last_fingerprint = current;
+            match veridex_core::run_check_with(
+                &registry,
+                &source,
+                args.format.as_deref(),
+                &ingest_opts,
+                &run_config,
+            ) {
+                Err(e) => {
+                    eprintln!("veridex: {e} — still watching");
+                }
+                Ok(out) => {
+                    last_status = Some(out.verdict.status);
+                    let report: serde_json::Value = serde_json::from_str(
+                        &veridex_core::render_json(&out.verdict, Some(out.trust.clone())),
+                    )
+                    .expect("the report renderer emits JSON");
+                    if args.json {
+                        // One JSON object per line (JSONL): a stream has no single closing bracket,
+                        // so a consumer can read it incrementally as the recording proceeds.
+                        let changes = previous.as_ref().map(|old| {
+                            serde_json::from_str::<serde_json::Value>(
+                                &veridex_core::render_diff_json(old, &report),
+                            )
+                            .expect("the diff renderer emits JSON")
+                        });
+                        let doc = serde_json::json!({
+                            "schema": WATCH_SCHEMA_VERSION,
+                            "tick": tick,
+                            "report": report,
+                            "changes": changes,
+                        });
+                        println!(
+                            "{}",
+                            serde_json::to_string(&doc).expect("watch doc serializes")
+                        );
+                    } else if let Some(old) = &previous {
+                        let diff = veridex_core::diff_reports(old, &report);
+                        print!("\n[tick {tick}] {}", veridex_core::render_diff(&diff));
+                    } else {
+                        print!(
+                            "\n{}",
+                            veridex_core::render_terminal(&out.verdict, Some(out.trust), 10)
+                        );
+                    }
+                    previous = Some(report);
+                }
+            }
+            // A watch is read as it runs, and stdout is block-buffered when it is a pipe.
+            let _ = std::io::stdout().flush();
+        }
+        if max_ticks.is_some_and(|n| tick >= n) {
+            break;
+        }
+        if interval > 0.0 {
+            std::thread::sleep(std::time::Duration::from_secs_f64(interval));
+        }
+    }
+
+    let fail_on_warning = match args.fail_on.as_deref() {
+        Some("warning") => true,
+        Some(_) => false,
+        None => config.fail_on == veridex_core::FailOn::Warning,
+    };
+    match last_status {
+        Some(status) => ExitCode::from(exit_code_for_status(status, fail_on_warning)),
+        // No verdict was ever produced, so there is no status to report. Exiting 0 here would tell
+        // a CI job the dataset passed when nothing was ever validated.
+        None => {
+            eprintln!("veridex: watch completed no validation of {path}");
+            ExitCode::from(EXIT_TOOL_ERROR)
+        }
+    }
+}
+
 fn cmd_diff(rest: &[String]) -> ExitCode {
     // Parse through the shared validator like every other command. Scanning the raw argv for known
     // flags meant an unknown one was silently dropped, so `--fail-on-regresion` (one letter short)
@@ -1627,7 +1856,7 @@ fn print_help() {
     println!("OPTIONS:");
     println!("    --format <fmt>       force an adapter (e.g. mcap) instead of autodetecting");
     println!(
-        "    --json               machine-readable JSON output (check, inspect, diff, checks)"
+        "    --json               machine-readable JSON output (check, inspect, diff, checks, watch)"
     );
     println!("    --sarif              SARIF 2.1.0 output for CI code scanning (check)");
     println!("    --html               self-contained HTML report (check)");
@@ -1640,6 +1869,10 @@ fn print_help() {
         "    --fail-on <sev>      check failure threshold: error (default) or warning
     --min-score <0-100>  fail (exit 20) if the trust score is below this (check)
     --fail-on-regression fail (exit 20) if the new report introduced findings or a lower score (diff)"
+    );
+    println!(
+        "    --interval <secs>    how often watch polls for a change (default 2)
+    --iterations <n>     stop watch after n polling ticks (default: until interrupted)"
     );
     println!("    --config <file>      veridex.toml (auto-discovered in cwd if present)");
     println!("    --profile <name>     policy profile to judge against: world-model-ready (check, certify)");

@@ -1165,22 +1165,37 @@ fn a_profile_verdict_reaches_the_machine_readable_outputs() {
     assert!(doc.get("readiness").is_none());
 }
 
+/// The command names `veridex --help` advertises, read from the `COMMANDS` table in the CLI source.
+fn commands_from_source() -> Vec<String> {
+    let source = include_str!("../src/main.rs");
+    let start = source.find("const COMMANDS").expect("COMMANDS table");
+    let block = &source[start..source[start..].find("];").expect("table ends") + start];
+    let mut out: Vec<String> = block
+        .match_indices('"')
+        .filter_map(|(i, _)| {
+            let tail = &block[i + 1..];
+            tail.find('"').map(|q| tail[..q].to_string())
+        })
+        // Command names only: the second element of each tuple is a description, which has spaces.
+        .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_lowercase()))
+        .collect();
+    out.sort();
+    out.dedup();
+    assert!(out.len() >= 8, "the COMMANDS table did not parse: {out:?}");
+    out
+}
+
 /// `--help` is listed under OPTIONS in the usage block, so `veridex certify --help` reads as
 /// supported. Every command rejected it with "unknown option `--help`" and exit 2, because each
 /// command's flag allow-list names only the flags it does something *with* — and `--help` is not
 /// one of those anywhere. Asking a tool how to use it should not be a tool error.
+///
+/// The command list is read out of `COMMANDS` in the source rather than retyped here: a hand-kept
+/// copy is extended by hand, and every miss is silent — a new command would simply not be covered.
 #[test]
 fn every_command_accepts_help() {
-    for cmd in [
-        "check",
-        "inspect",
-        "checks",
-        "certify",
-        "verify",
-        "keygen",
-        "diff",
-        "provenance",
-    ] {
+    for cmd in commands_from_source() {
+        let cmd = cmd.as_str();
         let (code, stdout, _) = run(&[cmd, "--help"]);
         assert_eq!(code, 0, "`veridex {cmd} --help` must not be an error");
         assert!(
@@ -1195,4 +1210,228 @@ fn every_command_accepts_help() {
     let (code, _, stderr) = run(&["check", "--bogus"]);
     assert_eq!(code, 2, "an unknown flag is still a tool error");
     assert!(stderr.contains("--bogus"), "{stderr}");
+}
+
+// ---------------------------------------------------------------------------
+// `veridex watch` — validate a dataset while it is being recorded.
+// ---------------------------------------------------------------------------
+
+/// Write the five-sensor autonomy-rig demo to `path` with the workspace generator, as the rig tests
+/// above do. It stands in for the *second* state of a dataset that changes mid-watch: a different
+/// finding set from the manipulation demo's, so the diff a watch prints is a real one.
+fn write_av_mcap(path: &std::path::Path) {
+    let status = std::process::Command::new(env!("CARGO"))
+        .args([
+            "run",
+            "--quiet",
+            "-p",
+            "veridex-core",
+            "--example",
+            "make_demo_mcap",
+            "--",
+        ])
+        .arg(path)
+        .arg("av")
+        .status()
+        .expect("run the demo generator");
+    assert!(status.success(), "the demo generator must succeed");
+}
+
+#[test]
+fn watch_reports_once_and_stays_quiet_while_nothing_changes() {
+    // The first tick has nothing to compare against, so it prints the whole report. Later ticks over
+    // an unchanged dataset must print *nothing*: a watch that re-prints its report every two seconds
+    // is unreadable, and a watch that re-ingests a growing log every tick is a load generator.
+    let (code, stdout, _) = run(&[
+        "watch",
+        &fixture_dataset(),
+        "--iterations",
+        "3",
+        "--interval",
+        "0",
+    ]);
+    assert_eq!(
+        code, 20,
+        "the exit code is the last validation's, as `check`"
+    );
+    assert_eq!(
+        stdout.matches("Veridex report").count(),
+        1,
+        "exactly one full report, on the first tick: {stdout}"
+    );
+    assert!(
+        !stdout.contains("Veridex diff"),
+        "an unchanged dataset must produce no diff: {stdout}"
+    );
+    assert!(stdout.contains("TEMPORAL.CLOCK_SKEW"));
+}
+
+#[test]
+fn watch_surfaces_the_findings_a_change_introduced() {
+    // The spec scenario: a dataset is being recorded, and new findings appear as it grows. Here the
+    // "recording" swaps in the autonomy rig, whose finding set differs from the manipulation demo's.
+    let dir = temp_dir("watchchange");
+    let dataset = dir.join("recording.mcap");
+    std::fs::copy(fixture_dataset(), &dataset).expect("seed the recording");
+    // Built before the watch starts: the generator shells out to cargo, which is far slower than
+    // the poll interval and would otherwise decide when the change lands.
+    let next = dir.join("next.mcap");
+    write_av_mcap(&next);
+    let target = dataset.clone();
+    let writer = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        std::fs::copy(&next, &target).expect("the recorder writes");
+    });
+
+    let (code, stdout, _) = run(&[
+        "watch",
+        dataset.to_str().unwrap(),
+        "--iterations",
+        "8",
+        "--interval",
+        "0.2",
+    ]);
+    writer.join().expect("writer thread");
+
+    assert_eq!(code, 20, "the rig fixture fails too, so the exit stays 20");
+    assert!(
+        stdout.contains("Veridex diff"),
+        "a changed dataset must be re-validated and diffed: {stdout}"
+    );
+    assert!(
+        stdout.contains("Introduced:") && stdout.contains("AUTONOMY.RIG_SYNC"),
+        "the findings the change introduced must be named: {stdout}"
+    );
+    assert!(
+        stdout.contains("Resolved:") && stdout.contains("TEMPORAL.CLOCK_SKEW"),
+        "and the ones it resolved: {stdout}"
+    );
+}
+
+#[test]
+fn watch_survives_a_dataset_that_is_mid_write() {
+    // A half-written file is an ordinary moment in a recording, not a reason to exit: aborting would
+    // end the watch seconds after a real recording started. The verdict that stands is the last one
+    // that completed, so the exit code still speaks for a real validation.
+    let dir = temp_dir("watchpartial");
+    let dataset = dir.join("recording.mcap");
+    std::fs::copy(fixture_dataset(), &dataset).expect("seed the recording");
+    let target = dataset.clone();
+    let writer = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        // Truncated mid-record: exactly what a reader sees between a recorder's writes.
+        let bytes = std::fs::read(&target).expect("read");
+        std::fs::write(&target, &bytes[..bytes.len() / 2]).expect("truncate");
+    });
+
+    let (code, stdout, stderr) = run(&[
+        "watch",
+        dataset.to_str().unwrap(),
+        "--iterations",
+        "8",
+        "--interval",
+        "0.2",
+    ]);
+    writer.join().expect("writer thread");
+
+    assert!(
+        stderr.contains("still watching"),
+        "an unreadable moment must be reported and survived: {stderr}"
+    );
+    assert_eq!(
+        code, 20,
+        "the exit code is the last *completed* validation's, not the failed read's"
+    );
+    assert!(stdout.contains("Veridex report"));
+}
+
+#[test]
+fn watch_json_is_one_document_per_validation() {
+    let (code, stdout, _) = run(&[
+        "watch",
+        &fixture_dataset(),
+        "--iterations",
+        "2",
+        "--interval",
+        "0",
+        "--json",
+    ]);
+    assert_eq!(code, 20);
+    let lines: Vec<&str> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(
+        lines.len(),
+        1,
+        "one validation happened (nothing changed on tick 2), so one document: {stdout}"
+    );
+    let doc: serde_json::Value = serde_json::from_str(lines[0]).expect("each line is one JSON doc");
+    assert_eq!(doc["schema"], "veridex.watch/1");
+    assert_eq!(doc["tick"], 1);
+    assert_eq!(doc["report"]["schema"], "veridex.report/1");
+    assert!(
+        doc["changes"].is_null(),
+        "the first validation has nothing to diff against"
+    );
+}
+
+#[test]
+fn a_watch_that_validated_nothing_is_a_tool_error() {
+    // Exiting 0 here would tell a CI job the dataset passed when nothing was ever read.
+    let dir = temp_dir("watchmissing");
+    let (code, _, stderr) = run(&[
+        "watch",
+        dir.join("no-such-dataset").to_str().unwrap(),
+        "--iterations",
+        "2",
+        "--interval",
+        "0",
+    ]);
+    assert_eq!(code, 2);
+    assert!(
+        stderr.contains("completed no validation"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
+fn watch_rejects_flags_it_would_not_honor_and_values_it_cannot_use() {
+    let dataset = fixture_dataset();
+    for (extra, expected) in [
+        // Flags `watch` would silently ignore. A score gate over a moving dataset and a sample of
+        // the episodes recorded *first* are both answers to a question a watch is not asking.
+        (
+            vec!["--min-score", "90", "--iterations", "1"],
+            "watch does not support --min-score",
+        ),
+        (
+            vec!["--sample-episodes", "1", "--iterations", "1"],
+            "watch does not support --sample-episodes",
+        ),
+        // Values it cannot act on. Each would otherwise fall back to a default, which is the
+        // failure this whole parser exists to prevent.
+        (vec!["--iterations", "0"], "invalid --iterations `0`"),
+        (
+            vec!["--interval", "soon", "--iterations", "1"],
+            "invalid --interval `soon`",
+        ),
+        (
+            vec!["--fail-on", "warn", "--iterations", "1"],
+            "invalid --fail-on `warn`",
+        ),
+    ] {
+        let mut argv = vec!["watch", dataset.as_str()];
+        argv.extend(extra.iter().copied());
+        let (code, _, stderr) = run(&argv);
+        assert_eq!(code, 2, "`{extra:?}` must be a tool error");
+        assert!(
+            stderr.contains(expected),
+            "unexpected stderr for {extra:?}: {stderr}"
+        );
+    }
+}
+
+#[test]
+fn watch_without_a_path_is_a_tool_error() {
+    let (code, _, stderr) = run(&["watch"]);
+    assert_eq!(code, 2);
+    assert!(stderr.contains("missing dataset path"));
 }

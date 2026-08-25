@@ -28,6 +28,7 @@ pub mod profile;
 pub mod report;
 pub mod scenario;
 pub mod simref;
+pub mod watch;
 
 pub use adapter::lerobot::LeRobotAdapter;
 pub use adapter::mcap::McapAdapter;
@@ -54,6 +55,7 @@ pub use report::{
     render_json_with_readiness, render_sarif, render_sarif_with_readiness, render_terminal,
     INSPECT_SCHEMA_VERSION, REPORT_SCHEMA_VERSION,
 };
+pub use watch::{fingerprint, fingerprint_within, MAX_WATCH_ENTRIES};
 
 /// The version of `veridex-core`, from Cargo.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

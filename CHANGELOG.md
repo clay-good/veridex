@@ -164,6 +164,43 @@ fails without it.*
 
 ### Added
 
+- **`veridex watch` — validation while the data is still being recorded.** The last command in the
+  CLI spec's minimum surface that had no implementation. Each tick fingerprints the dataset on disk
+  (names, kinds, sizes, mtimes; nothing is opened, and a symlink out of the dataset is never
+  followed, so activity in a file no adapter would read cannot wake it) and re-validates only when
+  something moved — re-ingesting a growing multi-gigabyte log every two seconds is not a change
+  detector, it is a load generator. The first pass prints the whole report; every pass after it
+  prints only the delta — findings introduced, findings resolved, and how the trust score moved —
+  through the same `diff` renderer `veridex diff` uses.
+
+  Three things a recording dataset does that a finished one does not, and what each meant for the
+  design:
+
+  - *It is unreadable part of the time.* A half-written shard or a manifest mid-rewrite is an
+    ordinary moment in a recording, so an ingest error is printed and the watch continues. Exiting
+    there would end a watch seconds after a real recording started.
+  - *It never ends on its own.* The loop runs until interrupted; `--iterations <n>` bounds it to `n`
+    polling ticks, which is what makes it a CI step and what makes it testable. The exit code is the
+    last **completed** validation's, under the same `--fail-on` threshold as `check` — and a watch
+    that never completed one is exit 2, not a pass, because exiting 0 there would tell a CI job the
+    dataset passed when nothing was ever read.
+  - *Its output is read as it arrives.* `--json` emits one document per validation, one per line
+    (`veridex.watch/1`, carrying the report and the diff against the previous one), because a stream
+    has no closing bracket; stdout is flushed each tick, since it is block-buffered into a pipe.
+
+  What it is not, stated because the spec's word is "incrementally": each pass re-runs the whole
+  catalog over the whole dataset. What is incremental is the *trigger* (only a change re-validates)
+  and the *output* (only the delta is printed) — not the validation. On a dataset large enough for a
+  full pass to hurt, raise `--interval`.
+
+  `--min-score` and the sampling flags are refused rather than accepted-and-ignored: a score gate is
+  a claim about a whole dataset, and a sample of the episodes recorded *first* is the opposite of
+  what a watch is looking at. Six CLI tests and six unit tests, each proven to fail against the
+  mutation it guards (ignore the fingerprint, abort on a read error, never diff, pass when nothing
+  validated, follow the symlink, drop size/mtime from the digest). The `--help` coverage test now
+  reads its command list out of the source's `COMMANDS` table instead of a hand-kept copy, which had
+  silently not covered the new command.
+
 - **Metadata-only ingestion** (`veridex check --metadata-only`, `veridex.check(..., metadata_only=True)`),
   the last unbuilt option in the ingestion spec, for LeRobot. The CDM is built from `meta/` alone: the
   declared episode set and per-episode lengths, every feature's dtype/shape/rate, `meta/stats.json`,
