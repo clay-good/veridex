@@ -1708,7 +1708,10 @@ fn is_regression(diff: &veridex_core::ReportDiff) -> bool {
     // A check that crashed in the new run is a regression even though it introduces no finding and
     // *raises* the score: an errored check costs 10 points where the error finding it suppressed
     // cost 15, so the gate saw the vanished finding as resolved and the score as improved.
+    // One redacted report and one not is the same kind of mismatch: every identifier-bearing
+    // finding differs textually, so the comparison is between documents rather than runs.
     diff.coverage_differs()
+        || diff.redaction_differs()
         || !diff.introduced.is_empty()
         || !diff.newly_errored().is_empty()
         || diff.score_delta().is_some_and(|d| d < 0)
@@ -2000,6 +2003,14 @@ fn cmd_diff(rest: &[String]) -> ExitCode {
     // For CI: optionally fail when the new report regressed — any finding introduced, or a lower
     // trust score. Without the flag, diff is purely informational and always exits 0.
     if fail_on_regression && is_regression(&diff) {
+        if diff.redaction_differs() {
+            eprintln!(
+                "veridex: regression — one of these reports is redacted and the other is not, so \
+                 every finding naming a stream, a task, or a path differs textually and the \
+                 comparison is between documents rather than runs"
+            );
+            return ExitCode::from(EXIT_FAIL);
+        }
         if diff.coverage_differs() {
             eprintln!(
                 "veridex: regression — the two reports cover different amounts of their dataset \
@@ -2161,6 +2172,8 @@ mod tests {
             new_coverage: Some("full".into()),
             old_errored: vec![],
             new_errored: vec![],
+            old_redacted: false,
+            new_redacted: false,
         };
         // No change → not a regression.
         assert!(!super::is_regression(&base));
@@ -2187,6 +2200,13 @@ mod tests {
             ..base.clone()
         };
         assert!(super::is_regression(&narrowed));
+        // And so is one redacted report against a plain one: the same findings appear as introduced
+        // and resolved at once, so the counts describe substitutions rather than the data.
+        let redacted = veridex_core::ReportDiff {
+            new_redacted: true,
+            ..base.clone()
+        };
+        assert!(super::is_regression(&redacted));
         // An introduced finding → regression, even at an unchanged score.
         let mut with_finding = base.clone();
         with_finding.introduced = vec![json!({"code": "X"})];

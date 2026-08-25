@@ -188,7 +188,9 @@ and label text, and provenance values are replaced with stable placeholders (`st
 consistent within one report and meaningless outside it, and the report says so — as a finding, so
 the disclosure travels into JSON, SARIF and HTML too. Every measurement stays: a 210 ms drift, a 12σ
 outlier, the score, the status, and the CDM content hash, which is what lets whoever holds the data
-match the report to it. `certify` refuses it: a certificate attests a dataset by name and hash.
+match the report to it. `certify` refuses it: a certificate attests a dataset by name and hash. So does `diff` — comparing a
+redacted report with a plain one compares documents, not runs, and `--fail-on-regression` treats that
+mismatch as a regression.
 
 `watch` runs that same check on a **dataset that is still being recorded**. Each tick it fingerprints
 the dataset's files (names, sizes, modification times — nothing is opened, and a symlink out of the

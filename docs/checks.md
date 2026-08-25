@@ -324,7 +324,10 @@ than it hides anything), and a name that is also an ordinary word may be replace
 identifier — over-redaction, which is the safe direction. Read a redacted report as one you may
 share, not as proof that nothing about the data can be inferred from it. `certify` refuses `--redact`
 outright: a certificate attests a dataset by name and hash, and a redacted one would say less than it
-attests.
+attests. And `veridex diff` refuses to compare a redacted report against a plain one — every finding
+naming a stream or a path differs textually between them, so the same findings appear as *introduced*
+and *resolved* at once; `--fail-on-regression` treats the mismatch as a regression, exactly as it
+treats a coverage change.
 
 ## Scope disclosure
 

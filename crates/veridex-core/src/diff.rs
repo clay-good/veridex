@@ -23,6 +23,10 @@ pub struct ReportDiff {
     pub old_coverage: Option<String>,
     /// See [`ReportDiff::old_coverage`].
     pub new_coverage: Option<String>,
+    /// Whether the old report was redacted for sharing (carries `REPORT.REDACTED`).
+    pub old_redacted: bool,
+    /// See [`ReportDiff::old_redacted`].
+    pub new_redacted: bool,
     /// Ids of checks that crashed instead of producing findings, in the old report.
     pub old_errored: Vec<String>,
     /// See [`ReportDiff::old_errored`].
@@ -51,6 +55,18 @@ impl ReportDiff {
             // One report predating the coverage field is not evidence of a change.
             _ => false,
         }
+    }
+
+    /// Whether exactly one of the two reports was redacted.
+    ///
+    /// A redacted report substitutes every identifier it quotes, so *every* finding that names a
+    /// stream, a task, or a path differs textually from its unredacted twin. Diffed against one
+    /// another the same findings appear once under `introduced` and once under `resolved`, the
+    /// counts are doubled, and a `--fail-on-regression` gate fires on a dataset that did not
+    /// change — or, with the redacted report as the *old* one, a real regression hides inside the
+    /// noise. Like a coverage change, this is a statement about the two documents, not the data.
+    pub fn redaction_differs(&self) -> bool {
+        self.old_redacted != self.new_redacted
     }
 
     /// Checks that crashed in the new report and did not in the old one.
@@ -160,6 +176,8 @@ pub fn diff_reports(old: &Value, new: &Value) -> ReportDiff {
         unchanged,
         old_score: trust_score(old),
         new_score: trust_score(new),
+        old_redacted: is_redacted(old),
+        new_redacted: is_redacted(new),
         old_coverage: coverage_kind(old),
         new_coverage: coverage_kind(new),
         old_errored: errored_checks(old),
@@ -168,12 +186,33 @@ pub fn diff_reports(old: &Value, new: &Value) -> ReportDiff {
 }
 
 /// Render a diff as a human-readable summary.
+/// Whether a report carries the redaction disclosure.
+fn is_redacted(report: &Value) -> bool {
+    report
+        .get("verdict")
+        .and_then(|v| v.get("findings"))
+        .and_then(Value::as_array)
+        .is_some_and(|findings| {
+            findings.iter().any(|f| {
+                f.get("code").and_then(Value::as_str) == Some(crate::redact::REDACTION_CODE)
+            })
+        })
+}
+
 pub fn render_diff(diff: &ReportDiff) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
 
     let _ = writeln!(out, "Veridex diff");
     // Stated before anything else, because it invalidates everything after it.
+    if diff.redaction_differs() {
+        let _ = writeln!(
+            out,
+            "  Redaction: CHANGED — one of these reports is redacted and the other is not. Every \
+             finding that names a stream, a task, or a path differs textually between them, so the \
+             counts below are of substitutions, not of changes to the data."
+        );
+    }
     if diff.coverage_differs() {
         let _ = writeln!(
             out,
@@ -243,6 +282,13 @@ pub fn render_diff_json(old: &Value, new: &Value) -> String {
             "old": diff.old_coverage,
             "new": diff.new_coverage,
             "changed": diff.coverage_differs(),
+        },
+        // Same reason coverage leads: one redacted report and one not makes every identifier-bearing
+        // finding look introduced *and* resolved, which is a fact about the documents, not the data.
+        "redaction": {
+            "old": diff.old_redacted,
+            "new": diff.new_redacted,
+            "changed": diff.redaction_differs(),
         },
         "introduced": diff.introduced,
         "resolved": diff.resolved,

@@ -102,3 +102,51 @@ fn a_partial_report_swapped_for_a_full_one_is_a_regression_not_a_fix() {
     let old_style = serde_json::json!({ "verdict": { "findings": [] } });
     assert!(!veridex_core::diff_reports(&old_style, &full).coverage_differs());
 }
+
+/// A redacted report substitutes every identifier it quotes, so diffed against its unredacted twin
+/// the *same* findings appear once as introduced and once as resolved. Read as a comparison of runs
+/// that is nonsense in both directions: a gate fires on a dataset that did not change, and — with
+/// the redacted report as the old one — a real regression hides in the noise.
+#[test]
+fn one_redacted_report_and_one_not_is_a_comparison_of_documents() {
+    let plain = serde_json::json!({
+        "schema": "veridex.report/1",
+        "verdict": { "coverage": { "kind": "full" }, "findings": [
+            {"code": "TEMPORAL.CLOCK_SKEW", "severity": "error",
+             "message": "streams `/camera/image` and `/joint_states` drift by 210.0 ms"}
+        ]},
+        "trust_score": { "score": 76 }
+    });
+    let redacted = serde_json::json!({
+        "schema": "veridex.report/1",
+        "verdict": { "coverage": { "kind": "full" }, "findings": [
+            {"code": "REPORT.REDACTED", "severity": "info", "message": "this report was redacted"},
+            {"code": "TEMPORAL.CLOCK_SKEW", "severity": "error",
+             "message": "streams `stream#1` and `stream#2` drift by 210.0 ms"}
+        ]},
+        "trust_score": { "score": 76 }
+    });
+
+    let diff = veridex_core::diff_reports(&plain, &redacted);
+    assert!(!diff.old_redacted && diff.new_redacted);
+    assert!(diff.redaction_differs(), "the mismatch must be detected");
+    // The same finding, counted twice — which is exactly why the mismatch has to be said out loud.
+    assert_eq!(diff.introduced.len(), 2);
+    assert_eq!(diff.resolved.len(), 1);
+
+    let rendered = veridex_core::render_diff(&diff);
+    assert!(
+        rendered.starts_with("Veridex diff\n  Redaction: CHANGED"),
+        "the mismatch leads the report, because it invalidates everything after it: {rendered}"
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_str(&veridex_core::render_diff_json(&plain, &redacted)).expect("JSON");
+    assert_eq!(json["redaction"]["changed"], true);
+    assert_eq!(json["redaction"]["new"], true);
+
+    // Two reports redacted the same way compare normally.
+    let both = veridex_core::diff_reports(&redacted, &redacted);
+    assert!(!both.redaction_differs());
+    assert!(both.introduced.is_empty() && both.resolved.is_empty());
+}

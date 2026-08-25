@@ -1869,3 +1869,46 @@ fn print_config_refuses_the_flags_it_would_ignore() {
     let (code, _, _) = run(&["check", "--print-config", "--json"]);
     assert_eq!(code, 0);
 }
+
+#[test]
+fn a_regression_gate_refuses_a_redacted_report_against_a_plain_one() {
+    // The gate exists to compare two runs. One redacted document and one not is a comparison of
+    // documents: the same findings appear as introduced *and* resolved, so the gate fires on a
+    // dataset that did not change — and in the other direction a real regression hides in the noise.
+    let dir = temp_dir("diff-redaction");
+    let dataset = fixture_dataset();
+    let plain = dir.join("plain.json");
+    let redacted = dir.join("redacted.json");
+    for (path, args) in [
+        (&plain, vec!["check", "--json", &dataset]),
+        (&redacted, vec!["check", "--json", "--redact", &dataset]),
+    ] {
+        let (_, stdout, _) = run(&args);
+        std::fs::write(path, stdout).expect("write report");
+    }
+
+    let (code, stdout, stderr) = run(&[
+        "diff",
+        "--fail-on-regression",
+        plain.to_str().unwrap(),
+        redacted.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 20, "the mismatch must fail the gate");
+    assert!(
+        stdout.contains("Redaction: CHANGED"),
+        "and lead the report: {stdout}"
+    );
+    assert!(
+        stderr.contains("one of these reports is redacted"),
+        "{stderr}"
+    );
+
+    // Two redacted reports of the same dataset compare cleanly and pass.
+    let (code, _, _) = run(&[
+        "diff",
+        "--fail-on-regression",
+        redacted.to_str().unwrap(),
+        redacted.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+}

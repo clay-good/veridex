@@ -10,6 +10,18 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **`diff` read a redacted report as a dataset that changed everywhere.** Redaction substitutes every
+  identifier a finding quotes, so a redacted report and its unredacted twin describe the same run in
+  different words — and `diff` compared them as findings. On this repo's demo dataset that is four
+  findings "introduced" and three "resolved" between two runs of the same bytes, and
+  `--fail-on-regression` exits 20 on a dataset nobody touched. The other direction is worse: with the
+  redacted report as the *old* one, a genuine regression hides inside the substitution noise.
+
+  `diff` now detects the mismatch (the `REPORT.REDACTED` disclosure is in exactly one of the two),
+  leads the report with it the way it leads with a coverage change, carries it in the JSON diff, and
+  treats it as a regression. Two reports redacted the same way compare normally — the placeholders
+  are stable for a given dataset, which is what makes that possible.
+
 *The near-duplicate check, audited against the case it exists for, an hour after it shipped.*
 
 - **A recording uploaded forty times went unreported, and then unmentioned.** The check skips a
