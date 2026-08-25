@@ -7,6 +7,7 @@
 
 pub mod coverage;
 pub mod document;
+pub mod label;
 pub mod render;
 pub mod score;
 pub mod signing;
@@ -16,6 +17,7 @@ pub use document::{
     Certificate, CriterionResult, FindingsSummary, Issuance, ReadinessReport,
     CERTIFICATE_SCHEMA_VERSION,
 };
+pub use label::render_label;
 pub use render::{
     readiness_verdict, render_readiness, render_verified, status_label, verified_json,
 };

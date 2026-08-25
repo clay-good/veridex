@@ -110,6 +110,7 @@ veridex inspect    <dataset>                                      # summarize th
 veridex checks                                                    # list the built-in check catalog
 veridex diff       <old.json> <new.json>                         # diff two report JSONs
 veridex watch      <dataset> [--interval <secs>] [--iterations <n>]  # re-validate as it records
+veridex label      --certificate c.json --key pub.key            # a Markdown label for a dataset card
 veridex keygen     issuer                                        # write issuer (secret) + issuer.pub
 ```
 
@@ -203,6 +204,15 @@ moment in a recording, not a reason to quit: the read error is printed and the w
 it with `--iterations <n>` to make it a CI step (the exit code is the last completed validation's,
 under the same `--fail-on` threshold as `check`), or use `--json` for one JSON document per line as
 the recording proceeds. Like every other command, it only reads: nothing is written to the dataset.
+
+`veridex label` turns a certificate into the form a person actually meets it in: a compact Markdown
+**trust label** — grade, score, findings by family, provenance coverage, the bound content hash, who
+issued it and when — to paste into a dataset card, a README, or a PR. It renders from the signed
+certificate alone, so it cannot describe a different verdict than the one that was signed, and it
+refuses to render at all from a certificate that does not verify. A label made without a trusted
+issuer key says so *in the label*, because that caveat has to survive being pasted somewhere else.
+Every label ends with the sentence that keeps it honest: a certificate is a statement of fact about a
+dataset, not an endorsement of it.
 
 Drop a [`veridex.toml`](docs/veridex.toml.example) in your repo (or pass `--config`) to select
 categories, disable checks, override per-check severities, tune numeric tolerances (clock-skew,
@@ -415,7 +425,7 @@ print(manifest["verdict"]["coverage"])
 ```
 
 Python mirrors the CLI's *operations* — `check`, `certify`, `verify`, `provenance`, `inspect`, `diff`,
-`effective_config`.
+`effective_config`, `label`.
 `watch` is not among them by design: it is a loop around `check`, not an operation, and a Python
 caller already owns their own loop.
 
@@ -455,9 +465,9 @@ neutrality gate (the same logical dataset yields equivalent CDMs as LeRobot v3 a
 reference extraction** (OpenSCENARIO / OpenDRIVE / OSI / simulator, with the version read from the
 referenced sidecar's own ASAM header); Croissant + W3C PROV provenance emit; Ed25519 **certificate signing with
 offline verification** (tamper + transplant rejection); a working CLI (`check`, `inspect`, `checks`,
-`certify`, `verify`, `provenance`, `keygen`, `diff`, `watch`, `check --print-config`,
+`certify`, `verify`, `provenance`, `keygen`, `diff`, `watch`, `label`, `check --print-config`,
 `check --redact`) — see the [Quickstart](#quickstart); and **Python
-bindings** (`import veridex`, exposing `check`/`check_sarif`/`check_html`/`inspect`/`content_hash`/`catalog`/`provenance`/`diff`/`keygen`/`certify`/`verify`/`effective_config`/`version`) that call the same
+bindings** (`import veridex`, exposing `check`/`check_sarif`/`check_html`/`inspect`/`content_hash`/`catalog`/`provenance`/`diff`/`keygen`/`certify`/`verify`/`effective_config`/`label`/`version`) that call the same
 core pipeline, with a CLI⇄Python parity test run in CI; and **sampled ingestion** (`--sample-episodes`
 / `--sample-fraction`), resolved before any data is read and reported as partial coverage everywhere
 it could otherwise be mistaken for a full check; and **metadata-only ingestion** (`--metadata-only`,

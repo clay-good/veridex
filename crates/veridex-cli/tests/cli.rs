@@ -1978,3 +1978,124 @@ fn a_loosening_profile_is_refused_by_name_with_its_reason() {
         "unexpected: {stderr}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// `veridex label` — the certificate as a dataset card reads it.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_label_says_what_the_certificate_says_and_nothing_more() {
+    let dir = temp_dir("label");
+    let key = dir.join("issuer");
+    let cert = dir.join("c.json");
+    assert_eq!(run(&["keygen", key.to_str().unwrap()]).0, 0);
+    // `certify` exits with the verdict it signed; the demo fails, and the certificate is written.
+    let (code, _, _) = run(&[
+        "certify",
+        &fixture_dataset(),
+        "--key",
+        key.to_str().unwrap(),
+        "--out",
+        cert.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 20);
+
+    let (code, label, stderr) = run(&[
+        "label",
+        "--certificate",
+        cert.to_str().unwrap(),
+        "--key",
+        &format!("{}.pub", key.to_str().unwrap()),
+    ]);
+    assert_eq!(code, 0, "unexpected stderr: {stderr}");
+
+    // The facts a dataset card needs, from the signed document.
+    for expected in [
+        "## Veridex trust label",
+        "Grade C — 76/100",
+        "| Dataset | `demo` |",
+        "| Findings | 1 error · 1 warning · 3 info |",
+        "| Provenance |",
+        "veridex verify",
+    ] {
+        assert!(label.contains(expected), "missing `{expected}`:\n{label}");
+    }
+    // And the sentence that keeps it from reading as an endorsement.
+    assert!(
+        label.contains("statement of fact") && label.contains("not an endorsement"),
+        "{label}"
+    );
+    // With a trusted key, no unverified-issuer caveat.
+    assert!(!label.contains("Issuer not verified"), "{label}");
+}
+
+#[test]
+fn a_label_carries_its_own_caveats() {
+    // The caveats have to travel with the pasted text: whoever reads the label is not the person who
+    // ran the command, and will never see the terminal it was produced in.
+    let dir = temp_dir("label-caveats");
+    let key = dir.join("issuer");
+    let cert = dir.join("c.json");
+    assert_eq!(run(&["keygen", key.to_str().unwrap()]).0, 0);
+    let (code, _, _) = run(&[
+        "certify",
+        &fixture_dataset(),
+        "--key",
+        key.to_str().unwrap(),
+        "--out",
+        cert.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 20);
+
+    // No trust decision at all is refused, rather than defaulted either way.
+    let (code, _, stderr) = run(&["label", "--certificate", cert.to_str().unwrap()]);
+    assert_eq!(code, 2);
+    assert!(stderr.contains("needs a trusted issuer"), "{stderr}");
+
+    // Opting out puts the caveat in the label itself.
+    let (code, label, _) = run(&[
+        "label",
+        "--certificate",
+        cert.to_str().unwrap(),
+        "--allow-any-issuer",
+    ]);
+    assert_eq!(code, 0);
+    assert!(label.contains("Issuer not verified"), "{label}");
+}
+
+#[test]
+fn a_tampered_certificate_gets_no_label() {
+    // A label is a paste-ready grade. Rendering one from a document that does not verify would
+    // produce precisely the artifact a forger wants.
+    let dir = temp_dir("label-tampered");
+    let key = dir.join("issuer");
+    let cert = dir.join("c.json");
+    assert_eq!(run(&["keygen", key.to_str().unwrap()]).0, 0);
+    let (code, _, _) = run(&[
+        "certify",
+        &fixture_dataset(),
+        "--key",
+        key.to_str().unwrap(),
+        "--out",
+        cert.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 20);
+
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cert).unwrap()).unwrap();
+    doc["certificate"]["trust_score"]["score"] = serde_json::json!(99);
+    std::fs::write(&cert, doc.to_string()).unwrap();
+
+    let (code, stdout, stderr) = run(&[
+        "label",
+        "--certificate",
+        cert.to_str().unwrap(),
+        "--allow-any-issuer",
+    ]);
+    assert_eq!(code, 20, "a doctored certificate must not produce a label");
+    assert!(
+        stderr.contains("refusing to label an unverified certificate"),
+        "{stderr}"
+    );
+    assert!(!stdout.contains("Veridex trust label"), "{stdout}");
+}

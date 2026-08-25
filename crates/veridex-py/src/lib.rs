@@ -596,6 +596,37 @@ fn effective_config(
     Ok(veridex_core::render_effective_config_json(&inputs))
 }
 
+/// `veridex.label(certificate_json, public_key_hex=None, allow_any_issuer=False) -> str`
+///
+/// Render a signed certificate as a Markdown trust label for a dataset card — the same document
+/// `veridex label` prints.
+///
+/// The signature is verified first: a label rendered from a certificate that does not verify is
+/// exactly the artifact an attacker wants, a paste-ready grade with no provenance behind it. A trust
+/// decision about the issuer is required rather than defaulted, and when it is `allow_any_issuer`
+/// the label itself says the issuer is unverified — that caveat has to survive being pasted.
+#[pyfunction]
+#[pyo3(signature = (certificate_json, public_key_hex=None, allow_any_issuer=false))]
+fn label(
+    certificate_json: &str,
+    public_key_hex: Option<&str>,
+    allow_any_issuer: bool,
+) -> PyResult<String> {
+    let signed: veridex_core::SignedCertificate =
+        serde_json::from_str(certificate_json).map_err(to_py_err)?;
+    if public_key_hex.is_none() && !allow_any_issuer {
+        return Err(PyValueError::new_err(
+            "label needs a trusted issuer: pass public_key_hex, or allow_any_issuer=True to render \
+             a label that says on its face that the issuer is unverified",
+        ));
+    }
+    veridex_core::verify(&signed, None, public_key_hex).map_err(to_py_err)?;
+    Ok(veridex_core::render_label(
+        &signed,
+        public_key_hex.is_some(),
+    ))
+}
+
 /// `veridex.version() -> str`
 #[pyfunction]
 fn version() -> &'static str {
@@ -615,6 +646,7 @@ fn veridex(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(provenance, m)?)?;
     m.add_function(wrap_pyfunction!(diff, m)?)?;
     m.add_function(wrap_pyfunction!(effective_config, m)?)?;
+    m.add_function(wrap_pyfunction!(label, m)?)?;
     m.add_function(wrap_pyfunction!(keygen, m)?)?;
     m.add_function(wrap_pyfunction!(certify, m)?)?;
     m.add_function(wrap_pyfunction!(verify, m)?)?;

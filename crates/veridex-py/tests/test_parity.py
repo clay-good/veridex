@@ -455,3 +455,43 @@ def test_cli_and_python_redacted_reports_agree(tmp_path):
     assert py["verdict"]["cdm_content_hash"] == plain["verdict"]["cdm_content_hash"]
     assert py["trust_score"]["score"] == plain["trust_score"]["score"]
     assert py["verdict"]["status"] == plain["verdict"]["status"]
+
+
+def test_cli_and_python_labels_agree(tmp_path):
+    """The label is what gets pasted into a dataset card; both front-ends must produce one text."""
+    dataset = _demo_dataset(tmp_path)
+    secret = "01" * 32
+    ts = "1700000000"
+    cert_json = veridex.certify(str(dataset), secret, ts)
+    public = veridex.keygen()[1]  # a different key, to prove the trust check bites
+
+    binary = os.environ.get("VERIDEX_BIN", "target/debug/veridex")
+    keyfile = tmp_path / "issuer"
+    keyfile.write_text(secret + "\n")
+    cert_path = tmp_path / "cert.json"
+    cert_path.write_text(cert_json)
+    cli = subprocess.run(
+        [binary, "label", "--certificate", str(cert_path), "--allow-any-issuer"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    py = veridex.label(cert_json, allow_any_issuer=True)
+    assert py == cli, "Python and CLI must render one label"
+    assert "Veridex trust label" in py
+    assert "statement of fact" in py
+    assert "Issuer not verified" in py, "the caveat travels with the text"
+
+    # A trust decision is required, and a wrong key is refused rather than labeled.
+    try:
+        veridex.label(cert_json)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("label must demand a trust decision about the issuer")
+    try:
+        veridex.label(cert_json, public_key_hex=public)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("a certificate from another issuer must not be labeled")

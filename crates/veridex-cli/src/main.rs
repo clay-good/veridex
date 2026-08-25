@@ -57,6 +57,10 @@ const COMMANDS: &[(&str, &str)] = &[
         "watch",
         "re-validate a dataset as it is recorded (--interval <secs>, --iterations <n>)",
     ),
+    (
+        "label",
+        "render a certificate as a Markdown trust label for a dataset card (--certificate <c.json>)",
+    ),
     ("checks", "list the built-in check catalog"),
 ];
 
@@ -369,6 +373,7 @@ fn main() -> ExitCode {
         Some("keygen") => cmd_keygen(&args[1..]),
         Some("diff") => cmd_diff(&args[1..]),
         Some("watch") => cmd_watch(&args[1..]),
+        Some("label") => cmd_label(&args[1..]),
         Some("provenance") => cmd_provenance(&args[1..]),
         Some(cmd) => {
             eprintln!("veridex: unknown command `{cmd}`.");
@@ -1625,6 +1630,97 @@ fn write_secret_key(path: &str, contents: &str) -> std::io::Result<()> {
 #[cfg(not(unix))]
 fn write_secret_key(path: &str, contents: &str) -> std::io::Result<()> {
     std::fs::write(path, contents)
+}
+
+/// `veridex label` — render a signed certificate as a Markdown trust label.
+///
+/// A certificate is a document a machine verifies; a label is the same facts in the form a person
+/// meets them, in a dataset card or a README. That is how a certificate actually travels, so the
+/// label is rendered from the signed certificate alone — no re-run, no dataset — and it cannot
+/// describe a verdict other than the one that was signed.
+///
+/// The signature is checked first. Rendering a label from a certificate that does not verify would
+/// produce exactly the artifact an attacker wants: a paste-ready grade with no provenance. And, as
+/// with `verify`, a trust decision about the *issuer* is mandatory rather than defaulted — a valid
+/// signature only proves the document is self-consistent, and anyone can mint one about data they
+/// hold. Without `--key`, the label itself carries the caveat, because the caveat has to survive
+/// being pasted somewhere else.
+fn cmd_label(rest: &[String]) -> ExitCode {
+    let args = match parse_args_or_exit(rest) {
+        Ok(a) => a,
+        Err(code) => return code,
+    };
+    // `label` reads a certificate, not a dataset: nothing about ingestion or scoring applies.
+    if let Err(code) = reject_flags_except(
+        "label",
+        &args,
+        &[&["--certificate", "--key", "--allow-any-issuer", "--out"]],
+    ) {
+        return code;
+    }
+    if !args.positionals.is_empty() {
+        eprintln!(
+            "veridex: label takes no dataset path (got {}) — it renders the certificate given by \
+             --certificate",
+            args.positionals.join(", ")
+        );
+        return ExitCode::from(EXIT_TOOL_ERROR);
+    }
+    let Some(cert_path) = &args.certificate else {
+        eprintln!("veridex: label requires --certificate <cert.json>");
+        return ExitCode::from(EXIT_TOOL_ERROR);
+    };
+    let cert_json = match std::fs::read_to_string(cert_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("veridex: cannot read {cert_path}: {e}");
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
+    };
+    let signed: SignedCertificate = match serde_json::from_str(&cert_json) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("veridex: {cert_path} is not a valid certificate: {e}");
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
+    };
+    if args.key.is_none() && !args.allow_any_issuer {
+        eprintln!(
+            "veridex: label needs a trusted issuer: pass --key <public-key|file>, or \
+             --allow-any-issuer to render a label that says on its face that the issuer is unverified"
+        );
+        return ExitCode::from(EXIT_TOOL_ERROR);
+    }
+    let expected_issuer = match &args.key {
+        Some(k) => match resolve_public_key(k) {
+            Ok(key) => Some(key),
+            Err(e) => {
+                eprintln!("veridex: {e}");
+                return ExitCode::from(EXIT_TOOL_ERROR);
+            }
+        },
+        None => None,
+    };
+
+    // The dataset is not presented here, so this verifies the signature and the issuer, not the
+    // binding to data. The label says as much: it prints the bound content hash for the reader to
+    // compare, and points at `veridex verify` for the comparison itself.
+    if let Err(e) = verify(&signed, None, expected_issuer.as_deref()) {
+        eprintln!("✗ refusing to label an unverified certificate: {e}");
+        return ExitCode::from(EXIT_FAIL);
+    }
+    let label = veridex_core::render_label(&signed, expected_issuer.is_some());
+    match &args.out {
+        None => print!("{label}"),
+        Some(path) => {
+            if let Err(e) = std::fs::write(path, &label) {
+                eprintln!("veridex: cannot write {path}: {e}");
+                return ExitCode::from(EXIT_TOOL_ERROR);
+            }
+            println!("wrote {path}");
+        }
+    }
+    ExitCode::SUCCESS
 }
 
 fn cmd_keygen(rest: &[String]) -> ExitCode {

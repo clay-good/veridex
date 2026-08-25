@@ -94,6 +94,27 @@ reproduced before it was fixed.*
 
 ### Added
 
+- **`veridex label` — the certificate in the form a person meets it.** A certificate is a document a
+  machine verifies. The trust-certificate spec also asks for a *nutrition label*: the same facts,
+  compact, for a dataset card — which is how a certificate actually travels. Nothing rendered one.
+
+  `veridex label --certificate c.json --key issuer.pub` prints Markdown to paste into a Hugging Face
+  dataset card, a README, or a PR: grade and score with both sub-scores, findings by severity and by
+  family, provenance known/attested/unknown, the bound content hash, what version and rubric produced
+  it, who issued it and when — plus the readiness verdict, the checks that failed to run, and the
+  families that did not run, when there are any. It renders from the signed certificate alone, so it
+  cannot describe a verdict other than the one that was signed.
+
+  Three refusals make it something you can trust when you find it in someone else's README. A
+  certificate that does not verify gets no label at all — a paste-ready grade with no provenance
+  behind it is exactly the artifact a forger wants. A trust decision about the issuer is required
+  rather than defaulted, as with `verify`. And when the answer is `--allow-any-issuer`, the label
+  *itself* says the issuer is unverified, because whoever reads it will never see the terminal it was
+  produced in. Every label ends with the sentence the spec insists on: a certificate is a statement
+  of fact about a dataset, not an endorsement of it.
+
+  Python gets `veridex.label(...)`, with a parity test asserting both front-ends render one text.
+
 - **The named policy profiles the configuration spec asks for — two of the three, and a reasoned
   refusal for the third.** `--profile` existed for exactly one bundle, `world-model-ready`, which is
   a *readiness* profile: it names criteria and produces the per-criterion verdict a certificate
