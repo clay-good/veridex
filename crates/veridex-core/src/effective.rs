@@ -24,6 +24,8 @@ pub enum Origin {
     Default,
     /// A `veridex.toml`.
     ConfigFile,
+    /// A `VERIDEX_*` environment variable.
+    Environment,
     /// A named policy profile (`--profile`).
     Profile,
     /// A command-line flag.
@@ -36,6 +38,7 @@ impl Origin {
         match self {
             Origin::Default => "default",
             Origin::ConfigFile => "config file",
+            Origin::Environment => "environment",
             Origin::Profile => "profile",
             Origin::Flag => "flag",
         }
@@ -60,8 +63,13 @@ pub struct Setting {
 pub struct Inputs<'a> {
     /// The config file that was read, if any (path as given, for the reader's benefit).
     pub config_path: Option<String>,
-    /// The config file as parsed. `CheckConfig::default()` when there was none.
+    /// The config file as parsed, with the environment merged on top — the config a run would use
+    /// before its flags. `CheckConfig::default()` when there was neither.
     pub file: &'a CheckConfig,
+    /// The `veridex.toml` keys the environment set, so those are attributed to it and not to the
+    /// file. Keys are as [`crate::config::env::merge`] reports them (`fail_on`,
+    /// `tolerances.gap_factor`, …).
+    pub from_env: &'a std::collections::BTreeSet<String>,
     /// The policy profile applied, if any.
     pub profile: Option<&'a Profile>,
     /// The tolerances the run will actually use, after every layer.
@@ -84,16 +92,25 @@ pub fn settings(inputs: &Inputs<'_>) -> Vec<Setting> {
     // from a later layer.
     let from_file = file.to_run_config().tolerances;
 
-    /// A selection setting: set by the file, or left at its default.
-    fn selection(out: &mut Vec<Setting>, key: &str, value: String, set_in_file: bool) {
+    // Which layer set `key`, given whether the merged config departs from the default. The
+    // environment is merged into the parsed config before this runs, so a key the environment set
+    // must be attributed to it rather than to the file it was merged onto.
+    let layer = |key: &str, set_in_config: bool| -> Origin {
+        if inputs.from_env.contains(key) {
+            Origin::Environment
+        } else if set_in_config {
+            Origin::ConfigFile
+        } else {
+            Origin::Default
+        }
+    };
+
+    /// A selection setting: set by a layer, or left at its default.
+    fn selection(out: &mut Vec<Setting>, key: &str, value: String, origin: Origin) {
         out.push(Setting {
             key: key.to_string(),
             value,
-            origin: if set_in_file {
-                Origin::ConfigFile
-            } else {
-                Origin::Default
-            },
+            origin,
             note: None,
         });
     }
@@ -109,7 +126,7 @@ pub fn settings(inputs: &Inputs<'_>) -> Vec<Setting> {
                 .collect::<Vec<_>>()
                 .join(", "),
         },
-        file.categories.is_some(),
+        layer("categories", file.categories.is_some()),
     );
     selection(
         &mut out,
@@ -118,7 +135,7 @@ pub fn settings(inputs: &Inputs<'_>) -> Vec<Setting> {
             None => "all".to_string(),
             Some(c) => c.join(", "),
         },
-        file.only_checks.is_some(),
+        layer("only_checks", file.only_checks.is_some()),
     );
     selection(
         &mut out,
@@ -128,7 +145,7 @@ pub fn settings(inputs: &Inputs<'_>) -> Vec<Setting> {
         } else {
             file.disabled_checks.join(", ")
         },
-        !file.disabled_checks.is_empty(),
+        layer("disabled_checks", !file.disabled_checks.is_empty()),
     );
     selection(
         &mut out,
@@ -142,7 +159,7 @@ pub fn settings(inputs: &Inputs<'_>) -> Vec<Setting> {
                 .collect::<Vec<_>>()
                 .join(", ")
         },
-        !file.severity_overrides.is_empty(),
+        layer("severity_overrides", !file.severity_overrides.is_empty()),
     );
 
     // The exit threshold and the score gate: a flag beats the file, which beats the default.
@@ -154,10 +171,8 @@ pub fn settings(inputs: &Inputs<'_>) -> Vec<Setting> {
         },
         origin: if inputs.fail_on_from_flag {
             Origin::Flag
-        } else if file.fail_on != FailOn::default() {
-            Origin::ConfigFile
         } else {
-            Origin::Default
+            layer("fail_on", file.fail_on != FailOn::default())
         },
         note: (inputs.fail_on_from_flag && file.fail_on != inputs.fail_on)
             .then(|| format!("--fail-on overrides the config file's `{:?}`", file.fail_on)),
@@ -170,10 +185,8 @@ pub fn settings(inputs: &Inputs<'_>) -> Vec<Setting> {
         },
         origin: if inputs.min_score_from_flag {
             Origin::Flag
-        } else if file.min_score.is_some() {
-            Origin::ConfigFile
         } else {
-            Origin::Default
+            layer("min_score", file.min_score.is_some())
         },
         note: match (inputs.min_score_from_flag, file.min_score) {
             (true, Some(configured)) if Some(configured) != inputs.min_score => Some(format!(
@@ -279,12 +292,7 @@ pub fn settings(inputs: &Inputs<'_>) -> Vec<Setting> {
     ];
     for (key, set_in_file, unchanged, value, file_value) in tolerances {
         let (origin, note) = if unchanged {
-            let origin = if set_in_file {
-                Origin::ConfigFile
-            } else {
-                Origin::Default
-            };
-            (origin, None)
+            (layer(&format!("tolerances.{key}"), set_in_file), None)
         } else {
             // Only a profile moves a tolerance after the file, and only downward.
             let note = match profile_name {

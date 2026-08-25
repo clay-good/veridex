@@ -31,6 +31,34 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **The environment layer the configuration spec's precedence names.** Configuration was defaults →
+  file → flags; the spec's order is defaults → file → **environment** → flags, and the middle layer
+  did not exist. It is the layer a container or a CI job can set without writing a file, which is
+  most of them.
+
+  Every `veridex.toml` key now has exactly one `VERIDEX_` twin — `VERIDEX_FAIL_ON`,
+  `VERIDEX_MIN_SCORE`, `VERIDEX_CATEGORIES`, `VERIDEX_ONLY_CHECKS`, `VERIDEX_DISABLED_CHECKS`,
+  `VERIDEX_SEVERITY_OVERRIDES`, and one `VERIDEX_TOLERANCE_<KEY>` per tolerance — plus
+  `VERIDEX_CONFIG` (which file to read) and `VERIDEX_PROFILE` (which profile to judge against). A
+  *partial* mapping was the thing to avoid: a variable that looks like it configures something and
+  does not is the same defect as a flag accepted and ignored.
+
+  Values from the environment meet exactly the bar file values meet, through the same validator: an
+  out-of-range tolerance, an unknown category or severity, a malformed `id=severity` pair, a
+  `min_score` above 100. Two refusals are specific to this layer. A `VERIDEX_TOLERANCE_*` name
+  matching no key is refused with the list of keys it could have meant — a mistyped one (say,
+  `VERIDEX_TOLERANCE_CLOCK_SKEW`, missing the `_MS`) moves nothing, so the run would silently keep
+  the default threshold the operator meant to change. And an *empty* value is refused rather than
+  obeyed: in a shell script that is almost always an unset variable expanding to nothing, and
+  `VERIDEX_CATEGORIES=""` read as an instruction selects no categories at all — which runs no checks
+  and scores a perfect data score. A `VERIDEX_*` name that is not a config key (the test harness's
+  own `VERIDEX_BIN`, a user's tooling) is left alone.
+
+  `--print-config` gained the layer: a value the environment set prints as `(environment)`, not as
+  the file it was merged onto. The Python bindings deliberately do **not** read the process
+  environment — an imported library that reconfigured itself from `VERIDEX_*` would change what
+  `veridex.check(...)` means without the caller writing anything.
+
 - **`veridex check --print-config` — the effective configuration, and where every value came from.**
   The configuration spec requires a way to print the merged configuration, and a verdict recorded
   only the *resolved* numbers. Those cannot answer the question people actually ask: why is this

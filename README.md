@@ -162,8 +162,16 @@ asks, so `check --profile world-model-ready --min-score 80` is a valid CI gate. 
 world-model-ready` also prints the per-criterion readiness verdict it judged against; `certify` is
 what signs it.
 
+Configuration comes in layers: built-in defaults, then a `veridex.toml`, then the `VERIDEX_*`
+environment, then command-line flags — each overriding the last. Every config key has one
+environment twin (`VERIDEX_MIN_SCORE`, `VERIDEX_CATEGORIES`, `VERIDEX_TOLERANCE_CLOCK_SKEW_MS`,
+`VERIDEX_CONFIG`, `VERIDEX_PROFILE`, …; see [`docs/veridex.toml.example`](docs/veridex.toml.example)),
+so a container or CI job can configure a run without writing a file. Values from the environment are
+validated exactly as file values are: an out-of-range tolerance, an unknown category, or a
+`VERIDEX_TOLERANCE_*` name matching no key is an error, never a setting that quietly does nothing.
+
 `veridex check --print-config` prints the configuration a run would use — every setting's value and
-**the layer that set it**: built-in default, `veridex.toml`, policy profile, or command-line flag,
+**the layer that set it**: built-in default, `veridex.toml`, environment, policy profile, or flag,
 with a note where one overrode another — a `clock_skew_ms` of 20 prints as coming from the profile,
 which tightened it from the 50 the file asked for. It reads no dataset, and it validates the config exactly
 as a run would, so it is also the cheapest way to check a `veridex.toml` before pointing it at data.

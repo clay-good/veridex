@@ -1559,3 +1559,182 @@ fn print_config_validates_the_config_it_prints() {
     assert_eq!(code, 2);
     assert!(stderr.contains("unknown profile"), "{stderr}");
 }
+
+// ---------------------------------------------------------------------------
+// The environment layer: `VERIDEX_*`, between the config file and the flags.
+// ---------------------------------------------------------------------------
+
+/// Run `veridex <args...>` with extra environment variables set.
+fn run_with_env(args: &[&str], env: &[(&str, &str)]) -> (i32, String, String) {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_veridex"));
+    cmd.args(args);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let out = cmd.output().expect("spawn veridex");
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn the_environment_configures_a_run_and_says_it_did() {
+    let dataset = fixture_dataset();
+
+    // A gate set entirely from the environment behaves exactly as `--min-score` does.
+    let (code, _, stderr) = run_with_env(&["check", &dataset], &[("VERIDEX_MIN_SCORE", "90")]);
+    assert_eq!(code, 20, "an environment gate must fail the run: {stderr}");
+    assert!(
+        stderr.contains("trust score 76 is below the required minimum 90"),
+        "unexpected stderr: {stderr}"
+    );
+
+    // And `--print-config` attributes it to the layer that set it, not to a file nobody wrote.
+    let (code, stdout, _) = run_with_env(
+        &["check", "--print-config"],
+        &[
+            ("VERIDEX_MIN_SCORE", "90"),
+            ("VERIDEX_TOLERANCE_CLOCK_SKEW_MS", "10"),
+        ],
+    );
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("min_score") && stdout.contains("(environment)"),
+        "the environment must be named as the layer: {stdout}"
+    );
+    let skew = stdout
+        .lines()
+        .find(|l| l.contains("tolerances.clock_skew_ms"))
+        .expect("the tolerance is printed");
+    assert!(
+        skew.contains("10") && skew.contains("(environment)"),
+        "unexpected line: {skew}"
+    );
+}
+
+#[test]
+fn a_flag_beats_the_environment_which_beats_the_file() {
+    // The precedence the configuration spec states, exercised through all three layers at once.
+    let dir = temp_dir("env-precedence");
+    let config = dir.join("veridex.toml");
+    std::fs::write(&config, "min_score = 10\nfail_on = 'error'\n").expect("write config");
+
+    let (code, stdout, _) = run_with_env(
+        &[
+            "check",
+            "--print-config",
+            "--config",
+            config.to_str().unwrap(),
+            "--min-score",
+            "90",
+        ],
+        &[("VERIDEX_MIN_SCORE", "50"), ("VERIDEX_FAIL_ON", "warning")],
+    );
+    assert_eq!(code, 0);
+    let line = |key: &str| -> String {
+        stdout
+            .lines()
+            .find(|l| l.trim_start().starts_with(key))
+            .unwrap_or_else(|| panic!("{key} is printed: {stdout}"))
+            .to_string()
+    };
+    // The flag wins over both, the environment wins over the file.
+    let min_score = line("min_score");
+    assert!(
+        min_score.contains("90") && min_score.contains("(flag)"),
+        "unexpected: {min_score}"
+    );
+    let fail_on = line("fail_on");
+    assert!(
+        fail_on.contains("warning") && fail_on.contains("(environment)"),
+        "unexpected: {fail_on}"
+    );
+}
+
+#[test]
+fn veridex_config_points_at_a_file_and_the_flag_still_wins() {
+    let dir = temp_dir("env-config-path");
+    let from_env = dir.join("env.toml");
+    let from_flag = dir.join("flag.toml");
+    std::fs::write(&from_env, "min_score = 30\n").expect("write config");
+    std::fs::write(&from_flag, "min_score = 60\n").expect("write config");
+
+    let (code, stdout, _) = run_with_env(
+        &["check", "--print-config"],
+        &[("VERIDEX_CONFIG", from_env.to_str().unwrap())],
+    );
+    assert_eq!(code, 0);
+    assert!(stdout.contains("env.toml"), "unexpected: {stdout}");
+    assert!(stdout.contains("30"), "unexpected: {stdout}");
+
+    let (code, stdout, _) = run_with_env(
+        &[
+            "check",
+            "--print-config",
+            "--config",
+            from_flag.to_str().unwrap(),
+        ],
+        &[("VERIDEX_CONFIG", from_env.to_str().unwrap())],
+    );
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("flag.toml") && !stdout.contains("env.toml"),
+        "--config must beat VERIDEX_CONFIG: {stdout}"
+    );
+}
+
+#[test]
+fn a_bad_environment_variable_stops_the_run() {
+    // A mistyped tolerance variable moves nothing, so a run that accepted it would quietly use the
+    // default threshold the operator meant to change.
+    let dataset = fixture_dataset();
+    for (var, value, expected) in [
+        (
+            "VERIDEX_TOLERANCE_CLOCK_SKEW",
+            "10",
+            "unknown environment variable",
+        ),
+        ("VERIDEX_FAIL_ON", "warn", "invalid fail_on"),
+        ("VERIDEX_TOLERANCE_OUTLIER_Z", "0.5", "outlier_z must be"),
+    ] {
+        let (code, _, stderr) = run_with_env(&["check", &dataset], &[(var, value)]);
+        assert_eq!(code, 2, "`{var}={value}` must be a tool error");
+        assert!(
+            stderr.contains(expected),
+            "unexpected stderr for {var}: {stderr}"
+        );
+    }
+}
+
+#[test]
+fn veridex_profile_selects_a_profile_and_the_flag_still_wins() {
+    // A CI image can pin the profile every job is judged against; a job can still override it, and
+    // an unknown name is refused from either layer.
+    let (code, stdout, _) = run_with_env(
+        &["check", "--print-config"],
+        &[("VERIDEX_PROFILE", "world-model-ready")],
+    );
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("Profile:     world-model-ready"),
+        "unexpected: {stdout}"
+    );
+    // The profile tightened cross-sensor sync, exactly as the flag does.
+    let skew = stdout
+        .lines()
+        .find(|l| l.contains("tolerances.clock_skew_ms"))
+        .expect("the tolerance is printed");
+    assert!(skew.contains("20") && skew.contains("(profile)"), "{skew}");
+
+    let (code, _, stderr) = run_with_env(
+        &["check", "--print-config"],
+        &[("VERIDEX_PROFILE", "no-such-profile")],
+    );
+    assert_eq!(
+        code, 2,
+        "an unknown profile is refused from the environment too"
+    );
+    assert!(stderr.contains("unknown profile"), "{stderr}");
+}

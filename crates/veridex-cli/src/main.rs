@@ -593,7 +593,7 @@ fn cmd_check(rest: &[String]) -> ExitCode {
     // A named profile applies its own (tighter) tolerances to the run, exactly as `certify` does.
     // Accepting the flag and ignoring it meant `check --profile world-model-ready` silently judged the
     // data at the looser defaults, and an unknown profile name passed without a word.
-    let profile = match args.profile.as_deref() {
+    let profile = match profile_name(&args).as_deref() {
         None => None,
         Some(name) => match veridex_core::profile::by_name(name) {
             Some(p) => Some(p),
@@ -763,26 +763,58 @@ fn exit_code_for_status(status: Status, fail_on_warning: bool) -> u8 {
     }
 }
 
-/// Load config from an explicit path, or auto-discover `veridex.toml` in the current directory.
-/// Returns the default config when neither is present.
+/// A loaded configuration: the file's values with the environment merged on top, plus what came
+/// from where, so `--print-config` can attribute every value to the layer that set it.
+struct LoadedConfig {
+    config: veridex_core::CheckConfig,
+    /// The config file that was read, if any.
+    path: Option<String>,
+    /// The `veridex.toml` keys the environment set.
+    from_env: std::collections::BTreeSet<String>,
+}
+
+/// The policy profile a run uses: `--profile`, else `VERIDEX_PROFILE`, else none.
+///
+/// The environment sits under the flag and over the file, and a profile is selected the same way —
+/// so a CI image can pin the profile every job is judged against, and a job can still override it.
+fn profile_name(args: &Args) -> Option<String> {
+    if let Some(name) = &args.profile {
+        return Some(name.clone());
+    }
+    match std::env::var("VERIDEX_PROFILE") {
+        Ok(name) if !name.trim().is_empty() => Some(name.trim().to_string()),
+        _ => None,
+    }
+}
+
+/// Load config from an explicit path, or auto-discover `veridex.toml` in the current directory,
+/// then merge the `VERIDEX_*` environment over it.
+///
+/// This is the configuration spec's precedence — defaults, then file, then environment, then the
+/// flags each command applies itself. Returns the defaults when there is no file and no
+/// environment.
 fn load_config(explicit: Option<&str>) -> Result<veridex_core::CheckConfig, String> {
-    let path = match explicit {
-        Some(p) => Some(p.to_string()),
-        None => {
-            let default = "veridex.toml";
-            std::path::Path::new(default)
-                .is_file()
-                .then(|| default.to_string())
-        }
-    };
-    match path {
-        None => Ok(veridex_core::CheckConfig::default()),
+    load_config_layers(explicit).map(|l| l.config)
+}
+
+/// [`load_config`], keeping the provenance of each layer.
+fn load_config_layers(explicit: Option<&str>) -> Result<LoadedConfig, String> {
+    let path = config_path_used(explicit);
+    let file = match &path {
+        None => veridex_core::CheckConfig::default(),
         Some(p) => {
             let text =
-                std::fs::read_to_string(&p).map_err(|e| format!("cannot read config {p}: {e}"))?;
-            veridex_core::CheckConfig::from_toml(&text).map_err(|e| e.to_string())
+                std::fs::read_to_string(p).map_err(|e| format!("cannot read config {p}: {e}"))?;
+            veridex_core::CheckConfig::from_toml(&text).map_err(|e| e.to_string())?
         }
-    }
+    };
+    let (config, from_env) =
+        veridex_core::config::env::merge(file, std::env::vars()).map_err(|e| e.to_string())?;
+    Ok(LoadedConfig {
+        config,
+        path,
+        from_env,
+    })
 }
 
 /// `veridex checks` — list the built-in check catalog (id, category, default severity, scope,
@@ -800,13 +832,14 @@ fn load_config(explicit: Option<&str>) -> Result<veridex_core::CheckConfig, Stri
 /// it: an unknown check id or an out-of-range tolerance is an error here too, which makes this the
 /// cheapest way to check a `veridex.toml` before pointing it at a dataset.
 fn cmd_print_config(args: &Args) -> ExitCode {
-    let config = match load_config(args.config.as_deref()) {
+    let loaded = match load_config_layers(args.config.as_deref()) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("veridex: {e}");
             return ExitCode::from(EXIT_TOOL_ERROR);
         }
     };
+    let config = loaded.config;
     let engine = match veridex_core::checks::default_engine() {
         Ok(e) => e,
         Err(e) => {
@@ -818,7 +851,7 @@ fn cmd_print_config(args: &Args) -> ExitCode {
         eprintln!("veridex: {e}");
         return ExitCode::from(EXIT_TOOL_ERROR);
     }
-    let profile = match args.profile.as_deref() {
+    let profile = match profile_name(args).as_deref() {
         None => None,
         Some(name) => match veridex_core::profile::by_name(name) {
             Some(p) => Some(p),
@@ -851,8 +884,9 @@ fn cmd_print_config(args: &Args) -> ExitCode {
         tolerances = p.apply_tolerances(tolerances);
     }
     let inputs = veridex_core::effective::Inputs {
-        config_path: config_path_used(args.config.as_deref()),
+        config_path: loaded.path,
         file: &config,
+        from_env: &loaded.from_env,
         profile: profile.as_ref(),
         tolerances,
         fail_on: fail_on_flag.unwrap_or(config.fail_on),
@@ -868,16 +902,23 @@ fn cmd_print_config(args: &Args) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// The config file a run would read: the explicit `--config`, else an auto-discovered
-/// `veridex.toml`, else none. Mirrors [`load_config`]'s discovery so the printed provenance names
-/// the file the run would actually use.
+/// The config file a run reads: the explicit `--config`, else `VERIDEX_CONFIG`, else an
+/// auto-discovered `veridex.toml`, else none.
+///
+/// `VERIDEX_CONFIG` sits where the environment sits in the precedence order — under the flag, over
+/// the convention — so a container can point at a config without a flag, and a flag still wins.
 fn config_path_used(explicit: Option<&str>) -> Option<String> {
-    match explicit {
-        Some(p) => Some(p.to_string()),
-        None => std::path::Path::new("veridex.toml")
-            .is_file()
-            .then(|| "veridex.toml".to_string()),
+    if let Some(p) = explicit {
+        return Some(p.to_string());
     }
+    if let Ok(p) = std::env::var("VERIDEX_CONFIG") {
+        if !p.trim().is_empty() {
+            return Some(p);
+        }
+    }
+    std::path::Path::new("veridex.toml")
+        .is_file()
+        .then(|| "veridex.toml".to_string())
 }
 
 fn cmd_checks(rest: &[String]) -> ExitCode {
@@ -1188,7 +1229,7 @@ fn cmd_certify(rest: &[String]) -> ExitCode {
         return ExitCode::from(EXIT_TOOL_ERROR);
     };
     // Resolve a readiness profile if one was requested; an unknown name is a tool error.
-    let profile = match &args.profile {
+    let profile = match &profile_name(&args) {
         None => None,
         Some(name) => match veridex_core::profile::by_name(name) {
             Some(p) => Some(p),

@@ -547,10 +547,15 @@ fn effective_config(
     if let Some(p) = &profile {
         tolerances = p.apply_tolerances(tolerances);
     }
+    let from_env = std::collections::BTreeSet::new();
     let inputs = veridex_core::effective::Inputs {
         // Python is handed config *text*, not a path: there is no file to name.
         config_path: None,
         file: &parsed,
+        // The `VERIDEX_*` environment is a CLI input-gathering mechanism. An imported library that
+        // silently reconfigured itself from the process environment would change what
+        // `veridex.check(...)` means without the caller writing anything.
+        from_env: &from_env,
         profile: profile.as_ref(),
         tolerances,
         fail_on: fail_on_flag.unwrap_or(parsed.fail_on),

@@ -91,15 +91,24 @@ impl CheckConfig {
     pub fn from_toml(text: &str) -> Result<Self, ConfigError> {
         let config: CheckConfig =
             toml::from_str(text).map_err(|e| ConfigError::Parse(e.to_string()))?;
-        if let Some(n) = config.min_score {
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Validate the values this config carries, independent of where they came from.
+    ///
+    /// Public because a config is no longer only parsed from a file: the environment layer merges
+    /// onto a parsed config, and a value that arrives that way has to meet exactly the same bar as
+    /// one written in the file. One validator, so the two cannot drift.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if let Some(n) = self.min_score {
             if n > 100 {
                 return Err(ConfigError::Parse(format!(
                     "min_score must be between 0 and 100, got {n}"
                 )));
             }
         }
-        config.tolerances.validate()?;
-        Ok(config)
+        self.tolerances.validate()
     }
 
     /// Validate that every check id this config references — `only_checks`, `disabled_checks`, and
@@ -245,5 +254,227 @@ impl TolerancesConfig {
                 .unwrap_or(d.sequence_drop_fraction),
             ego_max_speed_mps: self.ego_max_speed_mps.unwrap_or(d.ego_max_speed_mps),
         }
+    }
+}
+
+/// The environment layer: `VERIDEX_*` variables merged onto a parsed config.
+///
+/// The configuration spec's precedence is built-in defaults, then the config file, then the
+/// environment, then explicit flags. The environment is the layer a container or a CI job can set
+/// without writing a file, so every `veridex.toml` key has exactly one `VERIDEX_` twin — a partial
+/// mapping would mean a setting that looks configured and is not, which is the failure this whole
+/// module exists to prevent.
+pub mod env {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use super::{CheckConfig, ConfigError, FailOn};
+    use crate::check::{Category, Severity};
+
+    /// The `veridex.toml` key each variable sets, paired with the variable name.
+    ///
+    /// `VERIDEX_CONFIG` and `VERIDEX_PROFILE` are not in this table: they select *which* config file
+    /// and *which* profile, rather than setting a value inside one, and the CLI reads them directly.
+    pub const VARIABLES: &[(&str, &str)] = &[
+        ("VERIDEX_FAIL_ON", "fail_on"),
+        ("VERIDEX_MIN_SCORE", "min_score"),
+        ("VERIDEX_CATEGORIES", "categories"),
+        ("VERIDEX_ONLY_CHECKS", "only_checks"),
+        ("VERIDEX_DISABLED_CHECKS", "disabled_checks"),
+        ("VERIDEX_SEVERITY_OVERRIDES", "severity_overrides"),
+    ];
+
+    /// The tolerance keys, each settable as `VERIDEX_TOLERANCE_<KEY>` (upper-cased).
+    pub const TOLERANCE_KEYS: &[&str] = &[
+        "clock_skew_ms",
+        "start_offset_ms",
+        "end_offset_ms",
+        "rate_deviation",
+        "gap_factor",
+        "jitter_cv",
+        "episode_duration_factor",
+        "saturation_fraction",
+        "saturation_min_samples",
+        "outlier_z",
+        "sequence_drop_fraction",
+        "ego_max_speed_mps",
+    ];
+
+    /// Merge the environment onto `base`, returning the merged config and the `veridex.toml` keys
+    /// the environment set (so a reader can be told which layer a value came from).
+    ///
+    /// Takes the variables as an iterator rather than reading the process environment, so a caller
+    /// — and a test — decides what the environment *is*. The merged result is validated exactly as
+    /// a parsed file is: a value that arrives through the environment meets the same bar.
+    pub fn merge<I, K, V>(
+        base: CheckConfig,
+        vars: I,
+    ) -> Result<(CheckConfig, BTreeSet<String>), ConfigError>
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: AsRef<str>,
+        V: AsRef<str>,
+    {
+        let mut config = base;
+        let mut set: BTreeSet<String> = BTreeSet::new();
+        // Sorted, so two environments with the same variables always produce the same errors.
+        let vars: BTreeMap<String, String> = vars
+            .into_iter()
+            .map(|(k, v)| (k.as_ref().to_string(), v.as_ref().to_string()))
+            .collect();
+
+        for (name, value) in &vars {
+            let value = value.trim();
+            // A tolerance variable naming no known key is a typo, and a typo here is silent: the
+            // threshold the operator meant to move simply does not move. Refuse it by name.
+            if let Some(suffix) = name.strip_prefix("VERIDEX_TOLERANCE_") {
+                let key = suffix.to_ascii_lowercase();
+                if !TOLERANCE_KEYS.contains(&key.as_str()) {
+                    return Err(ConfigError::Parse(format!(
+                        "unknown environment variable `{name}` (known tolerances: {})",
+                        TOLERANCE_KEYS.join(", ")
+                    )));
+                }
+                set_tolerance(&mut config, &key, name, value)?;
+                set.insert(format!("tolerances.{key}"));
+                continue;
+            }
+            let Some((_, key)) = VARIABLES.iter().find(|(var, _)| var == name) else {
+                // Any other `VERIDEX_*` name belongs to something else (the test harness's
+                // `VERIDEX_BIN`, a user's own tooling) and is left alone.
+                continue;
+            };
+            if value.is_empty() {
+                return Err(ConfigError::Parse(format!(
+                    "{name} is empty; unset it to leave `{key}` alone rather than setting it to nothing"
+                )));
+            }
+            match *key {
+                "fail_on" => {
+                    config.fail_on = match value {
+                        "error" => FailOn::Error,
+                        "warning" => FailOn::Warning,
+                        v => {
+                            return Err(ConfigError::Parse(format!(
+                                "{name}: invalid fail_on `{v}` (expected `error` or `warning`)"
+                            )))
+                        }
+                    }
+                }
+                "min_score" => {
+                    config.min_score = Some(value.parse::<u8>().map_err(|_| {
+                        ConfigError::Parse(format!(
+                            "{name}: invalid min_score `{value}` (expected an integer 0-100)"
+                        ))
+                    })?)
+                }
+                "categories" => {
+                    let mut categories = Vec::new();
+                    for item in list(value) {
+                        categories.push(parse_category(&item).ok_or_else(|| {
+                            ConfigError::Parse(format!(
+                                "{name}: unknown category `{item}` (known: structural, temporal, \
+                                 statistical, semantic, video, provenance, autonomy)"
+                            ))
+                        })?);
+                    }
+                    config.categories = Some(categories);
+                }
+                "only_checks" => config.only_checks = Some(list(value)),
+                "disabled_checks" => config.disabled_checks = list(value),
+                "severity_overrides" => {
+                    let mut overrides = BTreeMap::new();
+                    for item in list(value) {
+                        let (id, severity) = item.split_once('=').ok_or_else(|| {
+                            ConfigError::Parse(format!(
+                                "{name}: `{item}` is not a `check-id=severity` pair"
+                            ))
+                        })?;
+                        let severity = parse_severity(severity.trim()).ok_or_else(|| {
+                            ConfigError::Parse(format!(
+                                "{name}: unknown severity `{severity}` (expected info, warning, or error)"
+                            ))
+                        })?;
+                        overrides.insert(id.trim().to_string(), severity);
+                    }
+                    config.severity_overrides = overrides;
+                }
+                other => unreachable!("unmapped environment key {other}"),
+            }
+            set.insert(key.to_string());
+        }
+
+        // The same validation a file gets: an out-of-range tolerance is an error wherever it came
+        // from. Check ids are validated by the caller, which is the one holding the check registry.
+        config.validate()?;
+        Ok((config, set))
+    }
+
+    /// Split a comma-separated list, trimming each entry and dropping empty ones.
+    fn list(value: &str) -> Vec<String> {
+        value
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn parse_category(s: &str) -> Option<Category> {
+        [
+            Category::Structural,
+            Category::Temporal,
+            Category::Statistical,
+            Category::Semantic,
+            Category::Video,
+            Category::Provenance,
+            Category::Autonomy,
+        ]
+        .into_iter()
+        .find(|c| c.tag() == s)
+    }
+
+    fn parse_severity(s: &str) -> Option<Severity> {
+        [Severity::Info, Severity::Warning, Severity::Error]
+            .into_iter()
+            .find(|sev| sev.tag() == s)
+    }
+
+    /// Apply one `VERIDEX_TOLERANCE_<KEY>` value.
+    fn set_tolerance(
+        config: &mut CheckConfig,
+        key: &str,
+        name: &str,
+        value: &str,
+    ) -> Result<(), ConfigError> {
+        let number = || -> Result<f64, ConfigError> {
+            value.parse::<f64>().map_err(|_| {
+                ConfigError::Parse(format!(
+                    "{name}: invalid {key} `{value}` (expected a number)"
+                ))
+            })
+        };
+        let t = &mut config.tolerances;
+        match key {
+            "clock_skew_ms" => t.clock_skew_ms = Some(number()?),
+            "start_offset_ms" => t.start_offset_ms = Some(number()?),
+            "end_offset_ms" => t.end_offset_ms = Some(number()?),
+            "rate_deviation" => t.rate_deviation = Some(number()?),
+            "gap_factor" => t.gap_factor = Some(number()?),
+            "jitter_cv" => t.jitter_cv = Some(number()?),
+            "episode_duration_factor" => t.episode_duration_factor = Some(number()?),
+            "saturation_fraction" => t.saturation_fraction = Some(number()?),
+            "saturation_min_samples" => {
+                t.saturation_min_samples = Some(value.parse::<u64>().map_err(|_| {
+                    ConfigError::Parse(format!(
+                        "{name}: invalid saturation_min_samples `{value}` (expected a whole number)"
+                    ))
+                })?)
+            }
+            "outlier_z" => t.outlier_z = Some(number()?),
+            "sequence_drop_fraction" => t.sequence_drop_fraction = Some(number()?),
+            "ego_max_speed_mps" => t.ego_max_speed_mps = Some(number()?),
+            other => unreachable!("unmapped tolerance key {other}"),
+        }
+        Ok(())
     }
 }
