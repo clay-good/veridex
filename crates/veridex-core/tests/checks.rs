@@ -784,6 +784,61 @@ fn the_threshold_is_the_one_the_run_was_configured_with() {
     assert_eq!(sensitive.run(&d).len(), 1, "half clears a half threshold");
 }
 
+#[test]
+fn a_recording_uploaded_forty_times_is_still_a_near_duplicate() {
+    // The cap on how many episodes may share one frame hash exists to stop the pair counting going
+    // quadratic on boilerplate — a home position, a calibration frame. Set too low it defeats the
+    // very case the check is for: a recording ingested forty times shares *every* frame with
+    // thirty-nine others, so every one of its hashes is over a cap of 32 and the whole group goes
+    // unreported. The global pair ceiling is what bounds the pathological case, and it abstains
+    // loudly rather than silently.
+    let contents: Vec<u8> = (0..12).collect();
+    let episodes: Vec<_> = (0..40u64)
+        .map(|i| {
+            // Different time base each upload, so the exact check is silent and this one must speak.
+            episode(
+                i,
+                vec![near_stream("s", i as i64 * 1_000_000_000, &contents)],
+            )
+        })
+        .collect();
+    let d = dataset(episodes);
+    assert!(
+        structural::DuplicateEpisode.run(&d).is_empty(),
+        "different time bases: the exact check does not speak for these"
+    );
+
+    let f = near_duplicate().run(&d);
+    assert_eq!(f.len(), 1, "forty copies, one group, one finding: {f:?}");
+    assert!(f[0].message.contains("39"), "{}", f[0].message);
+}
+
+#[test]
+fn episodes_the_boilerplate_rule_skipped_are_reported_not_passed_over() {
+    // Past the boilerplate ceiling the check stops comparing — which is the right call for a home
+    // position shared by every episode, and the wrong thing to do *silently* when it means an
+    // episode was never examined at all. A silent skip and a clean result look identical.
+    let contents: Vec<u8> = (0..12).collect();
+    let episodes: Vec<_> = (0..600u64)
+        .map(|i| {
+            episode(
+                i,
+                vec![near_stream("s", i as i64 * 1_000_000_000, &contents)],
+            )
+        })
+        .collect();
+    let f = near_duplicate().run(&dataset(episodes));
+
+    assert_eq!(f.len(), 1, "one abstention, not silence: {f:?}");
+    assert_eq!(f[0].code, "STRUCTURAL.NEAR_DUPLICATE_UNCHECKED");
+    assert_eq!(f[0].severity, Severity::Info);
+    assert!(
+        f[0].message.contains("600 episode(s)") && f[0].message.contains("boilerplate"),
+        "{}",
+        f[0].message
+    );
+}
+
 // ---- temporal ----
 
 #[test]

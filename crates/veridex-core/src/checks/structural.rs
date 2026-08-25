@@ -974,8 +974,11 @@ type EvidenceStreams<'a> = BTreeMap<&'a str, BTreeSet<[u8; 32]>>;
 ///   the camera disagrees.
 /// - **A frame that everyone has is not evidence.** A hash appearing in more than
 ///   [`NearDuplicateEpisode::MAX_EPISODES_PER_HASH`] episodes is boilerplate — a calibration frame,
-///   a home position — and is skipped. This also bounds the work: without it the pair counting is
-///   quadratic in the episode count.
+///   a home position — and is skipped. The ceiling is deliberately far above any *duplication*
+///   group: set near the size of a plausible re-upload it would defeat the case the check is for,
+///   since a recording ingested forty times shares every frame with thirty-nine others. What bounds
+///   the pathological dataset is [`NearDuplicateEpisode::MAX_TRACKED_PAIRS`], which abstains
+///   loudly instead of quietly dropping evidence.
 ///
 /// Pairs that [`DuplicateEpisode`] reports are suppressed here, using *its* signature function, so
 /// the suppression can never be broader than what the other check actually says (a narrower
@@ -993,7 +996,11 @@ impl NearDuplicateEpisode {
     /// Fraction of a stream's frames that must be distinct from one another for it to be evidence.
     pub const MIN_DISTINCT_FRACTION: f64 = 0.8;
     /// A hash in more episodes than this is boilerplate, not evidence.
-    pub const MAX_EPISODES_PER_HASH: usize = 32;
+    ///
+    /// High on purpose: a duplication group is evidence and must not be mistaken for boilerplate.
+    /// At 512 the worst a single hash can cost is ~131k pair increments, and a dataset with enough
+    /// such hashes trips [`Self::MAX_TRACKED_PAIRS`], which says so rather than going quiet.
+    pub const MAX_EPISODES_PER_HASH: usize = 512;
     /// Ceiling on candidate pairs held at once. Past it the check abstains, loudly.
     pub const MAX_TRACKED_PAIRS: usize = 200_000;
 
@@ -1075,6 +1082,10 @@ impl Check for NearDuplicateEpisode {
             stream_names.extend(streams.keys().copied());
         }
         let mut overflowed = false;
+        // Episodes at least one of whose frames was actually compared. An episode every one of
+        // whose hashes was skipped as boilerplate was not examined at all, and saying nothing about
+        // it would be indistinguishable from finding nothing — see the abstention below.
+        let mut examined: BTreeSet<usize> = BTreeSet::new();
         for name in &stream_names {
             let mut index: HashMap<[u8; 32], Vec<usize>> = HashMap::new();
             for (position, (_, streams)) in evidence.iter().enumerate() {
@@ -1085,7 +1096,13 @@ impl Check for NearDuplicateEpisode {
                 }
             }
             for (_, holders) in index {
-                if holders.len() < 2 || holders.len() > Self::MAX_EPISODES_PER_HASH {
+                if holders.len() > Self::MAX_EPISODES_PER_HASH {
+                    continue;
+                }
+                // A hash only one episode holds is evidence of nothing shared — but the episode
+                // holding it *was* compared, which is the difference this set records.
+                examined.extend(holders.iter().copied());
+                if holders.len() < 2 {
                     continue;
                 }
                 for (i, a) in holders.iter().enumerate() {
@@ -1102,7 +1119,8 @@ impl Check for NearDuplicateEpisode {
             }
         }
 
-        if overflowed {
+        let unexamined = evidence.len() - examined.len();
+        if overflowed || unexamined > 0 {
             // Abstention is a finding: a check that ran out of room and said nothing is
             // indistinguishable from a check that looked and found nothing.
             return vec![Finding::new(
@@ -1111,16 +1129,25 @@ impl Check for NearDuplicateEpisode {
                 Severity::Info,
                 Location::Dataset,
                 "STRUCTURAL.NEAR_DUPLICATE_UNCHECKED",
-                format!(
-                    "near-duplicate detection abstained: more than {} episode pairs share frames, \
-                     which is past what this check will hold at once",
-                    Self::MAX_TRACKED_PAIRS
-                ),
+                if overflowed {
+                    format!(
+                        "near-duplicate detection abstained: more than {} episode pairs share \
+                         frames, which is past what this check will hold at once",
+                        Self::MAX_TRACKED_PAIRS
+                    )
+                } else {
+                    format!(
+                        "near-duplicate detection abstained on {unexamined} episode(s): every one \
+                         of their frames is held by more than {} episodes, which this check treats \
+                         as boilerplate rather than evidence",
+                        Self::MAX_EPISODES_PER_HASH
+                    )
+                },
             )
             .with_risk(
-                "This dataset was not checked for near-duplicate episodes. A re-uploaded or \
-                 partially copied episode in it is not absent from this report, it was never \
-                 looked for.",
+                "Those episodes were not checked for near-duplication. A re-uploaded or partially \
+                 copied episode among them is not absent from this report, it was never looked \
+                 for.",
             )
             .with_remedy(
                 "Check the dataset in parts (each shard or split on its own), where the pair count \

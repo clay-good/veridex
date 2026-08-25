@@ -10,6 +10,21 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+*The near-duplicate check, audited against the case it exists for, an hour after it shipped.*
+
+- **A recording uploaded forty times went unreported, and then unmentioned.** The check skips a
+  frame hash held by many episodes as boilerplate — right for a home position, and set at 32 it
+  defeated the check's own headline case: a recording ingested forty times shares every frame with
+  thirty-nine others, so *every* hash was over the ceiling and the whole group vanished. The ceiling
+  is 512 now, far above any plausible duplication group; what bounds a pathological dataset is the
+  200,000-pair ceiling, which abstains **loudly**.
+
+  Worse than the miss was the silence. Past the ceiling an episode is not compared at all, and
+  nothing said so — a skipped episode and a clean one produced identical output. Episodes whose every
+  frame was ruled boilerplate are now counted and reported through
+  `STRUCTURAL.NEAR_DUPLICATE_UNCHECKED`, which already existed for the pair ceiling and now names
+  which of the two limits it hit.
+
 *A self-audit of the six features above, done immediately after writing them. Each defect was
 reproduced before it was fixed.*
 
