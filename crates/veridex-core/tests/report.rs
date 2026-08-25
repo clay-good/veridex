@@ -412,3 +412,110 @@ fn a_loosened_tolerance_is_not_rounded_back_to_the_default() {
     let text = render_terminal(&v, None, 5);
     assert!(text.contains("clock-skew 50.9ms"), "{text}");
 }
+
+// ---------------------------------------------------------------------------
+// Rollups: the summaries triage reads before it reads a finding.
+// ---------------------------------------------------------------------------
+
+/// A verdict carrying findings across two categories, two episodes, and two streams.
+fn verdict_with_spread() -> veridex_core::Verdict {
+    use veridex_core::check::{Category, Finding, Location, Severity};
+    let dataset = veridex_core::cdm::Dataset {
+        id: "t".into(),
+        calibration: None,
+        metadata: vec![],
+        provenance: vec![],
+        episodes: vec![],
+    };
+    let engine = veridex_core::Engine::builder().build();
+    let mut verdict = engine.run(
+        &dataset,
+        veridex_core::content_hash(&dataset),
+        &veridex_core::RunConfig::default(),
+    );
+    let at = |episode: u64, stream: &str| Location::Stream {
+        episode,
+        stream: stream.into(),
+    };
+    verdict.findings.push(Finding::new(
+        "temporal.clock-skew",
+        Category::Temporal,
+        Severity::Error,
+        at(0, "camera"),
+        "TEMPORAL.CLOCK_SKEW",
+        "drift",
+    ));
+    verdict.findings.push(Finding::new(
+        "temporal.gaps",
+        Category::Temporal,
+        Severity::Warning,
+        at(1, "camera"),
+        "TEMPORAL.GAP",
+        "gap",
+    ));
+    verdict.findings.push(Finding::new(
+        "statistical.saturation",
+        Category::Statistical,
+        Severity::Warning,
+        at(1, "arm"),
+        "STATISTICAL.SATURATED",
+        "pinned",
+    ));
+    verdict.findings.push(Finding::new(
+        "structural.duplicate-episode",
+        Category::Structural,
+        Severity::Info,
+        Location::Dataset,
+        "STRUCTURAL.DUPLICATE_EPISODE",
+        "dataset-scope",
+    ));
+    verdict.counts.error += 1;
+    verdict.counts.warning += 2;
+    verdict.counts.info += 1;
+    verdict
+}
+
+#[test]
+fn findings_roll_up_by_category_episode_and_stream() {
+    let summary = veridex_core::rollups(&verdict_with_spread());
+
+    assert_eq!(summary.by_category["temporal"].error, 1);
+    assert_eq!(summary.by_category["temporal"].warning, 1);
+    assert_eq!(summary.by_category["statistical"].total(), 1);
+    assert!(
+        !summary.by_category.contains_key("video"),
+        "a family with no findings costs no noise"
+    );
+
+    // Episodes rank worst-first: episode 0 has the only error.
+    assert_eq!(summary.by_episode[0].episode, 0);
+    assert_eq!(summary.by_episode[0].counts.error, 1);
+
+    // The stream rollup aggregates a sensor across every episode it appears in — the question a
+    // per-episode ranking cannot answer.
+    assert_eq!(summary.by_stream[0].stream, "camera");
+    assert_eq!(summary.by_stream[0].episodes, 2);
+    assert_eq!(summary.by_stream[0].counts.total(), 2);
+    assert_eq!(summary.by_stream[1].stream, "arm");
+    // A dataset-scope finding names no stream and is not attributed to one.
+    assert_eq!(summary.by_stream.len(), 2);
+}
+
+#[test]
+fn the_machine_readable_report_carries_the_summaries_the_terminal_prints() {
+    // A CI job is the only consumer `--json` has, and it had to re-derive every summary the human
+    // report was handed.
+    let verdict = verdict_with_spread();
+    let json: serde_json::Value =
+        serde_json::from_str(&veridex_core::render_json(&verdict, None)).expect("valid JSON");
+    assert_eq!(json["rollups"]["by_category"]["temporal"]["error"], 1);
+    assert_eq!(json["rollups"]["by_episode"][0]["episode"], 0);
+    assert_eq!(json["rollups"]["by_stream"][0]["stream"], "camera");
+    assert_eq!(json["rollups"]["by_stream"][0]["episodes"], 2);
+
+    // And the terminal report shows the same numbers, from the same function.
+    let terminal = veridex_core::render_terminal(&verdict, None, 10);
+    assert!(terminal.contains("By category:"), "{terminal}");
+    assert!(terminal.contains("Worst streams:"), "{terminal}");
+    assert!(terminal.contains("`camera`"), "{terminal}");
+}

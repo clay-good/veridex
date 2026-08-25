@@ -178,6 +178,11 @@ which tightened it from the 50 the file asked for. It reads no dataset, and it v
 as a run would, so it is also the cheapest way to check a `veridex.toml` before pointing it at data.
 `--json` emits the same document as `veridex.config/1`.
 
+Every report — terminal, JSON, and HTML — now leads with rollups: findings **by category**, the
+**worst episodes**, and the **worst streams** (a camera that drifts in forty episodes is one entry,
+not forty). `--json` carries the same summaries under `rollups`, so a CI job no longer has to
+re-derive from the finding list what the human report was handed.
+
 `--redact` prepares a report to **leave the building**. The dataset identifier, stream names, task
 and label text, and provenance values are replaced with stable placeholders (`stream#1`, `text#2`),
 consistent within one report and meaningless outside it, and the report says so — as a finding, so

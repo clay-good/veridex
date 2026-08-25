@@ -31,6 +31,20 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **Rollups: by category, by episode, by stream — and in the machine-readable report at all.** The
+  reporting spec asks for findings summarized at dataset, episode and stream scope, by severity *and
+  category*. What existed was a worst-episodes ranking in the terminal and HTML reports. Two slices
+  were missing everywhere, and every slice was missing from `--json`, whose only consumer is a CI job
+  — the one least able to re-derive them.
+
+  `By category` now leads the report, the worst-episodes ranking is joined by a worst-**streams**
+  ranking, and `--json` carries all three under `rollups`. The stream rollup is keyed by stream
+  *name* across episodes on purpose: the question it answers is "which sensor is the problem", and a
+  camera that drifts in forty episodes is one answer, not forty — so it also reports how many
+  episodes contributed. Every renderer derives them from one function over the verdict, so the
+  terminal, the HTML artifact and the JSON cannot summarize the same run differently — and a
+  `--redact`ed verdict rolls up to placeholder stream names without redaction knowing rollups exist.
+
 - **`veridex check --redact` — a report that can leave the building.** The reporting spec asks for a
   shareable mode, and there was none. A report is diagnostics, so it quotes the dataset: stream keys,
   task strings, annotator addresses, licenses. That is exactly what a team cannot hand to a customer,

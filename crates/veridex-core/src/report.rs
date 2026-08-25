@@ -5,7 +5,7 @@
 //! versioned JSON envelope, SARIF 2.1.0 for CI code-scanning, a self-contained HTML report, and the
 //! machine-readable check catalog (shared with the CLI and Python bindings).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use serde::Serialize;
@@ -79,6 +79,9 @@ pub struct JsonReport<'a> {
     /// The per-criterion readiness verdict, when the run named a policy profile.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub readiness: Option<&'a crate::certificate::ReadinessReport>,
+    /// Findings summarized by category, episode, and stream — the same rollups the terminal report
+    /// prints, so a machine consumer does not have to re-derive them from the finding list.
+    pub rollups: Rollups,
 }
 
 /// Render the verdict as stable, versioned JSON.
@@ -103,6 +106,7 @@ pub fn render_json_with_readiness(
         verdict,
         trust_score,
         readiness,
+        rollups: rollups(verdict),
     };
     // Pretty JSON is deterministic here: struct field order is fixed and the verdict's collections
     // are already stably ordered.
@@ -127,6 +131,144 @@ struct EpisodeRollup {
 impl EpisodeRollup {
     fn total(&self) -> u32 {
         self.errors + self.warnings + self.info
+    }
+}
+
+/// Findings counted by severity, for one slice of a report (a category, a stream, the dataset).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct SeverityTally {
+    /// Error findings in this slice.
+    pub error: u32,
+    /// Warning findings.
+    pub warning: u32,
+    /// Info findings.
+    pub info: u32,
+}
+
+impl SeverityTally {
+    /// Count one finding.
+    fn add(&mut self, severity: Severity) {
+        match severity {
+            Severity::Error => self.error += 1,
+            Severity::Warning => self.warning += 1,
+            Severity::Info => self.info += 1,
+        }
+    }
+
+    /// Total findings in this slice.
+    pub fn total(&self) -> u32 {
+        self.error + self.warning + self.info
+    }
+
+    /// Worst-first ordering: errors, then warnings, then info.
+    fn rank(&self) -> (u32, u32, u32) {
+        (self.error, self.warning, self.info)
+    }
+}
+
+/// One stream's findings, aggregated across every episode it appears in.
+///
+/// Keyed by stream *name* rather than by `(episode, stream)` on purpose: the triage question a
+/// stream rollup answers is "which sensor is the problem", and a camera that drifts in forty
+/// episodes is one answer, not forty.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StreamRollup {
+    /// The stream name (as it appears in the verdict — placeholder text under `--redact`).
+    pub stream: String,
+    /// How many distinct episodes contributed a finding about this stream.
+    pub episodes: u32,
+    /// Findings by severity.
+    #[serde(flatten)]
+    pub counts: SeverityTally,
+}
+
+/// The rollups a report carries: findings sliced by category and by stream, and the ranked worst
+/// episodes.
+///
+/// The terminal and HTML reports have always ranked the worst episodes; the machine-readable ones
+/// carried nothing but the flat finding list, so a CI job — the only consumer `--json` has — had to
+/// re-derive every summary the human report was given. Categories and streams are the two slices
+/// the reporting spec names beside episodes, and neither existed anywhere.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Rollups {
+    /// Findings by check category, in the catalog's category order. Categories with no findings are
+    /// omitted, so a clean family costs no noise.
+    pub by_category: BTreeMap<String, SeverityTally>,
+    /// Episodes, worst first.
+    pub by_episode: Vec<EpisodeTally>,
+    /// Streams, worst first.
+    pub by_stream: Vec<StreamRollup>,
+}
+
+/// One episode's findings, in the machine-readable rollup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct EpisodeTally {
+    /// Episode index.
+    pub episode: u64,
+    /// Findings by severity.
+    #[serde(flatten)]
+    pub counts: SeverityTally,
+}
+
+/// Summarize a verdict's findings by category, episode, and stream.
+///
+/// Derived from the verdict alone, so every renderer that shows a rollup shows the same numbers,
+/// and a redacted verdict rolls up to redacted stream names without redaction knowing about
+/// rollups.
+pub fn rollups(verdict: &Verdict) -> Rollups {
+    let mut by_category: BTreeMap<String, SeverityTally> = BTreeMap::new();
+    let mut by_stream: BTreeMap<&str, (SeverityTally, BTreeSet<u64>)> = BTreeMap::new();
+    for f in &verdict.findings {
+        by_category
+            .entry(f.category.tag().to_string())
+            .or_default()
+            .add(f.severity);
+        if let Some(stream) = location_stream(&f.location) {
+            let entry = by_stream.entry(stream).or_default();
+            entry.0.add(f.severity);
+            if let Some(episode) = f.location.episode() {
+                entry.1.insert(episode);
+            }
+        }
+    }
+    let mut streams: Vec<StreamRollup> = by_stream
+        .into_iter()
+        .map(|(stream, (counts, episodes))| StreamRollup {
+            stream: stream.to_string(),
+            episodes: episodes.len() as u32,
+            counts,
+        })
+        .collect();
+    streams.sort_by(|a, b| {
+        b.counts
+            .rank()
+            .cmp(&a.counts.rank())
+            .then_with(|| a.stream.cmp(&b.stream))
+    });
+    Rollups {
+        by_category,
+        by_episode: worst_episodes(verdict)
+            .into_iter()
+            .map(|r| EpisodeTally {
+                episode: r.episode,
+                counts: SeverityTally {
+                    error: r.errors,
+                    warning: r.warnings,
+                    info: r.info,
+                },
+            })
+            .collect(),
+        by_stream: streams,
+    }
+}
+
+/// The stream a location names, if it names one.
+fn location_stream(location: &Location) -> Option<&str> {
+    match location {
+        Location::Dataset | Location::Episode { .. } => None,
+        Location::Stream { stream, .. }
+        | Location::FrameRange { stream, .. }
+        | Location::TimeRange { stream, .. } => Some(stream.as_str()),
     }
 }
 
@@ -424,11 +566,23 @@ pub fn render_terminal(
         let _ = writeln!(out, "  Tolerances (non-default): {}", overrides.join(", "));
     }
 
+    // Rollups: which families the findings are in, then the worst episodes and streams. Triage
+    // reads these before it reads a single finding.
+    let summary = rollups(verdict);
+    if !summary.by_category.is_empty() {
+        let by_category: Vec<String> = summary
+            .by_category
+            .iter()
+            .map(|(category, counts)| format!("{category} {}", counts.total()))
+            .collect();
+        let _ = writeln!(out, "  By category: {}", by_category.join(" · "));
+    }
+
     // Worst-episodes rollup.
-    let rollups = worst_episodes(verdict);
-    if !rollups.is_empty() {
+    let episode_rollups = worst_episodes(verdict);
+    if !episode_rollups.is_empty() {
         let _ = writeln!(out, "\nWorst episodes:");
-        for r in rollups.iter().take(max_episodes) {
+        for r in episode_rollups.iter().take(max_episodes) {
             let _ = writeln!(
                 out,
                 "  episode {} — {} error, {} warning, {} info ({} total)",
@@ -437,6 +591,24 @@ pub fn render_terminal(
                 r.warnings,
                 r.info,
                 r.total()
+            );
+        }
+    }
+
+    // Worst-streams rollup: the question "which sensor is the problem" that a per-episode ranking
+    // cannot answer, since one bad camera spreads its findings across every episode it appears in.
+    if !summary.by_stream.is_empty() {
+        let _ = writeln!(out, "\nWorst streams:");
+        for r in summary.by_stream.iter().take(max_episodes) {
+            let _ = writeln!(
+                out,
+                "  `{}` — {} error, {} warning, {} info ({} total, across {} episode(s))",
+                r.stream,
+                r.counts.error,
+                r.counts.warning,
+                r.counts.info,
+                r.counts.total(),
+                r.episodes
             );
         }
     }
@@ -561,14 +733,42 @@ pub fn render_html_with_readiness(
         }
     }
 
-    let rollups = worst_episodes(verdict);
-    if !rollups.is_empty() {
+    // The same rollups the terminal report prints, from the same function, so a shared HTML
+    // artifact and the terminal it came from cannot summarize the run differently.
+    let summary = rollups(verdict);
+    if !summary.by_category.is_empty() {
+        let by_category: Vec<String> = summary
+            .by_category
+            .iter()
+            .map(|(category, counts)| format!("{} {}", esc(category), counts.total()))
+            .collect();
+        let _ = write!(body, "<p>By category: {}</p>", by_category.join(" · "));
+    }
+
+    let episode_rollups = worst_episodes(verdict);
+    if !episode_rollups.is_empty() {
         body.push_str("<h2>Worst episodes</h2><ul>");
-        for r in rollups.iter().take(10) {
+        for r in episode_rollups.iter().take(10) {
             let _ = write!(
                 body,
                 "<li>episode {} — {} error, {} warning, {} info</li>",
                 r.episode, r.errors, r.warnings, r.info
+            );
+        }
+        body.push_str("</ul>");
+    }
+
+    if !summary.by_stream.is_empty() {
+        body.push_str("<h2>Worst streams</h2><ul>");
+        for r in summary.by_stream.iter().take(10) {
+            let _ = write!(
+                body,
+                "<li><code>{}</code> — {} error, {} warning, {} info, across {} episode(s)</li>",
+                esc(&r.stream),
+                r.counts.error,
+                r.counts.warning,
+                r.counts.info,
+                r.episodes
             );
         }
         body.push_str("</ul>");
