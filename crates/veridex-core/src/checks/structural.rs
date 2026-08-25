@@ -1130,15 +1130,19 @@ impl Check for NearDuplicateEpisode {
 
         // Pairs the exact check already speaks for. Computed with its own signature so this
         // suppression is exactly as wide as what it reports — never wider.
-        let signatures: Vec<Option<String>> = evidence
+        //
+        // Built in one pass keyed by episode index: looking each one up by scanning the episode list
+        // is quadratic in the episode count, and a signature is itself linear in the episode's
+        // frames, so the naive form costs a large dataset dearly for a suppression list.
+        let mut signature_of: BTreeMap<u64, Option<String>> = BTreeMap::new();
+        for episode in &dataset.episodes {
+            signature_of
+                .entry(episode.index)
+                .or_insert_with(|| DuplicateEpisode::signature(episode));
+        }
+        let signatures: Vec<Option<&String>> = evidence
             .iter()
-            .map(|(index, _)| {
-                dataset
-                    .episodes
-                    .iter()
-                    .find(|ep| ep.index == *index)
-                    .and_then(DuplicateEpisode::signature)
-            })
+            .map(|(index, _)| signature_of.get(index).and_then(Option::as_ref))
             .collect();
 
         // Flag the pairs whose weakest shared stream still clears the threshold.

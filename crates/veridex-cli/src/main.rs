@@ -650,10 +650,16 @@ fn cmd_check(rest: &[String]) -> ExitCode {
     // code below are the unredacted ones. Only what the report *prints* changes, so a shared report
     // and the private one describe the same run — and both carry the same CDM content hash, which
     // is what lets whoever holds the dataset match them.
-    let redactor = args
-        .redact
-        .then(|| veridex_core::Redactor::for_dataset(&out.ingested.dataset));
-    let rendered = match &redactor {
+    let mut redactor = args.redact.then(|| {
+        veridex_core::Redactor::for_dataset(&out.ingested.dataset).and_unread_sources(
+            out.ingested
+                .report
+                .unread_sources
+                .iter()
+                .map(|u| u.source_path.as_str()),
+        )
+    });
+    let rendered = match &mut redactor {
         Some(r) => r.redact_verdict(&out.verdict),
         None => out.verdict.clone(),
     };
@@ -850,6 +856,42 @@ fn load_config_layers(explicit: Option<&str>) -> Result<LoadedConfig, String> {
 /// it: an unknown check id or an out-of-range tolerance is an error here too, which makes this the
 /// cheapest way to check a `veridex.toml` before pointing it at a dataset.
 fn cmd_print_config(args: &Args) -> ExitCode {
+    // `--print-config` answers a question about the configuration and reads no data, so every flag
+    // that describes a *run over a dataset* would be accepted and do nothing — the failure this
+    // CLI's whole allow-list exists to prevent. Refused by name, including a dataset path, which is
+    // the most natural thing to type here and the most misleading to ignore.
+    for (flag, given) in [
+        ("--sample-episodes", args.sample_episodes.is_some()),
+        ("--sample-fraction", args.sample_fraction.is_some()),
+        ("--sample-seed", args.sample_seed.is_some()),
+        ("--metadata-only", args.metadata_only),
+        ("--max-frames", args.max_frames.is_some()),
+        (
+            "--max-decompression-ratio",
+            args.max_decompression_ratio.is_some(),
+        ),
+        ("--format", args.format.is_some()),
+        ("--sarif", args.sarif),
+        ("--html", args.html),
+        ("--redact", args.redact),
+    ] {
+        if given {
+            eprintln!(
+                "veridex: --print-config does not support {flag} — it reads no dataset, it prints \
+                 the configuration a run would use"
+            );
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
+    }
+    if !args.positionals.is_empty() {
+        eprintln!(
+            "veridex: --print-config takes no dataset path (got {}) — the configuration does not \
+             depend on one",
+            args.positionals.join(", ")
+        );
+        return ExitCode::from(EXIT_TOOL_ERROR);
+    }
+
     let loaded = match load_config_layers(args.config.as_deref()) {
         Ok(c) => c,
         Err(e) => {

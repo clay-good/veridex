@@ -141,7 +141,15 @@ fn check(
 /// run's — so this is the only place the two paths differ.
 fn redacted_if(redact: bool, out: &veridex_core::CheckOutput) -> veridex_core::Verdict {
     if redact {
-        veridex_core::Redactor::for_dataset(&out.ingested.dataset).redact_verdict(&out.verdict)
+        veridex_core::Redactor::for_dataset(&out.ingested.dataset)
+            .and_unread_sources(
+                out.ingested
+                    .report
+                    .unread_sources
+                    .iter()
+                    .map(|u| u.source_path.as_str()),
+            )
+            .redact_verdict(&out.verdict)
     } else {
         out.verdict.clone()
     }

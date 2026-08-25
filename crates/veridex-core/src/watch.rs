@@ -16,6 +16,13 @@
 //! - **The walk is bounded.** A watched directory is as untrusted as a checked one, and
 //!   [`MAX_WATCH_ENTRIES`] is the ceiling on entries a single fingerprint will visit, so a pathological
 //!   tree fails loudly instead of pinning a CPU on every tick.
+//!
+//! What it cannot see, stated because a change detector that misses a change is worse than none: a
+//! file rewritten in place to the *same size* within the same modification-time tick is
+//! indistinguishable from an untouched one. On the filesystems a recorder runs on, mtime resolution
+//! is sub-microsecond and a rewrite moves it; on one with second-granularity timestamps, a same-size
+//! rewrite inside one second is a blind spot. Hashing the bytes would close it and would also mean
+//! reading the whole dataset every tick, which is the thing this exists to avoid.
 
 use std::io;
 use std::path::Path;

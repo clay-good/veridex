@@ -10,6 +10,30 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+*A self-audit of the six features above, done immediately after writing them. Each defect was
+reproduced before it was fixed.*
+
+- **`--redact` leaked exactly the strings a dataset is most identifying by.** The substitution was
+  built from stream names, task text, labels, provenance values and the dataset id — and two
+  findings the catalog really emits quote something else entirely. The video family names the media
+  file it could not read or pair (`videos/acme_warehouse_aisle_7/episode_000000.mp4`), and
+  `COVERAGE.SOURCE_UNREAD`'s whole content is a list of source *paths*, which are not in the CDM at
+  all: an unread source is precisely the file that did not become data. A coordinate-frame name
+  (`acme_wrist_cam_link`) and dataset metadata values (the robot model, the site) went through
+  untouched too. All four classes are now enumerated, and a second, pattern-based pass replaces any
+  surviving token carrying a path separator — because the enumerated set can only cover what the CDM
+  holds, and a check can quote a directory it merely looked in.
+
+- **`--print-config` accepted a dataset path and five run flags, and ignored all of them.** It reads
+  no dataset, so `check --print-config --sample-episodes 3 --metadata-only my-dataset/` printed the
+  configuration and silently discarded everything else asked for — the accepted-and-ignored failure
+  this CLI's whole allow-list exists to prevent, introduced in the same release that added the flag.
+
+- **The near-duplicate check looked each episode's signature up by scanning the episode list.** The
+  suppression list is built per candidate episode and each lookup walked every episode, so the cost
+  was quadratic in the episode count on top of a per-episode signature that is itself linear in
+  frames. Built in one pass now.
+
 - **CI had been red on `main` since 2026-08-16 — every run since, across 72 commits — and the README
   badge said so.** Two independent causes, neither visible to a local run:
 

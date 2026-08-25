@@ -12,8 +12,11 @@
 //! wrong, how badly, and which dataset it is about — the hash is what lets the holder of the data
 //! match the report to it.
 //!
-//! **What is removed:** the dataset identifier, stream names, task and label text, and provenance
-//! element values, wherever they appear in a finding's message or location.
+//! **What is removed:** the dataset identifier, stream names, task and label text, provenance
+//! element values, media and source *paths*, coordinate-frame names, and dataset metadata values —
+//! wherever they appear in a finding's message or location. Paths get a second, pattern-based pass
+//! on top of the enumerated ones, because a path is the string a dataset is most identifying in and
+//! a check can quote one this module never saw.
 //!
 //! **What is kept, deliberately:** episode indices, timestamps, frame counts, and every measured
 //! quantity (a 210 ms drift, a 12σ outlier, a saturated fraction). Those are the finding. A report
@@ -25,7 +28,7 @@
 //! rendering-only banner would be invisible to exactly the machine consumer most likely to be
 //! handed the redacted document.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::cdm::Dataset;
 use crate::check::{Category, Finding, Location, Severity};
@@ -48,6 +51,10 @@ const MIN_IDENTIFIER: usize = 3;
 pub struct Redactor {
     /// Longest first, so a stream named `arm` cannot chew a hole in `arm/gripper`.
     replacements: Vec<(String, String)>,
+    /// Path-shaped tokens met while redacting, and the placeholder each was given. Numbered in the
+    /// order they are first seen, over findings that are already in the verdict's deterministic
+    /// order, so the same report always redacts identically.
+    paths: BTreeMap<String, String>,
 }
 
 impl Redactor {
@@ -60,9 +67,19 @@ impl Redactor {
         let mut streams: BTreeSet<&str> = BTreeSet::new();
         let mut text: BTreeSet<&str> = BTreeSet::new();
         let mut values: BTreeSet<&str> = BTreeSet::new();
+        let mut paths: BTreeSet<&str> = BTreeSet::new();
         for episode in &dataset.episodes {
             for stream in &episode.streams {
                 streams.insert(stream.name.as_str());
+                // The video family names the media file it could not read or pair, and that path
+                // usually carries the stream name and the operator's own directory naming.
+                if let Some(media) = &stream.media {
+                    paths.insert(media.uri.as_str());
+                }
+                // A coordinate frame names a sensor mount on a real rig (`acme_wrist_cam_link`).
+                if let Some(frame) = &stream.frame_id {
+                    values.insert(frame.as_str());
+                }
             }
             if let Some(task) = &episode.task {
                 text.insert(task.as_str());
@@ -78,6 +95,20 @@ impl Redactor {
                 }
             }
         }
+        // Dataset metadata is where a source records the robot model, the site, the operator.
+        for (_, value) in &dataset.metadata {
+            values.insert(value.as_str());
+        }
+        // Calibration names every coordinate frame on the rig.
+        if let Some(calibration) = &dataset.calibration {
+            for transform in &calibration.transforms {
+                values.insert(transform.parent_frame.as_str());
+                values.insert(transform.child_frame.as_str());
+            }
+            for intrinsics in &calibration.intrinsics {
+                streams.insert(intrinsics.stream.as_str());
+            }
+        }
 
         let mut replacements: Vec<(String, String)> = Vec::new();
         let add = |set: BTreeSet<&str>, prefix: &str, out: &mut Vec<(String, String)>| {
@@ -90,13 +121,39 @@ impl Redactor {
         add(streams, "stream", &mut replacements);
         add(text, "text", &mut replacements);
         add(values, "value", &mut replacements);
+        add(paths, "path", &mut replacements);
         if dataset.id.chars().count() >= MIN_IDENTIFIER {
             replacements.push((dataset.id.clone(), "dataset".to_string()));
         }
         // Longest first: a substitution must never be applied inside a longer identifier it is a
         // prefix or substring of, or the longer one survives in pieces.
         replacements.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then_with(|| a.0.cmp(&b.0)));
-        Redactor { replacements }
+        Redactor {
+            replacements,
+            paths: BTreeMap::new(),
+        }
+    }
+
+    /// Also redact the source files an ingest declined to read.
+    ///
+    /// Those paths reach the report through `COVERAGE.SOURCE_UNREAD`, and they are not in the CDM:
+    /// the whole point of an unread source is that it did not become data. Without this the one
+    /// finding whose entire content is a list of file paths would pass through untouched.
+    pub fn and_unread_sources<'a>(
+        mut self,
+        sources: impl IntoIterator<Item = &'a str>,
+    ) -> Redactor {
+        let mut extra: Vec<(String, String)> = Vec::new();
+        let unique: BTreeSet<&str> = sources.into_iter().collect();
+        for (i, path) in unique.into_iter().enumerate() {
+            if path.chars().count() >= MIN_IDENTIFIER {
+                extra.push((path.to_string(), format!("unread#{}", i + 1)));
+            }
+        }
+        self.replacements.extend(extra);
+        self.replacements
+            .sort_by(|a, b| b.0.len().cmp(&a.0.len()).then_with(|| a.0.cmp(&b.0)));
+        self
     }
 
     /// Substitute every identifier in `text`.
@@ -105,18 +162,58 @@ impl Redactor {
     /// literally named `state` takes the word "state" with it wherever a message uses it — which is
     /// the safe direction for a document being handed to someone else, and is why the disclosure
     /// calls this best-effort rather than a guarantee.
-    pub fn redact_text(&self, text: &str) -> String {
+    pub fn redact_text(&mut self, text: &str) -> String {
         let mut out = text.to_string();
         for (identifier, placeholder) in &self.replacements {
             if out.contains(identifier.as_str()) {
                 out = out.replace(identifier.as_str(), placeholder);
             }
         }
+        self.redact_paths(&out)
+    }
+
+    /// Replace what is left that looks like a filesystem path.
+    ///
+    /// The enumerated identifiers cover what the CDM holds, and a check can quote a path the CDM
+    /// never held — a directory it looked in, a file it failed to open. A path is also the single
+    /// most identifying string a dataset has (`data/acme-warehouse-pilot/...`), so the backstop
+    /// errs toward substituting: any surviving token carrying a `/` or `\` is replaced.
+    fn redact_paths(&mut self, text: &str) -> String {
+        if !text.contains('/') && !text.contains('\\') {
+            return text.to_string();
+        }
+        let mut out = String::with_capacity(text.len());
+        // A "token" ends at whitespace or at the punctuation a message wraps identifiers in.
+        let is_boundary = |c: char| c.is_whitespace() || matches!(c, '`' | '(' | ')' | ',' | ';');
+        for part in text.split_inclusive(is_boundary) {
+            let (token, tail) = match part.chars().last() {
+                Some(last) if is_boundary(last) => {
+                    (&part[..part.len() - last.len_utf8()], Some(last))
+                }
+                _ => (part, None),
+            };
+            let trimmed = token.trim_end_matches('.');
+            if trimmed.contains('/') || trimmed.contains('\\') {
+                let next = self.paths.len() + 1;
+                let placeholder = self
+                    .paths
+                    .entry(trimmed.to_string())
+                    .or_insert_with(|| format!("path#{next}"))
+                    .clone();
+                out.push_str(&placeholder);
+                out.push_str(&token[trimmed.len()..]);
+            } else {
+                out.push_str(token);
+            }
+            if let Some(tail) = tail {
+                out.push(tail);
+            }
+        }
         out
     }
 
     /// Substitute the stream name a location names, keeping every index and timestamp.
-    pub fn redact_location(&self, location: &Location) -> Location {
+    pub fn redact_location(&mut self, location: &Location) -> Location {
         match location {
             Location::Dataset => Location::Dataset,
             Location::Episode { episode } => Location::Episode { episode: *episode },
@@ -154,7 +251,7 @@ impl Redactor {
     /// The verdict's status, score inputs, coverage, effective config, and content hash are
     /// unchanged: redaction is about who can read the report, not about what the run concluded.
     /// Only the `info` count moves, by the one finding that says the document was redacted.
-    pub fn redact_verdict(&self, verdict: &Verdict) -> Verdict {
+    pub fn redact_verdict(&mut self, verdict: &Verdict) -> Verdict {
         let mut out = verdict.clone();
         for finding in &mut out.findings {
             finding.message = self.redact_text(&finding.message);
@@ -176,8 +273,9 @@ fn disclosure() -> Finding {
         Location::Dataset,
         REDACTION_CODE,
         "this report was redacted for sharing: the dataset identifier, stream names, task and \
-         label text, and provenance values were replaced with stable placeholders (`stream#1`, \
-         `text#2`, `value#3`), consistent within this report and meaningless outside it",
+         label text, provenance values, coordinate-frame and metadata values, and file paths were \
+         replaced with stable placeholders (`stream#1`, `text#2`, `value#3`, `path#4`), consistent \
+         within this report and meaningless outside it",
     )
     .with_risk(
         "Every measured quantity is still here — episode indices, timestamps, frame counts, \

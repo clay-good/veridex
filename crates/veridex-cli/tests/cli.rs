@@ -1828,3 +1828,44 @@ fn a_certificate_cannot_be_redacted() {
         "unexpected stderr: {stderr}"
     );
 }
+
+#[test]
+fn print_config_refuses_the_flags_it_would_ignore() {
+    // `--print-config` reads no dataset, so every flag describing a run over one would be accepted
+    // and do nothing — the exact failure this CLI's allow-list exists to prevent. It shipped
+    // accepting all of them, and a dataset path too.
+    for (extra, expected) in [
+        (
+            vec!["--sample-episodes", "3"],
+            "--print-config does not support --sample-episodes",
+        ),
+        (
+            vec!["--metadata-only"],
+            "--print-config does not support --metadata-only",
+        ),
+        (
+            vec!["--max-frames", "10"],
+            "--print-config does not support --max-frames",
+        ),
+        (vec!["--sarif"], "--print-config does not support --sarif"),
+        (vec!["--redact"], "--print-config does not support --redact"),
+    ] {
+        let mut argv = vec!["check", "--print-config"];
+        argv.extend(extra.iter().copied());
+        let (code, _, stderr) = run(&argv);
+        assert_eq!(code, 2, "`{extra:?}` must be a tool error");
+        assert!(stderr.contains(expected), "unexpected stderr: {stderr}");
+    }
+
+    // And a dataset path, which is the most natural thing to type here.
+    let (code, _, stderr) = run(&["check", "--print-config", &fixture_dataset()]);
+    assert_eq!(code, 2);
+    assert!(
+        stderr.contains("--print-config takes no dataset path"),
+        "unexpected stderr: {stderr}"
+    );
+
+    // What it does support still works.
+    let (code, _, _) = run(&["check", "--print-config", "--json"]);
+    assert_eq!(code, 0);
+}

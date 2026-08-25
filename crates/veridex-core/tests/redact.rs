@@ -116,7 +116,7 @@ fn verdict_with(finding: Finding) -> veridex_core::Verdict {
 
 #[test]
 fn every_identifier_a_finding_quotes_is_replaced() {
-    let redactor = Redactor::for_dataset(&sensitive_dataset());
+    let mut redactor = Redactor::for_dataset(&sensitive_dataset());
     let verdict = verdict_with(finding_quoting_everything());
     let redacted = redactor.redact_verdict(&verdict);
 
@@ -150,7 +150,7 @@ fn every_identifier_a_finding_quotes_is_replaced() {
 #[test]
 fn every_measurement_the_finding_is_about_survives() {
     // A redacted report that dropped these would not be redacted, it would be empty.
-    let redactor = Redactor::for_dataset(&sensitive_dataset());
+    let mut redactor = Redactor::for_dataset(&sensitive_dataset());
     let redacted = redactor.redact_verdict(&verdict_with(finding_quoting_everything()));
     let quoted = redacted
         .findings
@@ -173,7 +173,7 @@ fn the_report_says_it_was_redacted() {
     // The disclosure is a finding, not a header line, so it reaches SARIF, JSON, HTML, the terminal
     // and `diff` alike — a rendering-only banner would be invisible to the machine consumer most
     // likely to receive the shared document.
-    let redactor = Redactor::for_dataset(&sensitive_dataset());
+    let mut redactor = Redactor::for_dataset(&sensitive_dataset());
     let verdict = verdict_with(finding_quoting_everything());
     let redacted = redactor.redact_verdict(&verdict);
 
@@ -198,7 +198,7 @@ fn the_report_says_it_was_redacted() {
 
 #[test]
 fn the_verdict_a_shared_report_describes_is_the_same_run() {
-    let redactor = Redactor::for_dataset(&sensitive_dataset());
+    let mut redactor = Redactor::for_dataset(&sensitive_dataset());
     let verdict = verdict_with(finding_quoting_everything());
     let redacted = redactor.redact_verdict(&verdict);
 
@@ -228,11 +228,74 @@ fn a_name_that_contains_another_name_is_not_left_in_pieces() {
     // substituting the short one first would leave `stream#1/gripper` — the long name, disclosed.
     let mut dataset = sensitive_dataset();
     dataset.episodes[0].streams = vec![stream("arm", &[0, 1]), stream("arm/gripper", &[0, 1])];
-    let redactor = Redactor::for_dataset(&dataset);
+    let mut redactor = Redactor::for_dataset(&dataset);
     let redacted = redactor.redact_text("`arm/gripper` lags `arm` by 40 ms");
     assert!(
         !redacted.contains("gripper"),
         "the longer name survived in pieces: {redacted}"
     );
     assert!(redacted.contains("40 ms"), "{redacted}");
+}
+
+#[test]
+fn a_path_a_finding_quotes_is_not_a_way_around_redaction() {
+    // Two findings the catalog really emits quote *paths* rather than stream names: the video family
+    // names the media file it could not pair (`videos/observation.images.wrist_cam/…`), and the
+    // coverage disclosure names every source file the adapter declined to read. A redactor built
+    // only from stream and task text lets both straight through — and a directory path is often the
+    // most identifying string in a dataset.
+    use veridex_core::check::{Category, Finding, Location, Severity};
+    let mut dataset = sensitive_dataset();
+    dataset.episodes[0].streams[0].media = Some(Media {
+        uri: "videos/acme_warehouse_aisle_7/episode_000000.mp4".into(),
+        declared: MediaParams::default(),
+        status: MediaStatus::Missing,
+        observed: MediaParams::default(),
+        frame_count: None,
+    });
+    dataset.metadata = vec![("robot".into(), "acme-picker-mk3".into())];
+    dataset.episodes[0].streams[0].frame_id = Some("acme_wrist_cam_link".into());
+
+    let mut verdict = verdict_with(Finding::new(
+        "video.media-readable",
+        Category::Video,
+        Severity::Error,
+        Location::Dataset,
+        "VIDEO.MEDIA_ABSENT",
+        "stream `observation.images.warehouse_aisle_7`: none were found under \
+         `videos/acme_warehouse_aisle_7/episode_000000.mp4`",
+    ));
+    verdict.findings.push(Finding::new(
+        "veridex.coverage",
+        Category::Structural,
+        Severity::Warning,
+        Location::Dataset,
+        "COVERAGE.SOURCE_UNREAD",
+        "1 source file(s) the dataset declares were not read \
+             (data/acme-warehouse-pilot/chunk-000/file-001.parquet)",
+    ));
+    verdict.findings.push(Finding::new(
+        "autonomy.sensor-frame-resolution",
+        Category::Autonomy,
+        Severity::Warning,
+        Location::Dataset,
+        "AUTONOMY.SENSOR_FRAME_UNRELATED",
+        "stream declares frame `acme_wrist_cam_link`, which the transform tree does not relate \
+         to the camera (robot acme-picker-mk3)",
+    ));
+
+    let redacted = Redactor::for_dataset(&dataset).redact_verdict(&verdict);
+    let text = serde_json::to_string(&redacted).expect("verdict serializes");
+    for leaked in [
+        "videos/acme_warehouse_aisle_7/episode_000000.mp4",
+        "acme_warehouse_aisle_7",
+        "data/acme-warehouse-pilot/chunk-000/file-001.parquet",
+        "acme_wrist_cam_link",
+        "acme-picker-mk3",
+    ] {
+        assert!(
+            !text.contains(leaked),
+            "`{leaked}` survived redaction: {text}"
+        );
+    }
 }
