@@ -1,6 +1,6 @@
 //! The trust certificate: deterministic scoring, a content-bound document, and Ed25519 signing.
 //!
-//! - [`score`] and [`ProvenanceCoverage`] compute the trust score (design D7).
+//! - [`score()`] and [`ProvenanceCoverage`] compute the trust score (design D7).
 //! - [`Certificate`] is the portable, content-bound statement (design D9).
 //! - [`sign`]/[`verify`] provide Ed25519 signing and offline verification with tamper and
 //!   transplant rejection (design D6).

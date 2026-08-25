@@ -1,4 +1,4 @@
-//! The adapter contract: how a source format becomes a [`Dataset`](crate::cdm::Dataset).
+//! The adapter contract: how a source format becomes a [`Dataset`].
 //!
 //! An adapter's *only* job is to populate the CDM faithfully (design D2). Adding a format later is
 //! "write an [`Adapter`]," never "touch the engine or the checks." Two rules from the ingestion

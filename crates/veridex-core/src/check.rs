@@ -1,7 +1,7 @@
 //! Check types: the vocabulary the [validation engine](crate::engine) runs and aggregates.
 //!
 //! The engine knows nothing about specific checks; a [`Check`] declares its identity and scope and
-//! inspects a [`Dataset`](crate::cdm::Dataset), emitting [`Finding`]s. Concrete checks live in
+//! inspects a [`Dataset`], emitting [`Finding`]s. Concrete checks live in
 //! `checks-catalog` (implemented incrementally).
 
 use serde::{Deserialize, Serialize};

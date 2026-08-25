@@ -527,7 +527,7 @@ impl Default for Jitter {
 impl Jitter {
     /// Minimum positive intervals (frames − 1) needed for a meaningful CV; below this the statistic
     /// is too noisy to act on.
-    const MIN_INTERVALS: usize = 8;
+    pub const MIN_INTERVALS: usize = 8;
 }
 
 impl Check for Jitter {
@@ -1056,7 +1056,7 @@ pub struct EpisodeDuration {
 impl EpisodeDuration {
     /// Minimum number of measurable-duration episodes before the check runs. Below this a median is
     /// not a meaningful "typical", so the check abstains rather than flag on thin evidence.
-    const MIN_EPISODES: usize = 4;
+    pub const MIN_EPISODES: usize = 4;
 }
 
 impl Default for EpisodeDuration {

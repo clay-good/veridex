@@ -8,7 +8,7 @@
 //!   and topic;
 //! - for the common ROS 2 autonomy message types, the message **header** (never the bulk payload) is
 //!   CDR-decoded to populate the rig CDM: `PointCloud2` → `Stream.point_fields`, `CameraInfo` and
-//!   `TFMessage` → `Dataset.calibration`, `Odometry` → `Episode.ego_poses` (see [`super::cdr`]);
+//!   `TFMessage` → `Dataset.calibration`, `Odometry` → `Episode.ego_poses` (see the `cdr` module);
 //! - each **message** → a [`Frame`] whose timestamp is the message `log_time` (ns);
 //! - all channels share the single MCAP log clock (`clock_id = "mcap-log"`); MCAP does not separate
 //!   per-sensor clocks, so cross-stream skew is inferred from duration drift (the `TEMPORAL.CLOCK_SKEW`

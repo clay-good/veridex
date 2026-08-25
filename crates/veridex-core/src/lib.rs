@@ -8,7 +8,7 @@
 //! the validation engine, and the trust certificate build on top of these.
 //!
 //! Determinism is a first-class contract: the same dataset bytes and the same Veridex version
-//! always canonicalize to the same [`ContentHash`](canonical::ContentHash).
+//! always canonicalize to the same [`ContentHash`].
 //!
 //! ```no_run
 //! use veridex_core::{default_registry, run_check, status_label, IngestOptions, Source};

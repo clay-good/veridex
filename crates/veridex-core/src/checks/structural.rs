@@ -1279,7 +1279,7 @@ pub struct StuckStream;
 
 impl StuckStream {
     /// Minimum run of consecutive byte-identical frames that counts as a freeze rather than a hiccup.
-    const STUCK_RUN: usize = 5;
+    pub const STUCK_RUN: usize = 5;
 }
 
 impl Check for StuckStream {

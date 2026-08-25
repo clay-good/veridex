@@ -12,7 +12,7 @@
 //! half-written files, not a per-frame decode.
 //!
 //! Both checks are silent on a dataset with no separate media: a stream only carries
-//! [`Media`](crate::cdm::Media) when the adapter resolved a media file for it, so a scalar feature,
+//! [`Media`] when the adapter resolved a media file for it, so a scalar feature,
 //! an inline-image dataset, or a video layout Veridex cannot resolve per episode contributes
 //! nothing rather than a false alarm.
 

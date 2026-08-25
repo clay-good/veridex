@@ -10,6 +10,18 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **Eleven documentation errors that would have shipped to docs.rs.** Four public items linked to
+  private ones (`StuckStream::STUCK_RUN`, `Jitter::MIN_INTERVALS`, `EpisodeDuration::MIN_EPISODES`
+  and the MCAP adapter's pointer at the CDR decoder) — each a threshold the prose names, so the
+  constants are public now and the one internal module is no longer linked. Six links carried a
+  redundant explicit target, and one (`score`) was ambiguous between a function and a module. On a
+  published crate every one of these is a page that renders wrong or not at all, and nothing on
+  crates.io says so.
+
+  CI now builds the docs for both published crates with `-D warnings`, and runs
+  `cargo publish --dry-run` on `veridex-core` — the manifest defect fixed in the previous commit was
+  invisible to every other gate.
+
 - **`diff` read a redacted report as a dataset that changed everywhere.** Redaction substitutes every
   identifier a finding quotes, so a redacted report and its unredacted twin describe the same run in
   different words — and `diff` compared them as findings. On this repo's demo dataset that is four

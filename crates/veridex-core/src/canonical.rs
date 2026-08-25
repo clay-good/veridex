@@ -5,7 +5,7 @@
 //! streams by name, metadata/labels/provenance by key). The bytes are streamed directly into
 //! SHA-256, so hashing a dataset with millions of frames never materializes the encoding in memory.
 //!
-//! Guarantee: identical [`Dataset`](crate::cdm::Dataset) values — up to the ordering of
+//! Guarantee: identical [`Dataset`] values — up to the ordering of
 //! order-insensitive collections — always produce the same [`ContentHash`], on any platform.
 
 use sha2::{Digest, Sha256};
