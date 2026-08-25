@@ -158,7 +158,9 @@ over any run that cannot support that claim: `--metadata-only`, a `--sample-epis
 by config (checks deselected, a severity overridden, or a tolerance *loosened*). The data score starts at
 100 and only deducts, so anything that stops a check from measuring *raises* it — each of those is
 otherwise one flag away from a green gate on bad data. A profile is not a narrowing and does not
-block the gate: it may only *tighten* a threshold, which measures the data harder than the catalog
+block the gate — `--profile strict` measures at tighter thresholds across the temporal and
+statistical families, and `--profile standard` names the defaults so a pipeline records which policy
+it ran under. There is deliberately no `lenient`: a profile may only *tighten* a threshold, which measures the data harder than the catalog
 asks, so `check --profile world-model-ready --min-score 80` is a valid CI gate. `check --profile
 world-model-ready` also prints the per-criterion readiness verdict it judged against; `certify` is
 what signs it.

@@ -8,10 +8,26 @@
 
 use crate::engine::Tolerances;
 
-/// A named readiness profile.
+/// What a profile claims.
+///
+/// The distinction exists because `--profile` came to mean two things. A **readiness** profile names
+/// criteria and produces a per-criterion verdict a certificate signs; a **threshold** profile only
+/// moves the thresholds the run measures at, and has no readiness opinion at all. Rendering an
+/// empty readiness block for the second kind would print `NOT READY` about criteria it never had.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileKind {
+    /// Bundles thresholds only: no criteria, no readiness verdict.
+    Thresholds,
+    /// Names criteria and produces a readiness verdict.
+    Readiness,
+}
+
+/// A named policy profile.
 pub struct Profile {
     /// The profile name (e.g. `world-model-ready`), recorded on the certificate.
     pub name: &'static str,
+    /// Whether this profile makes a readiness claim, or only sets thresholds.
+    pub kind: ProfileKind,
     /// The run tolerances the profile applies (tighter than the defaults where readiness demands it).
     pub tolerances: Tolerances,
     /// The readiness criteria: `(check id, human-readable threshold)` pairs. A dataset is *ready* when
@@ -55,6 +71,11 @@ impl Profile {
     /// below which the check abstains: a smaller one abstains on fewer streams, and
     /// `near_duplicate_fraction`, which is the overlap at which a pair is reported: a smaller one
     /// reports more pairs.
+    /// Whether this profile produces a readiness verdict at all.
+    pub fn judges_readiness(&self) -> bool {
+        self.kind == ProfileKind::Readiness
+    }
+
     pub fn apply_tolerances(&self, base: Tolerances) -> Tolerances {
         let d = Tolerances::default();
         let p = self.tolerances;
@@ -133,6 +154,7 @@ const WORLD_MODEL_READY_CRITERIA: &[(&str, &str)] = &[
 pub fn world_model_ready() -> Profile {
     Profile {
         name: "world-model-ready",
+        kind: ProfileKind::Readiness,
         tolerances: Tolerances {
             clock_skew_ns: 20_000_000, // 20 ms — stricter than the 50 ms default
             ..Tolerances::default()
@@ -162,10 +184,81 @@ fn is_world_model_candidate(dataset: &crate::cdm::Dataset) -> bool {
     })
 }
 
+/// The `standard` profile: Veridex's built-in thresholds, named.
+///
+/// It changes nothing, which is the point. A pipeline that says `--profile standard` records in its
+/// verdict *which* policy it ran under, and a later run under `strict` is then a visible change
+/// rather than an undocumented one. Naming the default also gives the other profiles something to
+/// be named against.
+pub fn standard() -> Profile {
+    Profile {
+        name: "standard",
+        kind: ProfileKind::Thresholds,
+        tolerances: Tolerances::default(),
+        criteria: &[],
+        applies_to: |_| false,
+    }
+}
+
+/// The `strict` profile: the same catalog, measured harder.
+///
+/// Every threshold it names is tighter than the default, so — like every profile — it can only
+/// tighten, never relax what a `veridex.toml` already set ([`Profile::apply_tolerances`]). That is
+/// what keeps it usable with `--min-score`: measuring the data *harder* than the catalog asks can
+/// only lower a score, so it is not a narrowing and does not disqualify a gate.
+///
+/// The numbers are one step in from the defaults rather than a different philosophy: 20 ms of
+/// cross-stream drift instead of 50, 5% rate deviation instead of 10, a 2x gap instead of 3x, and an
+/// outlier at 6σ instead of 10σ (a Chebyshev tail of ~2.8% instead of 1%).
+pub fn strict() -> Profile {
+    Profile {
+        name: "strict",
+        kind: ProfileKind::Thresholds,
+        tolerances: Tolerances {
+            clock_skew_ns: 20_000_000,
+            start_offset_ns: 20_000_000,
+            end_offset_ns: 20_000_000,
+            rate_deviation: 0.05,
+            gap_factor: 2.0,
+            jitter_cv: 0.3,
+            outlier_z: 6.0,
+            sequence_drop_fraction: 0.01,
+            ..Tolerances::default()
+        },
+        criteria: &[],
+        applies_to: |_| false,
+    }
+}
+
 /// Resolve a profile by name, or `None` for an unknown name.
 pub fn by_name(name: &str) -> Option<Profile> {
     match name {
         "world-model-ready" => Some(world_model_ready()),
+        "strict" => Some(strict()),
+        "standard" => Some(standard()),
+        _ => None,
+    }
+}
+
+/// The profile names that exist, for error messages and documentation.
+pub const KNOWN_PROFILES: &[&str] = &["standard", "strict", "world-model-ready"];
+
+/// Why a name that looks like a profile is not one.
+///
+/// `lenient` is the case worth explaining rather than dismissing as a typo. A profile that *loosens*
+/// thresholds is a narrowing of the run — the checks still run, measure the defect, and pass it —
+/// and this tool refuses to let a narrowing hide behind a name. Loosened thresholds belong in a
+/// `veridex.toml`, where `SCOPE.NARROWED` names each one and to what, `--min-score` refuses to gate
+/// the result, and a certificate carries the disclosure. Bundling them under a reassuring word would
+/// launder exactly the thing the disclosure exists to surface.
+pub fn refusal_reason(name: &str) -> Option<&'static str> {
+    match name {
+        "lenient" | "relaxed" | "permissive" => Some(
+            "a profile may only tighten a threshold, never loosen one — a loosened run is a \
+             narrowed run, and Veridex discloses it per threshold (`SCOPE.NARROWED`) rather than \
+             hiding it behind a name. Set the thresholds you want in `veridex.toml`: the run will \
+             say which ones moved, and `--min-score` will refuse to gate it.",
+        ),
         _ => None,
     }
 }

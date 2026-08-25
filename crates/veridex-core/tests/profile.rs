@@ -738,3 +738,76 @@ fn every_autonomy_check_is_a_world_model_ready_criterion() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// The named threshold profiles: `standard` and `strict`, and the one refused.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn strict_only_tightens_and_claims_nothing_about_readiness() {
+    let strict = veridex_core::profile::by_name("strict").expect("strict exists");
+    assert!(
+        !strict.judges_readiness(),
+        "a threshold profile has no criteria, so it must not produce a readiness verdict"
+    );
+    assert!(strict.criteria.is_empty());
+
+    // Every threshold it names is tighter than the default — which is what keeps it out of
+    // `SCOPE.NARROWED` and usable with `--min-score`.
+    let d = veridex_core::Tolerances::default();
+    let applied = strict.apply_tolerances(d);
+    assert!(applied.clock_skew_ns < d.clock_skew_ns);
+    assert!(applied.rate_deviation < d.rate_deviation);
+    assert!(applied.gap_factor < d.gap_factor);
+    assert!(applied.jitter_cv < d.jitter_cv);
+    assert!(applied.outlier_z < d.outlier_z);
+    assert!(applied.sequence_drop_fraction < d.sequence_drop_fraction);
+
+    // And it cannot relax a threshold an operator set tighter still.
+    let tighter = veridex_core::Tolerances {
+        clock_skew_ns: 1_000_000,
+        outlier_z: 3.0,
+        ..d
+    };
+    let applied = strict.apply_tolerances(tighter);
+    assert_eq!(applied.clock_skew_ns, 1_000_000);
+    assert_eq!(applied.outlier_z, 3.0);
+}
+
+#[test]
+fn standard_is_the_defaults_under_a_name() {
+    let standard = veridex_core::profile::by_name("standard").expect("standard exists");
+    assert!(!standard.judges_readiness());
+    let d = veridex_core::Tolerances::default();
+    assert_eq!(standard.apply_tolerances(d), d);
+    // Naming the default must not change a configured value either.
+    let configured = veridex_core::Tolerances {
+        gap_factor: 1.5,
+        ..d
+    };
+    assert_eq!(standard.apply_tolerances(configured), configured);
+}
+
+#[test]
+fn a_loosening_profile_is_refused_with_its_reason() {
+    // `lenient` is the name people reach for, and "unknown profile" would read as an oversight
+    // rather than a refusal. A profile that loosens is a narrowing, and Veridex discloses a
+    // narrowing per threshold rather than letting a reassuring name carry it.
+    for name in ["lenient", "relaxed", "permissive"] {
+        assert!(veridex_core::profile::by_name(name).is_none());
+        let reason = veridex_core::profile::refusal_reason(name)
+            .unwrap_or_else(|| panic!("`{name}` must be refused with a reason"));
+        assert!(reason.contains("SCOPE.NARROWED"), "{reason}");
+        assert!(reason.contains("veridex.toml"), "{reason}");
+    }
+    // An actual typo still gets the plain unknown-name treatment.
+    assert!(veridex_core::profile::refusal_reason("wrold-model-ready").is_none());
+
+    // Every name the catalog advertises resolves.
+    for name in veridex_core::profile::KNOWN_PROFILES {
+        assert!(
+            veridex_core::profile::by_name(name).is_some(),
+            "`{name}` is advertised but does not resolve"
+        );
+    }
+}

@@ -34,7 +34,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ),
     (
         "certify",
-        "issue a signed trust certificate (--key <secret>; --profile world-model-ready)",
+        "issue a signed trust certificate (--key <secret>; --profile standard|strict|world-model-ready)",
     ),
     (
         "verify",
@@ -604,7 +604,7 @@ fn cmd_check(rest: &[String]) -> ExitCode {
         Some(name) => match veridex_core::profile::by_name(name) {
             Some(p) => Some(p),
             None => {
-                eprintln!("veridex: unknown profile `{name}` (known: world-model-ready)");
+                eprintln!("veridex: {}", profile_error(name));
                 return ExitCode::from(EXIT_TOOL_ERROR);
             }
         },
@@ -668,8 +668,12 @@ fn cmd_check(rest: &[String]) -> ExitCode {
     // the terminal one: a profile is what the run is "judged against", and a CI consumer -- which
     // is precisely who reads --json, --sarif and --html -- was given the profile's tolerances and
     // none of its criterion verdicts, so the one thing the flag names was unreportable to a machine.
+    // Only a readiness profile has criteria to report. A threshold profile (`strict`, `standard`)
+    // moves what the run measures at and claims nothing about readiness, so rendering a block for it
+    // would print NOT READY about criteria it never had.
     let readiness = profile
         .as_ref()
+        .filter(|p| p.judges_readiness())
         .map(|p| ReadinessReport::evaluate(p, &out.verdict, &out.ingested.dataset));
 
     if args.html {
@@ -797,6 +801,20 @@ struct LoadedConfig {
     from_env: std::collections::BTreeSet<String>,
 }
 
+/// The message for a `--profile` name that resolves to nothing.
+///
+/// A name Veridex deliberately does not provide gets the reason rather than "unknown": `lenient` is
+/// the one people reach for, and "no such profile" would read as an oversight instead of a refusal.
+fn profile_error(name: &str) -> String {
+    match veridex_core::profile::refusal_reason(name) {
+        Some(reason) => format!("`{name}` is not a profile Veridex provides: {reason}"),
+        None => format!(
+            "unknown profile `{name}` (known: {})",
+            veridex_core::profile::KNOWN_PROFILES.join(", ")
+        ),
+    }
+}
+
 /// The policy profile a run uses: `--profile`, else `VERIDEX_PROFILE`, else none.
 ///
 /// The environment sits under the flag and over the file, and a profile is selected the same way —
@@ -916,7 +934,7 @@ fn cmd_print_config(args: &Args) -> ExitCode {
         Some(name) => match veridex_core::profile::by_name(name) {
             Some(p) => Some(p),
             None => {
-                eprintln!("veridex: unknown profile `{name}` (known: world-model-ready)");
+                eprintln!("veridex: {}", profile_error(name));
                 return ExitCode::from(EXIT_TOOL_ERROR);
             }
         },
@@ -1294,7 +1312,7 @@ fn cmd_certify(rest: &[String]) -> ExitCode {
         Some(name) => match veridex_core::profile::by_name(name) {
             Some(p) => Some(p),
             None => {
-                eprintln!("veridex: unknown profile `{name}` (known: world-model-ready)");
+                eprintln!("veridex: {}", profile_error(name));
                 return ExitCode::from(EXIT_TOOL_ERROR);
             }
         },
@@ -1371,8 +1389,11 @@ fn cmd_certify(rest: &[String]) -> ExitCode {
             timestamp,
         },
     );
-    // Attach the per-criterion readiness report when a profile was requested (design A4).
-    if let Some(p) = &profile {
+    // Attach the per-criterion readiness report when a *readiness* profile was requested (design
+    // A4). A threshold profile (`strict`, `standard`) has no criteria, and signing an empty block
+    // would attest a readiness judgement nobody made — the tolerances it applied are already in the
+    // certificate's effective config, which is what it actually changed.
+    if let Some(p) = profile.as_ref().filter(|p| p.judges_readiness()) {
         cert.readiness = Some(ReadinessReport::evaluate(
             p,
             &out.verdict,
@@ -2096,7 +2117,9 @@ fn print_help() {
     println!(
         "    --redact             replace dataset/stream/task/provenance names with placeholders, for a report you can share (check)"
     );
-    println!("    --profile <name>     policy profile to judge against: world-model-ready (check, certify)");
+    println!(
+        "    --profile <name>     policy profile to run under: standard, strict, world-model-ready (check, certify)"
+    );
     println!(
         "    --max-frames <n>     ceiling on frames an ingest may materialize (0 = no limit)
     --max-decompression-ratio <n>

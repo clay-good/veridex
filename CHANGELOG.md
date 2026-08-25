@@ -94,6 +94,31 @@ reproduced before it was fixed.*
 
 ### Added
 
+- **The named policy profiles the configuration spec asks for — two of the three, and a reasoned
+  refusal for the third.** `--profile` existed for exactly one bundle, `world-model-ready`, which is
+  a *readiness* profile: it names criteria and produces the per-criterion verdict a certificate
+  signs. The spec also asks for `strict`, `standard` and `lenient`, which are a different thing —
+  bundles of thresholds, with no readiness claim at all.
+
+  `strict` measures the same catalog harder: 20 ms of cross-stream drift instead of 50, 5% rate
+  deviation instead of 10%, a 2x gap instead of 3x, jitter at 0.3 instead of 0.5, outliers at 6σ
+  instead of 10σ, and 1% of a rig sensor's frames droppable instead of 5%. Every one is *tighter*
+  than the default, which is what makes it gateable: measuring harder than the catalog asks can only
+  lower a score, so it emits no `SCOPE.NARROWED` and `--min-score` still applies. `standard` is the
+  defaults under a name, so a pipeline records which policy it ran under and a later change to
+  `strict` is visible rather than undocumented.
+
+  Profiles now declare which kind they are, because the two were being conflated: a threshold profile
+  has no criteria, and rendering the readiness block for one printed — and would have *signed* —
+  `NOT READY` about criteria it never had.
+
+  There is no `lenient`, and asking for one says why instead of "unknown profile": a profile may only
+  tighten, because a loosened threshold does not deselect a check — the check runs, measures the
+  defect, and passes it, which is exactly what `SCOPE.NARROWED` exists to surface per threshold and
+  by how much. A run carrying that disclosure cannot be gated with `--min-score` or certified as a
+  clean whole-catalog result; bundling loosened thresholds under a reassuring name would launder it.
+  `relaxed` and `permissive` get the same answer.
+
 - **A corruption sweep over every binary fixture, in both ingest paths.** Veridex reads files it did
   not write, and the failure that matters is not a wrong verdict — a corrupt file has no right
   verdict — but a **panic**, which is not a finding, not an exit code, and not something a CI gate

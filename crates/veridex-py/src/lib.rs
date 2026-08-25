@@ -125,7 +125,8 @@ fn check(
     let out =
         veridex_core::run_check_with(&registry, &source_for(path), format, &opts, &run_config)
             .map_err(to_py_err)?;
-    let readiness = profile.as_ref().map(|p| {
+    // Only a readiness profile has criteria; a threshold profile claims nothing about readiness.
+    let readiness = profile.as_ref().filter(|p| p.judges_readiness()).map(|p| {
         veridex_core::certificate::ReadinessReport::evaluate(p, &out.verdict, &out.ingested.dataset)
     });
     Ok(veridex_core::render_json_with_readiness(
@@ -162,9 +163,15 @@ fn profile_by_name(name: Option<&str>) -> PyResult<Option<veridex_core::profile:
         None => Ok(None),
         Some(name) => Ok(Some(veridex_core::profile::by_name(name).ok_or_else(
             || {
-                PyValueError::new_err(format!(
-                    "unknown profile `{name}` (known: world-model-ready)"
-                ))
+                PyValueError::new_err(match veridex_core::profile::refusal_reason(name) {
+                    Some(reason) => {
+                        format!("`{name}` is not a profile Veridex provides: {reason}")
+                    }
+                    None => format!(
+                        "unknown profile `{name}` (known: {})",
+                        veridex_core::profile::KNOWN_PROFILES.join(", ")
+                    ),
+                })
             },
         )?)),
     }
@@ -328,14 +335,7 @@ fn certify(
         .ok_or_else(|| PyValueError::new_err("secret_key_hex is not a valid 32-byte hex key"))?;
     // An unknown profile name is an error, never a silently ignored argument that would produce a
     // certificate claiming less than the caller asked for.
-    let profile = match profile {
-        None => None,
-        Some(name) => Some(veridex_core::profile::by_name(name).ok_or_else(|| {
-            PyValueError::new_err(format!(
-                "unknown profile `{name}` (known: world-model-ready)"
-            ))
-        })?),
-    };
+    let profile = profile_by_name(profile)?;
     let registry = veridex_core::default_registry();
     // The config the caller passed, then the profile laid over it. This function used to take no
     // `config` at all while `check`, `check_sarif`, and `check_html` all did — and it is the one
@@ -374,7 +374,9 @@ fn certify(
             timestamp: timestamp.map(String::from).unwrap_or_else(unix_timestamp),
         },
     );
-    if let Some(p) = &profile {
+    // Only a readiness profile has criteria to sign; a threshold profile's effect is already in the
+    // certificate's effective config.
+    if let Some(p) = profile.as_ref().filter(|p| p.judges_readiness()) {
         cert.readiness = Some(veridex_core::certificate::ReadinessReport::evaluate(
             p,
             &out.verdict,

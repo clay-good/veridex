@@ -13,6 +13,48 @@ veridex certify my-rig.mcap --key issuer.key --profile world-model-ready
 
 The certificate gains a signed `readiness` section, and the terminal prints each criterion's result.
 
+Two kinds of profile share the flag, and they claim different things.
+
+- A **threshold** profile — `standard`, `strict` — moves the numbers the run measures at and makes no
+  other claim. There is no readiness verdict to print or sign, because it names no criteria.
+- A **readiness** profile — `world-model-ready` — names criteria as well, and produces the
+  per-criterion verdict a certificate signs.
+
+## `standard`
+
+Veridex's built-in thresholds, named. It changes nothing, which is the point: a pipeline that runs
+`--profile standard` records *which* policy it ran under, so a later run under `strict` is a visible
+change rather than an undocumented one.
+
+## `strict`
+
+The same catalog, measured harder: cross-stream drift at 20 ms instead of 50, rate deviation at 5%
+instead of 10%, a gap at 2x the expected interval instead of 3x, jitter at a 0.3 coefficient of
+variation instead of 0.5, an outlier at 6σ instead of 10σ, and a rig sensor allowed to drop 1% of its
+frames instead of 5%.
+
+Every one of those is *tighter* than the default, which is what makes `strict` safe to gate on.
+Measuring the data harder than the catalog asks can only lower a score, so it is not a narrowing: it
+emits no `SCOPE.NARROWED`, and `check --profile strict --min-score 80` is a valid CI gate. It also
+cannot relax a threshold you set tighter still — among the thresholds a profile names, the stricter
+of the two applies.
+
+## There is no `lenient`
+
+Asking for one is refused, with the reason rather than "unknown profile":
+
+```
+veridex: `lenient` is not a profile Veridex provides: a profile may only tighten a threshold, never
+loosen one — a loosened run is a narrowed run, and Veridex discloses it per threshold
+(`SCOPE.NARROWED`) rather than hiding it behind a name.
+```
+
+A loosened threshold does not deselect a check; the check runs, measures the defect, and passes it.
+That is precisely the failure `SCOPE.NARROWED` exists to surface, per threshold and by how much — and
+a run carrying it cannot be gated with `--min-score` or certified as a clean whole-catalog result.
+Bundling loosened thresholds under a reassuring word would launder exactly that. Set them in your
+`veridex.toml`, where the disclosure names each one.
+
 ## `world-model-ready`
 
 For multi-sensor autonomy rigs. It tightens cross-sensor sync and bundles the autonomy criteria a

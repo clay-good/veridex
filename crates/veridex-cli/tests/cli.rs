@@ -1912,3 +1912,69 @@ fn a_regression_gate_refuses_a_redacted_report_against_a_plain_one() {
     ]);
     assert_eq!(code, 0);
 }
+
+#[test]
+fn a_threshold_profile_measures_harder_without_narrowing_the_run() {
+    // `strict` is not a narrowing: it only tightens, which measures the data harder than the catalog
+    // asks and can only *lower* a score. So it must not emit SCOPE.NARROWED, must not print a
+    // readiness block it has no criteria for, and must not disqualify a `--min-score` gate.
+    let dataset = fixture_dataset();
+    let (code, stdout, _) = run(&["check", "--profile", "strict", "--json", &dataset]);
+    assert_eq!(code, 20, "the demo still fails, harder");
+    let report: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    let codes: Vec<&str> = report["verdict"]["findings"]
+        .as_array()
+        .expect("findings")
+        .iter()
+        .map(|f| f["code"].as_str().unwrap_or_default())
+        .collect();
+    assert!(
+        !codes.contains(&"SCOPE.NARROWED"),
+        "tightening is not narrowing: {codes:?}"
+    );
+    assert!(
+        report.get("readiness").is_none(),
+        "a threshold profile makes no readiness claim: {stdout}"
+    );
+
+    // The gate a narrowed run would be refused is accepted here.
+    let (code, _, stderr) = run(&[
+        "check",
+        "--profile",
+        "strict",
+        "--min-score",
+        "50",
+        &dataset,
+    ]);
+    assert_eq!(code, 20, "score 76 clears 50, but the findings still fail");
+    assert!(
+        !stderr.contains("cannot gate"),
+        "a tightening profile must not disqualify the gate: {stderr}"
+    );
+
+    // And the thresholds it applied are reported, with the layer that set them.
+    let (code, stdout, _) = run(&["check", "--print-config", "--profile", "strict"]);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("`strict` tightened it from 50"),
+        "unexpected: {stdout}"
+    );
+}
+
+#[test]
+fn a_loosening_profile_is_refused_by_name_with_its_reason() {
+    let (code, _, stderr) = run(&["check", "--profile", "lenient", &fixture_dataset()]);
+    assert_eq!(code, 2);
+    assert!(
+        stderr.contains("is not a profile Veridex provides") && stderr.contains("SCOPE.NARROWED"),
+        "the refusal must teach, not just reject: {stderr}"
+    );
+
+    // A typo still reads as a typo, and names what exists.
+    let (code, _, stderr) = run(&["check", "--profile", "strcit", &fixture_dataset()]);
+    assert_eq!(code, 2);
+    assert!(
+        stderr.contains("unknown profile `strcit`") && stderr.contains("world-model-ready"),
+        "unexpected: {stderr}"
+    );
+}
