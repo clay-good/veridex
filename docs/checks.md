@@ -299,6 +299,33 @@ score goes **up** — a regression gate passing precisely because the new run st
 can read from the CDM. It is emitted by the engine directly, so `veridex checks` still lists exactly
 the checks that run, and no configuration can disable the disclosure.
 
+## Redaction disclosure
+
+A report is diagnostics, so it quotes the dataset: stream keys, task strings, annotator names,
+licenses. `veridex check --redact` prepares a report to leave the building — the dataset identifier,
+stream names, task and label text, and provenance values are replaced with stable placeholders
+(`stream#1`, `text#2`), consistent within one report and meaningless outside it — and discloses that
+it did with **`REPORT.REDACTED`** (info, check id `report.redaction`).
+
+Like the coverage and scope disclosures, it is a *finding* rather than a printed banner, so it
+reaches JSON, SARIF, HTML, the terminal and `diff` alike: the machine-readable report is the one most
+likely to be handed to someone else, and a rendering-only banner would be invisible there.
+
+What redaction deliberately keeps: episode indices, timestamps, frame counts, and every measured
+quantity — a 210 ms drift, a 12σ outlier, a saturated fraction. Those *are* the finding; a report
+without them is not redacted, it is empty. It also keeps the CDM content hash, which is what lets
+whoever holds the dataset match the report to it. And it keeps the verdict itself: the status, the
+score, and the exit code are the run's own, so a shared report and the private one describe the same
+run.
+
+What it does not promise: substitution is best-effort over text. An identifier shorter than three
+characters is left alone (a one-character stream name collides with ordinary prose far more often
+than it hides anything), and a name that is also an ordinary word may be replaced where it was not an
+identifier — over-redaction, which is the safe direction. Read a redacted report as one you may
+share, not as proof that nothing about the data can be inferred from it. `certify` refuses `--redact`
+outright: a certificate attests a dataset by name and hash, and a redacted one would say less than it
+attests.
+
 ## Scope disclosure
 
 Coverage answers *how much of the dataset did we read*. **`SCOPE.NARROWED`** (info, check id

@@ -99,7 +99,7 @@ fn ingest_options_from(
 /// provenance are checked without reading any stream payload. The report carries
 /// `"coverage": {"kind": "metadata_only", …}`, and it cannot be certified either.
 #[pyfunction]
-#[pyo3(signature = (path, format=None, config=None, sample_episodes=None, sample_fraction=None, sample_seed=0, metadata_only=false, profile=None))]
+#[pyo3(signature = (path, format=None, config=None, sample_episodes=None, sample_fraction=None, sample_seed=0, metadata_only=false, profile=None, redact=false))]
 #[allow(clippy::too_many_arguments)]
 fn check(
     path: &str,
@@ -110,6 +110,7 @@ fn check(
     sample_seed: u64,
     metadata_only: bool,
     profile: Option<&str>,
+    redact: bool,
 ) -> PyResult<String> {
     let registry = veridex_core::default_registry();
     let mut run_config = run_config_from(config)?;
@@ -128,10 +129,22 @@ fn check(
         veridex_core::certificate::ReadinessReport::evaluate(p, &out.verdict, &out.ingested.dataset)
     });
     Ok(veridex_core::render_json_with_readiness(
-        &out.verdict,
+        &redacted_if(redact, &out),
         Some(out.trust),
         readiness.as_ref(),
     ))
+}
+
+/// The verdict to render: redacted for sharing, or the run's own.
+///
+/// `redact` is a rendering-time substitution — the verdict, the score, and the content hash are the
+/// run's — so this is the only place the two paths differ.
+fn redacted_if(redact: bool, out: &veridex_core::CheckOutput) -> veridex_core::Verdict {
+    if redact {
+        veridex_core::Redactor::for_dataset(&out.ingested.dataset).redact_verdict(&out.verdict)
+    } else {
+        out.verdict.clone()
+    }
 }
 
 /// Resolve a profile name, refusing an unknown one rather than silently ignoring it — a result that
@@ -447,7 +460,8 @@ fn diff(old_report_json: &str, new_report_json: &str) -> PyResult<String> {
 /// Validate a dataset and return the report as SARIF 2.1.0 JSON, byte-identical to
 /// `veridex check --sarif`. For CI code-scanning pipelines driven from Python.
 #[pyfunction]
-#[pyo3(signature = (path, format=None, config=None, sample_episodes=None, sample_fraction=None, sample_seed=0, metadata_only=false))]
+#[pyo3(signature = (path, format=None, config=None, sample_episodes=None, sample_fraction=None, sample_seed=0, metadata_only=false, redact=false))]
+#[allow(clippy::too_many_arguments)]
 fn check_sarif(
     path: &str,
     format: Option<&str>,
@@ -456,6 +470,7 @@ fn check_sarif(
     sample_fraction: Option<f64>,
     sample_seed: u64,
     metadata_only: bool,
+    redact: bool,
 ) -> PyResult<String> {
     let registry = veridex_core::default_registry();
     let run_config = run_config_from(config)?;
@@ -467,7 +482,7 @@ fn check_sarif(
         veridex_core::run_check_with(&registry, &source_for(path), format, &opts, &run_config)
             .map_err(to_py_err)?;
     Ok(
-        serde_json::to_string_pretty(&veridex_core::render_sarif(&out.verdict))
+        serde_json::to_string_pretty(&veridex_core::render_sarif(&redacted_if(redact, &out)))
             .expect("sarif serializes"),
     )
 }
@@ -477,7 +492,8 @@ fn check_sarif(
 /// Validate a dataset and return the self-contained HTML report, byte-identical to
 /// `veridex check --html`.
 #[pyfunction]
-#[pyo3(signature = (path, format=None, config=None, sample_episodes=None, sample_fraction=None, sample_seed=0, metadata_only=false))]
+#[pyo3(signature = (path, format=None, config=None, sample_episodes=None, sample_fraction=None, sample_seed=0, metadata_only=false, redact=false))]
+#[allow(clippy::too_many_arguments)]
 fn check_html(
     path: &str,
     format: Option<&str>,
@@ -486,6 +502,7 @@ fn check_html(
     sample_fraction: Option<f64>,
     sample_seed: u64,
     metadata_only: bool,
+    redact: bool,
 ) -> PyResult<String> {
     let registry = veridex_core::default_registry();
     let run_config = run_config_from(config)?;
@@ -493,7 +510,10 @@ fn check_html(
     let out =
         veridex_core::run_check_with(&registry, &source_for(path), format, &opts, &run_config)
             .map_err(to_py_err)?;
-    Ok(veridex_core::render_html(&out.verdict, Some(out.trust)))
+    Ok(veridex_core::render_html(
+        &redacted_if(redact, &out),
+        Some(out.trust),
+    ))
 }
 
 /// `veridex.effective_config(config=None, profile=None, min_score=None, fail_on=None) -> str`

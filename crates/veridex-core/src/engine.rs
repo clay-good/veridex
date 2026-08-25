@@ -512,21 +512,9 @@ impl Engine {
             findings.push(finding);
         }
 
-        // Total order over the finding's full content, independent of execution order. Every field is
-        // in the key: a sort that ties on non-identical content falls through to `Vec` order, which
-        // is execution order — and `result_content_hash` is computed over this sequence, so the same
-        // two findings emitted in either order would have to hash alike and would not.
-        findings.sort_by(|a, b| {
-            a.check_id
-                .cmp(b.check_id)
-                .then_with(|| a.location.sort_key().cmp(&b.location.sort_key()))
-                .then_with(|| a.code.cmp(&b.code))
-                .then_with(|| a.message.cmp(&b.message))
-                .then_with(|| a.severity.cmp(&b.severity))
-                .then_with(|| a.category.cmp(&b.category))
-                .then_with(|| a.risk.cmp(&b.risk))
-                .then_with(|| a.remedy.cmp(&b.remedy))
-        });
+        // Total order over the finding's full content, independent of execution order. See
+        // `crate::check::finding_order` for why every field is in the key.
+        findings.sort_by(crate::check::finding_order);
         executed_checks.sort_by(|a, b| a.check_id.cmp(&b.check_id));
         errored_checks.sort_by(|a, b| a.check_id.cmp(b.check_id));
 

@@ -88,6 +88,7 @@ struct Args {
     interval: Option<String>,
     iterations: Option<String>,
     print_config: bool,
+    redact: bool,
     /// Every positional argument, in order. `path` is the first; `diff` takes two.
     positionals: Vec<String>,
 }
@@ -105,7 +106,7 @@ impl Args {
     /// The single source of truth for [`reject_flags_except`]. Adding a flag to the parser without
     /// adding it here means it is never checked, so the two lists are kept adjacent, and a test
     /// asserts this covers the parser's whole flag set.
-    fn given_flags(&self) -> [(&'static str, bool); 25] {
+    fn given_flags(&self) -> [(&'static str, bool); 26] {
         [
             ("--json", self.json),
             ("--sarif", self.sarif),
@@ -135,6 +136,7 @@ impl Args {
             ("--interval", self.interval.is_some()),
             ("--iterations", self.iterations.is_some()),
             ("--print-config", self.print_config),
+            ("--redact", self.redact),
         ]
     }
 }
@@ -179,6 +181,7 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
     let mut interval = None;
     let mut iterations = None;
     let mut print_config = false;
+    let mut redact = false;
     let mut positionals: Vec<String> = Vec::new();
     let mut it = rest.iter();
     while let Some(arg) = it.next() {
@@ -207,6 +210,7 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
             "--fail-on-regression" => fail_on_regression = true,
             "--metadata-only" => metadata_only = true,
             "--print-config" => print_config = true,
+            "--redact" => redact = true,
             "--config" => config = Some(value("--config")?),
             "--format" => format = Some(value("--format")?),
             "--key" => key = Some(value("--key")?),
@@ -258,6 +262,7 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
         interval,
         iterations,
         print_config,
+        redact,
         positionals,
     })
 }
@@ -506,6 +511,7 @@ fn cmd_check(rest: &[String]) -> ExitCode {
                 "--min-score",
                 "--profile",
                 "--print-config",
+                "--redact",
             ],
             INGEST_FLAGS,
             SAMPLING_FLAGS,
@@ -640,6 +646,18 @@ fn cmd_check(rest: &[String]) -> ExitCode {
     // Capture the score before rendering, which consumes `out.trust`.
     let trust_score = out.trust.score;
 
+    // `--redact` is a rendering-time substitution: the run, its verdict, its score, and the exit
+    // code below are the unredacted ones. Only what the report *prints* changes, so a shared report
+    // and the private one describe the same run — and both carry the same CDM content hash, which
+    // is what lets whoever holds the dataset match them.
+    let redactor = args
+        .redact
+        .then(|| veridex_core::Redactor::for_dataset(&out.ingested.dataset));
+    let rendered = match &redactor {
+        Some(r) => r.redact_verdict(&out.verdict),
+        None => out.verdict.clone(),
+    };
+
     // The readiness verdict, when a profile was named. Rendered for *every* output shape, not only
     // the terminal one: a profile is what the run is "judged against", and a CI consumer -- which
     // is precisely who reads --json, --sarif and --html -- was given the profile's tolerances and
@@ -652,7 +670,7 @@ fn cmd_check(rest: &[String]) -> ExitCode {
         println!(
             "{}",
             veridex_core::render_html_with_readiness(
-                &out.verdict,
+                &rendered,
                 Some(out.trust),
                 readiness.as_ref()
             )
@@ -661,7 +679,7 @@ fn cmd_check(rest: &[String]) -> ExitCode {
         println!(
             "{}",
             serde_json::to_string_pretty(&veridex_core::render_sarif_with_readiness(
-                &out.verdict,
+                &rendered,
                 readiness.as_ref()
             ))
             .unwrap()
@@ -670,7 +688,7 @@ fn cmd_check(rest: &[String]) -> ExitCode {
         println!(
             "{}",
             veridex_core::render_json_with_readiness(
-                &out.verdict,
+                &rendered,
                 Some(out.trust),
                 readiness.as_ref()
             )
@@ -678,7 +696,7 @@ fn cmd_check(rest: &[String]) -> ExitCode {
     } else {
         print!(
             "{}",
-            veridex_core::render_terminal(&out.verdict, Some(out.trust), 10)
+            veridex_core::render_terminal(&rendered, Some(out.trust), 10)
         );
         // `--help` says a profile is what the run is "judged against", and until now `check` only
         // borrowed its tolerances — it printed no criterion verdicts at all, so the one thing the
@@ -2021,6 +2039,9 @@ fn print_help() {
     println!("    --config <file>      veridex.toml (auto-discovered in cwd if present)");
     println!(
         "    --print-config       print the effective config and where each value came from, then exit (check)"
+    );
+    println!(
+        "    --redact             replace dataset/stream/task/provenance names with placeholders, for a report you can share (check)"
     );
     println!("    --profile <name>     policy profile to judge against: world-model-ready (check, certify)");
     println!(

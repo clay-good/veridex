@@ -1738,3 +1738,93 @@ fn veridex_profile_selects_a_profile_and_the_flag_still_wins() {
     );
     assert!(stderr.contains("unknown profile"), "{stderr}");
 }
+
+// ---------------------------------------------------------------------------
+// `veridex check --redact` — a report that can leave the building.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_redacted_report_keeps_the_findings_and_drops_the_names() {
+    let dataset = fixture_dataset();
+    let (plain_code, plain, _) = run(&["check", &dataset]);
+    let (code, redacted, _) = run(&["check", "--redact", &dataset]);
+
+    assert_eq!(code, plain_code, "redaction is a rendering, not a verdict");
+    assert!(
+        plain.contains("/camera/image") && plain.contains("/joint_states"),
+        "the unredacted report names the streams: {plain}"
+    );
+    assert!(
+        !redacted.contains("/camera/image") && !redacted.contains("/joint_states"),
+        "a redacted report must not name them: {redacted}"
+    );
+    // What the report is *about* survives: the finding, its severity, and its measurement.
+    assert!(redacted.contains("TEMPORAL.CLOCK_SKEW"), "{redacted}");
+    assert!(redacted.contains("210.0 ms"), "{redacted}");
+    assert!(redacted.contains("stream#"), "{redacted}");
+    // And it says so, in the report itself.
+    assert!(redacted.contains("REPORT.REDACTED"), "{redacted}");
+    // The score and the hash are the run's own, so the two documents are comparable.
+    let hash = |report: &str| {
+        report
+            .lines()
+            .find(|l| l.contains("CDM hash:"))
+            .unwrap_or_default()
+            .to_string()
+    };
+    assert_eq!(hash(&plain), hash(&redacted));
+    assert_eq!(
+        plain.lines().find(|l| l.contains("Trust:")),
+        redacted.lines().find(|l| l.contains("Trust:"))
+    );
+}
+
+#[test]
+fn redaction_reaches_the_machine_readable_reports_too() {
+    // A shared report is most often the machine-readable one, and the disclosure has to travel with
+    // it — which is why it is a finding rather than a printed banner.
+    let dataset = fixture_dataset();
+    let (_, stdout, _) = run(&["check", "--redact", "--json", &dataset]);
+    let report: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert!(
+        !stdout.contains("/camera/image"),
+        "the JSON report leaked a stream name: {stdout}"
+    );
+    let codes: Vec<&str> = report["verdict"]["findings"]
+        .as_array()
+        .expect("findings")
+        .iter()
+        .map(|f| f["code"].as_str().unwrap_or_default())
+        .collect();
+    assert!(codes.contains(&"REPORT.REDACTED"), "{codes:?}");
+    assert!(codes.contains(&"TEMPORAL.CLOCK_SKEW"), "{codes:?}");
+
+    let (_, sarif, _) = run(&["check", "--redact", "--sarif", &dataset]);
+    assert!(!sarif.contains("/camera/image"), "SARIF leaked: {sarif}");
+    assert!(sarif.contains("REPORT.REDACTED"), "{sarif}");
+}
+
+#[test]
+fn a_certificate_cannot_be_redacted() {
+    // A certificate attests a dataset by name and hash. Redacting one would produce a signed
+    // document that says less than it attests — refused, like every other flag a command would not
+    // act on.
+    let dir = temp_dir("redact-certify");
+    let key = dir.join("issuer");
+    let (code, _, _) = run(&["keygen", key.to_str().unwrap()]);
+    assert_eq!(code, 0);
+    let (code, _, stderr) = run(&[
+        "certify",
+        &fixture_dataset(),
+        "--key",
+        key.to_str().unwrap(),
+        "--redact",
+        "--out",
+        dir.join("c.json").to_str().unwrap(),
+    ]);
+    assert_eq!(code, 2);
+    assert!(
+        stderr.contains("certify does not support --redact"),
+        "unexpected stderr: {stderr}"
+    );
+}

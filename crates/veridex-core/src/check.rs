@@ -233,6 +233,25 @@ impl Finding {
     }
 }
 
+/// The total order findings are reported in, independent of the order the checks emitted them.
+///
+/// Every field is in the key on purpose: a sort that ties on non-identical content falls through to
+/// `Vec` order, which is execution order — and `result_content_hash` is computed over this
+/// sequence, so the same two findings emitted in either order would have to hash alike and would
+/// not. Shared by the engine and by [`crate::redact`], which re-sorts after adding its disclosure,
+/// so the two orders cannot drift apart.
+pub(crate) fn finding_order(a: &Finding, b: &Finding) -> core::cmp::Ordering {
+    a.check_id
+        .cmp(b.check_id)
+        .then_with(|| a.location.sort_key().cmp(&b.location.sort_key()))
+        .then_with(|| a.code.cmp(&b.code))
+        .then_with(|| a.message.cmp(&b.message))
+        .then_with(|| a.severity.cmp(&b.severity))
+        .then_with(|| a.category.cmp(&b.category))
+        .then_with(|| a.risk.cmp(&b.risk))
+        .then_with(|| a.remedy.cmp(&b.remedy))
+}
+
 /// A registered check. The engine treats it as an opaque unit of work over the CDM.
 pub trait Check: Send + Sync {
     /// Stable, unique check id (e.g. `structural.episode-boundary`).

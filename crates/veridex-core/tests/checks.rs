@@ -2035,6 +2035,9 @@ fn docs_checks_md_lists_no_unknown_finding_codes() {
         // A profile's readiness verdict, synthesized as a SARIF result for the same reason a
         // crashed check is: results are the only channel a code-scanning system reads.
         "VERIDEX.PROFILE_NOT_READY",
+        // The redaction disclosure. Attached at render time by `--redact`, not by a check: what a
+        // report may quote is a property of who will read it, which nothing in the CDM knows.
+        "REPORT.REDACTED",
     ]
     .into();
 

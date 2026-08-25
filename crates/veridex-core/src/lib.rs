@@ -26,6 +26,7 @@ pub mod engine;
 pub mod media;
 pub mod pipeline;
 pub mod profile;
+pub mod redact;
 pub mod report;
 pub mod scenario;
 pub mod simref;
@@ -54,6 +55,7 @@ pub use engine::{
     CheckInfo, CoverageNote, Engine, RegistryError, RunConfig, Status, Tolerances, Verdict,
 };
 pub use pipeline::{run_check, run_check_with, CheckOutput};
+pub use redact::{Redactor, REDACTION_CHECK_ID, REDACTION_CODE};
 pub use report::{
     render_catalog_json, render_html, render_html_with_readiness, render_inspect_json, render_json,
     render_json_with_readiness, render_sarif, render_sarif_with_readiness, render_terminal,

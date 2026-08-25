@@ -428,3 +428,30 @@ def test_python_effective_config_reports_a_config_the_check_binding_refuses(tmp_
     assert settings["fail_on"]["origin"] == "config-file"
     assert settings["min_score"]["value"] == "70"
     assert settings["min_score"]["origin"] == "config-file"
+
+
+def test_cli_and_python_redacted_reports_agree(tmp_path):
+    """A report prepared for sharing must be the same document from either front-end."""
+    dataset = _demo_dataset(tmp_path)
+    binary = os.environ.get("VERIDEX_BIN", "target/debug/veridex")
+
+    py = json.loads(veridex.check(str(dataset), redact=True))
+    cli = json.loads(
+        subprocess.run(
+            [binary, "check", "--json", "--redact", str(dataset)],
+            capture_output=True,
+            text=True,
+        ).stdout
+    )
+    assert py == cli, "redacted reports must agree across the front-ends"
+
+    codes = [f["code"] for f in py["verdict"]["findings"]]
+    assert "REPORT.REDACTED" in codes, "the redaction discloses itself"
+    assert "TEMPORAL.CLOCK_SKEW" in codes, "the findings survive"
+    assert "/camera/image" not in json.dumps(py), "a stream name leaked"
+
+    # The verdict is the run's own: same hash, same score, same status as the unredacted report.
+    plain = json.loads(veridex.check(str(dataset)))
+    assert py["verdict"]["cdm_content_hash"] == plain["verdict"]["cdm_content_hash"]
+    assert py["trust_score"]["score"] == plain["trust_score"]["score"]
+    assert py["verdict"]["status"] == plain["verdict"]["status"]

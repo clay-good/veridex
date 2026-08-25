@@ -31,6 +31,37 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **`veridex check --redact` — a report that can leave the building.** The reporting spec asks for a
+  shareable mode, and there was none. A report is diagnostics, so it quotes the dataset: stream keys,
+  task strings, annotator addresses, licenses. That is exactly what a team cannot hand to a customer,
+  a vendor, or a public issue tracker — while the part they want to hand over, the findings and the
+  score, carries no such problem.
+
+  Redaction is a rendering-time substitution, not a different run. The dataset identifier, stream
+  names, task and label text, and provenance values are replaced with stable placeholders
+  (`stream#1`, `text#2`), consistent within one report so a reader can still tell two findings
+  concern the same stream, and meaningless outside it. Substitution is longest-identifier-first, so a
+  stream named `arm` cannot leave `arm/gripper` disclosed in pieces.
+
+  What it keeps is the harder half to get right. Episode indices, timestamps, frame counts, and every
+  measured quantity stay — a report that dropped the 210 ms drift would not be redacted, it would be
+  empty. The verdict, the score, the exit code, and the CDM content hash are the run's own, so a
+  shared report and the private one describe the same run and the hash still matches the report to
+  the dataset.
+
+  The disclosure (`REPORT.REDACTED`, info) rides as a *finding* rather than a printed banner, which
+  is what makes it reach JSON, SARIF, HTML, the terminal and `diff` alike — the machine-readable
+  report is the one most likely to be handed to someone else. It states the limits rather than
+  implying safety: substitution is best-effort over text, an identifier under three characters is
+  left alone, and a name that is also an ordinary word may be replaced where it was not an
+  identifier. `certify` refuses `--redact` outright — a certificate attests a dataset by name and
+  hash, and a redacted one would say less than it attests.
+
+  Python takes `redact=True` on `check`, `check_sarif`, and `check_html`, with a parity test
+  asserting the two front-ends emit the same shared document. Six unit tests, three CLI tests and one
+  parity test, proven red against redacting silently, redacting the location but not the message, and
+  substituting shortest-first.
+
 - **`STRUCTURAL.NEAR_DUPLICATE_EPISODE` — the partial copy the exact check cannot see.** The catalog
   owed the duplicate requirement its other half: an episode re-uploaded with its tail trimmed, a
   merge that pulled one recording in twice, an episode wholly contained in a longer one. Every frame
