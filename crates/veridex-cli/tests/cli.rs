@@ -1435,3 +1435,127 @@ fn watch_without_a_path_is_a_tool_error() {
     assert_eq!(code, 2);
     assert!(stderr.contains("missing dataset path"));
 }
+
+// ---------------------------------------------------------------------------
+// `veridex check --print-config` — the effective configuration, and where it came from.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn print_config_names_the_layer_every_value_came_from() {
+    // The question a resolved number cannot answer: *why* is this threshold 20 ms when my
+    // veridex.toml says 50? Each layer that set a value has to say so.
+    let dir = temp_dir("printconfig");
+    let config = dir.join("veridex.toml");
+    std::fs::write(
+        &config,
+        "fail_on = 'warning'\nmin_score = 70\ndisabled_checks = ['semantic.task-quality']\n\
+         \n[tolerances]\nclock_skew_ms = 50.0\ngap_factor = 2.0\n",
+    )
+    .expect("write config");
+
+    let (code, stdout, _) = run(&[
+        "check",
+        "--print-config",
+        "--config",
+        config.to_str().unwrap(),
+        "--profile",
+        "world-model-ready",
+        "--min-score",
+        "90",
+    ]);
+    assert_eq!(code, 0, "printing a config is not a verdict: {stdout}");
+    assert!(stdout.contains("Effective configuration"));
+    // The profile tightened the file's value, and says what it tightened.
+    assert!(
+        stdout.contains("tolerances.clock_skew_ms")
+            && stdout.contains("(profile)")
+            && stdout.contains("tightened it from 50"),
+        "the profile's override must be attributed: {stdout}"
+    );
+    // The flag beat the file, and says what it beat.
+    assert!(
+        stdout.contains("--min-score overrides the config file's 70"),
+        "the flag's override must be attributed: {stdout}"
+    );
+    // A value the file set, and one nobody set.
+    assert!(stdout.contains("gap_factor") && stdout.contains("(config file)"));
+    assert!(stdout.contains("(default)"));
+}
+
+#[test]
+fn print_config_reads_no_dataset() {
+    // The configuration does not depend on a dataset, so requiring one would make the flag useless
+    // for the thing it is for: checking a veridex.toml before pointing it at anything.
+    let (code, stdout, stderr) = run(&["check", "--print-config"]);
+    assert_eq!(code, 0, "unexpected stderr: {stderr}");
+    assert!(stdout.contains("Config file: (none"));
+    assert!(stdout.contains("tolerances.clock_skew_ms"));
+}
+
+#[test]
+fn print_config_json_is_the_machine_readable_same_document() {
+    let (code, stdout, _) = run(&["check", "--print-config", "--json"]);
+    assert_eq!(code, 0);
+    let doc: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(doc["schema"], "veridex.config/1");
+    assert!(doc["config_file"].is_null());
+    let settings = doc["settings"].as_array().expect("settings array");
+    let by_key: std::collections::BTreeMap<&str, &serde_json::Value> = settings
+        .iter()
+        .map(|s| (s["key"].as_str().unwrap(), s))
+        .collect();
+    assert_eq!(by_key["tolerances.clock_skew_ms"]["value"], "50");
+    assert_eq!(by_key["tolerances.clock_skew_ms"]["origin"], "default");
+    assert_eq!(by_key["min_score"]["value"], "none");
+    // Every key is a `veridex.toml` key, so a printed value can be pasted back into a config.
+    for key in [
+        "categories",
+        "only_checks",
+        "disabled_checks",
+        "severity_overrides",
+        "fail_on",
+        "min_score",
+    ] {
+        assert!(by_key.contains_key(key), "missing setting {key}: {stdout}");
+    }
+}
+
+#[test]
+fn print_config_validates_the_config_it_prints() {
+    // A config that would fail a run must fail here too: this is the cheapest way to check a
+    // veridex.toml, and one that printed an invalid config as though it were usable would be worse
+    // than not having it.
+    let dir = temp_dir("printconfig-invalid");
+    for (name, body, expected) in [
+        (
+            "unknown-check.toml",
+            "disabled_checks = ['nope.not-a-check']\n",
+            "unknown check id",
+        ),
+        (
+            "bad-tolerance.toml",
+            "[tolerances]\noutlier_z = 0.5\n",
+            "outlier_z must be",
+        ),
+        ("unknown-key.toml", "frobnicate = true\n", "invalid config"),
+    ] {
+        let path = dir.join(name);
+        std::fs::write(&path, body).expect("write config");
+        let (code, _, stderr) = run(&[
+            "check",
+            "--print-config",
+            "--config",
+            path.to_str().unwrap(),
+        ]);
+        assert_eq!(code, 2, "{name} must be a tool error");
+        assert!(
+            stderr.contains(expected),
+            "unexpected stderr for {name}: {stderr}"
+        );
+    }
+
+    // And an unknown profile is still an unknown profile.
+    let (code, _, stderr) = run(&["check", "--print-config", "--profile", "no-such-profile"]);
+    assert_eq!(code, 2);
+    assert!(stderr.contains("unknown profile"), "{stderr}");
+}

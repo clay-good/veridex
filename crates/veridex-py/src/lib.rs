@@ -496,6 +496,71 @@ fn check_html(
     Ok(veridex_core::render_html(&out.verdict, Some(out.trust)))
 }
 
+/// `veridex.effective_config(config=None, profile=None, min_score=None, fail_on=None) -> str`
+///
+/// The effective merged configuration as JSON (`veridex.config/1`): every setting's resolved value
+/// and the layer it came from — built-in default, config file, policy profile, or an explicit
+/// argument. The same document the CLI's `veridex check --print-config --json` prints.
+///
+/// Unlike [`check`], this accepts a config that sets `min_score` / `fail_on`: reporting what a
+/// config *says* is the whole point of the call, and nothing here acts on them.
+#[pyfunction]
+#[pyo3(signature = (config=None, profile=None, min_score=None, fail_on=None))]
+fn effective_config(
+    config: Option<&str>,
+    profile: Option<&str>,
+    min_score: Option<u8>,
+    fail_on: Option<&str>,
+) -> PyResult<String> {
+    let parsed = match config {
+        None => veridex_core::CheckConfig::default(),
+        Some(text) => {
+            let parsed =
+                veridex_core::CheckConfig::from_toml(text).map_err(|e| to_py_err(e.to_string()))?;
+            let engine =
+                veridex_core::checks::default_engine().map_err(|e| to_py_err(e.to_string()))?;
+            parsed
+                .validate_check_ids(engine.check_ids())
+                .map_err(|e| to_py_err(e.to_string()))?;
+            parsed
+        }
+    };
+    let profile = profile_by_name(profile)?;
+    let fail_on_flag = match fail_on {
+        None => None,
+        Some("error") => Some(veridex_core::FailOn::Error),
+        Some("warning") => Some(veridex_core::FailOn::Warning),
+        Some(v) => {
+            return Err(PyValueError::new_err(format!(
+                "invalid fail_on `{v}` (expected `error` or `warning`)"
+            )))
+        }
+    };
+    if let Some(n) = min_score {
+        if n > 100 {
+            return Err(PyValueError::new_err(format!(
+                "min_score must be between 0 and 100, got {n}"
+            )));
+        }
+    }
+    let mut tolerances = parsed.to_run_config().tolerances;
+    if let Some(p) = &profile {
+        tolerances = p.apply_tolerances(tolerances);
+    }
+    let inputs = veridex_core::effective::Inputs {
+        // Python is handed config *text*, not a path: there is no file to name.
+        config_path: None,
+        file: &parsed,
+        profile: profile.as_ref(),
+        tolerances,
+        fail_on: fail_on_flag.unwrap_or(parsed.fail_on),
+        fail_on_from_flag: fail_on_flag.is_some(),
+        min_score: min_score.or(parsed.min_score),
+        min_score_from_flag: min_score.is_some(),
+    };
+    Ok(veridex_core::render_effective_config_json(&inputs))
+}
+
 /// `veridex.version() -> str`
 #[pyfunction]
 fn version() -> &'static str {
@@ -514,6 +579,7 @@ fn veridex(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(catalog, m)?)?;
     m.add_function(wrap_pyfunction!(provenance, m)?)?;
     m.add_function(wrap_pyfunction!(diff, m)?)?;
+    m.add_function(wrap_pyfunction!(effective_config, m)?)?;
     m.add_function(wrap_pyfunction!(keygen, m)?)?;
     m.add_function(wrap_pyfunction!(certify, m)?)?;
     m.add_function(wrap_pyfunction!(verify, m)?)?;

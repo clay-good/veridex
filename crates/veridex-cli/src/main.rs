@@ -30,7 +30,7 @@ const EXIT_TOOL_ERROR: u8 = 2;
 const COMMANDS: &[(&str, &str)] = &[
     (
         "check",
-        "validate a dataset and report findings (--max-frames <n> / --max-decompression-ratio <n> raise the ingest ceilings; --sample-episodes / --sample-fraction check a subset)",
+        "validate a dataset and report findings (--max-frames <n> / --max-decompression-ratio <n> raise the ingest ceilings; --sample-episodes / --sample-fraction check a subset; --print-config prints the effective config instead)",
     ),
     (
         "certify",
@@ -87,6 +87,7 @@ struct Args {
     fail_on_regression: bool,
     interval: Option<String>,
     iterations: Option<String>,
+    print_config: bool,
     /// Every positional argument, in order. `path` is the first; `diff` takes two.
     positionals: Vec<String>,
 }
@@ -104,7 +105,7 @@ impl Args {
     /// The single source of truth for [`reject_flags_except`]. Adding a flag to the parser without
     /// adding it here means it is never checked, so the two lists are kept adjacent, and a test
     /// asserts this covers the parser's whole flag set.
-    fn given_flags(&self) -> [(&'static str, bool); 24] {
+    fn given_flags(&self) -> [(&'static str, bool); 25] {
         [
             ("--json", self.json),
             ("--sarif", self.sarif),
@@ -133,6 +134,7 @@ impl Args {
             ("--metadata-only", self.metadata_only),
             ("--interval", self.interval.is_some()),
             ("--iterations", self.iterations.is_some()),
+            ("--print-config", self.print_config),
         ]
     }
 }
@@ -176,6 +178,7 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
     let mut fail_on_regression = false;
     let mut interval = None;
     let mut iterations = None;
+    let mut print_config = false;
     let mut positionals: Vec<String> = Vec::new();
     let mut it = rest.iter();
     while let Some(arg) = it.next() {
@@ -203,6 +206,7 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
             "--allow-any-issuer" => allow_any_issuer = true,
             "--fail-on-regression" => fail_on_regression = true,
             "--metadata-only" => metadata_only = true,
+            "--print-config" => print_config = true,
             "--config" => config = Some(value("--config")?),
             "--format" => format = Some(value("--format")?),
             "--key" => key = Some(value("--key")?),
@@ -253,6 +257,7 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
         fail_on_regression,
         interval,
         iterations,
+        print_config,
         positionals,
     })
 }
@@ -500,6 +505,7 @@ fn cmd_check(rest: &[String]) -> ExitCode {
                 "--fail-on",
                 "--min-score",
                 "--profile",
+                "--print-config",
             ],
             INGEST_FLAGS,
             SAMPLING_FLAGS,
@@ -510,6 +516,11 @@ fn cmd_check(rest: &[String]) -> ExitCode {
     }
     if let Err(code) = reject_extra_positionals("check", &args, "dataset path") {
         return code;
+    }
+    // `--print-config` answers a question about the configuration, not about a dataset: it resolves
+    // every layer and prints where each value came from, then exits without ingesting anything.
+    if args.print_config {
+        return cmd_print_config(&args);
     }
     // One run writes one report. The dispatch below is an if/else chain, so `--json --sarif` emitted
     // SARIF and dropped `--json` without a word -- a CI job doing `check --json --sarif > report.json`
@@ -777,6 +788,98 @@ fn load_config(explicit: Option<&str>) -> Result<veridex_core::CheckConfig, Stri
 /// `veridex checks` — list the built-in check catalog (id, category, default severity, scope,
 /// title), so users can discover what runs without validating a dataset. `--json` emits the
 /// structured catalog.
+/// `veridex check --print-config` — print the effective merged configuration and exit.
+///
+/// The configuration spec's precedence is built-in defaults, then the config file, then the
+/// command line; `--profile` sits between the file and the flags, and may only tighten. A verdict
+/// records the *resolved* numbers, which cannot answer the question people actually ask — why is
+/// this threshold 20 ms when my `veridex.toml` says 50? — so each setting is printed with the layer
+/// that set it, and with what that layer overrode.
+///
+/// It reads no dataset, so it takes no path. The config is validated exactly as a run would validate
+/// it: an unknown check id or an out-of-range tolerance is an error here too, which makes this the
+/// cheapest way to check a `veridex.toml` before pointing it at a dataset.
+fn cmd_print_config(args: &Args) -> ExitCode {
+    let config = match load_config(args.config.as_deref()) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("veridex: {e}");
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
+    };
+    let engine = match veridex_core::checks::default_engine() {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("veridex: {e}");
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
+    };
+    if let Err(e) = config.validate_check_ids(engine.check_ids()) {
+        eprintln!("veridex: {e}");
+        return ExitCode::from(EXIT_TOOL_ERROR);
+    }
+    let profile = match args.profile.as_deref() {
+        None => None,
+        Some(name) => match veridex_core::profile::by_name(name) {
+            Some(p) => Some(p),
+            None => {
+                eprintln!("veridex: unknown profile `{name}` (known: world-model-ready)");
+                return ExitCode::from(EXIT_TOOL_ERROR);
+            }
+        },
+    };
+    let cli_min_score = match args.min_score.as_deref().map(parse_min_score) {
+        None => None,
+        Some(Ok(n)) => Some(n),
+        Some(Err(e)) => {
+            eprintln!("veridex: {e}");
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
+    };
+    let fail_on_flag = match args.fail_on.as_deref() {
+        None => None,
+        Some("error") => Some(veridex_core::FailOn::Error),
+        Some("warning") => Some(veridex_core::FailOn::Warning),
+        Some(v) => {
+            eprintln!("veridex: invalid --fail-on `{v}` (expected `error` or `warning`)");
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
+    };
+
+    let mut tolerances = config.to_run_config().tolerances;
+    if let Some(p) = &profile {
+        tolerances = p.apply_tolerances(tolerances);
+    }
+    let inputs = veridex_core::effective::Inputs {
+        config_path: config_path_used(args.config.as_deref()),
+        file: &config,
+        profile: profile.as_ref(),
+        tolerances,
+        fail_on: fail_on_flag.unwrap_or(config.fail_on),
+        fail_on_from_flag: fail_on_flag.is_some(),
+        min_score: cli_min_score.or(config.min_score),
+        min_score_from_flag: cli_min_score.is_some(),
+    };
+    if args.json {
+        println!("{}", veridex_core::render_effective_config_json(&inputs));
+    } else {
+        print!("{}", veridex_core::render_effective_config(&inputs));
+    }
+    ExitCode::SUCCESS
+}
+
+/// The config file a run would read: the explicit `--config`, else an auto-discovered
+/// `veridex.toml`, else none. Mirrors [`load_config`]'s discovery so the printed provenance names
+/// the file the run would actually use.
+fn config_path_used(explicit: Option<&str>) -> Option<String> {
+    match explicit {
+        Some(p) => Some(p.to_string()),
+        None => std::path::Path::new("veridex.toml")
+            .is_file()
+            .then(|| "veridex.toml".to_string()),
+    }
+}
+
 fn cmd_checks(rest: &[String]) -> ExitCode {
     let args = match parse_args_or_exit(rest) {
         Ok(a) => a,
@@ -1875,6 +1978,9 @@ fn print_help() {
     --iterations <n>     stop watch after n polling ticks (default: until interrupted)"
     );
     println!("    --config <file>      veridex.toml (auto-discovered in cwd if present)");
+    println!(
+        "    --print-config       print the effective config and where each value came from, then exit (check)"
+    );
     println!("    --profile <name>     policy profile to judge against: world-model-ready (check, certify)");
     println!(
         "    --max-frames <n>     ceiling on frames an ingest may materialize (0 = no limit)

@@ -34,6 +34,9 @@ Three rules keep that honest:
   exactly as you configured them. So `--profile world-model-ready` cannot relax a limit you set
   deliberately — asking for `clock_skew_ms = 5.0` keeps 5 ms rather than being loosened to the
   profile's 20 ms, and the readiness criterion still holds, since 5 ms is stricter than it requires.
+  To see exactly which thresholds a profile moved and what it moved them from, run
+  `veridex check --print-config --profile world-model-ready` — it prints every setting with the layer
+  that set it, without reading a dataset.
 - **A narrowed run is never ready.** The profile names only one threshold, so the rest of the
   criteria's limits come from your `veridex.toml`. Loosening one of *those* would otherwise buy a
   READY verdict whose criterion line still quoted the default: one `sequence_drop_fraction = 0.9`

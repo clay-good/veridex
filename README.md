@@ -101,6 +101,7 @@ sequenceDiagram
 
 ```sh
 veridex check      <dataset> [--json | --sarif | --html] [--sample-episodes <n> | --sample-fraction <f> | --metadata-only]  # validate + report
+veridex check      --print-config [--config f.toml] [--profile p]  # print the effective config
 veridex certify    <dataset> --key issuer.key [--profile world-model-ready]  # issue a signed trust certificate
 veridex verify     <dataset> --certificate c.json --key pub.key   # verify offline (issuer required)
 veridex provenance <dataset> --emit croissant                     # extract + emit provenance
@@ -160,6 +161,13 @@ block the gate: it may only *tighten* a threshold, which measures the data harde
 asks, so `check --profile world-model-ready --min-score 80` is a valid CI gate. `check --profile
 world-model-ready` also prints the per-criterion readiness verdict it judged against; `certify` is
 what signs it.
+
+`veridex check --print-config` prints the configuration a run would use — every setting's value and
+**the layer that set it**: built-in default, `veridex.toml`, policy profile, or command-line flag,
+with a note where one overrode another — a `clock_skew_ms` of 20 prints as coming from the profile,
+which tightened it from the 50 the file asked for. It reads no dataset, and it validates the config exactly
+as a run would, so it is also the cheapest way to check a `veridex.toml` before pointing it at data.
+`--json` emits the same document as `veridex.config/1`.
 
 `watch` runs that same check on a **dataset that is still being recorded**. Each tick it fingerprints
 the dataset's files (names, sizes, modification times — nothing is opened, and a symlink out of the
@@ -381,7 +389,8 @@ manifest = json.loads(veridex.check("my-dataset/", metadata_only=True))
 print(manifest["verdict"]["coverage"])
 ```
 
-Python mirrors the CLI's *operations* — `check`, `certify`, `verify`, `provenance`, `inspect`, `diff`.
+Python mirrors the CLI's *operations* — `check`, `certify`, `verify`, `provenance`, `inspect`, `diff`,
+`effective_config`.
 `watch` is not among them by design: it is a loop around `check`, not an operation, and a Python
 caller already owns their own loop.
 
@@ -414,8 +423,9 @@ neutrality gate (the same logical dataset yields equivalent CDMs as LeRobot v3 a
 reference extraction** (OpenSCENARIO / OpenDRIVE / OSI / simulator, with the version read from the
 referenced sidecar's own ASAM header); Croissant + W3C PROV provenance emit; Ed25519 **certificate signing with
 offline verification** (tamper + transplant rejection); a working CLI (`check`, `inspect`, `checks`,
-`certify`, `verify`, `provenance`, `keygen`, `diff`, `watch`) — see the [Quickstart](#quickstart); and **Python
-bindings** (`import veridex`, exposing `check`/`check_sarif`/`check_html`/`inspect`/`content_hash`/`catalog`/`provenance`/`diff`/`keygen`/`certify`/`verify`/`version`) that call the same
+`certify`, `verify`, `provenance`, `keygen`, `diff`, `watch`, `check --print-config`) — see the
+[Quickstart](#quickstart); and **Python
+bindings** (`import veridex`, exposing `check`/`check_sarif`/`check_html`/`inspect`/`content_hash`/`catalog`/`provenance`/`diff`/`keygen`/`certify`/`verify`/`effective_config`/`version`) that call the same
 core pipeline, with a CLI⇄Python parity test run in CI; and **sampled ingestion** (`--sample-episodes`
 / `--sample-fraction`), resolved before any data is read and reported as partial coverage everywhere
 it could otherwise be mistaken for a full check; and **metadata-only ingestion** (`--metadata-only`,

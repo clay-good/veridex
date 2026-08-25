@@ -164,6 +164,26 @@ fails without it.*
 
 ### Added
 
+- **`veridex check --print-config` — the effective configuration, and where every value came from.**
+  The configuration spec requires a way to print the merged configuration, and a verdict recorded
+  only the *resolved* numbers. Those cannot answer the question people actually ask: why is this
+  threshold 20 ms when my `veridex.toml` says 50? Each setting now prints with the layer that set it
+  — built-in default, config file, policy profile, or command-line flag — and with what that layer
+  overrode — a `clock_skew_ms` of 20 prints as `(profile)`, naming the 50 in the file it tightened,
+  and a `min_score` of 90 prints as `(flag)`, naming the 70 in the file it beat.
+
+  It reads no dataset (the configuration does not depend on one), and it validates the config
+  exactly as a run would — an unknown check id, an out-of-range tolerance, an unknown key, an
+  unknown profile are all errors here too — which makes it the cheapest way to check a
+  `veridex.toml` before pointing it at data. Every key it prints is the key `veridex.toml` uses, so
+  a printed value can be pasted straight back. `--json` emits the same document as
+  `veridex.config/1`, and Python gets `veridex.effective_config(config=..., profile=...,
+  min_score=..., fail_on=...)` rendering through the same core helper, with a parity test asserting
+  the two resolve a config identically. That binding accepts a config carrying `min_score` /
+  `fail_on`, which `veridex.check` refuses: reporting what a config *says* is a different job from
+  running under it, and refusing there would make the one call that exists to explain a CI config
+  unable to read one.
+
 - **`veridex watch` — validation while the data is still being recorded.** The last command in the
   CLI spec's minimum surface that had no implementation. Each tick fingerprints the dataset on disk
   (names, kinds, sizes, mtimes; nothing is opened, and a symlink out of the dataset is never

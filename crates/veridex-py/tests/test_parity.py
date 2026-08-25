@@ -351,3 +351,69 @@ if __name__ == "__main__":
         test_cli_and_python_agree(Path(d))
     print("parity OK")
     sys.exit(0)
+
+
+def test_cli_and_python_effective_config_agree(tmp_path):
+    """The effective configuration — every value and the layer it came from — must be one document.
+
+    The CLI reads a `veridex.toml` off disk and Python is handed its text, so the two legitimately
+    disagree about the file's *name*; everything they say about what the config *means* must match.
+    """
+    config = tmp_path / "veridex.toml"
+    config.write_text(
+        "fail_on = 'warning'\n"
+        "min_score = 70\n"
+        "disabled_checks = ['semantic.task-quality']\n"
+        "\n[tolerances]\n"
+        "clock_skew_ms = 50.0\n"
+        "gap_factor = 2.0\n"
+    )
+
+    binary = os.environ.get("VERIDEX_BIN", "target/debug/veridex")
+    cli = json.loads(
+        subprocess.run(
+            [
+                binary, "check", "--print-config", "--json",
+                "--config", str(config),
+                "--profile", "world-model-ready",
+                "--min-score", "90",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    )
+    py = json.loads(
+        veridex.effective_config(
+            config=config.read_text(), profile="world-model-ready", min_score=90
+        )
+    )
+
+    assert py["settings"] == cli["settings"], "Python and CLI must resolve a config identically"
+    assert py["schema"] == cli["schema"] == "veridex.config/1"
+    assert py["profile"] == cli["profile"] == "world-model-ready"
+
+    settings = {s["key"]: s for s in py["settings"]}
+    # The flag beats the file, the profile beats the file, and each says so.
+    assert settings["min_score"]["value"] == "90"
+    assert settings["min_score"]["origin"] == "flag"
+    assert settings["tolerances.clock_skew_ms"]["value"] == "20"
+    assert settings["tolerances.clock_skew_ms"]["origin"] == "profile"
+    assert settings["tolerances.gap_factor"]["origin"] == "config-file"
+    assert settings["tolerances.jitter_cv"]["origin"] == "default"
+
+
+def test_python_effective_config_reports_a_config_the_check_binding_refuses(tmp_path):
+    """`veridex.check` refuses a config carrying `min_score`/`fail_on` — it cannot act on them.
+
+    Reporting what a config *says* is a different job from running under it, and refusing here would
+    make the one call that exists to explain a CI config unable to read a CI config.
+    """
+    text = "fail_on = 'warning'\nmin_score = 70\n"
+    settings = {
+        s["key"]: s for s in json.loads(veridex.effective_config(config=text))["settings"]
+    }
+    assert settings["fail_on"]["value"] == "warning"
+    assert settings["fail_on"]["origin"] == "config-file"
+    assert settings["min_score"]["value"] == "70"
+    assert settings["min_score"]["origin"] == "config-file"
