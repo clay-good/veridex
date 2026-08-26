@@ -747,7 +747,8 @@ fn attest(
         veridex_core::content_hash(&ingested.dataset).to_hex(),
         elements,
         timestamp.map(String::from).unwrap_or_else(unix_timestamp),
-    );
+    )
+    .map_err(PyValueError::new_err)?;
     let signed = veridex_core::sign_attestation(attestation, &keypair);
     serde_json::to_string_pretty(&signed).map_err(to_py_err)
 }

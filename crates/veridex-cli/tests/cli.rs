@@ -2561,3 +2561,62 @@ fn a_certificate_does_not_contradict_itself_about_attested_provenance() {
         "and name what came from a signature: {label}"
     );
 }
+
+#[test]
+fn a_merge_can_attest_every_parent_but_not_two_licenses() {
+    // A dataset merged from several recordings really does have several upstreams, and PROV emitted
+    // exactly one of them. A dataset does not have two licenses — that is a claim needing resolution
+    // before it is signed, not after.
+    let dir = temp_dir("attest-multi");
+    let dataset = make_lerobot("attest-multi-ds");
+    let key = dir.join("producer");
+    assert_eq!(run(&["keygen", key.to_str().unwrap()]).0, 0);
+    let attestation = dir.join("a.json");
+
+    let (code, _, stderr) = run(&[
+        "attest",
+        dataset.to_str().unwrap(),
+        "--key",
+        key.to_str().unwrap(),
+        "--set",
+        "upstream=acme/raw-v1",
+        "--set",
+        "upstream=partner/pilot",
+        "--out",
+        attestation.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "several upstreams are a lineage: {stderr}");
+
+    let (_, prov, _) = run(&[
+        "provenance",
+        dataset.to_str().unwrap(),
+        "--emit",
+        "prov",
+        "--attestation",
+        attestation.to_str().unwrap(),
+    ]);
+    let doc: serde_json::Value = serde_json::from_str(&prov).expect("valid JSON");
+    let derived = doc["@graph"][0]["prov:wasDerivedFrom"]
+        .as_array()
+        .expect("both parents are in the lineage");
+    assert_eq!(derived.len(), 2, "{derived:?}");
+
+    // Two licenses is refused at signing time.
+    let (code, _, stderr) = run(&[
+        "attest",
+        dataset.to_str().unwrap(),
+        "--key",
+        key.to_str().unwrap(),
+        "--set",
+        "license=MIT",
+        "--set",
+        "license=Apache-2.0",
+        "--out",
+        dir.join("b.json").to_str().unwrap(),
+    ]);
+    assert_eq!(code, 2);
+    assert!(
+        stderr.contains("attested with 2 different values"),
+        "{stderr}"
+    );
+}

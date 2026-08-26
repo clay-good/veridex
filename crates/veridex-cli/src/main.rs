@@ -1990,8 +1990,18 @@ fn cmd_attest(rest: &[String]) -> ExitCode {
     };
     let hash = veridex_core::content_hash(&ingested.dataset).to_hex();
     let timestamp = args.timestamp.clone().unwrap_or_else(unix_timestamp);
-    let attestation =
-        veridex_core::Attestation::build(ingested.dataset.id.clone(), hash, elements, timestamp);
+    let attestation = match veridex_core::Attestation::build(
+        ingested.dataset.id.clone(),
+        hash,
+        elements,
+        timestamp,
+    ) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("veridex: {e}");
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
+    };
     // Say what the dataset already records for these keys, rather than letting a producer sign over
     // it without noticing: the run that applies this will report the disagreement either way.
     for conflict in veridex_core::conflicts(&ingested.dataset, &attestation) {

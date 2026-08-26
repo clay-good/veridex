@@ -10,6 +10,17 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **A merged dataset's lineage named one parent out of three.** The CDM has always been able to hold
+  several `upstream` elements — provenance is a list — and the PROV emit read the first and dropped
+  the rest, silently. A lineage document that names one parent of a merge is worse than one that
+  names none, because it looks complete. Every recorded upstream is now a `prov:wasDerivedFrom`
+  edge with its own entity node; a single upstream still emits the singular form every existing
+  consumer reads.
+
+  `attest` can sign for them too: a key may repeat where more than one value is a fact rather than a
+  contradiction, which today means `upstream` alone. Two different licenses in one signed document
+  is refused at signing time — that is a claim needing resolution before it is signed, not after.
+
 - **A certificate that contradicted itself about the provenance it attested.** Found by auditing the
   attestation feature an hour after writing it, against the defect class this repo has already been
   burned by twice: a signed fact no reader is shown.

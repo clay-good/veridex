@@ -26,6 +26,27 @@ fn collect_elements(dataset: &Dataset) -> Vec<&ProvenanceElement> {
     out
 }
 
+/// Every distinct known-or-asserted value recorded for a key, sorted.
+///
+/// The plural of [`known_value`], for the keys where more than one value is a fact about the dataset
+/// rather than a contradiction: a merge really does have several upstreams. Placeholder values are
+/// skipped for the same reason they are there.
+fn known_values<'a>(dataset: &'a Dataset, key: &str) -> Vec<&'a str> {
+    let mut out: Vec<&str> = Vec::new();
+    for record in &dataset.provenance {
+        for el in &record.elements {
+            if el.key == key && el.class != ProvenanceClass::Unknown && el.has_real_value() {
+                if let Some(value) = el.value.as_deref() {
+                    out.push(value);
+                }
+            }
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
 /// Find the value of a known-or-asserted provenance element by key. Placeholder values (`unknown`,
 /// `n/a`, …) are skipped: emitting them into a mapped schema.org field like `license` would present
 /// fake provenance as real. The classified `veridex:provenance` list still carries every element.
@@ -209,10 +230,28 @@ pub fn to_prov(dataset: &Dataset) -> Value {
             entity.insert(format!("veridex:{key}"), json!(value));
         }
     }
-    if let Some(upstream) = known_value(dataset, "upstream") {
-        let upstream_id = format!("veridex:dataset/{}", iri_segment(upstream));
-        entity.insert("prov:wasDerivedFrom".into(), json!({ "@id": upstream_id }));
-        agent_nodes.push(json!({ "@id": upstream_id, "@type": "prov:Entity" }));
+    // Every upstream, not the first one. A dataset merged from several parents records several
+    // `upstream` elements — the CDM has always been able to hold them, since provenance is a list —
+    // and a lineage document naming one of three is worse than one naming none, because it looks
+    // complete. Deduplicated and sorted so the graph is deterministic; the singular form is kept for
+    // a single upstream, so every existing consumer reads what it always read.
+    let upstreams = known_values(dataset, "upstream");
+    if !upstreams.is_empty() {
+        let ids: Vec<String> = upstreams
+            .iter()
+            .map(|u| format!("veridex:dataset/{}", iri_segment(u)))
+            .collect();
+        let reference = match ids.as_slice() {
+            [single] => json!({ "@id": single }),
+            many => json!(many
+                .iter()
+                .map(|id| json!({ "@id": id }))
+                .collect::<Vec<_>>()),
+        };
+        entity.insert("prov:wasDerivedFrom".into(), reference);
+        for id in ids {
+            agent_nodes.push(json!({ "@id": id, "@type": "prov:Entity" }));
+        }
     }
 
     // Entity first, then the agents/upstream it references.

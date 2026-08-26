@@ -31,6 +31,12 @@ use crate::certificate::signing::{to_hex, CertError, SigningKeypair, ALGORITHM};
 /// Schema id for the attestation document.
 pub const ATTESTATION_SCHEMA_VERSION: &str = "veridex.attestation/1";
 
+/// Provenance keys where several values are a fact rather than a contradiction.
+///
+/// A merge has several upstreams. It does not have several licenses — that is a claim that needs
+/// resolving before it is signed, not after.
+pub const MULTI_VALUED_KEYS: &[&str] = &["upstream"];
+
 /// Domain separation for the signature.
 ///
 /// Distinct from the certificate's tag so an attestation can never be presented as a certificate, or
@@ -82,30 +88,46 @@ pub struct SignedAttestation {
 impl Attestation {
     /// Build an attestation over `elements` for a dataset and its content hash.
     ///
-    /// Elements are sorted by key and de-duplicated (last value for a repeated key wins), so the
-    /// same request always produces the same document — an attestation whose bytes depended on
-    /// argument order could not be compared, cached, or re-signed reproducibly.
+    /// Elements are sorted and de-duplicated by `(key, value)`, so the same request always produces
+    /// the same document — one whose bytes depended on argument order could not be compared, cached,
+    /// or re-signed reproducibly.
+    ///
+    /// A key may repeat only where more than one value is a *fact* rather than a contradiction: a
+    /// dataset merged from three recordings really does have three upstreams. Two different licenses
+    /// in one signed document is not a lineage, it is an incoherent claim, and it is refused here
+    /// rather than left for a reader to resolve.
     pub fn build(
         dataset_id: impl Into<String>,
         cdm_content_hash: impl Into<String>,
         elements: impl IntoIterator<Item = (String, String)>,
         timestamp: impl Into<String>,
-    ) -> Attestation {
-        let mut by_key: std::collections::BTreeMap<String, String> =
-            std::collections::BTreeMap::new();
+    ) -> Result<Attestation, String> {
+        let mut pairs: std::collections::BTreeSet<(String, String)> =
+            std::collections::BTreeSet::new();
         for (key, value) in elements {
-            by_key.insert(key, value);
+            pairs.insert((key, value));
         }
-        Attestation {
+        for key in pairs.iter().map(|(k, _)| k.as_str()) {
+            let count = pairs.iter().filter(|(k, _)| k == key).count();
+            if count > 1 && !MULTI_VALUED_KEYS.contains(&key) {
+                return Err(format!(
+                    "`{key}` is attested with {count} different values, and only {} may hold more \
+                     than one — a signed document that says two things about `{key}` is not a \
+                     claim anyone can act on",
+                    MULTI_VALUED_KEYS.join(", ")
+                ));
+            }
+        }
+        Ok(Attestation {
             schema: ATTESTATION_SCHEMA_VERSION.to_string(),
             dataset_id: dataset_id.into(),
             cdm_content_hash: cdm_content_hash.into(),
-            elements: by_key
+            elements: pairs
                 .into_iter()
                 .map(|(key, value)| AttestedElement { key, value })
                 .collect(),
             timestamp: timestamp.into(),
-        }
+        })
     }
 }
 

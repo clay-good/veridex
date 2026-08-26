@@ -387,3 +387,56 @@ fn an_emit_carries_attested_provenance_and_names_who_signed_for_it() {
     );
     assert_eq!(veridex_core::to_prov_attested(&d, &[], ""), to_prov(&d));
 }
+
+/// A dataset merged from several upstreams records several `upstream` elements — the CDM has always
+/// been able to hold them, since provenance is a list. PROV emitted exactly one, silently: a lineage
+/// document that says a merge came from one of its parents is worse than one that says nothing,
+/// because it looks complete.
+#[test]
+fn every_recorded_upstream_reaches_the_lineage_graph() {
+    let d = dataset_with(vec![
+        el("upstream", Some("acme/raw-v1"), ProvenanceClass::Known),
+        el("upstream", Some("acme/raw-v2"), ProvenanceClass::Known),
+        el("upstream", Some("partner/pilot"), ProvenanceClass::Asserted),
+        el("license", Some("mit"), ProvenanceClass::Known),
+    ]);
+
+    let prov = to_prov(&d);
+    let graph = prov["@graph"].as_array().expect("graph");
+    let derived: Vec<&str> = graph[0]["prov:wasDerivedFrom"]
+        .as_array()
+        .expect("a merge derives from more than one entity")
+        .iter()
+        .map(|v| v["@id"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(
+        derived.len(),
+        3,
+        "every upstream is in the lineage: {derived:?}"
+    );
+    for upstream in ["acme/raw-v1", "acme/raw-v2", "partner/pilot"] {
+        let id = format!("veridex:dataset/{}", upstream.replace('/', "%2F"));
+        assert!(
+            derived.contains(&id.as_str()),
+            "`{upstream}` is missing from {derived:?}"
+        );
+        assert!(
+            graph
+                .iter()
+                .any(|n| n["@id"] == id && n["@type"] == "prov:Entity"),
+            "and it must be a node in the graph, or the reference dangles"
+        );
+    }
+
+    // A single upstream still emits the singular form every existing consumer reads.
+    let one = dataset_with(vec![el(
+        "upstream",
+        Some("acme/raw"),
+        ProvenanceClass::Known,
+    )]);
+    let prov = to_prov(&one);
+    assert_eq!(
+        prov["@graph"][0]["prov:wasDerivedFrom"]["@id"],
+        "veridex:dataset/acme%2Fraw"
+    );
+}
