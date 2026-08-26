@@ -299,3 +299,42 @@ fn a_path_a_finding_quotes_is_not_a_way_around_redaction() {
         );
     }
 }
+
+#[test]
+fn a_value_a_producer_attested_is_redacted_like_any_other() {
+    // Attested values are not in the dataset, so a redactor built from the dataset alone does not
+    // know them — and the conflict finding quotes them verbatim. A producer attesting an annotator's
+    // address or an internal licence term, then sharing a redacted report, published exactly the
+    // string redaction exists to remove.
+    use veridex_core::check::{Category, Finding, Location, Severity};
+    let dataset = sensitive_dataset();
+    let attested = [
+        "dana.quinn@acme-robotics.example",
+        "acme-internal-only-terms",
+    ];
+
+    let mut redactor = Redactor::for_dataset(&dataset)
+        .and_attested(attested.iter().map(|v| v.to_string()).collect::<Vec<_>>());
+    let verdict = verdict_with(Finding::new(
+        "veridex.attestation",
+        Category::Provenance,
+        Severity::Warning,
+        Location::Dataset,
+        "PROVENANCE.ATTESTATION_CONFLICT",
+        "1 attested value(s) contradict what the dataset records (license: recorded \
+         `acme-internal-only` → attested `acme-internal-only-terms`)",
+    ));
+    let redacted = redactor.redact_verdict(&verdict);
+    let text = serde_json::to_string(&redacted).expect("serializes");
+    for leaked in attested {
+        assert!(
+            !text.contains(leaked),
+            "`{leaked}` survived redaction: {text}"
+        );
+    }
+    // The finding still says a conflict happened — the measurement survives, the strings do not.
+    assert!(
+        text.contains("contradict what the dataset records"),
+        "the finding must survive: {text}"
+    );
+}

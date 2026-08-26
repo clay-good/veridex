@@ -666,10 +666,39 @@ fn cmd_check(rest: &[String]) -> ExitCode {
         Ok(i) => i,
         Err(code) => return code,
     };
-    let attestation = match &args.attestation {
-        None => None,
-        Some(path) => match applied_attestation(path, &ingested.dataset) {
-            Ok(a) => Some(a),
+    let (attestation, attested_values) = match &args.attestation {
+        None => (None, Vec::new()),
+        Some(path) => match load_attestation(path, &ingested.dataset) {
+            Ok((signed, producer_key)) => {
+                let values = signed
+                    .attestation
+                    .elements
+                    .iter()
+                    .map(|e| e.value.clone())
+                    .collect();
+                let conflicts = veridex_core::conflicts(&ingested.dataset, &signed.attestation)
+                    .into_iter()
+                    .map(|c| {
+                        format!(
+                            "{}: recorded `{}` → attested `{}`",
+                            c.key, c.recorded, c.attested
+                        )
+                    })
+                    .collect();
+                (
+                    Some(veridex_core::AppliedAttestation {
+                        producer_key,
+                        keys: signed
+                            .attestation
+                            .elements
+                            .iter()
+                            .map(|e| e.key.clone())
+                            .collect(),
+                        conflicts,
+                    }),
+                    values,
+                )
+            }
             Err(code) => return code,
         },
     };
@@ -693,13 +722,17 @@ fn cmd_check(rest: &[String]) -> ExitCode {
     // and the private one describe the same run — and both carry the same CDM content hash, which
     // is what lets whoever holds the dataset match them.
     let mut redactor = args.redact.then(|| {
-        veridex_core::Redactor::for_dataset(&out.ingested.dataset).and_unread_sources(
-            out.ingested
-                .report
-                .unread_sources
-                .iter()
-                .map(|u| u.source_path.as_str()),
-        )
+        veridex_core::Redactor::for_dataset(&out.ingested.dataset)
+            .and_unread_sources(
+                out.ingested
+                    .report
+                    .unread_sources
+                    .iter()
+                    .map(|u| u.source_path.as_str()),
+            )
+            // Attested values are not in the CDM, so the redactor cannot find them there — and the
+            // conflict finding quotes them.
+            .and_attested(attested_values.clone())
     });
     let rendered = match &mut redactor {
         Some(r) => r.redact_verdict(&out.verdict),

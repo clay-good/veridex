@@ -135,13 +135,26 @@ fn check(
         None => None,
         Some(document) => Some(applied_attestation(document, &ingested.dataset)?),
     };
+    let attested_values: Vec<String> = match attestation {
+        None => Vec::new(),
+        Some(document) => serde_json::from_str::<veridex_core::SignedAttestation>(document)
+            .map(|signed| {
+                signed
+                    .attestation
+                    .elements
+                    .iter()
+                    .map(|e| e.value.clone())
+                    .collect()
+            })
+            .unwrap_or_default(),
+    };
     let out = veridex_core::check_ingested(ingested, &run_config, applied.as_ref());
     // Only a readiness profile has criteria; a threshold profile claims nothing about readiness.
     let readiness = profile.as_ref().filter(|p| p.judges_readiness()).map(|p| {
         veridex_core::certificate::ReadinessReport::evaluate(p, &out.verdict, &out.ingested.dataset)
     });
     Ok(veridex_core::render_json_with_readiness(
-        &redacted_if(redact, &out),
+        &redacted_if(redact, &out, &attested_values),
         Some(out.trust),
         readiness.as_ref(),
     ))
@@ -151,7 +164,11 @@ fn check(
 ///
 /// `redact` is a rendering-time substitution — the verdict, the score, and the content hash are the
 /// run's — so this is the only place the two paths differ.
-fn redacted_if(redact: bool, out: &veridex_core::CheckOutput) -> veridex_core::Verdict {
+fn redacted_if(
+    redact: bool,
+    out: &veridex_core::CheckOutput,
+    attested_values: &[String],
+) -> veridex_core::Verdict {
     if redact {
         veridex_core::Redactor::for_dataset(&out.ingested.dataset)
             .and_unread_sources(
@@ -161,6 +178,9 @@ fn redacted_if(redact: bool, out: &veridex_core::CheckOutput) -> veridex_core::V
                     .iter()
                     .map(|u| u.source_path.as_str()),
             )
+            // Attested values are not in the CDM, so the redactor cannot find them there — and the
+            // conflict finding quotes them.
+            .and_attested(attested_values.to_vec())
             .redact_verdict(&out.verdict)
     } else {
         out.verdict.clone()
@@ -571,7 +591,7 @@ fn check_sarif(
         veridex_core::run_check_with(&registry, &source_for(path), format, &opts, &run_config)
             .map_err(to_py_err)?;
     Ok(
-        serde_json::to_string_pretty(&veridex_core::render_sarif(&redacted_if(redact, &out)))
+        serde_json::to_string_pretty(&veridex_core::render_sarif(&redacted_if(redact, &out, &[])))
             .expect("sarif serializes"),
     )
 }
@@ -600,7 +620,7 @@ fn check_html(
         veridex_core::run_check_with(&registry, &source_for(path), format, &opts, &run_config)
             .map_err(to_py_err)?;
     Ok(veridex_core::render_html(
-        &redacted_if(redact, &out),
+        &redacted_if(redact, &out, &[]),
         Some(out.trust),
     ))
 }

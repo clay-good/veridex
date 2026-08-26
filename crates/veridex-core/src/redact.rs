@@ -13,7 +13,7 @@
 //! match the report to it.
 //!
 //! **What is removed:** the dataset identifier, stream names, task and label text, provenance
-//! element values, media and source *paths*, coordinate-frame names, and dataset metadata values —
+//! element values (including values a producer attested, which are not in the CDM at all), media and source *paths*, coordinate-frame names, and dataset metadata values —
 //! wherever they appear in a finding's message or location. Paths get a second, pattern-based pass
 //! on top of the enumerated ones, because a path is the string a dataset is most identifying in and
 //! a check can quote one this module never saw.
@@ -132,6 +132,25 @@ impl Redactor {
             replacements,
             paths: BTreeMap::new(),
         }
+    }
+
+    /// Also redact values a producer attested.
+    ///
+    /// Attested values are not in the CDM — that is the whole design — so a redactor built from the
+    /// dataset alone does not know them, and the conflict finding quotes them verbatim. A producer
+    /// who attests an operator's address or an internal licence term and then shares a redacted
+    /// report would publish exactly the string redaction exists to remove.
+    pub fn and_attested(mut self, values: impl IntoIterator<Item = String>) -> Redactor {
+        let unique: BTreeSet<String> = values.into_iter().collect();
+        for (i, value) in unique.into_iter().enumerate() {
+            if value.chars().count() >= MIN_IDENTIFIER {
+                self.replacements
+                    .push((value, format!("attested#{}", i + 1)));
+            }
+        }
+        self.replacements
+            .sort_by(|a, b| b.0.len().cmp(&a.0.len()).then_with(|| a.0.cmp(&b.0)));
+        self
     }
 
     /// Also redact the source files an ingest declined to read.

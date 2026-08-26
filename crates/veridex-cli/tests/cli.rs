@@ -2620,3 +2620,58 @@ fn a_merge_can_attest_every_parent_but_not_two_licenses() {
         "{stderr}"
     );
 }
+
+#[test]
+fn a_redacted_report_does_not_publish_what_a_producer_attested() {
+    // Attested values are not in the CDM — that is the design — so a redactor built from the dataset
+    // alone cannot find them, and the conflict finding quotes them verbatim. A producer who attests
+    // an internal licence term or an operator's address and then shares a redacted report would
+    // publish exactly the string redaction exists to remove.
+    let dir = temp_dir("redact-attested");
+    let dataset = make_lerobot("redact-attested-ds");
+    let key = dir.join("producer");
+    assert_eq!(run(&["keygen", key.to_str().unwrap()]).0, 0);
+    let attestation = dir.join("a.json");
+    assert_eq!(
+        run(&[
+            "attest",
+            dataset.to_str().unwrap(),
+            "--key",
+            key.to_str().unwrap(),
+            "--set",
+            "license=acme-internal-secret-terms",
+            "--out",
+            attestation.to_str().unwrap(),
+        ])
+        .0,
+        0
+    );
+
+    let (_, report, _) = run(&[
+        "check",
+        "--redact",
+        "--json",
+        "--attestation",
+        attestation.to_str().unwrap(),
+        dataset.to_str().unwrap(),
+    ]);
+    assert!(
+        !report.contains("acme-internal-secret-terms"),
+        "the attested value leaked through redaction: {report}"
+    );
+    // The finding still reports the conflict — the measurement survives, the string does not.
+    assert!(
+        report.contains("PROVENANCE.ATTESTATION_CONFLICT"),
+        "{report}"
+    );
+
+    // Unredacted, it is of course there — this is a rendering choice, not a change to the run.
+    let (_, plain, _) = run(&[
+        "check",
+        "--json",
+        "--attestation",
+        attestation.to_str().unwrap(),
+        dataset.to_str().unwrap(),
+    ]);
+    assert!(plain.contains("acme-internal-secret-terms"), "{plain}");
+}

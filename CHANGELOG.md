@@ -10,6 +10,16 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **A redacted report published what a producer attested.** Attested values are deliberately *not* in
+  the CDM, so a redactor built from the dataset — which is how it is built — cannot know them, and
+  the conflict finding quotes them verbatim: `license: recorded \`value#3\` → attested
+  \`acme-internal-secret-terms\``. The recorded side was redacted and the attested side was not. A
+  producer who attests an operator's address or an internal licence term and shares a redacted report
+  published exactly the string redaction exists to remove.
+
+  The redactor now takes the attested values too (`Redactor::and_attested`), in both front ends. The
+  conflict is still reported; only the strings are replaced.
+
 - **A merged dataset's lineage named one parent out of three.** The CDM has always been able to hold
   several `upstream` elements — provenance is a list — and the PROV emit read the first and dropped
   the rest, silently. A lineage document that names one parent of a merge is worse than one that
