@@ -140,6 +140,21 @@ reproduced before it was fixed.*
 
 ### Changed
 
+- **The README stopped being a manual.** It had grown to 35 KB, 22 KB of which sat under a heading
+  called "Quickstart" — the per-format tour, the trust chain, sampling, budgets, redaction, watching,
+  attestation, labels. A quickstart that takes twenty minutes to read is not one, and the first
+  thing a visitor meets is the thing most worth getting right.
+
+  Nothing was cut; three sections moved out whole, with their prose intact:
+  [docs/formats.md](docs/formats.md) (what each of the seven adapters reads and refuses to guess),
+  [docs/trust-chain.md](docs/trust-chain.md) (attest → certify → verify → label, and what each
+  signature does and does not prove), and [docs/partial-runs.md](docs/partial-runs.md) (budgets,
+  sampling, manifest-only checks, and why a partial run cannot gate or certify). A "Going further"
+  table points at all of them and at the docs that already existed.
+
+  Every command in the moved pages was run before the move: the five in `formats.md` and the whole
+  five-step chain in `trust-chain.md`.
+
 - **The default terminal report is readable again.** A sound dataset's report is almost entirely
   `info` findings — what could not be measured, which provenance elements are absent, what a partial
   run did not cover — and each carried a risk and a remedy paragraph. On a clean LeRobot dataset that

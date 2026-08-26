@@ -213,25 +213,17 @@ the recording proceeds. Like every other command, it only reads: nothing is writ
 
 Most of what provenance means is not in the file — no format records who operated the robot, which
 calibration was in force, or what upstream a merge drew from — and Veridex will not infer any of it.
-`veridex attest` lets the producer **sign for it**: a document signed with the producer's key (not the
-issuer's) and bound to the dataset's content hash, so it cannot be moved to other data.
-`check --attestation` and `certify --attestation` apply what verifies, raising provenance coverage
-and saying in the report that a signature — not the data — is why (`PROVENANCE.ATTESTED`, naming the
-key). An attested value that contradicts what the dataset records is reported, not preferred: a
-signature does not get to rewrite the data's own account of itself. Nothing attested enters the CDM,
-so the content hash still describes the data and nothing else. `veridex provenance --emit croissant
---attestation a.json` carries the attested elements into the emitted Croissant/PROV too — marked
-`asserted`, with the producer key named (`veridex:attestedBy`, and a `prov:Agent` the dataset is
-attributed to), because a document that omitted them would describe less than the run did.
+`veridex attest` lets the producer **sign for it**, bound to the dataset's content hash and signed
+with their own key; `check --attestation` and `certify --attestation` apply what verifies, raising
+provenance coverage and saying in the report that a signature — not the data — is why. Nothing
+attested enters the CDM, so the content hash still describes the data and nothing else. See
+[docs/trust-chain.md](docs/trust-chain.md).
 
-`veridex label` turns a certificate into the form a person actually meets it in: a compact Markdown
-**trust label** — grade, score, findings by family, provenance coverage, the bound content hash, who
-issued it and when — to paste into a dataset card, a README, or a PR. It renders from the signed
-certificate alone, so it cannot describe a different verdict than the one that was signed, and it
-refuses to render at all from a certificate that does not verify. A label made without a trusted
-issuer key says so *in the label*, because that caveat has to survive being pasted somewhere else.
-Every label ends with the sentence that keeps it honest: a certificate is a statement of fact about a
-dataset, not an endorsement of it.
+`veridex label` renders a certificate as the form a person actually meets it in: a compact Markdown
+**trust label** — grade, score, findings by family, provenance coverage, the bound hash, who issued
+it — to paste into a dataset card or a PR. It renders only from a certificate that verifies, and a
+label made without a trusted issuer key says so *in the label*, because that caveat has to survive
+being pasted somewhere else.
 
 Running it in CI: [docs/ci-recipes.md](docs/ci-recipes.md) has the GitHub Actions and GitLab
 recipes, including uploading `--sarif` to the Security tab and gating on a *regression* rather than
@@ -244,188 +236,19 @@ sequence-drop, ego max speed), and set the failure
 threshold — the effective config is recorded in every
 verdict, and unknown keys, check ids, or invalid tolerances are rejected, not silently ignored.
 
-Veridex reads untrusted files, so ingestion carries two budgets. A **frame budget** (20M by default):
-a dataset that would materialize more frames is refused with a clear error rather than exhausting
-memory, because the frame count is a product of two numbers the file itself controls. And a
-**decompression budget** for compressed containers (MCAP chunks and LeRobot Parquet), capping
-expansion at 100x the file's own size with a 64 MiB floor — so a small file cannot unpack into a
-gigabyte, while a genuinely large log keeps a proportionate allowance. Raise either with `--max-frames <n>` /
-`--max-decompression-ratio <n>`, or remove it with `0`.
 
-For a dataset too large to check in full on every commit, `check` and `inspect` can validate a subset
-of its episodes:
+## Going further
 
-```sh
-veridex check my-dataset/ --sample-episodes 20             # the first 20 episodes by index
-veridex check my-dataset/ --sample-fraction 0.1 --sample-seed 7   # a deterministic 10% draw
-```
-
-The draw is resolved from the dataset's declared episode set *before* any data is read, so the
-episodes you skipped cost nothing — a sample of a dataset over the frame budget succeeds where the
-full ingest is refused. The same seed always draws the same episodes. Sampling applies to LeRobot,
-RLDS/TFDS, HDF5, and Zarr (which have an episode axis); MCAP, CAN+DBC, and MF4 ingest a recording as one episode and refuse the request rather than handing
-back everything labelled as a sample.
-
-A sampled run is never presented as a whole-dataset one. The verdict carries a `coverage` field
-(bound into its hash), every report states the sample and the episode count, and **`certify` refuses
-to issue a certificate from a partial run** — a certificate speaks for a dataset, and the episodes a
-sample never read are exactly where the problem would be.
-
-For a dataset too large to read on every commit at all, `check` and `inspect` can also skip the data
-entirely and check what the dataset *says about itself*:
-
-```sh
-veridex check my-dataset/ --metadata-only     # LeRobot; reads meta/, opens no Parquet or video
-```
-
-This is a real check, not a smoke test: the declared episode set and per-episode lengths, every
-feature's dtype/shape/rate, the stored statistics in `meta/stats.json` (an inverted range or a mean
-outside its own bounds is caught here), and the whole provenance family. What it cannot see — every
-timestamp, value, content hash, and media header — it says it cannot see. The frame-dependent checks
-**abstain rather than firing**: "declares 120 frames, ingested 0" is true of every sound dataset read
-this way, and reporting it would fail them all. The verdict carries
-`coverage: {"kind": "metadata_only"}`, every report prints a `METADATA-ONLY` banner, and `certify`
-refuses it — a sound manifest says nothing about the data. One nice detail: when the episode set is
-derived from `info.json`'s `total_episodes` alone, the declared-episode-count check is *withheld*
-rather than run, because comparing that number against a set built from it could not fail, and a
-check that cannot fail must not be reported as having passed.
-
-The same command works on a LeRobot v3 dataset — proof of the cross-format claim. Generate a demo
-one (its second episode carries an out-of-order timestamp) and check it the same way:
-
-```sh
-# generate a demo LeRobot v3 dataset; append `clean`, `truncated`, `boundary`, `jitter`,
-# `short-episode`, `duplicate`, `saturated`, `spike`, `nan`, `multi-joint`, `video`,
-# `video-desync`, `video-missing`, or `video-reencoded`
-cargo run -p veridex-core --example make_demo_lerobot -- /tmp/demo-lerobot
-cargo run -p veridex-cli -- check /tmp/demo-lerobot   # fires TEMPORAL.NON_MONOTONIC, exits 20
-```
-
-The `truncated` variant writes a dataset whose manifest declares more frames than were exported —
-a realistic interrupted upload — and `check` catches it as `STRUCTURAL.FRAME_COUNT_MISMATCH`. The
-`boundary` variant leaves the frames intact but corrupts one episode's declared `length` in
-`meta/episodes.jsonl` — the lerobot#4143 failure, where wrong cumulative boundaries silently load
-frames under the wrong episode — and `check` catches the declared-vs-actual disagreement as
-`STRUCTURAL.EPISODE_BOUNDARY`. The
-`jitter` variant spaces one episode's frames unevenly so its mean rate still looks right, and
-`check` flags the irregular timeline as `TEMPORAL.JITTER`. The `short-episode` variant records five
-episodes where one was cut short right after it began, and `check` flags it against the dataset
-median as `TEMPORAL.EPISODE_DURATION_OUTLIER`. The `duplicate` variant re-uploads an episode
-byte-for-byte, and `check` catches it as `STRUCTURAL.DUPLICATE_EPISODE` — Veridex fingerprints each
-feature cell's bytes into a per-frame content hash, so the duplicate is proven by content, not
-guessed from matching timestamps. The `saturated` variant pins the feature values exactly at their
-maximum for most of the episode — a clamped actuator against its stop — and `check` flags it as
-`STATISTICAL.SATURATED` from the values it recomputes as it fingerprints them. The `spike` variant
-jumps a single frame far off the baseline — a sensor glitch or unit error — and `check` flags it as
-`STATISTICAL.OUTLIER`, provably a rare value by Chebyshev's inequality. The `nan` variant writes one
-NaN feature value and no `meta/stats.json`, so the stored-stats check has nothing to inspect — only
-the recompute over the real cells sees it, flagged as `STATISTICAL.NON_FINITE_OBSERVED`. The
-`multi-joint` variant is a 3-DoF `action` whose gripper (dimension 2) saturates while the arm joints
-sweep freely; `check` flags `STATISTICAL.SATURATED` and **names the dimension** — the value-based
-checks scan every joint, not just element 0, which is where real robot data hides its problems. Every
-variant also ships a Hugging Face-style dataset card (`README.md`), so `veridex inspect` surfaces the
-extracted `license` as covered provenance rather than a `PROVENANCE.MISSING_LICENSE` gap.
-
-Four more variants add a real camera feature backed by `.mp4` files, because a video dataset is two
-artifacts that nothing reconciles — a manifest and a data table on one side, a container on the
-other, paired by frame index and never checked against each other. `video` is the clean baseline;
-`video-desync` gives episode 1 a video three frames short of its rows (`VIDEO.FRAME_COUNT_MISMATCH`
-— every pair past the shorter one is an action against an image from a different moment);
-`video-missing` never uploads that file (`VIDEO.MEDIA_MISSING`); and `video-reencoded` ships 320x240
-video against a declared 640x480 (`VIDEO.RESOLUTION_MISMATCH`, charged once for the stream rather
-than once per episode). Veridex reads the container's **headers only** — it never decodes a pixel —
-and it compares the codec across the names for one encoder, so a manifest saying `h264` against a
-container stamped `avc1` is not reported as a mismatch.
-
-It works on an **RLDS/TFDS** dataset too — the layout Open X-Embodiment and most TFDS-published
-robot datasets ship in, and the third format behind the same command:
-
-```sh
-# generate a demo RLDS dataset in the TFDS layout; append `truncated`, `desynced`, or `corrupt`
-cargo run -p veridex-core --example make_demo_rlds -- /tmp/demo-rlds
-cargo run -p veridex-cli -- check /tmp/demo-rlds
-```
-
-RLDS stores one episode per TFRecord, with every step's values concatenated into a single
-`tf.train.Example` — so an episode's step count is never written down, it is *derived* by dividing
-each feature's list length by the element size `features.json` declares. Veridex does that division
-for every step feature and requires the answers to agree. The `desynced` variant makes them
-disagree (19 camera images against 20 actions) and is refused by name, rather than mapped into a
-19-step episode that would read as sound. The `truncated` variant declares four episodes in its
-shard lengths and ships three (`STRUCTURAL.EPISODE_COUNT_MISMATCH`), and `corrupt` flips one bit
-inside a record — only the TFRecord CRC-32C notices, and Veridex verifies it on every record rather
-than parsing past it.
-
-One honesty note this format forces: **RLDS records no wall clock.** There is no per-step timestamp
-in it, so Veridex stamps frames with their step index, records in the CDM that those timestamps are
-an index rather than measured time, and never invents a rate. The checks that need measured time —
-rate, gap, jitter, clock skew, start/end offset, episode duration — then skip those streams instead
-of grading a dataset against a period Veridex made up.
-
-They *say* they skipped, which is the part that matters. A step index is flawlessly monotonic,
-perfectly regular, and identical across every stream of an episode, so a check that graded it would
-pass — and a clean temporal result is exactly what a report and a signed certificate carry forward,
-where it reads as "these sensors were synchronized." So a run over such a dataset emits
-`TEMPORAL.UNMEASURED_CLOCK`, and it travels: into the JSON, the SARIF, the HTML, and the
-certificate's findings summary. A passing verdict on an RLDS dataset means the structure and the
-content are sound, and that nobody measured the timing.
-
-It works on an **HDF5** file too — what `robomimic`, MimicGen, RoboTurk, and most hand-rolled lab
-collectors write, and the fourth format behind the same command:
-
-```sh
-# a real h5py-written robomimic-layout file, committed as a test fixture
-cargo run -p veridex-cli -- check crates/veridex-core/tests/fixtures/hdf5/robomimic_small.h5
-```
-
-The mapping is the file's own structure: a **group of arrays is an episode** (`/data/demo_0`), every
-array under it is a **stream** (`actions`, `obs/agentview_image`, nested paths included), and an
-array's first dimension is that stream's frame count. Types and shapes come from the file — a
-`float32 [T, 7]` action stream stays exactly that — and the attributes a collector writes become
-metadata, provenance, and the counts a check can test against (`num_samples` per episode, `/data`'s
-`total` frames). Values are read, so the statistical checks are live: a gripper pinned at its limit,
-a NaN buried in joint 6, or a lone 250x spike is caught **per dimension** and named. Veridex reads the HDF5 container directly, with no libhdf5 dependency: superblocks
-v0–v3, old- and new-style groups, contiguous, compact, and chunked storage, and the `deflate`,
-`shuffle`, and `fletcher32` filters. A structure it does not read is named rather than skipped past.
-
-HDF5 records no clock either, so the same honesty rule applies: frames carry a step index, and the
-temporal checks abstain and say so. A file that *does* record time gets measured time — but only if
-it also declares its units (a `units` attribute on the timestamp array). Whether a bare `time`
-column is seconds or nanoseconds is not something Veridex will guess: guess wrong and every rate,
-duration, and skew verdict derived from it is fiction.
-
-And on a **Zarr** store — the replay-buffer layout Diffusion Policy, UMI, and the tooling around them
-ship in, and the fifth format behind the same command:
-
-```sh
-cargo run -p veridex-cli -- check crates/veridex-core/tests/fixtures/zarr/dp_replay.zarr
-```
-
-A replay buffer is one flat array per key with every episode concatenated end to end, and the episode
-boundaries kept beside it in `meta/episode_ends`. Those boundaries *are* the episode structure:
-`[4, 10]` means episode 0 is rows 0..4 and episode 1 is rows 4..10, and Veridex slices every `data/`
-array accordingly. Rows past the last boundary belong to no episode, and the report says so rather
-than attaching them to the last one — an off-by-one in a replay buffer is exactly the corruption this
-tool exists to catch, and a boundary that runs backwards or past the end of the arrays it indexes is
-refused outright.
-
-Zarr's chunks are plain files, so there is no index to trust — but there is a codec to get right, and
-a compressed array read through the wrong one does not fail, it yields plausible numbers. Veridex
-reads `zlib`, `gzip`, `zstd`, `lz4`, and `blosc` (with `lz4`, `zstd`, or `zlib` inside it, byte
-shuffle included), and refuses anything else by name with what to re-save it as. Every codec is tested
-by decoding the same values through all of them and requiring identical bytes.
-
-The certificate binds to the dataset's CDM content hash and is Ed25519-signed: `verify` succeeds
-offline, and rejects a tampered certificate (signature mismatch) or one presented against a
-different dataset (content-hash mismatch). **`verify` requires a trusted issuer key**: a valid
-signature only proves a certificate is self-consistent, and anyone can mint one about data they
-hold — so you either name the issuer with `--key`, or say `--allow-any-issuer` and get a printed
-warning (and `issuer_verified: false` in `--json`) instead of an implied endorsement.
-On success `verify` reports what the certificate actually
-attests — the hash it is bound to, the trust score, and, for a certificate issued with
-`--profile world-model-ready`, each readiness criterion's verdict (`--json` for the machine-readable
-form). Every line printed is covered by the signature that just verified, so a doctored readiness
-block fails verification rather than being read back.
+| If you want to | Read |
+| --- | --- |
+| See it read LeRobot, RLDS/TFDS, HDF5, Zarr, MCAP, CAN+DBC, MF4 | [docs/formats.md](docs/formats.md) |
+| Sign, verify, and share a verdict — including producer attestation | [docs/trust-chain.md](docs/trust-chain.md) |
+| Check a dataset too large to read in full, and what that costs | [docs/partial-runs.md](docs/partial-runs.md) |
+| Run it in CI (GitHub Actions, GitLab, SARIF upload, regression gating) | [docs/ci-recipes.md](docs/ci-recipes.md) |
+| Know exactly what each check looks for | [docs/checks.md](docs/checks.md) |
+| Judge a rig against a policy profile | [docs/profiles.md](docs/profiles.md) |
+| Understand the 0–100 score | [docs/rubric-v1.md](docs/rubric-v1.md) |
+| Configure it | [docs/veridex.toml.example](docs/veridex.toml.example) |
 
 ## Python
 
