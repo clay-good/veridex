@@ -347,6 +347,10 @@ makes disclosure part of the deal:
   either the recording is wrong or the claim is, and a signature does not get to rewrite the data's
   own account of itself.
 
+`veridex provenance --emit ... --attestation` carries the attested elements into the emitted
+Croissant and PROV documents, marked `asserted` and with the producer key named — a shared
+provenance document that omitted them would describe less than the run did.
+
 An attestation never enters the CDM, so it cannot change the content hash — a claim about the data
 must not change what the data *is*. It is refused if its signature does not verify, or if it is bound
 to a different dataset than the one presented.

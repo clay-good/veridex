@@ -1834,6 +1834,27 @@ fn attestation_timestamp(path: Option<&str>) -> String {
         .unwrap_or_default()
 }
 
+/// Load and verify a producer attestation, returning the document and the key it verified against.
+fn load_attestation(
+    path: &str,
+    dataset: &veridex_core::cdm::Dataset,
+) -> Result<(veridex_core::SignedAttestation, String), ExitCode> {
+    let text = std::fs::read_to_string(path).map_err(|e| {
+        eprintln!("veridex: cannot read {path}: {e}");
+        ExitCode::from(EXIT_TOOL_ERROR)
+    })?;
+    let signed: veridex_core::SignedAttestation = serde_json::from_str(&text).map_err(|e| {
+        eprintln!("veridex: {path} is not a valid attestation: {e}");
+        ExitCode::from(EXIT_TOOL_ERROR)
+    })?;
+    let hash = veridex_core::content_hash(dataset).to_hex();
+    let key = veridex_core::verify_attestation(&signed, &hash, None).map_err(|e| {
+        eprintln!("✗ refusing to apply an attestation that does not check out: {e}");
+        ExitCode::from(EXIT_FAIL)
+    })?;
+    Ok((signed, key))
+}
+
 /// Load and verify a producer attestation against the dataset it claims to describe.
 ///
 /// Verification happens here, in the front end, because only the caller knows which producer key it
@@ -2055,9 +2076,11 @@ fn cmd_provenance(rest: &[String]) -> ExitCode {
     };
     // No sampling: emitted provenance describes a dataset, and from a sample it would describe a
     // subset while carrying the dataset's name.
-    if let Err(code) =
-        reject_flags_except("provenance", &args, &[&["--emit", "--out"], INGEST_FLAGS])
-    {
+    if let Err(code) = reject_flags_except(
+        "provenance",
+        &args,
+        &[&["--emit", "--out", "--attestation"], INGEST_FLAGS],
+    ) {
         return code;
     }
     if let Err(code) = reject_extra_positionals("provenance", &args, "dataset path") {
@@ -2072,8 +2095,18 @@ fn cmd_provenance(rest: &[String]) -> ExitCode {
     ingested.dataset.canonicalize_order();
     let d = &ingested.dataset;
 
+    // Attested provenance belongs in an emit: a Croissant document that omitted it would describe
+    // less than the run did. It is verified first, and the document names the key that signed it.
+    let (attested, producer_key) = match &args.attestation {
+        None => (Vec::new(), String::new()),
+        Some(path) => match load_attestation(path, d) {
+            Ok((signed, key)) => (signed.attestation.elements, key),
+            Err(code) => return code,
+        },
+    };
+
     let emit = args.emit.as_deref().unwrap_or("croissant");
-    let json = match veridex_core::render_provenance(d, emit) {
+    let json = match veridex_core::render_provenance_attested(d, emit, &attested, &producer_key) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("veridex: {e}");

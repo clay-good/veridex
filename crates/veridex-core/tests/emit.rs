@@ -305,3 +305,85 @@ fn croissant_terms_expand_to_the_iris_croissant_readers_look_for() {
     assert_eq!(doc["@type"], "sc:Dataset");
     assert_eq!(doc["conformsTo"], "http://mlcommons.org/croissant/1.0");
 }
+
+/// Attested provenance has to reach the emit, or a producer who signs for what the format does not
+/// record gets a Croissant document that describes less than the run did — and the reader of that
+/// document has no way to see that the extra facts came from a key rather than the data.
+#[test]
+fn an_emit_carries_attested_provenance_and_names_who_signed_for_it() {
+    use veridex_core::certificate::AttestedElement;
+    let d = dataset_with(vec![el("license", Some("mit"), ProvenanceClass::Known)]);
+    let attested = vec![
+        AttestedElement {
+            key: "clock".into(),
+            value: "ptp-grandmaster".into(),
+        },
+        AttestedElement {
+            key: "annotator".into(),
+            value: "dana".into(),
+        },
+    ];
+    let producer = "ab".repeat(32);
+    let hash = content_hash(&d).to_hex();
+
+    let croissant = veridex_core::to_croissant_attested(&d, &hash, &attested, &producer);
+    let elements: Vec<(&str, &str)> = croissant["veridex:provenance"]
+        .as_array()
+        .expect("provenance list")
+        .iter()
+        .map(|e| {
+            (
+                e["key"].as_str().unwrap_or_default(),
+                e["class"].as_str().unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert!(
+        elements.contains(&("clock", "asserted")) && elements.contains(&("annotator", "asserted")),
+        "attested elements appear, as asserted: {elements:?}"
+    );
+    assert!(
+        elements.contains(&("license", "known")),
+        "and the recorded ones keep their class: {elements:?}"
+    );
+    // Whose signature. A consumer that trusts only its own producers can subtract exactly these.
+    assert_eq!(croissant["veridex:attestedBy"]["producer_key"], producer);
+    // The bound hash is still the dataset's own — an attestation adds to what the document says,
+    // never to what the data is.
+    assert_eq!(croissant["distribution"][0]["sha256"], hash);
+    assert_eq!(
+        croissant["distribution"][0]["sha256"],
+        to_croissant(&d, &hash)["distribution"][0]["sha256"]
+    );
+
+    // PROV says it with the vocabulary it has: the facts were attributed to a producer agent.
+    let prov = veridex_core::to_prov_attested(&d, &attested, &producer);
+    let graph = prov["@graph"].as_array().expect("graph");
+    let producer_node = graph
+        .iter()
+        .find(|n| n["veridex:role"] == "producer-attestation")
+        .expect("the producer is an agent in the graph");
+    assert_eq!(producer_node["@type"], "prov:Agent");
+    assert_eq!(producer_node["veridex:label"], producer);
+    let attributions = graph[0]["prov:wasAttributedTo"]
+        .as_array()
+        .expect("attributions");
+    assert!(
+        attributions
+            .iter()
+            .any(|a| a["@id"] == producer_node["@id"]),
+        "the dataset entity is attributed to the producer: {attributions:?}"
+    );
+    // The attested annotator became an agent too, exactly as a recorded one would.
+    assert!(
+        graph.iter().any(|n| n["veridex:role"] == "annotator"),
+        "an attested annotator is an agent like any other"
+    );
+
+    // With no attestation, the documents are byte-identical to the plain ones.
+    assert_eq!(
+        veridex_core::to_croissant_attested(&d, &hash, &[], ""),
+        to_croissant(&d, &hash)
+    );
+    assert_eq!(veridex_core::to_prov_attested(&d, &[], ""), to_prov(&d));
+}

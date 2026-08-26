@@ -225,13 +225,120 @@ pub fn to_prov(dataset: &Dataset) -> Value {
     })
 }
 
+/// A copy of `dataset` whose provenance also carries the attested elements, for rendering only.
+///
+/// Attested provenance is a run input, not part of the CDM — the content hash describes the data,
+/// and a claim about the data must not change it. An *emit*, though, is exactly where a producer
+/// wants their attested facts to appear: a Croissant document that omitted them would describe less
+/// than the run did. So the merge happens here, on a local copy that never leaves this module, and
+/// the caller still passes the dataset's own content hash.
+///
+/// Attested elements enter as [`ProvenanceClass::Asserted`] — the class that means "someone says
+/// so" — and never overwrite an element the dataset records: a conflict is reported by the check
+/// catalog, not silently resolved here.
+fn with_attested(dataset: &Dataset, attested: &[crate::certificate::AttestedElement]) -> Dataset {
+    let mut copy = dataset.clone();
+    if attested.is_empty() {
+        return copy;
+    }
+    copy.provenance.push(crate::cdm::Provenance {
+        scope: crate::cdm::ProvenanceScope::Dataset,
+        elements: attested
+            .iter()
+            .map(|e| ProvenanceElement {
+                key: e.key.clone(),
+                value: Some(e.value.clone()),
+                class: ProvenanceClass::Asserted,
+            })
+            .collect(),
+    });
+    copy
+}
+
+/// [`to_croissant`], including provenance a producer attested and naming the key that signed it.
+pub fn to_croissant_attested(
+    dataset: &Dataset,
+    cdm_content_hash: &str,
+    attested: &[crate::certificate::AttestedElement],
+    producer_key: &str,
+) -> Value {
+    let merged = with_attested(dataset, attested);
+    let mut doc = to_croissant(&merged, cdm_content_hash);
+    if !attested.is_empty() {
+        if let Some(object) = doc.as_object_mut() {
+            // Who asserted the asserted elements. A consumer that trusts only its own producers can
+            // subtract exactly these; one that cannot see the key cannot.
+            object.insert(
+                "veridex:attestedBy".into(),
+                json!({
+                    "producer_key": producer_key,
+                    "keys": attested.iter().map(|e| e.key.clone()).collect::<Vec<_>>(),
+                }),
+            );
+        }
+    }
+    doc
+}
+
+/// [`to_prov`], including provenance a producer attested and the agent that signed for it.
+pub fn to_prov_attested(
+    dataset: &Dataset,
+    attested: &[crate::certificate::AttestedElement],
+    producer_key: &str,
+) -> Value {
+    let merged = with_attested(dataset, attested);
+    let mut doc = to_prov(&merged);
+    if attested.is_empty() {
+        return doc;
+    }
+    // PROV has a word for this: the attested facts were attributed to the producer, who is an agent
+    // identified by their signing key.
+    let agent_id = format!("veridex:producer/{}", iri_segment(producer_key));
+    if let Some(graph) = doc.get_mut("@graph").and_then(Value::as_array_mut) {
+        if let Some(entity) = graph.first_mut().and_then(Value::as_object_mut) {
+            let mut attributions = match entity.remove("prov:wasAttributedTo") {
+                Some(Value::Array(existing)) => existing,
+                Some(other) => vec![other],
+                None => Vec::new(),
+            };
+            attributions.push(json!({ "@id": agent_id }));
+            entity.insert("prov:wasAttributedTo".into(), Value::Array(attributions));
+        }
+        graph.push(json!({
+            "@id": agent_id,
+            "@type": "prov:Agent",
+            "veridex:role": "producer-attestation",
+            "veridex:label": producer_key,
+            "veridex:attests": attested.iter().map(|e| e.key.clone()).collect::<Vec<_>>(),
+        }));
+    }
+    doc
+}
+
 /// Render provenance as a pretty JSON string in the requested format — `croissant` (default) or
 /// `prov`. Shared by the CLI's `veridex provenance` and the Python `veridex.provenance` binding, so
 /// both emit byte-identical documents. Returns `Err` with a message for an unknown format.
 pub fn render_provenance(dataset: &Dataset, emit: &str) -> Result<String, String> {
+    render_provenance_attested(dataset, emit, &[], "")
+}
+
+/// [`render_provenance`], including a verified producer attestation's elements.
+pub fn render_provenance_attested(
+    dataset: &Dataset,
+    emit: &str,
+    attested: &[crate::certificate::AttestedElement],
+    producer_key: &str,
+) -> Result<String, String> {
     let doc = match emit {
-        "croissant" => to_croissant(dataset, &crate::content_hash(dataset).to_hex()),
-        "prov" => to_prov(dataset),
+        // The hash is the *dataset's*, computed before the merge: an attestation adds to what the
+        // document says, never to what the data is.
+        "croissant" => to_croissant_attested(
+            dataset,
+            &crate::content_hash(dataset).to_hex(),
+            attested,
+            producer_key,
+        ),
+        "prov" => to_prov_attested(dataset, attested, producer_key),
         other => {
             return Err(format!(
                 "unknown emit `{other}` (expected `croissant` or `prov`)"

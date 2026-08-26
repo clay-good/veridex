@@ -67,7 +67,10 @@ pub use diff::{diff_reports, is_report_shaped, render_diff, render_diff_json, Re
 pub use effective::{
     render_effective_config, render_effective_config_json, EFFECTIVE_CONFIG_SCHEMA_VERSION,
 };
-pub use emit::{render_provenance, to_croissant, to_prov};
+pub use emit::{
+    render_provenance, render_provenance_attested, to_croissant, to_croissant_attested, to_prov,
+    to_prov_attested,
+};
 pub use engine::{
     AppliedAttestation, CheckInfo, CoverageNote, Engine, RegistryError, RunConfig, Status,
     Tolerances, Verdict,

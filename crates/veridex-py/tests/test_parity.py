@@ -591,3 +591,30 @@ def test_cli_and_python_attested_certificates_agree(tmp_path):
         "provenance_pct"
     ], "the coverage block and the trust score must describe the same run"
     assert cert["attestation"]["keys"] == ["clock"]
+
+
+def test_cli_and_python_attested_emits_agree(tmp_path):
+    """An emit carrying attested provenance must be one document from either front-end."""
+    dataset = _demo_lerobot(tmp_path)
+    attestation = veridex.attest(str(dataset), "02" * 32, {"clock": "ptp"}, "1700000000")
+    (tmp_path / "a.json").write_text(attestation)
+    binary = os.environ.get("VERIDEX_BIN", "target/debug/veridex")
+
+    for emit in ("croissant", "prov"):
+        cli = json.loads(
+            subprocess.run(
+                [binary, "provenance", str(dataset), "--emit", emit,
+                 "--attestation", str(tmp_path / "a.json")],
+                capture_output=True, text=True, check=True,
+            ).stdout
+        )
+        py = json.loads(veridex.provenance(str(dataset), emit, attestation=attestation))
+        assert py == cli, f"attested {emit} must agree across the front-ends"
+
+    croissant = json.loads(veridex.provenance(str(dataset), "croissant", attestation=attestation))
+    assert croissant["veridex:attestedBy"]["keys"] == ["clock"]
+    classes = {e["key"]: e["class"] for e in croissant["veridex:provenance"]}
+    assert classes["clock"] == "asserted", classes
+    # The bound hash is the dataset's own, with or without the attestation.
+    plain = json.loads(veridex.provenance(str(dataset), "croissant"))
+    assert croissant["distribution"][0]["sha256"] == plain["distribution"][0]["sha256"]

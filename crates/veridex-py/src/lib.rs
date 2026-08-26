@@ -314,8 +314,13 @@ fn inspect(
 /// Extract the dataset's provenance and emit it as a JSON string — `croissant` (MLCommons Croissant
 /// JSON-LD, the default) or `prov` (minimal W3C PROV) — byte-identical to `veridex provenance`.
 #[pyfunction]
-#[pyo3(signature = (path, emit="croissant", format=None))]
-fn provenance(path: &str, emit: &str, format: Option<&str>) -> PyResult<String> {
+#[pyo3(signature = (path, emit, format=None, attestation=None))]
+fn provenance(
+    path: &str,
+    emit: &str,
+    format: Option<&str>,
+    attestation: Option<&str>,
+) -> PyResult<String> {
     let registry = veridex_core::default_registry();
     let source = source_for(path);
     let opts = IngestOptions::default();
@@ -326,7 +331,20 @@ fn provenance(path: &str, emit: &str, format: Option<&str>) -> PyResult<String> 
     .map_err(to_py_err)?;
     let mut dataset = ingested.dataset;
     dataset.canonicalize_order();
-    veridex_core::render_provenance(&dataset, emit).map_err(to_py_err)
+    // Attested provenance belongs in an emit: a document that omitted it would describe less than
+    // the run did. Verified first, and the document names the key that signed it.
+    let (attested, producer_key) = match attestation {
+        None => (Vec::new(), String::new()),
+        Some(document) => {
+            let signed: veridex_core::SignedAttestation =
+                serde_json::from_str(document).map_err(to_py_err)?;
+            let hash = veridex_core::content_hash(&dataset).to_hex();
+            let key = veridex_core::verify_attestation(&signed, &hash, None).map_err(to_py_err)?;
+            (signed.attestation.elements, key)
+        }
+    };
+    veridex_core::render_provenance_attested(&dataset, emit, &attested, &producer_key)
+        .map_err(to_py_err)
 }
 
 /// `veridex.catalog() -> str`

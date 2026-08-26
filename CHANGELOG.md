@@ -144,6 +144,18 @@ reproduced before it was fixed.*
 
 ### Added
 
+- **Attested provenance reaches the Croissant and PROV emits.** A producer who signs for what the
+  format does not record then runs `veridex provenance --emit croissant` and gets a document
+  describing less than the run did — the attested facts simply absent. `--attestation` now applies
+  there too: the elements appear marked `asserted` (never `known`, and never overwriting what the
+  dataset records), the Croissant names the signing key under `veridex:attestedBy`, and PROV says it
+  with the vocabulary it has — the dataset entity is `prov:wasAttributedTo` a producer agent
+  identified by that key, and an attested annotator becomes an agent exactly as a recorded one does.
+
+  The bound content hash is unchanged either way, which is the invariant that makes this safe: an
+  attestation adds to what the document *says*, never to what the data *is*. With no attestation the
+  documents are byte-identical to before.
+
 - **`veridex attest` — producer attestation, which the provenance checks were already telling users
   to use.** Six checks carried the remedy "attest this element with `veridex certify` inputs", and
   no such input existed. Most of what provenance means is not in the file — no format records who

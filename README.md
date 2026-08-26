@@ -219,7 +219,10 @@ issuer's) and bound to the dataset's content hash, so it cannot be moved to othe
 and saying in the report that a signature — not the data — is why (`PROVENANCE.ATTESTED`, naming the
 key). An attested value that contradicts what the dataset records is reported, not preferred: a
 signature does not get to rewrite the data's own account of itself. Nothing attested enters the CDM,
-so the content hash still describes the data and nothing else.
+so the content hash still describes the data and nothing else. `veridex provenance --emit croissant
+--attestation a.json` carries the attested elements into the emitted Croissant/PROV too — marked
+`asserted`, with the producer key named (`veridex:attestedBy`, and a `prov:Agent` the dataset is
+attributed to), because a document that omitted them would describe less than the run did.
 
 `veridex label` turns a certificate into the form a person actually meets it in: a compact Markdown
 **trust label** — grade, score, findings by family, provenance coverage, the bound content hash, who
