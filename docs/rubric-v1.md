@@ -33,6 +33,14 @@ Veridex expects six provenance elements: `license`, `sensor`, `clock`, `calibrat
 provenance_pct = round_down( (known + asserted) / 6 * 100 )
 ```
 
+An element a **producer attested** (`veridex attest`, applied with `check --attestation`) counts as
+`asserted` — the same class and the same weight as a value the source asserts rather than records.
+This is the one way the provenance axis moves on a *signature* rather than on the data, so it is
+disclosed in the verdict (`PROVENANCE.ATTESTED`, naming the producer key and every element it
+supplied) and recorded in the certificate. A reader who does not trust that key can subtract exactly
+those elements; one who cannot see them could not. An attested value never upgrades or overrides an
+element the dataset already records — a contradiction is a finding, not a resolution.
+
 An element whose value is a low-information placeholder (`unknown`, `n/a`, `none`, …) is present in
 form but empty in substance, so it does **not** count as known or asserted — it is treated as
 `unknown` here and flagged as `PROVENANCE.PLACEHOLDER_VALUE`. This keeps fake provenance from

@@ -140,6 +140,17 @@ reproduced before it was fixed.*
 
 ### Changed
 
+- **The security and rubric documents describe attestation.** `SECURITY.md` had a line anticipating
+  it — "asserted provenance reflects what a producer signed" — written before the feature existed. It
+  now states the mechanism: a separate producer key, a distinct signing domain so an attestation can
+  never verify as a certificate, binding to the CDM content hash, and the fact that applying one
+  raises provenance coverage *only*, with the key disclosed in the verdict and recorded in the
+  certificate. A security document that omits a signing path is incomplete in the way that matters.
+
+  `docs/rubric-v1.md`, the authority on the score, now says that the provenance axis is the one that
+  can move on a *signature* rather than on the data — and what makes that safe: the disclosure names
+  the key, so a reader who does not trust it can subtract exactly those elements.
+
 - **The README stopped being a manual.** It had grown to 35 KB, 22 KB of which sat under a heading
   called "Quickstart" — the per-format tour, the trust chain, sampling, budgets, redaction, watching,
   attestation, labels. A quickstart that takes twenty minutes to read is not one, and the first

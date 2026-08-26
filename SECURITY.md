@@ -31,6 +31,16 @@ document states what Veridex guarantees, what it does **not**, and how signing k
   the canonical spelling this crate writes. Verification also rejects a certificate signed by an
   untrusted issuer key, and one that declares a signature algorithm this build cannot verify (rather
   than assuming Ed25519).
+- **Attestation binding and domain separation.** A producer attestation (`veridex attest`) is
+  Ed25519-signed by the **producer's** key — a different key from the certificate issuer's — and is
+  bound to the dataset's CDM content hash, so an attestation cannot be moved to other data. It signs
+  under its own domain tag (`veridex.attestation.sig.v1\0`, distinct from the certificate's), so a
+  signature over one document can never verify as the other even if their bytes coincided. Applying
+  an attestation raises **provenance coverage only**: attested elements never enter the CDM, so the
+  content hash still describes the data and nothing else, and the run discloses the producer key and
+  every element it supplied (`PROVENANCE.ATTESTED`) — which a certificate records, signed, and
+  `veridex verify` prints. An attested value that contradicts what the dataset records is reported
+  (`PROVENANCE.ATTESTATION_CONFLICT`), never allowed to overwrite it.
 - **Non-mutation.** Veridex only reads datasets and writes its own outputs to caller-specified
   paths. It never modifies, repairs, or deletes a user's dataset.
 - **No wall-clock in core.** Issuance timestamps are caller-supplied, so signing is reproducible and
@@ -66,6 +76,12 @@ document states what Veridex guarantees, what it does **not**, and how signing k
   existing key file unless `--force` is given, so an accidental re-run cannot destroy a signing key.
   On Unix the secret key file is created with `0600` (owner-only) permissions so another local user
   cannot read it.
+- A **producer key** is a separate key with a separate purpose: it signs attestations about
+  provenance, not certificates about verdicts. The same `keygen` produces one, and the same care
+  applies. A verifier decides independently whether it trusts the issuer and whether it trusts the
+  producer — a certificate can be from an issuer you trust while carrying provenance attested by a
+  key you do not, which is exactly why the certificate records the producer key rather than folding
+  its claims into the data.
 - Rotating an issuer key invalidates trust in future certificates signed by the old key; already
   issued certificates remain verifiable against the public key they embed.
 - **In memory**, secret key material is scrubbed rather than left in freed allocations: the
