@@ -666,12 +666,15 @@ fn a_sampled_check_reports_its_coverage_and_cannot_be_certified() {
 #[test]
 fn every_command_refuses_the_flags_it_does_not_act_on() {
     // The shared parser accepts one flag set for every command, so without an allow-list a command
-    // silently tolerates flags it has no use for: `check --out r.json` looks like it writes a file,
-    // `diff --min-score 90` looks like a gate, and neither is. Each pair below is a flag the command
-    // genuinely ignores, and each must be a loud tool error.
+    // silently tolerates flags it has no use for: `diff --min-score 90` looks like a gate and is
+    // not, `inspect --profile` looks like a judgement and is not. Each pair below is a flag the
+    // command genuinely ignores, and each must be a loud tool error.
+    //
+    // `check --out` used to be on this list and is now a supported flag — see
+    // `check_writes_its_report_where_it_is_told`. A case here that stops being true has to be moved
+    // rather than left to fail, or the next person reads a deliberate change as a break.
     let dataset = fixture_dataset();
     let cases: &[(&str, &[&str])] = &[
-        ("check", &["--out", "/dev/null"]),
         ("check", &["--key", "k"]),
         ("check", &["--emit", "croissant"]),
         ("check", &["--timestamp", "1"]),
@@ -2129,4 +2132,51 @@ fn the_default_report_is_readable_and_full_restores_everything() {
     let (code, _, stderr) = run(&["check", "--print-config", "--full"]);
     assert_eq!(code, 2);
     assert!(stderr.contains("does not support --full"), "{stderr}");
+}
+
+#[test]
+fn check_writes_its_report_where_it_is_told() {
+    // Shell redirection is the obvious alternative and is not equivalent everywhere: PowerShell's
+    // `>` writes UTF-16 with a BOM, which is not the JSON or SARIF any consumer parses. `--out` is
+    // also what makes a CI recipe one line instead of one line plus a shell caveat.
+    let dir = temp_dir("check-out");
+    let dataset = fixture_dataset();
+    for (flag, path, check) in [
+        ("--json", dir.join("report.json"), "veridex.report/1"),
+        ("--sarif", dir.join("report.sarif"), "2.1.0"),
+    ] {
+        let (code, stdout, stderr) =
+            run(&["check", flag, "--out", path.to_str().unwrap(), &dataset]);
+        assert_eq!(code, 20, "the verdict still decides the exit code");
+        assert!(
+            stdout.trim().is_empty(),
+            "the report went to the file, not stdout: {stdout}"
+        );
+        assert!(stderr.contains("wrote"), "{stderr}");
+        let written = std::fs::read_to_string(&path).expect("the file exists");
+        let parsed: serde_json::Value = serde_json::from_str(&written).expect("valid JSON");
+        assert!(written.contains(check), "unexpected content: {written}");
+        assert!(parsed.is_object());
+    }
+
+    // A path that cannot be written is a tool error, not a silently-lost report.
+    let (code, _, stderr) = run(&[
+        "check",
+        "--json",
+        "--out",
+        dir.join("no-such-dir/report.json").to_str().unwrap(),
+        &dataset,
+    ]);
+    assert_eq!(code, 2);
+    assert!(stderr.contains("cannot write"), "{stderr}");
+
+    // `--print-config` prints a configuration, not a report, so the flag would mean nothing there.
+    let (code, _, stderr) = run(&[
+        "check",
+        "--print-config",
+        "--out",
+        dir.join("c.txt").to_str().unwrap(),
+    ]);
+    assert_eq!(code, 2);
+    assert!(stderr.contains("does not support --out"), "{stderr}");
 }

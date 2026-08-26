@@ -107,6 +107,7 @@ sequenceDiagram
 veridex check      <dataset> [--json | --sarif | --html] [--sample-episodes <n> | --sample-fraction <f> | --metadata-only]  # validate + report
 veridex check      --print-config [--config f.toml] [--profile p]  # print the effective config
 veridex check      <dataset> --redact                             # a report you can share
+veridex check      <dataset> --sarif --out veridex.sarif          # write the report to a file
 veridex certify    <dataset> --key issuer.key [--profile world-model-ready]  # issue a signed trust certificate
 veridex verify     <dataset> --certificate c.json --key pub.key   # verify offline (issuer required)
 veridex provenance <dataset> --emit croissant                     # extract + emit provenance
@@ -217,6 +218,10 @@ refuses to render at all from a certificate that does not verify. A label made w
 issuer key says so *in the label*, because that caveat has to survive being pasted somewhere else.
 Every label ends with the sentence that keeps it honest: a certificate is a statement of fact about a
 dataset, not an endorsement of it.
+
+Running it in CI: [docs/ci-recipes.md](docs/ci-recipes.md) has the GitHub Actions and GitLab
+recipes, including uploading `--sarif` to the Security tab and gating on a *regression* rather than
+on pre-existing findings.
 
 Drop a [`veridex.toml`](docs/veridex.toml.example) in your repo (or pass `--config`) to select
 categories, disable checks, override per-check severities, tune numeric tolerances (clock-skew,

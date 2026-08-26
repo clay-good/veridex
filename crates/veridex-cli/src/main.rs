@@ -523,6 +523,7 @@ fn cmd_check(rest: &[String]) -> ExitCode {
                 "--print-config",
                 "--redact",
                 "--full",
+                "--out",
             ],
             INGEST_FLAGS,
             SAMPLING_FLAGS,
@@ -697,33 +698,54 @@ fn cmd_check(rest: &[String]) -> ExitCode {
         .filter(|p| p.judges_readiness())
         .map(|p| ReadinessReport::evaluate(p, &out.verdict, &out.ingested.dataset));
 
+    // `--out` writes the report where the caller asks instead of to stdout. Shell redirection is the
+    // obvious alternative and is not equivalent everywhere: PowerShell's `>` writes UTF-16 with a
+    // BOM, which is not the JSON or SARIF any consumer will parse.
+    let emit = |document: String| -> Result<(), ExitCode> {
+        match &args.out {
+            None => {
+                println!("{document}");
+                Ok(())
+            }
+            Some(path) => match std::fs::write(path, format!("{document}\n")) {
+                Ok(()) => {
+                    // On stderr, so `--out` composes with a caller that is also reading stdout.
+                    eprintln!("wrote {path}");
+                    Ok(())
+                }
+                Err(e) => {
+                    eprintln!("veridex: cannot write {path}: {e}");
+                    Err(ExitCode::from(EXIT_TOOL_ERROR))
+                }
+            },
+        }
+    };
     if args.html {
-        println!(
-            "{}",
-            veridex_core::render_html_with_readiness(
-                &rendered,
-                Some(out.trust),
-                readiness.as_ref()
-            )
-        );
+        if let Err(code) = emit(veridex_core::render_html_with_readiness(
+            &rendered,
+            Some(out.trust),
+            readiness.as_ref(),
+        )) {
+            return code;
+        }
     } else if args.sarif {
-        println!(
-            "{}",
+        if let Err(code) = emit(
             serde_json::to_string_pretty(&veridex_core::render_sarif_with_readiness(
                 &rendered,
-                readiness.as_ref()
+                readiness.as_ref(),
             ))
-            .unwrap()
-        );
+            .expect("sarif serializes"),
+        ) {
+            return code;
+        }
     } else if args.json {
-        println!(
-            "{}",
-            veridex_core::render_json_with_readiness(
-                &rendered,
-                Some(out.trust),
-                readiness.as_ref()
-            )
-        );
+        if let Err(code) = emit(veridex_core::render_json_with_readiness(
+            &rendered,
+            Some(out.trust),
+            readiness.as_ref(),
+        )) {
+            return code;
+        }
     } else {
         print!(
             "{}",
@@ -914,6 +936,7 @@ fn cmd_print_config(args: &Args) -> ExitCode {
         ("--html", args.html),
         ("--redact", args.redact),
         ("--full", args.full),
+        ("--out", args.out.is_some()),
     ] {
         if given {
             eprintln!(
@@ -2221,7 +2244,9 @@ fn print_help() {
     println!("    --html               self-contained HTML report (check)");
     println!("    --key <file>         issuer secret key (certify) or trusted public key (verify)");
     println!("    --certificate <file> certificate to verify");
-    println!("    --out <file>         certificate output path (certify)");
+    println!(
+        "    --out <file>         write the output to a file instead of stdout (check, certify, label)"
+    );
     println!("    --timestamp <ts>     issuance timestamp (certify; defaults to now)");
     println!("    --emit <fmt>         provenance format: croissant (default) or prov");
     println!(

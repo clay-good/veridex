@@ -129,6 +129,20 @@ reproduced before it was fixed.*
 
 ### Added
 
+- **`veridex check --out <file>`, and CI recipes that were run before they were written down.**
+  `check` could only write its report to stdout, so every CI snippet needed a shell redirect — which
+  is not equivalent everywhere: PowerShell's `>` writes UTF-16 with a BOM, and that is not the JSON
+  or SARIF any consumer parses. `--out` now works for `--json`, `--sarif` and `--html`, printing
+  `wrote <path>` on stderr so it composes with a caller reading stdout, and failing loudly rather
+  than losing a report when the path cannot be written.
+
+  [docs/ci-recipes.md](docs/ci-recipes.md) collects what was scattered across the README: the exit
+  codes and what `2` does *not* mean, a GitHub Actions gate, uploading SARIF to the Security tab,
+  gating on a **regression** instead of on pre-existing findings (the practical way to adopt Veridex
+  on a dataset that already has some), the GitLab equivalent, pinning policy in `veridex.toml` or the
+  environment, and the three things not to do. Every command in it was run against the demo dataset
+  first.
+
 - **Guards for two output properties that were true only by luck.** The machine-readable outputs were
   audited against what actually consumes them — the SARIF 2.1.0 schema (validated externally, and it
   passes) and a browser.
