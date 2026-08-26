@@ -1455,7 +1455,16 @@ fn cmd_certify(rest: &[String]) -> ExitCode {
         out.ingested.dataset.id.clone(),
         &out.verdict,
         out.trust.clone(),
-        ProvenanceCoverage::of(&out.ingested.dataset),
+        // Attestation-aware, or the certificate's coverage block would contradict its own trust
+        // score: the score counts an attested element and a block computed from the dataset alone
+        // does not. One signed document, two provenance numbers, is a document nobody can act on.
+        ProvenanceCoverage::of_with_attested(
+            &out.ingested.dataset,
+            &attestation
+                .as_ref()
+                .map(|a| a.keys.clone())
+                .unwrap_or_default(),
+        ),
         Issuance {
             key_id: keypair.public_hex(),
             timestamp,

@@ -122,6 +122,22 @@ pub(crate) fn narrowing_clauses(cfg: &crate::engine::EffectiveConfig) -> Vec<Str
 /// dataset. The same reasoning applies: without a dataset to compare, the `bound to:` line is an echo
 /// of the certificate's own claim rather than a confirmation of anything, and a certificate issued
 /// for one dataset presented alongside another verifies exactly like a genuine pairing.
+/// One line naming who asserted which provenance elements, when a certificate carries an
+/// attestation.
+///
+/// The offline reader is the whole point of a certificate: they cannot re-run Veridex, and a trust
+/// score raised by someone's signature rather than by the data is exactly what they need to see —
+/// with the key, so they can decide whether they trust it.
+fn attestation_line(cert: &crate::certificate::Certificate) -> Option<String> {
+    let record = cert.attestation.as_ref()?;
+    Some(format!(
+        "  attested:   {} by producer key {} ({})",
+        record.keys.join(", "),
+        record.producer_key,
+        record.timestamp
+    ))
+}
+
 pub fn render_verified(
     signed: &SignedCertificate,
     verified: &Verified,
@@ -213,6 +229,9 @@ pub fn render_verified(
         cert.trust_score.data_score,
         cert.trust_score.provenance_pct
     );
+    if let Some(line) = attestation_line(cert) {
+        let _ = writeln!(out, "{line}");
+    }
     // A score means something only within the rubric that produced it — the rubric is versioned for
     // exactly that reason, and `verify` accepts a certificate scored under any of them (a newer
     // issuer's document is still perfectly readable; refusing it would be the wrong trade). What
@@ -278,6 +297,10 @@ pub fn verified_json(
         // Signed all along, compared against nothing and reported nowhere: a certificate from an
         // older Veridex whose catalog lacked today's checks read as current.
         "veridex_version": cert.veridex_version,
+        // Who asserted what, when a producer attestation raised this certificate's provenance
+        // coverage. Null for an ordinary certificate. A machine gate that trusts only its own
+        // producers has no other way to see that a third of the score came from someone else's key.
+        "attestation": cert.attestation,
     });
     if let Some(readiness) = &cert.readiness {
         doc["readiness"] = serde_json::to_value(readiness).expect("readiness serializes");

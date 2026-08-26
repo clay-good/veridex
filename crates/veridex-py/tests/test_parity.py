@@ -552,3 +552,42 @@ def test_python_attest_refuses_a_key_veridex_does_not_score(tmp_path):
         assert "not a provenance element" in str(e), e
     else:
         raise AssertionError("an unscored key must be refused, not signed")
+
+
+def test_cli_and_python_attested_certificates_agree(tmp_path):
+    """A certificate issued with an attestation must be one document from either front-end — and
+    must not contradict itself: the coverage block and the trust score describe the same run."""
+    dataset = _demo_lerobot(tmp_path)
+    producer_secret = "02" * 32
+    issuer_secret = "01" * 32
+    ts = "1700000000"
+
+    attestation = veridex.attest(str(dataset), producer_secret, {"clock": "ptp"}, ts)
+    py_cert = json.loads(
+        veridex.certify(str(dataset), issuer_secret, ts, attestation=attestation)
+    )
+
+    binary = os.environ.get("VERIDEX_BIN", "target/debug/veridex")
+    (tmp_path / "issuer").write_text(issuer_secret + "\n")
+    (tmp_path / "a.json").write_text(attestation)
+    out = tmp_path / "cert.json"
+    subprocess.run(
+        [
+            binary, "certify", str(dataset),
+            "--key", str(tmp_path / "issuer"),
+            "--timestamp", ts,
+            "--attestation", str(tmp_path / "a.json"),
+            "--out", str(out),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert py_cert == json.loads(out.read_text()), "one certificate, both front-ends"
+
+    cert = py_cert["certificate"]
+    coverage = cert["provenance_coverage"]
+    assert coverage["asserted"] == 1, coverage
+    assert (coverage["known"] + coverage["asserted"]) * 100 // 6 == cert["trust_score"][
+        "provenance_pct"
+    ], "the coverage block and the trust score must describe the same run"
+    assert cert["attestation"]["keys"] == ["clock"]

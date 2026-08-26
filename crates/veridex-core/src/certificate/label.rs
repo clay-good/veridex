@@ -88,6 +88,14 @@ pub fn render_label(signed: &SignedCertificate, issuer_verified: bool) -> String
         let skipped: Vec<&str> = cert.categories_skipped.iter().map(|c| c.tag()).collect();
         let _ = writeln!(out, "| Families not run | {} |", skipped.join(", "));
     }
+    if let Some(record) = &cert.attestation {
+        let _ = writeln!(
+            out,
+            "| Attested | {} — by producer key `{}` |",
+            record.keys.join(", "),
+            abbreviate(&record.producer_key)
+        );
+    }
     if let Some(readiness) = &cert.readiness {
         let met = readiness
             .criteria

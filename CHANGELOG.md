@@ -10,6 +10,21 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **A certificate that contradicted itself about the provenance it attested.** Found by auditing the
+  attestation feature an hour after writing it, against the defect class this repo has already been
+  burned by twice: a signed fact no reader is shown.
+
+  `certify --attestation` computed the trust score with the attested element counted and built the
+  certificate's `provenance_coverage` block *without* it — one signed document carrying `provenance
+  50%` beside `known 2 · asserted 0 · unknown 4`, which is 33%. A verifier comparing the two had no
+  way to tell which was right.
+
+  And the disclosure did not reach the reader who most needs it. `verify` printed nothing about the
+  attestation, `verify --json` carried no field for it, and the label counted `0 attested` — so an
+  offline reader, who cannot re-run Veridex, saw a trust score raised by a stranger's signature with
+  nothing naming the key. All three now show it, and the Python `certify` gained the
+  `attestation` argument the CLI had, so the two front-ends still issue the identical document.
+
 - **The Croissant emit declared conformance that no Croissant reader could see.** A JSON-LD document
   means whatever its `@context` says it means, and two terms in ours expanded to the wrong IRI. Under
   `@vocab: https://schema.org/`, a bare `conformsTo` expands to `https://schema.org/conformsTo` —

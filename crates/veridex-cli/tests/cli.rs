@@ -2443,3 +2443,121 @@ fn attest_refuses_what_it_cannot_honestly_sign() {
         assert!(stderr.contains(expected), "unexpected stderr: {stderr}");
     }
 }
+
+#[test]
+fn a_certificate_does_not_contradict_itself_about_attested_provenance() {
+    // Three faces of one defect, all in the feature that introduced attestation. The certificate's
+    // `trust_score` counted the attested element and its `provenance_coverage` block did not — a
+    // signed document disagreeing with itself. And `verify`, the whole point of which is telling an
+    // offline reader what a certificate says, printed nothing about the signature that raised the
+    // score by a sixth.
+    let dir = temp_dir("attest-consistency");
+    let dataset = make_lerobot("attest-consistency-ds");
+    let producer = dir.join("producer");
+    let issuer = dir.join("issuer");
+    assert_eq!(run(&["keygen", producer.to_str().unwrap()]).0, 0);
+    assert_eq!(run(&["keygen", issuer.to_str().unwrap()]).0, 0);
+    let attestation = dir.join("a.json");
+    assert_eq!(
+        run(&[
+            "attest",
+            dataset.to_str().unwrap(),
+            "--key",
+            producer.to_str().unwrap(),
+            "--set",
+            "clock=ptp-grandmaster",
+            "--out",
+            attestation.to_str().unwrap(),
+            "--timestamp",
+            "1700000000",
+        ])
+        .0,
+        0
+    );
+    let cert = dir.join("c.json");
+    run(&[
+        "certify",
+        dataset.to_str().unwrap(),
+        "--key",
+        issuer.to_str().unwrap(),
+        "--attestation",
+        attestation.to_str().unwrap(),
+        "--out",
+        cert.to_str().unwrap(),
+    ]);
+
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cert).expect("certificate")).unwrap();
+    let certificate = &doc["certificate"];
+    // The two provenance numbers in one signed document must agree.
+    let coverage = &certificate["provenance_coverage"];
+    let counted = coverage["known"].as_u64().unwrap() + coverage["asserted"].as_u64().unwrap();
+    let pct = certificate["trust_score"]["provenance_pct"]
+        .as_u64()
+        .unwrap();
+    assert_eq!(
+        counted * 100 / 6,
+        pct,
+        "the certificate's coverage block and its trust score must describe the same run: {coverage} vs {pct}%"
+    );
+    assert_eq!(
+        coverage["asserted"], 1,
+        "the attested element is asserted coverage: {coverage}"
+    );
+
+    // `verify` tells the offline reader who asserted what — the reader cannot re-run Veridex, and a
+    // score raised by a key they may not trust is exactly what they need to see.
+    let issuer_pub = format!("{}.pub", issuer.to_str().unwrap());
+    let (code, stdout, _) = run(&[
+        "verify",
+        dataset.to_str().unwrap(),
+        "--certificate",
+        cert.to_str().unwrap(),
+        "--key",
+        &issuer_pub,
+    ]);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("attested") && stdout.contains("clock"),
+        "verify must name the attested elements: {stdout}"
+    );
+    let producer_key = std::fs::read_to_string(format!("{}.pub", producer.to_str().unwrap()))
+        .unwrap()
+        .trim()
+        .to_string();
+    assert!(
+        stdout.contains(&producer_key[..16]),
+        "and the key that asserted them: {stdout}"
+    );
+
+    // Machines too.
+    let (_, json, _) = run(&[
+        "verify",
+        dataset.to_str().unwrap(),
+        "--certificate",
+        cert.to_str().unwrap(),
+        "--key",
+        &issuer_pub,
+        "--json",
+    ]);
+    let verified: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+    assert_eq!(verified["attestation"]["keys"][0], "clock");
+    assert_eq!(verified["attestation"]["producer_key"], producer_key);
+
+    // And the label, which is the form most people will actually read.
+    let (_, label, _) = run(&[
+        "label",
+        "--certificate",
+        cert.to_str().unwrap(),
+        "--key",
+        &issuer_pub,
+    ]);
+    assert!(
+        label.contains("1 attested"),
+        "the label's provenance line must count it: {label}"
+    );
+    assert!(
+        label.contains("Attested"),
+        "and name what came from a signature: {label}"
+    );
+}

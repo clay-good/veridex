@@ -362,7 +362,7 @@ fn keygen() -> (String, String) {
 /// (e.g. `world-model-ready`), which applies the profile's tolerances and attaches the signed
 /// per-criterion `readiness` block — exactly as `veridex certify --profile` does.
 #[pyfunction]
-#[pyo3(signature = (path, secret_key_hex, timestamp=None, format=None, profile=None, config=None))]
+#[pyo3(signature = (path, secret_key_hex, timestamp=None, format=None, profile=None, config=None, attestation=None))]
 fn certify(
     path: &str,
     secret_key_hex: &str,
@@ -370,6 +370,7 @@ fn certify(
     format: Option<&str>,
     profile: Option<&str>,
     config: Option<&str>,
+    attestation: Option<&str>,
 ) -> PyResult<String> {
     let keypair = veridex_core::SigningKeypair::from_secret_hex(secret_key_hex)
         .ok_or_else(|| PyValueError::new_err("secret_key_hex is not a valid 32-byte hex key"))?;
@@ -390,14 +391,19 @@ fn certify(
     if let Some(p) = &profile {
         run_config.tolerances = p.apply_tolerances(run_config.tolerances);
     }
-    let out = veridex_core::run_check_with(
-        &registry,
-        &source_for(path),
-        format,
-        &IngestOptions::default(),
-        &run_config,
-    )
+    // Ingest once, verify any attestation against the resulting hash, then validate — the same
+    // order the CLI uses, so the two issue the same document.
+    let mut ingested = match format {
+        Some(f) => registry.ingest_as(f, &source_for(path), &IngestOptions::default()),
+        None => registry.ingest(&source_for(path), &IngestOptions::default()),
+    }
     .map_err(to_py_err)?;
+    ingested.dataset.canonicalize_order();
+    let applied = match attestation {
+        None => None,
+        Some(document) => Some(applied_attestation(document, &ingested.dataset)?),
+    };
+    let out = veridex_core::check_ingested(ingested, &run_config, applied.as_ref());
     // The same refusal the CLI makes, made here too. `Certificate::certifiable` documents that both
     // front-ends call it; only the CLI did. Satisfied today because this function exposes no
     // sampling or metadata-only argument, so the ingest is always full — but the guard being absent
@@ -408,7 +414,12 @@ fn certify(
         out.ingested.dataset.id.clone(),
         &out.verdict,
         out.trust.clone(),
-        veridex_core::ProvenanceCoverage::of(&out.ingested.dataset),
+        // Attestation-aware, or the certificate's coverage block would contradict its own trust
+        // score.
+        veridex_core::ProvenanceCoverage::of_with_attested(
+            &out.ingested.dataset,
+            &applied.as_ref().map(|a| a.keys.clone()).unwrap_or_default(),
+        ),
         veridex_core::Issuance {
             key_id: keypair.public_hex(),
             timestamp: timestamp.map(String::from).unwrap_or_else(unix_timestamp),
@@ -416,6 +427,16 @@ fn certify(
     );
     // Only a readiness profile has criteria to sign; a threshold profile's effect is already in the
     // certificate's effective config.
+    if let Some(record) = &applied {
+        cert.attestation = Some(veridex_core::certificate::document::AttestationRecord {
+            producer_key: record.producer_key.clone(),
+            keys: record.keys.clone(),
+            timestamp: attestation
+                .and_then(|d| serde_json::from_str::<veridex_core::SignedAttestation>(d).ok())
+                .map(|signed| signed.attestation.timestamp)
+                .unwrap_or_default(),
+        });
+    }
     if let Some(p) = profile.as_ref().filter(|p| p.judges_readiness()) {
         cert.readiness = Some(veridex_core::certificate::ReadinessReport::evaluate(
             p,
