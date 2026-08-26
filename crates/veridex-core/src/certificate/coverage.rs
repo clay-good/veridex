@@ -32,6 +32,16 @@ impl ProvenanceCoverage {
     /// Compute coverage of [`EXPECTED_PROVENANCE_KEYS`] over a dataset's provenance records. For each
     /// expected key, the strongest class found wins (`known` > `asserted` > absent/`unknown`).
     pub fn of(dataset: &Dataset) -> Self {
+        Self::of_with_attested(dataset, &[])
+    }
+
+    /// [`ProvenanceCoverage::of`], counting keys a verified producer attestation supplied.
+    ///
+    /// An attested key counts as `asserted` — the same class the CDM uses for a value the source
+    /// asserts rather than records, and the same weight in the rubric. It never upgrades a key the
+    /// dataset already records as `known`: a signature is a claim, and a claim does not outrank the
+    /// data's own account of itself.
+    pub fn of_with_attested(dataset: &Dataset, attested: &[String]) -> Self {
         let mut cov = ProvenanceCoverage {
             known: 0,
             asserted: 0,
@@ -54,6 +64,9 @@ impl ProvenanceCoverage {
                         });
                     }
                 }
+            }
+            if best.is_none() && attested.iter().any(|k| k == key) {
+                best = Some(ProvenanceClass::Asserted);
             }
             match best {
                 Some(ProvenanceClass::Known) => cov.known += 1,

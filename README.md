@@ -115,6 +115,7 @@ veridex inspect    <dataset>                                      # summarize th
 veridex checks                                                    # list the built-in check catalog
 veridex diff       <old.json> <new.json>                         # diff two report JSONs
 veridex watch      <dataset> [--interval <secs>] [--iterations <n>]  # re-validate as it records
+veridex attest     <dataset> --key producer.key --set clock=ptp   # sign provenance you can vouch for
 veridex label      --certificate c.json --key pub.key            # a Markdown label for a dataset card
 veridex keygen     issuer                                        # write issuer (secret) + issuer.pub
 ```
@@ -209,6 +210,16 @@ moment in a recording, not a reason to quit: the read error is printed and the w
 it with `--iterations <n>` to make it a CI step (the exit code is the last completed validation's,
 under the same `--fail-on` threshold as `check`), or use `--json` for one JSON document per line as
 the recording proceeds. Like every other command, it only reads: nothing is written to the dataset.
+
+Most of what provenance means is not in the file — no format records who operated the robot, which
+calibration was in force, or what upstream a merge drew from — and Veridex will not infer any of it.
+`veridex attest` lets the producer **sign for it**: a document signed with the producer's key (not the
+issuer's) and bound to the dataset's content hash, so it cannot be moved to other data.
+`check --attestation` and `certify --attestation` apply what verifies, raising provenance coverage
+and saying in the report that a signature — not the data — is why (`PROVENANCE.ATTESTED`, naming the
+key). An attested value that contradicts what the dataset records is reported, not preferred: a
+signature does not get to rewrite the data's own account of itself. Nothing attested enters the CDM,
+so the content hash still describes the data and nothing else.
 
 `veridex label` turns a certificate into the form a person actually meets it in: a compact Markdown
 **trust label** — grade, score, findings by family, provenance coverage, the bound content hash, who
@@ -434,7 +445,7 @@ print(manifest["verdict"]["coverage"])
 ```
 
 Python mirrors the CLI's *operations* — `check`, `certify`, `verify`, `provenance`, `inspect`, `diff`,
-`effective_config`, `label`.
+`effective_config`, `label`, `attest`.
 `watch` is not among them by design: it is a loop around `check`, not an operation, and a Python
 caller already owns their own loop.
 
@@ -474,9 +485,9 @@ neutrality gate (the same logical dataset yields equivalent CDMs as LeRobot v3 a
 reference extraction** (OpenSCENARIO / OpenDRIVE / OSI / simulator, with the version read from the
 referenced sidecar's own ASAM header); Croissant + W3C PROV provenance emit; Ed25519 **certificate signing with
 offline verification** (tamper + transplant rejection); a working CLI (`check`, `inspect`, `checks`,
-`certify`, `verify`, `provenance`, `keygen`, `diff`, `watch`, `label`, `check --print-config`,
-`check --redact`) — see the [Quickstart](#quickstart); and **Python
-bindings** (`import veridex`, exposing `check`/`check_sarif`/`check_html`/`inspect`/`content_hash`/`catalog`/`provenance`/`diff`/`keygen`/`certify`/`verify`/`effective_config`/`label`/`version`) that call the same
+`certify`, `verify`, `provenance`, `keygen`, `diff`, `watch`, `label`, `attest`,
+`check --print-config`, `check --redact`) — see the [Quickstart](#quickstart); and **Python
+bindings** (`import veridex`, exposing `check`/`check_sarif`/`check_html`/`inspect`/`content_hash`/`catalog`/`provenance`/`diff`/`keygen`/`certify`/`verify`/`effective_config`/`label`/`attest`/`version`) that call the same
 core pipeline, with a CLI⇄Python parity test run in CI; and **sampled ingestion** (`--sample-episodes`
 / `--sample-fraction`), resolved before any data is read and reported as partial coverage everywhere
 it could otherwise be mistaken for a full check; and **metadata-only ingestion** (`--metadata-only`,

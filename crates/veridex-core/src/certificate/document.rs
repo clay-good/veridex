@@ -88,8 +88,29 @@ pub struct Certificate {
     /// Absent for an ordinary certificate; its presence is signed like every other field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub readiness: Option<ReadinessReport>,
+    /// The producer attestation applied to this run, when one was.
+    ///
+    /// Provenance coverage is a third of the trust score, and an attestation can raise it on the
+    /// strength of a signature rather than the data. A reader who does not trust that key has to be
+    /// able to see which elements came from it — so the key and the keys it supplied are recorded
+    /// here and signed like every other field. Absent for an ordinary certificate, so existing
+    /// certificates' bytes are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestation: Option<AttestationRecord>,
     /// Caller-supplied issuance metadata.
     pub issuance: Issuance,
+}
+
+/// What a producer attestation contributed to a certified run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttestationRecord {
+    /// The producer public key the attestation's signature verified against.
+    pub producer_key: String,
+    /// The provenance keys it supplied, sorted.
+    pub keys: Vec<String>,
+    /// The attestation's own timestamp, as the producer stamped it.
+    pub timestamp: String,
 }
 
 /// One readiness criterion's result: a check that must pass for the profile, and whether it did.
@@ -298,6 +319,7 @@ impl Certificate {
             trust_score,
             provenance_coverage,
             readiness: None,
+            attestation: None,
             issuance,
         }
     }

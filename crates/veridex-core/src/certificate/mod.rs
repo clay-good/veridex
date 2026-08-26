@@ -5,6 +5,7 @@
 //! - [`sign`]/[`verify`] provide Ed25519 signing and offline verification with tamper and
 //!   transplant rejection (design D6).
 
+pub mod attestation;
 pub mod coverage;
 pub mod document;
 pub mod label;
@@ -12,6 +13,10 @@ pub mod render;
 pub mod score;
 pub mod signing;
 
+pub use attestation::{
+    conflicts, sign_attestation, verify_attestation, AttestError, Attestation, AttestationConflict,
+    AttestedElement, SignedAttestation, ATTESTATION_SCHEMA_VERSION,
+};
 pub use coverage::{ProvenanceCoverage, EXPECTED_PROVENANCE_KEYS};
 pub use document::{
     Certificate, CriterionResult, FindingsSummary, Issuance, ReadinessReport,

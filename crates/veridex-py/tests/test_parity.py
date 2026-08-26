@@ -495,3 +495,60 @@ def test_cli_and_python_labels_agree(tmp_path):
         pass
     else:
         raise AssertionError("a certificate from another issuer must not be labeled")
+
+
+def test_cli_and_python_attestations_agree(tmp_path):
+    """A signed attestation must be one document, and raise provenance identically."""
+    dataset = _demo_lerobot(tmp_path)
+    secret = "01" * 32
+    ts = "1700000000"
+
+    py_doc = veridex.attest(
+        str(dataset), secret, {"clock": "ptp-grandmaster", "annotator": "dana"}, ts
+    )
+
+    binary = os.environ.get("VERIDEX_BIN", "target/debug/veridex")
+    keyfile = tmp_path / "producer"
+    keyfile.write_text(secret + "\n")
+    out = tmp_path / "a.json"
+    subprocess.run(
+        [
+            binary, "attest", str(dataset),
+            "--key", str(keyfile),
+            "--set", "clock=ptp-grandmaster",
+            "--set", "annotator=dana",
+            "--out", str(out),
+            "--timestamp", ts,
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert json.loads(py_doc) == json.loads(out.read_text()), "one attestation, both front-ends"
+
+    # Applying it raises provenance coverage and leaves the dataset's identity alone.
+    plain = json.loads(veridex.check(str(dataset)))
+    attested = json.loads(veridex.check(str(dataset), attestation=py_doc))
+    assert attested["trust_score"]["provenance_pct"] > plain["trust_score"]["provenance_pct"]
+    assert attested["verdict"]["cdm_content_hash"] == plain["verdict"]["cdm_content_hash"]
+    codes = [f["code"] for f in attested["verdict"]["findings"]]
+    assert "PROVENANCE.ATTESTED" in codes, "the run says a signature is why"
+
+    # The same document applied to different data is refused rather than counted.
+    other = _demo_dataset(tmp_path)
+    try:
+        veridex.check(str(other), attestation=py_doc)
+    except ValueError as e:
+        assert "different dataset" in str(e), e
+    else:
+        raise AssertionError("an attestation about other data must not apply")
+
+
+def test_python_attest_refuses_a_key_veridex_does_not_score(tmp_path):
+    dataset = _demo_lerobot(tmp_path)
+    try:
+        veridex.attest(str(dataset), "01" * 32, {"favourite_colour": "blue"})
+    except ValueError as e:
+        assert "not a provenance element" in str(e), e
+    else:
+        raise AssertionError("an unscored key must be refused, not signed")

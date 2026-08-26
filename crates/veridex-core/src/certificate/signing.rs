@@ -73,7 +73,7 @@ use zeroize::Zeroize;
 pub use zeroize::Zeroizing;
 
 /// The only signature algorithm v0.1 issues and verifies.
-const ALGORITHM: &str = "ed25519";
+pub(crate) const ALGORITHM: &str = "ed25519";
 
 /// An Ed25519 signing keypair.
 pub struct SigningKeypair {
@@ -81,6 +81,14 @@ pub struct SigningKeypair {
 }
 
 impl SigningKeypair {
+    /// Sign arbitrary bytes with this key, returning the 64-byte signature.
+    ///
+    /// The key never leaves this type; callers hand it a message and get a signature, which is what
+    /// keeps the attestation path from needing access to the `SigningKey` itself.
+    pub(crate) fn sign_bytes(&self, message: &[u8]) -> [u8; 64] {
+        self.key.sign(message).to_bytes()
+    }
+
     /// Construct from a 32-byte seed (deterministic; useful for tests and reproducible issuance).
     ///
     /// The seed is taken by value and scrubbed before returning, so this function leaves no copy of
@@ -290,7 +298,41 @@ pub fn verify(
     })
 }
 
-fn to_hex(bytes: &[u8]) -> String {
+/// Verify a detached Ed25519 signature over `message`.
+///
+/// Factored out of [`verify`] so the attestation path checks a signature exactly the way a
+/// certificate does — same hex validation, same `verify_strict` (which rejects non-canonical
+/// signatures and small-order keys, so a document has exactly one valid signature). Two
+/// implementations of "is this signature good" is one more than a project should have.
+pub(crate) fn verify_detached(
+    message: &[u8],
+    public_key_hex: &str,
+    signature_hex: &str,
+) -> Result<(), CertError> {
+    if !is_canonical_hex(public_key_hex) {
+        return Err(CertError::Malformed {
+            what: "public key",
+            expected: 32,
+        });
+    }
+    let vk_bytes: [u8; 32] = from_hex(public_key_hex).ok_or(CertError::Malformed {
+        what: "public key",
+        expected: 32,
+    })?;
+    let verifying_key = VerifyingKey::from_bytes(&vk_bytes).map_err(|_| CertError::Malformed {
+        what: "public key",
+        expected: 32,
+    })?;
+    let sig_bytes: [u8; 64] = from_hex(signature_hex).ok_or(CertError::Malformed {
+        what: "signature",
+        expected: 64,
+    })?;
+    verifying_key
+        .verify_strict(message, &Signature::from_bytes(&sig_bytes))
+        .map_err(|_| CertError::SignatureMismatch)
+}
+
+pub(crate) fn to_hex(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 2);
     for b in bytes {
         s.push(char::from_digit((b >> 4) as u32, 16).unwrap());

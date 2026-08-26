@@ -329,6 +329,28 @@ naming a stream or a path differs textually between them, so the same findings a
 and *resolved* at once; `--fail-on-regression` treats the mismatch as a regression, exactly as it
 treats a coverage change.
 
+## Attestation disclosure
+
+Most of what provenance means is not in the file: no format records who operated the robot, which
+calibration was in force, or what upstream a merge drew from. `veridex attest` lets the producer sign
+for those, bound to the dataset's CDM content hash, and `check --attestation` / `certify
+--attestation` apply what verifies.
+
+An attested element counts as **asserted** — the same class and the same weight as a value the source
+asserts rather than records — so it raises provenance coverage, which is 30% of the trust score. That
+makes disclosure part of the deal:
+
+- **`PROVENANCE.ATTESTED`** (info, check id `veridex.attestation`) names the producer key and every
+  element that came from it. A reader who does not trust that key can subtract exactly those.
+- **`PROVENANCE.ATTESTATION_CONFLICT`** (warning) fires when an attested value contradicts what the
+  dataset itself records as `known`. Veridex keeps the extracted value and reports the disagreement:
+  either the recording is wrong or the claim is, and a signature does not get to rewrite the data's
+  own account of itself.
+
+An attestation never enters the CDM, so it cannot change the content hash — a claim about the data
+must not change what the data *is*. It is refused if its signature does not verify, or if it is bound
+to a different dataset than the one presented.
+
 ## Scope disclosure
 
 Coverage answers *how much of the dataset did we read*. **`SCOPE.NARROWED`** (info, check id

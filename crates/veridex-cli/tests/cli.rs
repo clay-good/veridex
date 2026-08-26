@@ -2180,3 +2180,266 @@ fn check_writes_its_report_where_it_is_told() {
     assert_eq!(code, 2);
     assert!(stderr.contains("does not support --out"), "{stderr}");
 }
+
+// ---------------------------------------------------------------------------
+// Producer attestation: provenance a producer signs for, bound to the data.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_attestation_raises_provenance_without_touching_the_data() {
+    // The gap this closes: the provenance checks' own remedy told users to "attest this element",
+    // and nothing could. What must stay true is that a signature raises *coverage* and not the
+    // dataset's identity — the content hash describes the data, and a claim about the data cannot
+    // be allowed to change it.
+    let dir = temp_dir("attest");
+    let dataset = make_lerobot("attest-ds");
+    let key = dir.join("producer");
+    assert_eq!(run(&["keygen", key.to_str().unwrap()]).0, 0);
+
+    let (code, before, _) = run(&["check", "--json", dataset.to_str().unwrap()]);
+    assert!(code == 0 || code == 10 || code == 20);
+    let before: serde_json::Value = serde_json::from_str(&before).expect("valid JSON");
+
+    let attestation = dir.join("a.json");
+    let (code, stdout, stderr) = run(&[
+        "attest",
+        dataset.to_str().unwrap(),
+        "--key",
+        key.to_str().unwrap(),
+        "--set",
+        "clock=ptp-grandmaster",
+        "--set",
+        "annotator=dana",
+        "--out",
+        attestation.to_str().unwrap(),
+        "--timestamp",
+        "1700000000",
+    ]);
+    assert_eq!(code, 0, "unexpected stderr: {stderr}");
+    assert!(stdout.contains("signed by"), "{stdout}");
+
+    let (_, after, _) = run(&[
+        "check",
+        "--json",
+        "--attestation",
+        attestation.to_str().unwrap(),
+        dataset.to_str().unwrap(),
+    ]);
+    let after: serde_json::Value = serde_json::from_str(&after).expect("valid JSON");
+
+    // Coverage rose; the dataset's identity did not move.
+    let pct = |r: &serde_json::Value| r["trust_score"]["provenance_pct"].as_u64().unwrap();
+    assert!(
+        pct(&after) > pct(&before),
+        "attested elements must raise provenance coverage: {} -> {}",
+        pct(&before),
+        pct(&after)
+    );
+    assert_eq!(
+        after["verdict"]["cdm_content_hash"], before["verdict"]["cdm_content_hash"],
+        "an attestation must not change what the dataset hashes to"
+    );
+    assert_eq!(
+        after["trust_score"]["data_score"], before["trust_score"]["data_score"],
+        "and must not move the data axis at all"
+    );
+
+    // And the run says a signature is why.
+    let codes: Vec<&str> = after["verdict"]["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["code"].as_str().unwrap_or_default())
+        .collect();
+    assert!(codes.contains(&"PROVENANCE.ATTESTED"), "{codes:?}");
+}
+
+#[test]
+fn an_attestation_about_other_data_applies_to_nothing() {
+    // The transplant case, which is why the document is bound to a content hash at all.
+    let dir = temp_dir("attest-transplant");
+    let dataset = make_lerobot("attest-transplant-ds");
+    let key = dir.join("producer");
+    assert_eq!(run(&["keygen", key.to_str().unwrap()]).0, 0);
+    let attestation = dir.join("a.json");
+    assert_eq!(
+        run(&[
+            "attest",
+            dataset.to_str().unwrap(),
+            "--key",
+            key.to_str().unwrap(),
+            "--set",
+            "clock=ptp",
+            "--out",
+            attestation.to_str().unwrap(),
+        ])
+        .0,
+        0
+    );
+
+    // Presented against a different dataset.
+    let (code, _, stderr) = run(&[
+        "check",
+        "--attestation",
+        attestation.to_str().unwrap(),
+        &fixture_dataset(),
+    ]);
+    assert_eq!(code, 20, "a transplanted attestation must not be applied");
+    assert!(
+        stderr.contains("about a different dataset"),
+        "the refusal must name what is wrong: {stderr}"
+    );
+
+    // And a tampered one, against its own dataset.
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&attestation).unwrap()).unwrap();
+    doc["attestation"]["elements"][0]["value"] = serde_json::json!("forged");
+    std::fs::write(&attestation, doc.to_string()).unwrap();
+    let (code, _, stderr) = run(&[
+        "check",
+        "--attestation",
+        attestation.to_str().unwrap(),
+        dataset.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 20);
+    assert!(stderr.contains("signature mismatch"), "{stderr}");
+    assert!(
+        !stderr.contains("certificate"),
+        "the message must name the document it refused: {stderr}"
+    );
+}
+
+#[test]
+fn an_attested_value_that_contradicts_the_data_is_reported_not_preferred() {
+    // An attestation adds what the format does not carry. Overriding what it *does* carry is a
+    // different thing: either the recording is wrong or the claim is, and a signature must not get
+    // to rewrite the data's own account of itself.
+    let dir = temp_dir("attest-conflict");
+    let dataset = make_lerobot("attest-conflict-ds");
+    let key = dir.join("producer");
+    assert_eq!(run(&["keygen", key.to_str().unwrap()]).0, 0);
+    let attestation = dir.join("a.json");
+    let (code, _, stderr) = run(&[
+        "attest",
+        dataset.to_str().unwrap(),
+        "--key",
+        key.to_str().unwrap(),
+        "--set",
+        "license=MIT",
+        "--out",
+        attestation.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    assert!(
+        stderr.contains("will report the conflict"),
+        "attest warns at signing time: {stderr}"
+    );
+
+    let (_, report, _) = run(&[
+        "check",
+        "--json",
+        "--attestation",
+        attestation.to_str().unwrap(),
+        dataset.to_str().unwrap(),
+    ]);
+    let report: serde_json::Value = serde_json::from_str(&report).expect("valid JSON");
+    let conflict = report["verdict"]["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["code"] == "PROVENANCE.ATTESTATION_CONFLICT")
+        .expect("the disagreement is reported");
+    assert_eq!(conflict["severity"], "warning");
+    assert!(conflict["message"].as_str().unwrap().contains("apache-2.0"));
+}
+
+#[test]
+fn a_certificate_records_who_attested_what() {
+    let dir = temp_dir("attest-certify");
+    let dataset = make_lerobot("attest-certify-ds");
+    let producer = dir.join("producer");
+    let issuer = dir.join("issuer");
+    assert_eq!(run(&["keygen", producer.to_str().unwrap()]).0, 0);
+    assert_eq!(run(&["keygen", issuer.to_str().unwrap()]).0, 0);
+    let attestation = dir.join("a.json");
+    assert_eq!(
+        run(&[
+            "attest",
+            dataset.to_str().unwrap(),
+            "--key",
+            producer.to_str().unwrap(),
+            "--set",
+            "clock=ptp",
+            "--out",
+            attestation.to_str().unwrap(),
+            "--timestamp",
+            "1700000000",
+        ])
+        .0,
+        0
+    );
+    let cert = dir.join("c.json");
+    let (_, _, _) = run(&[
+        "certify",
+        dataset.to_str().unwrap(),
+        "--key",
+        issuer.to_str().unwrap(),
+        "--attestation",
+        attestation.to_str().unwrap(),
+        "--out",
+        cert.to_str().unwrap(),
+    ]);
+
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cert).expect("certificate written"))
+            .expect("valid JSON");
+    let record = &doc["certificate"]["attestation"];
+    assert_eq!(record["keys"][0], "clock");
+    assert_eq!(record["timestamp"], "1700000000");
+    let producer_key = std::fs::read_to_string(format!("{}.pub", producer.to_str().unwrap()))
+        .expect("public key")
+        .trim()
+        .to_string();
+    assert_eq!(record["producer_key"], producer_key);
+
+    // It is signed like everything else: altering it fails verification.
+    let mut tampered = doc.clone();
+    tampered["certificate"]["attestation"]["producer_key"] = serde_json::json!("00".repeat(32));
+    let tampered_path = dir.join("t.json");
+    std::fs::write(&tampered_path, tampered.to_string()).unwrap();
+    let (code, _, stderr) = run(&[
+        "verify",
+        dataset.to_str().unwrap(),
+        "--certificate",
+        tampered_path.to_str().unwrap(),
+        "--allow-any-issuer",
+    ]);
+    assert_eq!(code, 20, "a rewritten attestation record must not verify");
+    assert!(stderr.contains("verification failed"), "{stderr}");
+}
+
+#[test]
+fn attest_refuses_what_it_cannot_honestly_sign() {
+    let dir = temp_dir("attest-refusals");
+    let dataset = make_lerobot("attest-refusals-ds");
+    let key = dir.join("producer");
+    assert_eq!(run(&["keygen", key.to_str().unwrap()]).0, 0);
+    let k = key.to_str().unwrap().to_string();
+    let d = dataset.to_str().unwrap().to_string();
+
+    for (extra, expected) in [
+        (vec![], "requires at least one --set"),
+        (vec!["--set", "license"], "is not a `key=value` pair"),
+        (vec!["--set", "license="], "empty key or value"),
+        (
+            vec!["--set", "favourite_colour=blue"],
+            "not a provenance element Veridex scores",
+        ),
+    ] {
+        let mut argv = vec!["attest", d.as_str(), "--key", k.as_str()];
+        argv.extend(extra.iter().copied());
+        let (code, _, stderr) = run(&argv);
+        assert_eq!(code, 2, "`{extra:?}` must be a tool error");
+        assert!(stderr.contains(expected), "unexpected stderr: {stderr}");
+    }
+}

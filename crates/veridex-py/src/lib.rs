@@ -99,7 +99,7 @@ fn ingest_options_from(
 /// provenance are checked without reading any stream payload. The report carries
 /// `"coverage": {"kind": "metadata_only", …}`, and it cannot be certified either.
 #[pyfunction]
-#[pyo3(signature = (path, format=None, config=None, sample_episodes=None, sample_fraction=None, sample_seed=0, metadata_only=false, profile=None, redact=false))]
+#[pyo3(signature = (path, format=None, config=None, sample_episodes=None, sample_fraction=None, sample_seed=0, metadata_only=false, profile=None, redact=false, attestation=None))]
 #[allow(clippy::too_many_arguments)]
 fn check(
     path: &str,
@@ -111,6 +111,7 @@ fn check(
     metadata_only: bool,
     profile: Option<&str>,
     redact: bool,
+    attestation: Option<&str>,
 ) -> PyResult<String> {
     let registry = veridex_core::default_registry();
     let mut run_config = run_config_from(config)?;
@@ -122,9 +123,19 @@ fn check(
         run_config.tolerances = p.apply_tolerances(run_config.tolerances);
     }
     let opts = ingest_options_from(sample_episodes, sample_fraction, sample_seed, metadata_only)?;
-    let out =
-        veridex_core::run_check_with(&registry, &source_for(path), format, &opts, &run_config)
-            .map_err(to_py_err)?;
+    // An attestation is verified against the dataset's own content hash, so the ingest happens here
+    // and the verified result is handed to the same pipeline the CLI calls.
+    let mut ingested = match format {
+        Some(f) => registry.ingest_as(f, &source_for(path), &opts),
+        None => registry.ingest(&source_for(path), &opts),
+    }
+    .map_err(to_py_err)?;
+    ingested.dataset.canonicalize_order();
+    let applied = match attestation {
+        None => None,
+        Some(document) => Some(applied_attestation(document, &ingested.dataset)?),
+    };
+    let out = veridex_core::check_ingested(ingested, &run_config, applied.as_ref());
     // Only a readiness profile has criteria; a threshold profile claims nothing about readiness.
     let readiness = profile.as_ref().filter(|p| p.judges_readiness()).map(|p| {
         veridex_core::certificate::ReadinessReport::evaluate(p, &out.verdict, &out.ingested.dataset)
@@ -154,6 +165,35 @@ fn redacted_if(redact: bool, out: &veridex_core::CheckOutput) -> veridex_core::V
     } else {
         out.verdict.clone()
     }
+}
+
+/// Verify an attestation document against the dataset it claims to describe.
+fn applied_attestation(
+    document: &str,
+    dataset: &veridex_core::cdm::Dataset,
+) -> PyResult<veridex_core::AppliedAttestation> {
+    let signed: veridex_core::SignedAttestation =
+        serde_json::from_str(document).map_err(to_py_err)?;
+    let hash = veridex_core::content_hash(dataset).to_hex();
+    let producer_key = veridex_core::verify_attestation(&signed, &hash, None).map_err(to_py_err)?;
+    Ok(veridex_core::AppliedAttestation {
+        producer_key,
+        keys: signed
+            .attestation
+            .elements
+            .iter()
+            .map(|e| e.key.clone())
+            .collect(),
+        conflicts: veridex_core::conflicts(dataset, &signed.attestation)
+            .into_iter()
+            .map(|c| {
+                format!(
+                    "{}: recorded `{}` → attested `{}`",
+                    c.key, c.recorded, c.attested
+                )
+            })
+            .collect(),
+    })
 }
 
 /// Resolve a profile name, refusing an unknown one rather than silently ignoring it — a result that
@@ -627,6 +667,52 @@ fn label(
     ))
 }
 
+/// `veridex.attest(path, secret_key_hex, elements, timestamp=None, format=None) -> str`
+///
+/// Sign provenance a producer can vouch for, bound to this dataset's CDM content hash. `elements` is
+/// a `{key: value}` mapping over the provenance keys Veridex scores. Returns the signed attestation
+/// document as JSON — the same document `veridex attest` writes.
+#[pyfunction]
+#[pyo3(signature = (path, secret_key_hex, elements, timestamp=None, format=None))]
+fn attest(
+    path: &str,
+    secret_key_hex: &str,
+    elements: std::collections::BTreeMap<String, String>,
+    timestamp: Option<&str>,
+    format: Option<&str>,
+) -> PyResult<String> {
+    let keypair = veridex_core::SigningKeypair::from_secret_hex(secret_key_hex)
+        .ok_or_else(|| PyValueError::new_err("secret_key_hex is not a valid 32-byte hex key"))?;
+    if elements.is_empty() {
+        return Err(PyValueError::new_err(
+            "attest needs at least one provenance element",
+        ));
+    }
+    for key in elements.keys() {
+        if !veridex_core::certificate::EXPECTED_PROVENANCE_KEYS.contains(&key.as_str()) {
+            return Err(PyValueError::new_err(format!(
+                "`{key}` is not a provenance element Veridex scores (expected: {})",
+                veridex_core::certificate::EXPECTED_PROVENANCE_KEYS.join(", ")
+            )));
+        }
+    }
+    let registry = veridex_core::default_registry();
+    let mut ingested = match format {
+        Some(f) => registry.ingest_as(f, &source_for(path), &IngestOptions::default()),
+        None => registry.ingest(&source_for(path), &IngestOptions::default()),
+    }
+    .map_err(to_py_err)?;
+    ingested.dataset.canonicalize_order();
+    let attestation = veridex_core::Attestation::build(
+        ingested.dataset.id.clone(),
+        veridex_core::content_hash(&ingested.dataset).to_hex(),
+        elements,
+        timestamp.map(String::from).unwrap_or_else(unix_timestamp),
+    );
+    let signed = veridex_core::sign_attestation(attestation, &keypair);
+    serde_json::to_string_pretty(&signed).map_err(to_py_err)
+}
+
 /// `veridex.version() -> str`
 #[pyfunction]
 fn version() -> &'static str {
@@ -647,6 +733,7 @@ fn veridex(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(diff, m)?)?;
     m.add_function(wrap_pyfunction!(effective_config, m)?)?;
     m.add_function(wrap_pyfunction!(label, m)?)?;
+    m.add_function(wrap_pyfunction!(attest, m)?)?;
     m.add_function(wrap_pyfunction!(keygen, m)?)?;
     m.add_function(wrap_pyfunction!(certify, m)?)?;
     m.add_function(wrap_pyfunction!(verify, m)?)?;

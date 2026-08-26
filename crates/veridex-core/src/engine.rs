@@ -110,6 +110,23 @@ impl Default for Tolerances {
     }
 }
 
+/// What an applied producer attestation contributed to a run.
+///
+/// Carried as a *run input* rather than folded into the CDM, for the same reason coverage is: the
+/// content hash describes the data, and a claim about the data must not change it. The engine's job
+/// here is disclosure — a certificate whose provenance coverage rose because someone signed for it
+/// must say so, and say whose key.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AppliedAttestation {
+    /// The producer public key the attestation's signature verified against.
+    pub producer_key: String,
+    /// The provenance keys it supplied, sorted.
+    pub keys: Vec<String>,
+    /// Keys whose attested value contradicts what the dataset itself records, as
+    /// `key: recorded → attested`, sorted.
+    pub conflicts: Vec<String>,
+}
+
 /// Caller configuration for a run. All collections are ordered for determinism.
 #[derive(Debug, Clone, Default)]
 pub struct RunConfig {
@@ -435,6 +452,23 @@ impl Engine {
         coverage: CoverageNote,
         unread: &[crate::adapter::UnmappedField],
     ) -> Verdict {
+        self.run_over_attested(dataset, cdm_hash, config, coverage, unread, None)
+    }
+
+    /// As [`Engine::run_over_with_unread`], disclosing an applied producer attestation.
+    ///
+    /// The attestation raises provenance *coverage*, which is a third of the trust score, so the
+    /// verdict has to say that a signature — not the data — is why. Without this a certificate could
+    /// show full provenance coverage with nothing in it explaining where that came from.
+    pub fn run_over_attested(
+        &self,
+        dataset: &Dataset,
+        cdm_hash: ContentHash,
+        config: &RunConfig,
+        coverage: CoverageNote,
+        unread: &[crate::adapter::UnmappedField],
+        attestation: Option<&AppliedAttestation>,
+    ) -> Verdict {
         let mut findings: Vec<Finding> = Vec::new();
         let mut errored_checks: Vec<ErroredCheck> = Vec::new();
         let mut executed_checks: Vec<ExecutedCheck> = Vec::new();
@@ -511,6 +545,9 @@ impl Engine {
         {
             findings.push(finding);
         }
+        if let Some(applied) = attestation {
+            findings.extend(attestation_findings(applied));
+        }
 
         // Total order over the finding's full content, independent of execution order. See
         // `crate::check::finding_order` for why every field is in the key.
@@ -559,6 +596,79 @@ impl Engine {
 pub const COVERAGE_CHECK_ID: &str = "veridex.coverage";
 
 /// The finding a partial run discloses about itself, or `None` for a full run.
+/// The check id the attestation disclosures are attributed to. Not a registered check: whether a
+/// producer signed for a provenance element is a property of the run's inputs, which nothing in the
+/// CDM can see.
+const ATTESTATION_CHECK_ID: &str = "veridex.attestation";
+
+/// Disclose an applied attestation, and any value it contradicts.
+fn attestation_findings(applied: &AppliedAttestation) -> Vec<Finding> {
+    let mut out = Vec::new();
+    if !applied.keys.is_empty() {
+        out.push(
+            Finding::new(
+                ATTESTATION_CHECK_ID,
+                Category::Provenance,
+                Severity::Info,
+                crate::check::Location::Dataset,
+                "PROVENANCE.ATTESTED",
+                format!(
+                    "{} provenance element(s) come from a producer attestation signed by key {}, \
+                     not from the dataset itself ({})",
+                    applied.keys.len(),
+                    short_key(&applied.producer_key),
+                    applied.keys.join(", ")
+                ),
+            )
+            .with_risk(
+                "An attested element is someone's signed claim, not something read out of the \
+                 data. It raises provenance coverage — a third of the trust score — on the strength \
+                 of a key, so a reader who does not trust that key should read the coverage without \
+                 these.",
+            )
+            .with_remedy(
+                "Check the producer key against one you trust. `veridex verify` names the key every \
+                 attested element came from.",
+            ),
+        );
+    }
+    if !applied.conflicts.is_empty() {
+        out.push(
+            Finding::new(
+                ATTESTATION_CHECK_ID,
+                Category::Provenance,
+                Severity::Warning,
+                crate::check::Location::Dataset,
+                "PROVENANCE.ATTESTATION_CONFLICT",
+                format!(
+                    "{} attested value(s) contradict what the dataset records ({})",
+                    applied.conflicts.len(),
+                    applied.conflicts.join("; ")
+                ),
+            )
+            .with_risk(
+                "Either the recording is wrong or the claim is, and nothing here can say which. \
+                 Veridex keeps the extracted value and reports the disagreement rather than \
+                 silently preferring the signed one — an attestation that could overwrite what was \
+                 read would let a key rewrite the data's own account of itself.",
+            )
+            .with_remedy(
+                "Reconcile the two at the source: correct the recording, or re-issue the \
+                 attestation to agree with it.",
+            ),
+        );
+    }
+    out
+}
+
+/// A short, comparable form of a public key for a message.
+fn short_key(key: &str) -> String {
+    match key.len() > 16 {
+        true => format!("{}…{}", &key[..8], &key[key.len() - 8..]),
+        false => key.to_string(),
+    }
+}
+
 fn coverage_finding(coverage: &CoverageNote) -> Option<Finding> {
     let (code, message, risk, remedy) = match coverage {
         CoverageNote::Full => return None,

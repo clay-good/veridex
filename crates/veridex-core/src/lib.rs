@@ -55,9 +55,11 @@ pub use adapter::{
 };
 pub use canonical::{content_hash, ContentHash, CANONICAL_VERSION};
 pub use certificate::{
-    readiness_verdict, render_label, render_readiness, render_verified, score, sign, status_label,
-    verified_json, verify, CertError, Certificate, Grade, Issuance, ProvenanceCoverage,
-    SignedCertificate, SigningKeypair, TrustScore, Verified, Zeroizing, RUBRIC_VERSION,
+    conflicts, readiness_verdict, render_label, render_readiness, render_verified, score, sign,
+    sign_attestation, status_label, verified_json, verify, verify_attestation, AttestError,
+    Attestation, AttestationConflict, AttestedElement, CertError, Certificate, Grade, Issuance,
+    ProvenanceCoverage, SignedAttestation, SignedCertificate, SigningKeypair, TrustScore, Verified,
+    Zeroizing, ATTESTATION_SCHEMA_VERSION, RUBRIC_VERSION,
 };
 pub use check::{Category, Check, Finding, Location, Scope, Severity};
 pub use config::{CheckConfig, ConfigError, FailOn};
@@ -67,9 +69,10 @@ pub use effective::{
 };
 pub use emit::{render_provenance, to_croissant, to_prov};
 pub use engine::{
-    CheckInfo, CoverageNote, Engine, RegistryError, RunConfig, Status, Tolerances, Verdict,
+    AppliedAttestation, CheckInfo, CoverageNote, Engine, RegistryError, RunConfig, Status,
+    Tolerances, Verdict,
 };
-pub use pipeline::{run_check, run_check_with, CheckOutput};
+pub use pipeline::{check_ingested, run_check, run_check_attested, run_check_with, CheckOutput};
 pub use redact::{Redactor, REDACTION_CHECK_ID, REDACTION_CODE};
 pub use report::{
     render_catalog_json, render_html, render_html_with_readiness, render_inspect_json, render_json,

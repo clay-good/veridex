@@ -129,6 +129,39 @@ reproduced before it was fixed.*
 
 ### Added
 
+- **`veridex attest` — producer attestation, which the provenance checks were already telling users
+  to use.** Six checks carried the remedy "attest this element with `veridex certify` inputs", and
+  no such input existed. Most of what provenance means is not in the file — no format records who
+  operated the robot, which calibration was in force, or what upstream a merge drew from — and
+  Veridex will not infer any of it, so until now the only way to raise provenance coverage was to
+  change the recording format.
+
+  An attestation is the producer saying it, in a document that can be checked: signed with the
+  **producer's** key (not the certificate issuer's, so a verifier can decide whether it trusts that
+  key), and **bound to the dataset's CDM content hash**, so it cannot be moved to other data.
+  `check --attestation` and `certify --attestation` apply one that verifies; one that does not, or
+  one about a different dataset, applies to nothing and says which.
+
+  Three properties hold it honest. Attested elements are carried **beside** the CDM, never folded
+  into it — the content hash describes the data, and a claim about the data must not change what the
+  data *is*. The run **discloses** it (`PROVENANCE.ATTESTED`, info, naming the producer key and every
+  element it supplied), because provenance coverage is 30% of the trust score and a reader who does
+  not trust that key has to be able to subtract exactly those. And an attested value that contradicts
+  what the dataset records is **reported, not preferred**
+  (`PROVENANCE.ATTESTATION_CONFLICT`, warning): either the recording is wrong or the claim is, and a
+  signature does not get to rewrite the data's own account of itself.
+
+  A certificate records the producer key, the keys it supplied, and the attestation's timestamp,
+  signed like every other field — a rewritten attestation record fails verification. Attestations use
+  their own signing domain, so one can never be presented as a certificate or the reverse, and their
+  own error type, because "the certificate was altered" is the wrong sentence to print while refusing
+  an attestation.
+
+  Python gets `veridex.attest(...)` and `veridex.check(..., attestation=...)`, with parity tests
+  asserting one document and identical coverage. Ten tests, proven red against dropping the
+  content-hash binding, against attested keys not counting, and against an attested value silently
+  overriding a recorded one.
+
 - **`veridex check --out <file>`, and CI recipes that were run before they were written down.**
   `check` could only write its report to stdout, so every CI snippet needed a shell redirect — which
   is not equivalent everywhere: PowerShell's `>` writes UTF-16 with a BOM, and that is not the JSON

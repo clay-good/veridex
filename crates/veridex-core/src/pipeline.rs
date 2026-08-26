@@ -40,11 +40,41 @@ pub fn run_check_with(
     options: &IngestOptions,
     run_config: &RunConfig,
 ) -> Result<CheckOutput, IngestError> {
-    let mut ingested = match format {
+    run_check_attested(registry, source, format, options, run_config, None)
+}
+
+/// As [`run_check_with`], applying a producer attestation the caller has already verified.
+///
+/// The attestation is a run *input*: it raises provenance coverage and is disclosed in the verdict,
+/// and it does not touch the CDM or its content hash. Verification is the caller's job because only
+/// the caller knows which producer key it trusts — this function is handed the result, never the
+/// decision.
+pub fn run_check_attested(
+    registry: &AdapterRegistry,
+    source: &Source,
+    format: Option<&str>,
+    options: &IngestOptions,
+    run_config: &RunConfig,
+    attestation: Option<&crate::engine::AppliedAttestation>,
+) -> Result<CheckOutput, IngestError> {
+    let ingested = match format {
         Some(f) => registry.ingest_as(f, source, options)?,
         None => registry.ingest(source, options)?,
     };
+    Ok(check_ingested(ingested, run_config, attestation))
+}
 
+/// Validate and score a dataset that has already been ingested.
+///
+/// Split out because an attestation is verified against the dataset's *content hash*, which does not
+/// exist until the ingest has happened — a front end that had to call the whole pipeline to get a
+/// hash, and the whole pipeline again to apply what it verified, would read the data twice. Both
+/// front ends call this, so a verdict is identical whichever one produced it.
+pub fn check_ingested(
+    mut ingested: Ingested,
+    run_config: &RunConfig,
+    attestation: Option<&crate::engine::AppliedAttestation>,
+) -> CheckOutput {
     // Normalize episode/stream order before validating so the verdict and reports are
     // order-independent, matching the order-independent content hash. The hash itself is unaffected
     // (it canonicalizes order internally); this aligns what the checks and reports see with it.
@@ -74,18 +104,23 @@ pub fn run_check_with(
             episodes_declared: *episodes_declared,
         },
     };
-    let verdict = engine.run_over_with_unread(
+    let verdict = engine.run_over_attested(
         &ingested.dataset,
         hash,
         &run_config,
         coverage,
         &ingested.report.unread_sources,
+        attestation,
     );
-    let trust = score(&verdict, &ProvenanceCoverage::of(&ingested.dataset));
+    let attested_keys: Vec<String> = attestation.map(|a| a.keys.clone()).unwrap_or_default();
+    let trust = score(
+        &verdict,
+        &ProvenanceCoverage::of_with_attested(&ingested.dataset, &attested_keys),
+    );
 
-    Ok(CheckOutput {
+    CheckOutput {
         ingested,
         verdict,
         trust,
-    })
+    }
 }

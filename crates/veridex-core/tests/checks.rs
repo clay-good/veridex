@@ -2093,6 +2093,11 @@ fn docs_checks_md_lists_no_unknown_finding_codes() {
         // The redaction disclosure. Attached at render time by `--redact`, not by a check: what a
         // report may quote is a property of who will read it, which nothing in the CDM knows.
         "REPORT.REDACTED",
+        // A producer attestation applied to the run, and any value in it that contradicts the data.
+        // Emitted by the engine for the same reason coverage is: whether someone signed for a
+        // provenance element is a property of the run's inputs, not of the CDM.
+        "PROVENANCE.ATTESTED",
+        "PROVENANCE.ATTESTATION_CONFLICT",
     ]
     .into();
 

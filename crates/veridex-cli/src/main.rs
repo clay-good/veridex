@@ -58,6 +58,10 @@ const COMMANDS: &[(&str, &str)] = &[
         "re-validate a dataset as it is recorded (--interval <secs>, --iterations <n>)",
     ),
     (
+        "attest",
+        "sign provenance you can vouch for, bound to this dataset (--key <secret> --set key=value)",
+    ),
+    (
         "label",
         "render a certificate as a Markdown trust label for a dataset card (--certificate <c.json>)",
     ),
@@ -94,6 +98,9 @@ struct Args {
     print_config: bool,
     redact: bool,
     full: bool,
+    attestation: Option<String>,
+    /// Repeatable `--set key=value` pairs for `attest`, in the order given.
+    set: Vec<String>,
     /// Every positional argument, in order. `path` is the first; `diff` takes two.
     positionals: Vec<String>,
 }
@@ -111,7 +118,7 @@ impl Args {
     /// The single source of truth for [`reject_flags_except`]. Adding a flag to the parser without
     /// adding it here means it is never checked, so the two lists are kept adjacent, and a test
     /// asserts this covers the parser's whole flag set.
-    fn given_flags(&self) -> [(&'static str, bool); 27] {
+    fn given_flags(&self) -> [(&'static str, bool); 29] {
         [
             ("--json", self.json),
             ("--sarif", self.sarif),
@@ -143,6 +150,8 @@ impl Args {
             ("--print-config", self.print_config),
             ("--redact", self.redact),
             ("--full", self.full),
+            ("--attestation", self.attestation.is_some()),
+            ("--set", !self.set.is_empty()),
         ]
     }
 }
@@ -189,6 +198,8 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
     let mut print_config = false;
     let mut redact = false;
     let mut full = false;
+    let mut attestation = None;
+    let mut set: Vec<String> = Vec::new();
     let mut positionals: Vec<String> = Vec::new();
     let mut it = rest.iter();
     while let Some(arg) = it.next() {
@@ -219,6 +230,9 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
             "--print-config" => print_config = true,
             "--redact" => redact = true,
             "--full" => full = true,
+            "--attestation" => attestation = Some(value("--attestation")?),
+            // Repeatable: each `--set` adds an element rather than replacing the last.
+            "--set" => set.push(value("--set")?),
             "--config" => config = Some(value("--config")?),
             "--format" => format = Some(value("--format")?),
             "--key" => key = Some(value("--key")?),
@@ -272,6 +286,8 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
         print_config,
         redact,
         full,
+        attestation,
+        set,
         positionals,
     })
 }
@@ -379,6 +395,7 @@ fn main() -> ExitCode {
         Some("diff") => cmd_diff(&args[1..]),
         Some("watch") => cmd_watch(&args[1..]),
         Some("label") => cmd_label(&args[1..]),
+        Some("attest") => cmd_attest(&args[1..]),
         Some("provenance") => cmd_provenance(&args[1..]),
         Some(cmd) => {
             eprintln!("veridex: unknown command `{cmd}`.");
@@ -524,6 +541,7 @@ fn cmd_check(rest: &[String]) -> ExitCode {
                 "--redact",
                 "--full",
                 "--out",
+                "--attestation",
             ],
             INGEST_FLAGS,
             SAMPLING_FLAGS,
@@ -641,19 +659,21 @@ fn cmd_check(rest: &[String]) -> ExitCode {
     if let Some(p) = &profile {
         run_config.tolerances = p.apply_tolerances(run_config.tolerances);
     }
-    let out = match veridex_core::run_check_with(
-        &registry,
-        &source,
-        args.format.as_deref(),
-        &ingest_opts,
-        &run_config,
-    ) {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!("veridex: {e}");
-            return ExitCode::from(EXIT_TOOL_ERROR);
-        }
+    // An attestation is verified against the dataset's own content hash, which does not exist until
+    // the ingest has happened — so the ingest happens here, once, and the verified result is handed
+    // to the same pipeline both front ends call.
+    let ingested = match ingest_with(&registry, &source, args.format.as_deref(), &ingest_opts) {
+        Ok(i) => i,
+        Err(code) => return code,
     };
+    let attestation = match &args.attestation {
+        None => None,
+        Some(path) => match applied_attestation(path, &ingested.dataset) {
+            Ok(a) => Some(a),
+            Err(code) => return code,
+        },
+    };
+    let out = veridex_core::check_ingested(ingested, &run_config, attestation.as_ref());
 
     // Capture the score before rendering, which consumes `out.trust`.
     let trust_score = out.trust.score;
@@ -937,6 +957,7 @@ fn cmd_print_config(args: &Args) -> ExitCode {
         ("--redact", args.redact),
         ("--full", args.full),
         ("--out", args.out.is_some()),
+        ("--attestation", args.attestation.is_some()),
     ] {
         if given {
             eprintln!(
@@ -1320,7 +1341,14 @@ fn cmd_certify(rest: &[String]) -> ExitCode {
         "certify",
         &args,
         &[
-            &["--key", "--out", "--timestamp", "--profile", "--config"],
+            &[
+                "--key",
+                "--out",
+                "--timestamp",
+                "--profile",
+                "--config",
+                "--attestation",
+            ],
             INGEST_FLAGS,
         ],
     ) {
@@ -1401,19 +1429,18 @@ fn cmd_certify(rest: &[String]) -> ExitCode {
     if let Some(p) = &profile {
         run_config.tolerances = p.apply_tolerances(run_config.tolerances);
     }
-    let out = match veridex_core::run_check_with(
-        &registry,
-        &source,
-        args.format.as_deref(),
-        &ingest_opts,
-        &run_config,
-    ) {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!("veridex: {e}");
-            return ExitCode::from(EXIT_TOOL_ERROR);
-        }
+    let ingested = match ingest_with(&registry, &source, args.format.as_deref(), &ingest_opts) {
+        Ok(i) => i,
+        Err(code) => return code,
     };
+    let attestation = match &args.attestation {
+        None => None,
+        Some(path) => match applied_attestation(path, &ingested.dataset) {
+            Ok(a) => Some(a),
+            Err(code) => return code,
+        },
+    };
+    let out = veridex_core::check_ingested(ingested, &run_config, attestation.as_ref());
 
     // A certificate speaks for a whole dataset. Refuse to mint one from a run that only looked at
     // part of it, rather than issuing a portable claim wider than the evidence behind it.
@@ -1438,6 +1465,16 @@ fn cmd_certify(rest: &[String]) -> ExitCode {
     // A4). A threshold profile (`strict`, `standard`) has no criteria, and signing an empty block
     // would attest a readiness judgement nobody made — the tolerances it applied are already in the
     // certificate's effective config, which is what it actually changed.
+    // Who asserted what, signed like every other field: provenance coverage is a third of the trust
+    // score, and a reader who does not trust the producer key has to be able to see which elements
+    // came from it.
+    if let Some(applied) = &attestation {
+        cert.attestation = Some(veridex_core::certificate::document::AttestationRecord {
+            producer_key: applied.producer_key.clone(),
+            keys: applied.keys.clone(),
+            timestamp: attestation_timestamp(args.attestation.as_deref()),
+        });
+    }
     if let Some(p) = profile.as_ref().filter(|p| p.judges_readiness()) {
         cert.readiness = Some(ReadinessReport::evaluate(
             p,
@@ -1760,6 +1797,197 @@ fn cmd_label(rest: &[String]) -> ExitCode {
             println!("wrote {path}");
         }
     }
+    ExitCode::SUCCESS
+}
+
+/// Ingest a dataset with the registry, mapping the error to the tool-error exit code.
+fn ingest_with(
+    registry: &veridex_core::AdapterRegistry,
+    source: &Source,
+    format: Option<&str>,
+    options: &IngestOptions,
+) -> Result<veridex_core::Ingested, ExitCode> {
+    let result = match format {
+        Some(f) => registry.ingest_as(f, source, options),
+        None => registry.ingest(source, options),
+    };
+    result.map_err(|e| {
+        eprintln!("veridex: {e}");
+        ExitCode::from(EXIT_TOOL_ERROR)
+    })
+}
+
+/// The attestation document's own timestamp, for the certificate's record of it.
+fn attestation_timestamp(path: Option<&str>) -> String {
+    path.and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|text| serde_json::from_str::<veridex_core::SignedAttestation>(&text).ok())
+        .map(|signed| signed.attestation.timestamp)
+        .unwrap_or_default()
+}
+
+/// Load and verify a producer attestation against the dataset it claims to describe.
+///
+/// Verification happens here, in the front end, because only the caller knows which producer key it
+/// trusts. The core is handed the *result* — never the decision — and an attestation that does not
+/// verify, or that is bound to other data, applies to nothing.
+fn applied_attestation(
+    path: &str,
+    dataset: &veridex_core::cdm::Dataset,
+) -> Result<veridex_core::AppliedAttestation, ExitCode> {
+    let text = std::fs::read_to_string(path).map_err(|e| {
+        eprintln!("veridex: cannot read {path}: {e}");
+        ExitCode::from(EXIT_TOOL_ERROR)
+    })?;
+    let signed: veridex_core::SignedAttestation = serde_json::from_str(&text).map_err(|e| {
+        eprintln!("veridex: {path} is not a valid attestation: {e}");
+        ExitCode::from(EXIT_TOOL_ERROR)
+    })?;
+    let hash = veridex_core::content_hash(dataset).to_hex();
+    let producer_key = veridex_core::verify_attestation(&signed, &hash, None).map_err(|e| {
+        eprintln!("✗ refusing to apply an attestation that does not check out: {e}");
+        ExitCode::from(EXIT_FAIL)
+    })?;
+    let conflicts = veridex_core::conflicts(dataset, &signed.attestation)
+        .into_iter()
+        .map(|c| {
+            format!(
+                "{}: recorded `{}` → attested `{}`",
+                c.key, c.recorded, c.attested
+            )
+        })
+        .collect();
+    Ok(veridex_core::AppliedAttestation {
+        producer_key,
+        keys: signed
+            .attestation
+            .elements
+            .iter()
+            .map(|e| e.key.clone())
+            .collect(),
+        conflicts,
+    })
+}
+
+/// Read a producer/issuer secret key file into a keypair.
+///
+/// Wrapped on read: the key file's plaintext otherwise lives to the end of the calling function and
+/// is then dropped un-scrubbed into a freed heap allocation.
+fn read_secret_key(path: &str) -> Result<SigningKeypair, ExitCode> {
+    let secret = std::fs::read_to_string(path)
+        .map(veridex_core::Zeroizing::new)
+        .map_err(|e| {
+            eprintln!("veridex: cannot read key {path}: {e}");
+            ExitCode::from(EXIT_TOOL_ERROR)
+        })?;
+    SigningKeypair::from_secret_hex(&secret).ok_or_else(|| {
+        eprintln!("veridex: {path} is not a valid 32-byte hex secret key");
+        ExitCode::from(EXIT_TOOL_ERROR)
+    })
+}
+
+/// `veridex attest` — sign provenance the producer can vouch for, bound to this dataset.
+///
+/// Most of what provenance means is not in the file: who operated the robot, which calibration was
+/// in force, what upstream a merge drew from. Veridex will not infer any of it, so before this
+/// command the only way to raise provenance coverage was to change the recording format — and the
+/// checks' own remedy told users to "attest this element", which named nothing that existed.
+///
+/// The document it writes is signed with the **producer's** key, which is not the certificate
+/// issuer's, and is bound to the dataset's CDM content hash so it cannot be moved to other data.
+/// Applying it (`check --attestation`, `certify --attestation`) raises provenance coverage and says
+/// in the verdict that a signature, not the data, is why.
+fn cmd_attest(rest: &[String]) -> ExitCode {
+    let args = match parse_args_or_exit(rest) {
+        Ok(a) => a,
+        Err(code) => return code,
+    };
+    if let Err(code) = reject_flags_except(
+        "attest",
+        &args,
+        &[&["--key", "--set", "--out", "--timestamp"], INGEST_FLAGS],
+    ) {
+        return code;
+    }
+    if let Err(code) = reject_extra_positionals("attest", &args, "dataset path") {
+        return code;
+    }
+    let Some(key_path) = &args.key else {
+        eprintln!("veridex: attest requires --key <producer-secret-key-file>");
+        return ExitCode::from(EXIT_TOOL_ERROR);
+    };
+    if args.set.is_empty() {
+        eprintln!(
+            "veridex: attest requires at least one --set <key>=<value> (expected keys: {})",
+            veridex_core::certificate::EXPECTED_PROVENANCE_KEYS.join(", ")
+        );
+        return ExitCode::from(EXIT_TOOL_ERROR);
+    }
+    // Parse the assertions before reading anything: a typo should not cost an ingest.
+    let mut elements: Vec<(String, String)> = Vec::new();
+    for pair in &args.set {
+        let Some((key, value)) = pair.split_once('=') else {
+            eprintln!("veridex: `--set {pair}` is not a `key=value` pair");
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        };
+        let (key, value) = (key.trim(), value.trim());
+        if key.is_empty() || value.is_empty() {
+            eprintln!("veridex: `--set {pair}` has an empty key or value");
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
+        // A key outside the expected set would be signed and then counted by nothing, which is a
+        // signature the producer gets no benefit from and a reader cannot interpret.
+        if !veridex_core::certificate::EXPECTED_PROVENANCE_KEYS.contains(&key) {
+            eprintln!(
+                "veridex: `{key}` is not a provenance element Veridex scores (expected: {})",
+                veridex_core::certificate::EXPECTED_PROVENANCE_KEYS.join(", ")
+            );
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
+        elements.push((key.to_string(), value.to_string()));
+    }
+
+    let keypair = match read_secret_key(key_path) {
+        Ok(k) => k,
+        Err(code) => return code,
+    };
+    // The attestation binds to the dataset as it is now, so the dataset has to be read.
+    let ingested = match ingest(&args) {
+        Ok(mut i) => {
+            i.dataset.canonicalize_order();
+            i
+        }
+        Err(code) => return code,
+    };
+    let hash = veridex_core::content_hash(&ingested.dataset).to_hex();
+    let timestamp = args.timestamp.clone().unwrap_or_else(unix_timestamp);
+    let attestation =
+        veridex_core::Attestation::build(ingested.dataset.id.clone(), hash, elements, timestamp);
+    // Say what the dataset already records for these keys, rather than letting a producer sign over
+    // it without noticing: the run that applies this will report the disagreement either way.
+    for conflict in veridex_core::conflicts(&ingested.dataset, &attestation) {
+        eprintln!(
+            "veridex: note — the dataset records `{}` as `{}`, and this attestation says `{}`; a \
+             run applying it will report the conflict",
+            conflict.key, conflict.recorded, conflict.attested
+        );
+    }
+    let signed = veridex_core::sign_attestation(attestation, &keypair);
+    let document = serde_json::to_string_pretty(&signed).expect("attestation serializes");
+    let out_path = args
+        .out
+        .clone()
+        .unwrap_or_else(|| format!("{}.attestation.json", ingested.dataset.id));
+    if let Err(e) = std::fs::write(&out_path, format!("{document}\n")) {
+        eprintln!("veridex: cannot write {out_path}: {e}");
+        return ExitCode::from(EXIT_TOOL_ERROR);
+    }
+    println!("wrote {out_path}");
+    println!(
+        "  signed by {} over {} element(s), bound to {}",
+        signed.public_key,
+        signed.attestation.elements.len(),
+        signed.attestation.cdm_content_hash
+    );
     ExitCode::SUCCESS
 }
 
@@ -2244,6 +2472,10 @@ fn print_help() {
     println!("    --html               self-contained HTML report (check)");
     println!("    --key <file>         issuer secret key (certify) or trusted public key (verify)");
     println!("    --certificate <file> certificate to verify");
+    println!(
+        "    --attestation <file> apply a signed producer attestation (check, certify)
+    --set <key>=<value>  a provenance element to attest, repeatable (attest)"
+    );
     println!(
         "    --out <file>         write the output to a file instead of stdout (check, certify, label)"
     );
