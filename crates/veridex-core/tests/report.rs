@@ -593,3 +593,123 @@ fn a_compact_report_keeps_every_finding_and_drops_only_info_guidance() {
     assert!(!full.contains("printed without their risk"), "{full}");
     assert_eq!(full, veridex_core::render_terminal(&verdict, None, 5));
 }
+
+/// The SARIF invariants a consumer actually depends on, rather than the two fields the test above
+/// happens to name.
+///
+/// GitHub code scanning resolves every result's `ruleId` against the rules the driver declares, so a
+/// result naming a rule that is not there is a defect that no amount of valid JSON hides — and this
+/// tree emits rule ids that belong to no registered check (`REPORT.REDACTED`, `SCOPE.NARROWED`,
+/// `VERIDEX.CHECK_ERRORED`), which is precisely where such a dangle would appear.
+#[test]
+fn every_sarif_result_resolves_to_a_declared_rule() {
+    use veridex_core::check::{Category, Finding, Location, Severity};
+    let d = skewed_dataset();
+    let mut v = verdict_for(&d);
+    // A finding from outside the check catalog, as `--redact` and the engine's own disclosures are.
+    v.findings.push(Finding::new(
+        "report.redaction",
+        Category::Structural,
+        Severity::Info,
+        Location::Dataset,
+        "REPORT.REDACTED",
+        "this report was redacted for sharing",
+    ));
+    v.counts.info += 1;
+
+    let sarif = veridex_core::render_sarif(&v);
+    let run = &sarif["runs"][0];
+    let declared: std::collections::BTreeSet<&str> = run["tool"]["driver"]["rules"]
+        .as_array()
+        .expect("rules")
+        .iter()
+        .map(|r| r["id"].as_str().expect("rule id"))
+        .collect();
+
+    for result in run["results"].as_array().expect("results") {
+        let rule = result["ruleId"]
+            .as_str()
+            .expect("every result names a rule");
+        assert!(
+            declared.contains(rule),
+            "result names `{rule}`, which the driver does not declare: {declared:?}"
+        );
+        // The vocabulary SARIF defines; anything else is rejected outright by a consumer.
+        let level = result["level"].as_str().expect("every result has a level");
+        assert!(
+            ["none", "note", "warning", "error"].contains(&level),
+            "unexpected level `{level}`"
+        );
+        assert!(
+            !result["message"]["text"]
+                .as_str()
+                .unwrap_or_default()
+                .is_empty(),
+            "every result carries a message"
+        );
+        assert!(
+            result["locations"]
+                .as_array()
+                .is_some_and(|l| !l.is_empty()),
+            "every result carries a location"
+        );
+    }
+    assert_eq!(sarif["version"], "2.1.0");
+}
+
+/// A hostile identifier cannot script the HTML report.
+///
+/// The HTML report is the one output built to be *shared* — attached to a ticket, committed to a
+/// repo, mailed to a customer — and every string in it comes from a dataset Veridex did not write.
+/// A stream named `<script>…` in a report opened in a browser is a stored cross-site scripting
+/// payload delivered by the tool that was supposed to be checking the data. Nothing guarded this.
+#[test]
+fn a_hostile_name_cannot_script_the_shared_html_report() {
+    use veridex_core::check::{Category, Finding, Location, Severity};
+    let payload = "<script>alert('xss')</script>";
+    let dataset = veridex_core::cdm::Dataset {
+        id: format!("acme{payload}"),
+        calibration: None,
+        metadata: vec![],
+        provenance: vec![],
+        episodes: vec![],
+    };
+    let engine = veridex_core::Engine::builder().build();
+    let mut verdict = engine.run(
+        &dataset,
+        veridex_core::content_hash(&dataset),
+        &veridex_core::RunConfig::default(),
+    );
+    // Every string a finding carries, each of them dataset-controlled.
+    verdict.findings.push(
+        Finding::new(
+            "temporal.clock-skew",
+            Category::Temporal,
+            Severity::Error,
+            Location::Stream {
+                episode: 0,
+                stream: format!("camera{payload}"),
+            },
+            "TEMPORAL.CLOCK_SKEW",
+            format!("message {payload}"),
+        )
+        .with_risk(format!("risk {payload}"))
+        .with_remedy(format!("remedy {payload}")),
+    );
+    verdict.counts.error += 1;
+
+    let html = veridex_core::render_html(&verdict, None);
+    assert!(
+        !html.contains("<script>"),
+        "the report must not carry an executable script tag from its input"
+    );
+    // The text is still there — escaped, not dropped, or the report would be lying about the data.
+    assert!(
+        html.contains("&lt;script&gt;"),
+        "the payload must be shown escaped"
+    );
+    assert!(
+        html.contains("camera&lt;script&gt;"),
+        "including in the rollups"
+    );
+}

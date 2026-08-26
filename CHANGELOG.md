@@ -129,6 +129,22 @@ reproduced before it was fixed.*
 
 ### Added
 
+- **Guards for two output properties that were true only by luck.** The machine-readable outputs were
+  audited against what actually consumes them — the SARIF 2.1.0 schema (validated externally, and it
+  passes) and a browser.
+
+  `every_sarif_result_resolves_to_a_declared_rule` asserts what GitHub code scanning depends on: each
+  result's `ruleId` is declared by the driver, each `level` is one of SARIF's four, each result has a
+  message and a location. This tree emits rule ids that belong to no registered check —
+  `REPORT.REDACTED`, `SCOPE.NARROWED`, `VERIDEX.CHECK_ERRORED` — which is exactly where a dangling
+  rule would appear, and the test includes one of them deliberately.
+
+  `a_hostile_name_cannot_script_the_shared_html_report` covers the output built to be *shared*: a
+  stream named `<script>…` in an HTML report opened in a browser is stored XSS delivered by the tool
+  that was supposed to be checking the data. Every string in that report comes from a dataset Veridex
+  did not write. The escaping was already correct in every path, including the rollups added this
+  release, and nothing was holding it there.
+
 - **`veridex label` — the certificate in the form a person meets it.** A certificate is a document a
   machine verifies. The trust-certificate spec also asks for a *nutrition label*: the same facts,
   compact, for a dataset card — which is how a certificate actually travels. Nothing rendered one.
