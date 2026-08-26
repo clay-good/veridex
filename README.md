@@ -304,13 +304,17 @@ sensor-rig checks `AUTONOMY.RIG_SYNC` / `SEQUENCE_COMPLETE` / `EGO_POSE_CONTINUI
 LiDAR-camera miscalibration a well-formed transform tree hides, where a sensor's own frame is absent
 from the tree or has no chain of transforms to the camera); **video/media checks** that read an
 `.mp4`'s container headers (never a pixel) and catch the missing, unparseable, desynced, or
-re-encoded video behind a camera stream; the v1 trust-score rubric and the `world-model-ready` readiness profile;
-terminal, JSON, SARIF 2.1.0, and self-contained HTML reporting; **LeRobot v3, RLDS/TFDS, HDF5, Zarr, MCAP (with
+re-encoded video behind a camera stream; the v1 trust-score rubric, the `standard` / `strict` threshold profiles and the `world-model-ready`
+readiness profile;
+terminal, JSON, SARIF 2.1.0, and self-contained HTML reporting, each carrying rollups by category,
+episode and stream, and each shareable through `--redact`; **LeRobot v3, RLDS/TFDS, HDF5, Zarr, MCAP (with
 ROS-message decode into an autonomy rig), CAN+DBC, and ASAM MDF/MF4 adapters** with a passing cross-format
 neutrality gate (the same logical dataset yields equivalent CDMs as LeRobot v3 and as MCAP); descriptive scenario-dimension coverage and **scenario/map/sim
 reference extraction** (OpenSCENARIO / OpenDRIVE / OSI / simulator, with the version read from the
-referenced sidecar's own ASAM header); Croissant + W3C PROV provenance emit; Ed25519 **certificate signing with
-offline verification** (tamper + transplant rejection); a working CLI (`check`, `inspect`, `checks`,
+referenced sidecar's own ASAM header); Croissant + W3C PROV provenance emit (carrying attested provenance when one is
+applied); Ed25519 **certificate signing with offline verification** (tamper + transplant rejection)
+and **producer attestation** — provenance a producer signs for, bound to the dataset's content hash
+and disclosed by the key that signed it; a working CLI (`check`, `inspect`, `checks`,
 `certify`, `verify`, `provenance`, `keygen`, `diff`, `watch`, `label`, `attest`,
 `check --print-config`, `check --redact`) — see the [Quickstart](#quickstart); and **Python
 bindings** (`import veridex`, exposing `check`/`check_sarif`/`check_html`/`inspect`/`content_hash`/`catalog`/`provenance`/`diff`/`keygen`/`certify`/`verify`/`effective_config`/`label`/`attest`/`version`) that call the same
@@ -324,7 +328,10 @@ ingestion — until then a remote source is refused with a clear error, never si
 
 What Veridex does **not** tell you, stated plainly because silence would read as a pass: it never
 decodes a pixel or a point, so it says nothing about the *content* of your imagery — no PII or face
-detection, and no near-duplicate detection beyond exact content matches. Both limits, and every
+detection, and no *perceptual* duplicate detection. It does catch exact duplicate episodes and
+**partial** copies (`STRUCTURAL.NEAR_DUPLICATE_EPISODE` — a re-upload with its tail trimmed, an
+episode contained in a longer one), because those share frames byte-for-byte; a re-encoded or
+noise-perturbed copy shares no bytes and is out of reach without decoding. Every limit, and every
 check's own abstention rules, are recorded in [docs/checks.md](docs/checks.md).
 
 And where a check *could not run at all*, the report says so rather than staying quiet. A source that

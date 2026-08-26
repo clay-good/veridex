@@ -150,6 +150,13 @@ reproduced before it was fixed.*
 
 ### Changed
 
+- **A stale claim in the README's status section.** It still said Veridex offers "no near-duplicate
+  detection beyond exact content matches" — untrue since `STRUCTURAL.NEAR_DUPLICATE_EPISODE` shipped
+  this release. The honest statement is narrower and now written: exact duplicates *and* partial
+  copies are caught, because those share frames byte-for-byte; a re-encoded or perturbed copy shares
+  no bytes and is out of reach without decoding. The same section gained the threshold profiles,
+  producer attestation, the report rollups, and `--redact`, so what it lists is what ships.
+
 - **The security and rubric documents describe attestation.** `SECURITY.md` had a line anticipating
   it — "asserted provenance reflects what a producer signed" — written before the feature existed. It
   now states the mechanism: a separate producer key, a distinct signing domain so an attestation can
