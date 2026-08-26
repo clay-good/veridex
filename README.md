@@ -41,7 +41,10 @@ Veridex Trust Report
 - **Proves where data came from.** Which sensor, clock, calibration, annotator, license, and
   upstream dataset produced each segment — surfaced, scored, and emitted two ways: as a signed
   trust certificate, and as Croissant + W3C PROV documents (`veridex provenance --emit`) for tools
-  that speak them.
+  that speak them. The Croissant carries what Veridex actually extracted — name, license, creator,
+  the CDM hash, and every provenance element with its class — and deliberately omits `datePublished`,
+  `url` and `version`, which it has no honest value for. A Croissant validator warns about exactly
+  those three; it will not warn about anything Veridex made up.
 - **A number you can trust and share.** A deterministic 0–100 trust score and A–F grade. Same
   dataset and the same Veridex version always yield the same result — including from inside the
   dataset directory, so a certificate issued anywhere verifies anywhere — and the signed certificate

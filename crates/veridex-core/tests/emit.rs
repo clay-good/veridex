@@ -44,7 +44,7 @@ fn croissant_is_well_formed_and_binds_content_hash() {
     let hash = content_hash(&d).to_hex();
     let doc = to_croissant(&d, &hash);
 
-    assert_eq!(doc["@type"], "Dataset");
+    assert_eq!(doc["@type"], "sc:Dataset");
     assert_eq!(doc["conformsTo"], "http://mlcommons.org/croissant/1.0");
     assert_eq!(doc["name"], "acme/pick");
     // Known license/annotator map onto standard schema.org fields.
@@ -246,4 +246,62 @@ fn a_space_in_a_name_cannot_dissolve_the_prov_graph() {
     // Encoding the identifier must not cost the reader the human-readable name.
     let agent = graph.iter().find(|n| n["@id"] == *agent_id).unwrap();
     assert_eq!(agent["veridex:label"], "Jane Doe & Co");
+}
+
+/// A JSON-LD document means whatever its `@context` says it means, and the previous version of this
+/// file asserted the *spelling* of every term while asserting nothing about what those terms
+/// expanded to. Two of them expanded to the wrong IRI, so a Croissant reader saw neither the
+/// conformance declaration nor the hash that pins which data the document describes — while every
+/// string-equality assertion here passed.
+#[test]
+fn croissant_terms_expand_to_the_iris_croissant_readers_look_for() {
+    let d = dataset_with(vec![el(
+        "license",
+        Some("apache-2.0"),
+        ProvenanceClass::Known,
+    )]);
+    let doc = to_croissant(&d, "deadbeef");
+    let context = &doc["@context"];
+
+    /// Expand a term through a JSON-LD context: an explicit mapping (resolving a `prefix:suffix`
+    /// value through the context's own prefixes), else `@vocab` + the term.
+    fn expand(context: &serde_json::Value, term: &str) -> String {
+        let mapped = context
+            .get(term)
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let value = match mapped {
+            Some(v) => v,
+            None => {
+                return format!(
+                    "{}{term}",
+                    context["@vocab"].as_str().expect("a context has a @vocab")
+                )
+            }
+        };
+        match value.split_once(':') {
+            Some((prefix, suffix)) if context.get(prefix).is_some() => format!(
+                "{}{suffix}",
+                context[prefix].as_str().expect("prefix maps to an IRI")
+            ),
+            _ => value,
+        }
+    }
+
+    // What Croissant's reference implementation reads: DCTERMS for conformsTo, schema.org for the
+    // file hash. Getting either wrong is silent — the document parses and says nothing.
+    assert_eq!(
+        expand(context, "conformsTo"),
+        "http://purl.org/dc/terms/conformsTo"
+    );
+    assert_eq!(expand(context, "sha256"), "https://schema.org/sha256");
+    assert_eq!(
+        expand(context, "encodingFormat"),
+        "https://schema.org/encodingFormat"
+    );
+    // And the type resolves to schema.org's Dataset through the `sc` prefix the canonical context
+    // defines.
+    assert_eq!(context["sc"], "https://schema.org/");
+    assert_eq!(doc["@type"], "sc:Dataset");
+    assert_eq!(doc["conformsTo"], "http://mlcommons.org/croissant/1.0");
 }

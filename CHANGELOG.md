@@ -10,6 +10,26 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **The Croissant emit declared conformance that no Croissant reader could see.** A JSON-LD document
+  means whatever its `@context` says it means, and two terms in ours expanded to the wrong IRI. Under
+  `@vocab: https://schema.org/`, a bare `conformsTo` expands to `https://schema.org/conformsTo` —
+  while Croissant's reference implementation reads `http://purl.org/dc/terms/conformsTo`, so the
+  document's claim to be Croissant 1.0 was invisible to every tool that would act on it, and the
+  document was read under the legacy v0 rules instead. `sha256` was mapped to `cr:sha256` against a
+  reader that looks for `https://schema.org/sha256`, so the one field that pins *which* data the
+  metadata describes was silent too.
+
+  Both were syntactically valid JSON-LD and semantically empty — and the existing tests asserted the
+  *spelling* of every term while asserting nothing about what those terms expand to, which is why
+  they passed. The context now follows the canonical Croissant 1.0 one (`dct` prefix, `sc` prefix,
+  `conformsTo: dct:conformsTo`, `@type: sc:Dataset`), and the test expands each term through the
+  emitted context and checks the IRI a reader would resolve.
+
+  Verified against the Croissant 1.0 spec and the `mlcroissant` reference implementation's own
+  constants. What stays absent is deliberate: `datePublished`, `url` and `version` have no honest
+  value here, so Veridex omits them rather than inventing them — a validator warns about exactly
+  those three, which is the correct thing for it to say.
+
 - **Eleven documentation errors that would have shipped to docs.rs.** Four public items linked to
   private ones (`StuckStream::STUCK_RUN`, `Jitter::MIN_INTERVALS`, `EpisodeDuration::MIN_EPISODES`
   and the MCAP adapter's pointer at the CDR decoder) — each a threshold the prose names, so the

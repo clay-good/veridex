@@ -61,14 +61,24 @@ pub fn to_croissant(dataset: &Dataset, cdm_content_hash: &str) -> Value {
     let mut doc = Map::new();
     doc.insert(
         "@context".into(),
+        // Modeled on the canonical Croissant 1.0 context, because a JSON-LD document means whatever
+        // its context says it means and nothing else. Two terms here were wrong in a way no reader
+        // would report: `conformsTo` under `@vocab` expands to `https://schema.org/conformsTo`,
+        // while Croissant tooling looks for `http://purl.org/dc/terms/conformsTo` — so the document
+        // declared conformance that no Croissant reader could see. `sha256` was mapped to
+        // `cr:sha256`, while the reference implementation reads `https://schema.org/sha256`, so the
+        // one field that pins *which* data this describes was invisible too. Both were syntactically
+        // valid JSON-LD and semantically silent.
         json!({
             "@vocab": "https://schema.org/",
+            "sc": "https://schema.org/",
             "cr": "http://mlcommons.org/croissant/",
-            "sha256": "cr:sha256",
+            "dct": "http://purl.org/dc/terms/",
+            "conformsTo": "dct:conformsTo",
             "veridex": "https://veridex.dev/ns#"
         }),
     );
-    doc.insert("@type".into(), json!("Dataset"));
+    doc.insert("@type".into(), json!("sc:Dataset"));
     doc.insert(
         "conformsTo".into(),
         json!("http://mlcommons.org/croissant/1.0"),
