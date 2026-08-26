@@ -93,6 +93,7 @@ struct Args {
     iterations: Option<String>,
     print_config: bool,
     redact: bool,
+    full: bool,
     /// Every positional argument, in order. `path` is the first; `diff` takes two.
     positionals: Vec<String>,
 }
@@ -110,7 +111,7 @@ impl Args {
     /// The single source of truth for [`reject_flags_except`]. Adding a flag to the parser without
     /// adding it here means it is never checked, so the two lists are kept adjacent, and a test
     /// asserts this covers the parser's whole flag set.
-    fn given_flags(&self) -> [(&'static str, bool); 26] {
+    fn given_flags(&self) -> [(&'static str, bool); 27] {
         [
             ("--json", self.json),
             ("--sarif", self.sarif),
@@ -141,6 +142,7 @@ impl Args {
             ("--iterations", self.iterations.is_some()),
             ("--print-config", self.print_config),
             ("--redact", self.redact),
+            ("--full", self.full),
         ]
     }
 }
@@ -186,6 +188,7 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
     let mut iterations = None;
     let mut print_config = false;
     let mut redact = false;
+    let mut full = false;
     let mut positionals: Vec<String> = Vec::new();
     let mut it = rest.iter();
     while let Some(arg) = it.next() {
@@ -215,6 +218,7 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
             "--metadata-only" => metadata_only = true,
             "--print-config" => print_config = true,
             "--redact" => redact = true,
+            "--full" => full = true,
             "--config" => config = Some(value("--config")?),
             "--format" => format = Some(value("--format")?),
             "--key" => key = Some(value("--key")?),
@@ -267,6 +271,7 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
         iterations,
         print_config,
         redact,
+        full,
         positionals,
     })
 }
@@ -517,6 +522,7 @@ fn cmd_check(rest: &[String]) -> ExitCode {
                 "--profile",
                 "--print-config",
                 "--redact",
+                "--full",
             ],
             INGEST_FLAGS,
             SAMPLING_FLAGS,
@@ -651,6 +657,16 @@ fn cmd_check(rest: &[String]) -> ExitCode {
     // Capture the score before rendering, which consumes `out.trust`.
     let trust_score = out.trust.score;
 
+    // A sound dataset's report is mostly `info` findings — what could not be measured, what
+    // provenance is absent — and printing every one of their risk/remedy paragraphs buries the two
+    // lines that say whether the data is usable. `--full` restores them; nothing is dropped from any
+    // machine-readable output either way.
+    let detail = if args.full {
+        veridex_core::FindingDetail::Full
+    } else {
+        veridex_core::FindingDetail::Compact
+    };
+
     // `--redact` is a rendering-time substitution: the run, its verdict, its score, and the exit
     // code below are the unredacted ones. Only what the report *prints* changes, so a shared report
     // and the private one describe the same run — and both carry the same CDM content hash, which
@@ -711,7 +727,7 @@ fn cmd_check(rest: &[String]) -> ExitCode {
     } else {
         print!(
             "{}",
-            veridex_core::render_terminal(&rendered, Some(out.trust), 10)
+            veridex_core::render_terminal_with(&rendered, Some(out.trust), 10, detail)
         );
         // `--help` says a profile is what the run is "judged against", and until now `check` only
         // borrowed its tolerances — it printed no criterion verdicts at all, so the one thing the
@@ -897,6 +913,7 @@ fn cmd_print_config(args: &Args) -> ExitCode {
         ("--sarif", args.sarif),
         ("--html", args.html),
         ("--redact", args.redact),
+        ("--full", args.full),
     ] {
         if given {
             eprintln!(
@@ -1879,6 +1896,7 @@ fn cmd_watch(rest: &[String]) -> ExitCode {
                 "--fail-on",
                 "--interval",
                 "--iterations",
+                "--full",
             ],
             INGEST_FLAGS,
         ],
@@ -2014,7 +2032,16 @@ fn cmd_watch(rest: &[String]) -> ExitCode {
                     } else {
                         print!(
                             "\n{}",
-                            veridex_core::render_terminal(&out.verdict, Some(out.trust), 10)
+                            veridex_core::render_terminal_with(
+                                &out.verdict,
+                                Some(out.trust),
+                                10,
+                                if args.full {
+                                    veridex_core::FindingDetail::Full
+                                } else {
+                                    veridex_core::FindingDetail::Compact
+                                },
+                            )
                         );
                     }
                     previous = Some(report);
@@ -2212,6 +2239,9 @@ fn print_help() {
     );
     println!(
         "    --redact             replace dataset/stream/task/provenance names with placeholders, for a report you can share (check)"
+    );
+    println!(
+        "    --full               print every finding's risk and remedy, including info (check, watch)"
     );
     println!(
         "    --profile <name>     policy profile to run under: standard, strict, world-model-ready (check, certify)"

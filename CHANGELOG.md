@@ -92,6 +92,21 @@ reproduced before it was fixed.*
     reports, and the coverage `inspect` now carries — rather than being loosened to accept both
     shapes.
 
+### Changed
+
+- **The default terminal report is readable again.** A sound dataset's report is almost entirely
+  `info` findings — what could not be measured, which provenance elements are absent, what a partial
+  run did not cover — and each carried a risk and a remedy paragraph. On a clean LeRobot dataset that
+  is seven findings and forty lines of guidance, with the two lines that actually say whether the
+  data is usable at the top, above the fold and easy to miss.
+
+  `error` and `warning` findings keep their risk and remedy, because those say what is *wrong*. An
+  `info` finding now prints its code, location and message and stops there — every finding is still
+  listed, nothing is summarized away — and the report states how many had their guidance omitted and
+  that `--full` prints it. Every machine-readable output (`--json`, `--sarif`, `--html`) is
+  unchanged, and `render_terminal` still renders everything: the compact form is a new
+  `FindingDetail` the CLI selects, not a new default for the library.
+
 ### Added
 
 - **`veridex label` — the certificate in the form a person meets it.** A certificate is a document a

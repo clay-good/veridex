@@ -519,3 +519,77 @@ fn the_machine_readable_report_carries_the_summaries_the_terminal_prints() {
     assert!(terminal.contains("Worst streams:"), "{terminal}");
     assert!(terminal.contains("`camera`"), "{terminal}");
 }
+
+#[test]
+fn a_compact_report_keeps_every_finding_and_drops_only_info_guidance() {
+    // A sound dataset's report is mostly `info` — what could not be measured, what provenance is
+    // absent — and printing every risk/remedy paragraph buries the two lines that say whether the
+    // data is usable. Compact must lose no *finding*, only the guidance on the informational ones.
+    use veridex_core::check::{Category, Finding, Location, Severity};
+    let dataset = veridex_core::cdm::Dataset {
+        id: "t".into(),
+        calibration: None,
+        metadata: vec![],
+        provenance: vec![],
+        episodes: vec![],
+    };
+    let engine = veridex_core::Engine::builder().build();
+    let mut verdict = engine.run(
+        &dataset,
+        veridex_core::content_hash(&dataset),
+        &veridex_core::RunConfig::default(),
+    );
+    verdict.findings.push(
+        Finding::new(
+            "provenance.completeness",
+            Category::Provenance,
+            Severity::Info,
+            Location::Dataset,
+            "PROVENANCE.MISSING_CLOCK",
+            "provenance is missing `clock`",
+        )
+        .with_risk("an informational risk nobody needs four times")
+        .with_remedy("an informational remedy"),
+    );
+    verdict.findings.push(
+        Finding::new(
+            "temporal.clock-skew",
+            Category::Temporal,
+            Severity::Error,
+            Location::Episode { episode: 0 },
+            "TEMPORAL.CLOCK_SKEW",
+            "streams drift by 210.0 ms",
+        )
+        .with_risk("the risk that matters")
+        .with_remedy("the remedy that matters"),
+    );
+    verdict.counts.info += 1;
+    verdict.counts.error += 1;
+
+    let compact =
+        veridex_core::render_terminal_with(&verdict, None, 5, veridex_core::FindingDetail::Compact);
+    // Every finding is still named, with its message.
+    assert!(compact.contains("PROVENANCE.MISSING_CLOCK"), "{compact}");
+    assert!(
+        compact.contains("provenance is missing `clock`"),
+        "{compact}"
+    );
+    assert!(compact.contains("TEMPORAL.CLOCK_SKEW"), "{compact}");
+    // The error keeps its guidance; the info finding's is dropped, and the report says so.
+    assert!(compact.contains("the risk that matters"), "{compact}");
+    assert!(
+        !compact.contains("an informational risk"),
+        "info guidance must be dropped: {compact}"
+    );
+    assert!(
+        compact.contains("1 info finding(s) printed without their risk and remedy"),
+        "the omission must be disclosed: {compact}"
+    );
+
+    // Full prints everything, and is what `render_terminal` still does.
+    let full =
+        veridex_core::render_terminal_with(&verdict, None, 5, veridex_core::FindingDetail::Full);
+    assert!(full.contains("an informational risk"), "{full}");
+    assert!(!full.contains("printed without their risk"), "{full}");
+    assert_eq!(full, veridex_core::render_terminal(&verdict, None, 5));
+}

@@ -74,8 +74,8 @@ pub use redact::{Redactor, REDACTION_CHECK_ID, REDACTION_CODE};
 pub use report::{
     render_catalog_json, render_html, render_html_with_readiness, render_inspect_json, render_json,
     render_json_with_readiness, render_sarif, render_sarif_with_readiness, render_terminal,
-    rollups, EpisodeTally, Rollups, SeverityTally, StreamRollup, INSPECT_SCHEMA_VERSION,
-    REPORT_SCHEMA_VERSION,
+    render_terminal_with, rollups, EpisodeTally, FindingDetail, Rollups, SeverityTally,
+    StreamRollup, INSPECT_SCHEMA_VERSION, REPORT_SCHEMA_VERSION,
 };
 pub use watch::{fingerprint, fingerprint_within, MAX_WATCH_ENTRIES};
 

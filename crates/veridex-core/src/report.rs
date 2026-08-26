@@ -507,11 +507,40 @@ pub(crate) fn loosened_tolerances(t: &crate::Tolerances) -> Vec<String> {
         .collect()
 }
 
+/// How much of each finding the terminal report prints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FindingDetail {
+    /// Every finding with its risk and remedy — everything the verdict holds.
+    Full,
+    /// `error` and `warning` findings in full; `info` findings as their code, location and message,
+    /// without the risk and remedy paragraphs.
+    ///
+    /// A sound dataset's report is mostly `info`: what could not be measured, what provenance is
+    /// absent, what a partial run did not cover. Each of those carries a risk and a remedy worth
+    /// reading *once*, and printing all of them by default buries the two lines that say whether the
+    /// data is usable under forty that say what was not looked at. Nothing is dropped — the codes
+    /// and messages are all still there, `--full` prints the rest, and every machine-readable output
+    /// is unchanged.
+    Compact,
+}
+
 /// Render a human-readable terminal report. `max_episodes` bounds the worst-episodes rollup.
+///
+/// Prints every finding in full; [`render_terminal_with`] takes a [`FindingDetail`].
 pub fn render_terminal(
     verdict: &Verdict,
     trust_score: Option<TrustScore>,
     max_episodes: usize,
+) -> String {
+    render_terminal_with(verdict, trust_score, max_episodes, FindingDetail::Full)
+}
+
+/// [`render_terminal`], choosing how much of each finding to print.
+pub fn render_terminal_with(
+    verdict: &Verdict,
+    trust_score: Option<TrustScore>,
+    max_episodes: usize,
+    detail: FindingDetail,
 ) -> String {
     let mut out = String::new();
 
@@ -616,6 +645,7 @@ pub fn render_terminal(
     // Findings (already stably ordered in the verdict).
     if !verdict.findings.is_empty() {
         let _ = writeln!(out, "\nFindings:");
+        let mut compacted = 0usize;
         for f in &verdict.findings {
             let _ = writeln!(
                 out,
@@ -625,12 +655,25 @@ pub fn render_terminal(
                 tty_safe(&location_label(&f.location))
             );
             let _ = writeln!(out, "      {}", tty_safe(&f.message));
+            // An `info` finding says what was not measured; a warning or an error says what is
+            // wrong. Under `Compact` the second keeps its risk and remedy and the first does not.
+            if detail == FindingDetail::Compact && f.severity == Severity::Info {
+                compacted += 1;
+                continue;
+            }
             if !f.risk.is_empty() {
                 let _ = writeln!(out, "      risk:   {}", tty_safe(&f.risk));
             }
             if !f.remedy.is_empty() {
                 let _ = writeln!(out, "      remedy: {}", tty_safe(&f.remedy));
             }
+        }
+        if compacted > 0 {
+            let _ = writeln!(
+                out,
+                "\n  {compacted} info finding(s) printed without their risk and remedy — \
+                 `--full` prints those, and every machine-readable output already carries them."
+            );
         }
     }
 

@@ -17,8 +17,9 @@ portable, signed **trust certificate** you can hand to anyone.
 veridex check my-dataset/
 ```
 
-An illustrative summary of what a run tells you (the real terminal report lists each finding with
-its risk and remedy, worst episodes first):
+An illustrative summary of what a run tells you (the real terminal report lists every finding with
+its location and message, worst episodes first, and the risk and remedy for anything at warning or
+error — `--full` adds those for the informational ones too):
 
 ```
 Veridex Trust Report

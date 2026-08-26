@@ -2099,3 +2099,34 @@ fn a_tampered_certificate_gets_no_label() {
     );
     assert!(!stdout.contains("Veridex trust label"), "{stdout}");
 }
+
+#[test]
+fn the_default_report_is_readable_and_full_restores_everything() {
+    let dataset = fixture_dataset();
+    let (code, compact, _) = run(&["check", &dataset]);
+    assert_eq!(code, 20);
+    let (code, full, _) = run(&["check", "--full", &dataset]);
+    assert_eq!(code, 20);
+
+    // The error keeps its guidance in both; the info findings lose theirs by default.
+    assert!(compact.contains("risk:   Clock drift"), "{compact}");
+    assert!(
+        !compact.contains("risk:   Unknown clock source"),
+        "an info finding's guidance is not printed by default: {compact}"
+    );
+    assert!(full.contains("risk:   Unknown clock source"), "{full}");
+    // Nothing is lost: every code appears in both.
+    for code in ["TEMPORAL.CLOCK_SKEW", "PROVENANCE.MISSING_CLOCK"] {
+        assert!(compact.contains(code) && full.contains(code), "{code}");
+    }
+    assert!(
+        compact.contains("info finding(s) printed without their risk"),
+        "the omission must be disclosed: {compact}"
+    );
+    assert!(full.len() > compact.len());
+
+    // `--print-config` prints no findings at all, so the flag would do nothing there.
+    let (code, _, stderr) = run(&["check", "--print-config", "--full"]);
+    assert_eq!(code, 2);
+    assert!(stderr.contains("does not support --full"), "{stderr}");
+}
