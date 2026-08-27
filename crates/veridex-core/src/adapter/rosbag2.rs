@@ -74,12 +74,24 @@ struct BagManifest {
     ros_distro: Option<String>,
     message_count: Option<u64>,
     relative_file_paths: Vec<String>,
+    /// The topic inventory the manifest declares: `(name, ROS type, message count)`, in the order
+    /// listed. Empty when the manifest carries none, or when this reader was not certain it read the
+    /// whole list — see [`parse_topic_inventory`].
+    topics: Vec<ManifestTopic>,
     /// `zstd`, or absent for an uncompressed bag. rosbag2 writes the key with an empty value when
     /// nothing was compressed, which is read as absent.
     compression_format: Option<String>,
     /// `FILE` (the whole `.db3` compressed after writing) or `MESSAGE` (each message body compressed
     /// individually). Only the first is read; the second is refused by name.
     compression_mode: Option<String>,
+}
+
+/// One topic as `metadata.yaml` declares it, with the message count the manifest attributes to it.
+#[derive(Debug, Clone, PartialEq)]
+struct ManifestTopic {
+    name: String,
+    ros_type: String,
+    message_count: u64,
 }
 
 /// Read the handful of scalar keys Veridex uses out of a rosbag2 `metadata.yaml`.
@@ -129,10 +141,84 @@ fn parse_manifest(text: &str) -> BagManifest {
             "compression_mode" if !value.is_empty() => m.compression_mode = Some(value.to_string()),
             "message_count" => m.message_count = value.parse().ok(),
             "relative_file_paths" => in_paths = true,
+            "topics_with_message_count" => m.topics = parse_topic_inventory(text),
             _ => {}
         }
     }
     m
+}
+
+/// Read `topics_with_message_count` — the manifest's own inventory of what the bag holds.
+///
+/// This is what makes a metadata-only ingest of a bag possible: the topic names, their ROS types,
+/// and how many messages each holds, without opening a shard. It is also the one place this reader
+/// goes deeper than a top-level scalar, so it is written to fail closed. rosbag2 emits the list as
+///
+/// ```text
+///   topics_with_message_count:
+///     - topic_metadata:
+///         name: /lidar/points
+///         type: sensor_msgs/msg/PointCloud2
+///         serialization_format: cdr
+///         offered_qos_profiles: ""
+///       message_count: 20
+/// ```
+///
+/// and an entry is taken only when all three of `name`, `type` and `message_count` were read for it.
+/// Anything else — a shape this reader does not recognize, a value it cannot parse — drops that
+/// entry, and the caller then finds the per-topic counts disagreeing with the manifest's own total
+/// and refuses the metadata-only run by name. A partial inventory presented as a complete one is
+/// exactly the failure this tool exists to prevent.
+fn parse_topic_inventory(text: &str) -> Vec<ManifestTopic> {
+    let mut out = Vec::new();
+    let mut in_list = false;
+    let mut name: Option<String> = None;
+    let mut ros_type: Option<String> = None;
+    for line in text.lines() {
+        let indent = line.len() - line.trim_start().len();
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if !in_list {
+            // The list's key sits at the same depth as every other manifest key.
+            if indent == 2 && trimmed.starts_with("topics_with_message_count:") {
+                in_list = true;
+            }
+            continue;
+        }
+        // A key back at the manifest's own depth ends the list.
+        if indent <= 2 {
+            break;
+        }
+        if trimmed.starts_with("- topic_metadata:") {
+            // A new entry: whatever the previous one had gathered but never completed is dropped.
+            name = None;
+            ros_type = None;
+            continue;
+        }
+        let Some((key, rest)) = trimmed.split_once(':') else {
+            continue;
+        };
+        let value = unquote(rest.trim());
+        match key {
+            "name" if !value.is_empty() => name = Some(value.to_string()),
+            "type" if !value.is_empty() => ros_type = Some(value.to_string()),
+            "message_count" => {
+                // `message_count` closes the entry, and only a complete one is kept.
+                if let (Some(n), Some(t), Ok(count)) = (name.take(), ros_type.take(), value.parse())
+                {
+                    out.push(ManifestTopic {
+                        name: n,
+                        ros_type: t,
+                        message_count: count,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Strip one layer of matching quotes from a YAML scalar.
@@ -595,6 +681,163 @@ fn display(path: &Path) -> String {
         .to_string()
 }
 
+/// Ingest a bag from `metadata.yaml` alone, without opening a shard.
+///
+/// What this covers, honestly: the topic inventory the manifest declares — every topic's name, its
+/// ROS type, and the modality that type implies — plus the recorder identity, the storage and
+/// compression it used, and the bag's own message total. What it does not cover is everything a
+/// shard would answer: no timestamps, no message bytes, no content hashes, no decoded rig
+/// calibration or ego trajectory. Every stream therefore carries zero frames *by request*, which is
+/// what [`Coverage::MetadataOnly`] tells the checks that reason about frames, so they abstain rather
+/// than reading that absence as a defect — and a certificate cannot be issued from it.
+///
+/// Refused rather than approximated in two cases. A bare `.db3` has no manifest at all, so there is
+/// nothing to read but the shard the caller asked not to open. And a manifest whose per-topic counts
+/// do not add up to its own `message_count` total means this reader did not understand the whole
+/// inventory: presenting three topics out of twelve as the bag's contents is the exact shape of
+/// failure this tool exists to prevent, and it is the one a caller has no way to notice.
+fn ingest_metadata_only(
+    dataset_id: &str,
+    manifest: &BagManifest,
+    is_dir: bool,
+) -> Result<Ingested, IngestError> {
+    if !is_dir {
+        return Err(IngestError::NotImplemented {
+            what: "metadata-only ingestion of a bare .db3",
+            hint:
+                "a bag's manifest lives in `metadata.yaml` beside the shard — point Veridex at the \
+                   bag directory, or drop --metadata-only",
+        });
+    }
+    if manifest.topics.is_empty() {
+        return Err(parse_error(
+            "the bag's `metadata.yaml` declares no readable topic inventory \
+             (`topics_with_message_count`), so there is nothing to check without opening a shard",
+        ));
+    }
+    // The inventory has to be whole, and the manifest's own total is what proves it. A topic this
+    // reader dropped is invisible otherwise.
+    let counted: u64 = manifest.topics.iter().map(|t| t.message_count).sum();
+    if let Some(total) = manifest.message_count {
+        if counted != total {
+            return Err(parse_error(format!(
+                "the bag's `metadata.yaml` declares {total} message(s) in total but its topic \
+                 inventory accounts for {counted} across {} topic(s) — Veridex did not read the \
+                 whole inventory, and will not present part of it as the bag's contents; drop \
+                 --metadata-only to read the shards instead",
+                manifest.topics.len()
+            )));
+        }
+    }
+
+    // Name order, as the full read produces (it accumulates topics in a `BTreeMap`), so the two
+    // paths describe one bag the same way and a reader comparing them sees only the frames differ.
+    let mut inventory: Vec<&ManifestTopic> = manifest.topics.iter().collect();
+    inventory.sort_by(|a, b| a.name.cmp(&b.name));
+    let streams: Vec<Stream> = inventory
+        .into_iter()
+        .map(|t| Stream {
+            name: t.name.clone(),
+            modality: super::mcap::infer_modality(&t.ros_type, &t.name),
+            declared_rate_hz: None,
+            clock_id: CLOCK_ID.to_string(),
+            clock_kind: ClockKind::Measured,
+            // The manifest states no delivery policy per topic in a form this reader takes, so
+            // nothing is claimed about it — the QoS column that carries it lives in the shard.
+            latched: None,
+            dtype: None,
+            shape: None,
+            frames: Vec::new(),
+            stats: None,
+            dim_stats: None,
+            observed_stats: None,
+            observed_saturation: None,
+            observed_non_finite: None,
+            observed_dim_stats: None,
+            point_fields: None,
+            media: None,
+            frame_id: None,
+        })
+        .collect();
+
+    let mut metadata = vec![("source_format".into(), FORMAT.to_string())];
+    let mut elements = vec![ProvenanceElement {
+        key: "source_format".into(),
+        value: Some(FORMAT.to_string()),
+        class: ProvenanceClass::Known,
+    }];
+    if let Some(v) = &manifest.version {
+        metadata.push(("rosbag2_version".into(), v.clone()));
+    }
+    if let Some(st) = &manifest.storage_identifier {
+        metadata.push(("rosbag2_storage".into(), st.clone()));
+    }
+    if let Some(fmt) = &manifest.compression_format {
+        metadata.push(("rosbag2_compression".into(), fmt.clone()));
+    }
+    if let Some(distro) = &manifest.ros_distro {
+        metadata.push(("ros_distro".into(), distro.clone()));
+        elements.push(ProvenanceElement {
+            key: "recorder".into(),
+            value: Some(format!("rosbag2 ({distro})")),
+            class: ProvenanceClass::Known,
+        });
+    }
+
+    let dataset = Dataset {
+        id: dataset_id.to_string(),
+        metadata,
+        provenance: vec![Provenance {
+            scope: ProvenanceScope::Dataset,
+            elements,
+        }],
+        episodes: vec![Episode {
+            index: 0,
+            // No frames were read, so there is no measured span to state. The manifest's
+            // `starting_time` and `duration` describe the recording, not the streams in this CDM,
+            // and stamping them here would put a timeline on an episode that has no frames to
+            // support it.
+            start_ts: None,
+            end_ts: None,
+            streams,
+            task: None,
+            labels: Vec::new(),
+            ego_poses: None,
+            declared_frame_count: None,
+        }],
+        calibration: None,
+    };
+
+    let report = IngestReport {
+        format_id: FORMAT,
+        source_version: manifest.version.clone(),
+        coverage: Coverage::MetadataOnly {
+            episodes_declared: 1,
+        },
+        mapped_fields: vec![
+            "metadata.yaml topics_with_message_count.name -> stream.name".into(),
+            "metadata.yaml topics_with_message_count.type -> stream.modality".into(),
+        ],
+        unmapped_fields: vec![UnmappedField {
+            source_path: "*.db3".into(),
+            note: format!(
+                "the bag's {} declared message(s) were not read: this is a metadata-only ingest",
+                counted
+            ),
+        }],
+        unread_sources: Vec::new(),
+        omitted_fields: vec![
+            "frames (no shard was opened, so there are no timestamps, message bytes or content \
+             hashes)"
+                .into(),
+            "rig calibration and ego trajectory (both are decoded from message bodies)".into(),
+            "per-topic delivery policy (the QoS profile lives in the shard's `topics` table)"
+                .into(),
+        ],
+    };
+    Ok(Ingested { dataset, report })
+}
+
 impl Adapter for Rosbag2Adapter {
     fn format_id(&self) -> &'static str {
         FORMAT
@@ -623,6 +866,13 @@ impl Adapter for Rosbag2Adapter {
             return Detection::Yes { version: None };
         }
         Detection::No
+    }
+
+    fn supports_metadata_only(&self) -> bool {
+        // Only a bag *directory* has a manifest, and the registry hands the option to any adapter
+        // that claims the capability — so a bare `.db3` is refused inside `ingest`, by name, rather
+        // than here.
+        true
     }
 
     fn ingest(&self, source: &Source, options: &IngestOptions) -> Result<Ingested, IngestError> {
@@ -700,6 +950,10 @@ impl Adapter for Rosbag2Adapter {
                      plugin (an MCAP-backed bag is read by pointing Veridex at its .mcap file)"
                 )));
             }
+        }
+
+        if options.metadata_only {
+            return ingest_metadata_only(&dataset_id, &manifest, is_dir);
         }
 
         let source_bytes: u64 = shards

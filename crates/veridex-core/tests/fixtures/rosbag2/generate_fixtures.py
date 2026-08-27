@@ -436,6 +436,24 @@ os._exit(0)
         os.remove(shm)
     assert os.path.getsize(shard + "-wal") > 0, "the WAL must survive for this fixture to mean anything"
 
+    # A bag whose manifest lists only some of its topics, so the per-topic counts do not add up to
+    # its own total. Veridex must refuse a metadata-only run over it rather than present a partial
+    # inventory as the bag's contents.
+    msgs = rig_messages()
+    d = os.path.join(HERE, "partial_inventory")
+    if os.path.exists(d):
+        shutil.rmtree(d)
+    os.makedirs(d)
+    db = "partial_inventory_0.db3"
+    write_bag(os.path.join(d, db), RIG_TOPICS, msgs)
+    span = max(m[1] for m in msgs) - min(m[1] for m in msgs)
+    with open(os.path.join(d, "metadata.yaml"), "w") as f:
+        f.write(
+            metadata_yaml(
+                [db], len(msgs), per_topic_counts(msgs)[:2], span, min(m[1] for m in msgs)
+            )
+        )
+
     # A recording whose `.db3` lost its tail (the process was killed) while metadata.yaml still
     # claims every message it meant to write.
     msgs = rig_messages()

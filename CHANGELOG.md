@@ -369,6 +369,25 @@ reproduced before it was fixed.*
 
 ### Added
 
+- **`--metadata-only` reads a rosbag2 bag from its manifest.** A bag can be a terabyte, and
+  `metadata.yaml` already lists every topic, its ROS type, and how many messages it holds — so
+  `check` and `inspect` can now answer "is this the recording I think it is, and does it carry the
+  topics I need" in seconds without opening a shard. The recording distribution, the storage plugin
+  and any compression come along too. rosbag2 joins LeRobot as the second format supporting the
+  option; the others keep their structure inside the container and are still refused by name.
+
+  What it cannot see, said rather than left inferred: no timestamps, no message bytes, no content
+  hashes, and no rig calibration or ego trajectory — those are decoded from message *bodies*. Every
+  stream carries zero frames by request, the coverage is `metadata_only`, the frame-dependent checks
+  abstain rather than firing, and `certify` refuses the run outright.
+
+  Two cases are refused rather than approximated. A bare `.db3` has no manifest at all, so there is
+  nothing to read but the shard the caller asked not to open. And a manifest whose per-topic counts
+  do not add up to its own declared total means Veridex did not understand the whole inventory —
+  presenting three topics out of twelve as the bag's contents is invisible to the caller, which is
+  the failure this tool exists to prevent, so the run is refused naming both numbers. That guard is
+  what makes it safe to parse four levels into a YAML file with a hand-written reader at all.
+
 - **`TEMPORAL.UNCOMPARED_STREAMS` — the three alignment checks now say when they had nothing to
   compare.** `CLOCK_SKEW`, `START_OFFSET` and `END_OFFSET` are the checks that answer whether a
   dataset's sensors are aligned, and all three need at least two streams sharing a clock. Given

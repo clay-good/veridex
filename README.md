@@ -325,8 +325,9 @@ bindings** (`import veridex`, exposing `check`/`check_sarif`/`check_html`/`inspe
 core pipeline, with a CLI⇄Python parity test run in CI; and **sampled ingestion** (`--sample-episodes`
 / `--sample-fraction`), resolved before any data is read and reported as partial coverage everywhere
 it could otherwise be mistaken for a full check; and **metadata-only ingestion** (`--metadata-only`,
-LeRobot), which checks the manifest, the stored statistics, and the provenance without opening a
-data file, with the frame-dependent checks abstaining rather than misfiring. Next up: remote (Hub)
+LeRobot and rosbag2), which checks the manifest — the declared episodes and stored statistics for
+LeRobot, the topic inventory and recorder for a bag — and the provenance, without opening a data
+file, with the frame-dependent checks abstaining rather than misfiring. Next up: remote (Hub)
 ingestion — until then a remote source is refused with a clear error, never silently ignored, and
 `--metadata-only` on a format that keeps its structure inside the container is refused by name.
 

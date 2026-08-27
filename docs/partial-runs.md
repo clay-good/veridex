@@ -37,9 +37,21 @@ entirely and check what the dataset *says about itself*:
 
 ```sh
 veridex check my-dataset/ --metadata-only     # LeRobot; reads meta/, opens no Parquet or video
+veridex check my-bag/      --metadata-only    # rosbag2; reads metadata.yaml, opens no .db3
 ```
 
-This is a real check, not a smoke test: the declared episode set and per-episode lengths, every
+Two formats support it, because two formats keep a manifest outside the container. For a **rosbag2**
+bag it reads `topics_with_message_count` — every topic's name, its ROS type and so its modality, the
+declared message total, the recording distribution, the storage and any compression — without
+opening a shard, which is the difference between seconds and a terabyte. What it cannot see is
+everything a shard would answer: no timestamps, no message bytes, no content hashes, and no decoded
+rig calibration or ego trajectory, since those come from message *bodies*. It says all of that
+rather than leaving it inferred, and it refuses two cases outright rather than approximating them: a
+bare `.db3` has no manifest at all, and a manifest whose per-topic counts do not add up to its own
+total means Veridex did not read the whole inventory — presenting three topics out of twelve as the
+bag's contents is invisible to the caller, so the run is refused naming both numbers.
+
+For **LeRobot** this is a real check, not a smoke test: the declared episode set and per-episode lengths, every
 feature's dtype/shape/rate, the stored statistics in `meta/stats.json` (an inverted range or a mean
 outside its own bounds is caught here), and the whole provenance family. What it cannot see — every
 timestamp, value, content hash, and media header — it says it cannot see. The frame-dependent checks

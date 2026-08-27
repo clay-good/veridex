@@ -616,18 +616,109 @@ fn sampling_a_bag_is_refused_rather_than_silently_ignored() {
     }
 }
 
-#[test]
-fn metadata_only_is_refused_rather_than_read_as_a_full_check() {
-    let options = IngestOptions {
+fn metadata_only() -> IngestOptions {
+    IngestOptions {
         metadata_only: true,
         ..IngestOptions::default()
-    };
-    match ingest_with("clean_rig", &options) {
-        Err(IngestError::NotImplemented { what, .. }) => {
-            assert!(what.contains("metadata-only"), "{what}")
-        }
-        other => panic!("expected a metadata-only refusal, got {other:?}"),
     }
+}
+
+#[test]
+fn a_bag_can_be_checked_from_its_manifest_without_opening_a_shard() {
+    // The point of this path is a bag too large to read: the topic inventory, the ROS types, the
+    // recorder identity and the storage, from `metadata.yaml` alone.
+    let out = ingest_with("clean_rig", &metadata_only()).expect("a manifest-only ingest");
+    assert_eq!(
+        out.report.coverage,
+        Coverage::MetadataOnly {
+            episodes_declared: 1
+        }
+    );
+    let ep = &out.dataset.episodes[0];
+    let names: Vec<&str> = ep.streams.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec![
+            "/camera/front/camera_info",
+            "/camera/front/image_raw",
+            "/imu/data",
+            "/lidar/points",
+            "/odom",
+            "/tf_static",
+        ],
+        "every topic the manifest declares"
+    );
+    // The ROS type still selects the modality, because the manifest records it.
+    assert_eq!(
+        ep.streams
+            .iter()
+            .find(|s| s.name == "/lidar/points")
+            .unwrap()
+            .modality,
+        Modality::PointCloud
+    );
+    // Zero frames by request, not by defect — and nothing is claimed that a shard would have
+    // answered.
+    assert!(ep.streams.iter().all(|s| s.frames.is_empty()));
+    assert_eq!(ep.start_ts, None, "no frames, so no measured span to state");
+    assert_eq!(out.dataset.calibration, None);
+    assert_eq!(ep.ego_poses, None);
+    assert!(ep.streams.iter().all(|s| s.latched.is_none()));
+    // The recorder is in the manifest, so it survives.
+    assert!(out.dataset.provenance[0]
+        .elements
+        .iter()
+        .any(|e| e.key == "recorder"));
+}
+
+#[test]
+fn a_manifest_whose_inventory_does_not_add_up_is_refused() {
+    // `partial_inventory/` lists two of its six topics while still declaring the full total.
+    // Presenting two topics as the bag's contents is invisible to the caller and is the exact shape
+    // of failure this tool exists to prevent — so the run is refused, naming both numbers.
+    match ingest_with("partial_inventory", &metadata_only()) {
+        Err(IngestError::Parse { message, .. }) => {
+            assert!(message.contains("401"), "{message}");
+            assert!(message.contains("60"), "{message}");
+            assert!(message.contains("--metadata-only"), "{message}");
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    // Reading the shards is unaffected: the manifest is wrong about its inventory, not the data.
+    let full = ingest("partial_inventory");
+    assert_eq!(full.dataset.episodes[0].streams.len(), 6);
+}
+
+#[test]
+fn metadata_only_needs_a_manifest_and_says_so_when_there_is_none() {
+    // A bare `.db3` has no manifest at all, so there is nothing to read but the shard the caller
+    // asked not to open.
+    match ingest_with("bare.db3", &metadata_only()) {
+        Err(IngestError::NotImplemented { what, hint }) => {
+            assert!(what.contains("bare .db3"), "{what}");
+            assert!(hint.contains("metadata.yaml"), "{hint}");
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    // And a bag still recording has not written one yet.
+    match ingest_with("recording", &metadata_only()) {
+        Err(IngestError::Parse { message, .. }) => {
+            assert!(message.contains("topics_with_message_count"), "{message}")
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_metadata_only_run_over_a_bag_cannot_be_certified() {
+    // The guard that makes the whole path safe to offer: a verdict that read no data must not become
+    // a signed claim about the data. Enforced by the pipeline for every format; asserted here so the
+    // new adapter is covered by it.
+    let out = ingest_with("clean_rig", &metadata_only()).expect("a manifest-only ingest");
+    assert!(
+        matches!(out.report.coverage, Coverage::MetadataOnly { .. }),
+        "the coverage is what `certify` refuses on"
+    );
 }
 
 #[test]
