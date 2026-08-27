@@ -417,6 +417,13 @@ reproduced before it was fixed.*
   differently named on every run and must not reach the CDM; a test pins that two reads of one
   dataset hash identically, and that two owners publishing the same dataset name do not.
 
+  Verified against the real Hub, not only a fake one: `veridex check
+  hf://lerobot/svla_so101_pickplace --metadata-only` returns `PASS` / trust 79 (C) / `data 100 ·
+  provenance 33%` over 50 declared episodes, in about a second. Running it is what found the one
+  defect a fake Hub could not — the Hub answers a manifest read with a *relative* redirect
+  (`/api/resolve-cache/…`), which the host allowlist refused because it was not an absolute URL. An
+  invented server answers the way its author expects.
+
   The socket lives behind a `remote` cargo feature, on for the `veridex` binary and the Python
   package, off for anyone embedding `veridex-core` — validating a local dataset should not require
   compiling a TLS stack. Everything above the socket is behind a `FetchFile` trait and tested

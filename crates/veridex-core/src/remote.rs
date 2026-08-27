@@ -294,6 +294,30 @@ impl HubFetcher {
     }
 }
 
+/// Resolve a `Location` header against the URL it was returned from.
+///
+/// The Hub answers a manifest read with a **relative** redirect —
+/// `/api/resolve-cache/datasets/...` — which is ordinary HTTP, and which a host allowlist applied to
+/// the raw header value rejects out of hand. Found by pointing the tool at a real repository, which
+/// no test against a fake Hub would have caught: an invented server answers the way its author
+/// expects.
+///
+/// Only the two shapes that actually occur are resolved — an absolute URL, and a root-relative path
+/// against the current origin. A path-relative `Location` is legal HTTP and is deliberately *not*
+/// resolved: guessing at the base of one is how a redirect ends up somewhere nobody chose. Whatever
+/// comes out is host-checked by the caller either way.
+fn resolve_redirect(current: &str, location: &str) -> Option<String> {
+    if location.starts_with("https://") || location.starts_with("http://") {
+        return Some(location.to_string());
+    }
+    if let Some(path) = location.strip_prefix('/') {
+        let rest = current.strip_prefix("https://")?;
+        let host = rest.split(['/', '?', '#']).next()?;
+        return Some(format!("https://{host}/{path}"));
+    }
+    None
+}
+
 /// Whether `url` is `https` on a host this module will connect to.
 ///
 /// Checked on the first request and on every redirect. `http` is refused even for the Hub's own
@@ -348,10 +372,15 @@ impl FetchFile for HubFetcher {
                 Err(ureq::Error::StatusCode(code)) => {
                     return match code {
                         404 => Ok(None),
+                        // The Hub answers 401 for a repository that is private, that is gated, and
+                        // for one that does not exist — it does not distinguish them for a reader
+                        // sending no credentials, so neither does this message. Saying "private"
+                        // alone would send someone hunting for access to a dataset they mistyped.
                         401 | 403 => Err(refuse(format!(
-                            "`{current}` needs authentication ({code}). Veridex sends no \
-                             credentials, so a private or gated dataset cannot be read remotely — \
-                             download it with the Hub's own tooling and check the local copy"
+                            "`{current}` returned {code}: the repository is private, gated, or does \
+                             not exist — the Hub does not tell an unauthenticated reader which. \
+                             Veridex sends no credentials; check the id, or download the dataset \
+                             with the Hub's own tooling and check the local copy"
                         ))),
                         429 => Err(refuse(
                             "the Hub is rate-limiting this client (429); try again shortly".into(),
@@ -374,7 +403,13 @@ impl FetchFile for HubFetcher {
                         "`{current}` redirected with no destination"
                     )));
                 };
-                current = location;
+                let Some(next) = resolve_redirect(&current, &location) else {
+                    return Err(refuse(format!(
+                        "`{current}` redirected to `{location}`, which is not an absolute URL or a \
+                         root-relative path — Veridex will not guess where that points"
+                    )));
+                };
+                current = next;
                 continue;
             }
 
@@ -402,6 +437,37 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn a_relative_redirect_is_resolved_against_the_url_it_came_from() {
+        // The shape the real Hub answers with, and the one a fake Hub never would: found by running
+        // the tool against `hf://lerobot/svla_so101_pickplace`, where the manifest read 302s to
+        // `/api/resolve-cache/...` and the host check rejected the bare path.
+        let from = "https://huggingface.co/datasets/a/b/resolve/main/meta/info.json";
+        assert_eq!(
+            resolve_redirect(
+                from,
+                "/api/resolve-cache/datasets/a/b/x/meta%2Finfo.json?e=1"
+            ),
+            Some(
+                "https://huggingface.co/api/resolve-cache/datasets/a/b/x/meta%2Finfo.json?e=1"
+                    .to_string()
+            )
+        );
+        // An absolute redirect is taken as it stands — and still host-checked by the caller, which
+        // is what stops it leaving the Hub.
+        assert_eq!(
+            resolve_redirect(from, "https://cdn-lfs.huggingface.co/x"),
+            Some("https://cdn-lfs.huggingface.co/x".to_string())
+        );
+        assert!(!is_allowed_url(
+            &resolve_redirect(from, "https://evil.test/x").unwrap()
+        ));
+        // A path-relative `Location` is legal HTTP, and guessing at its base is how a redirect ends
+        // up somewhere nobody chose. Refused rather than resolved.
+        assert_eq!(resolve_redirect(from, "other/path"), None);
+        assert_eq!(resolve_redirect(from, ""), None);
+    }
 
     #[test]
     fn only_https_on_an_allowlisted_host_is_reachable() {

@@ -177,6 +177,13 @@ the build plan.
       which is the behavior the abstention work exists to produce, confirmed here on data nobody
       wrote for us.
 
+      The **remote** path is now proven against that same repository too, from the Hub with nothing
+      downloaded: `veridex check hf://lerobot/svla_so101_pickplace --metadata-only` returns
+      `PASS` / trust 79 (C) / `data 100 · provenance 33%` over 50 declared episodes and 4 streams
+      each, in about a second. Running it is what found the one defect a fake Hub could not: the
+      real Hub answers a manifest read with a *relative* redirect (`/api/resolve-cache/…`), which
+      the host allowlist refused because it was not an absolute URL.
+
       Still open: a **real MCAP recording** (the synthetic `examples/make_demo_mcap` rig covers the
       format end-to-end, including the `av` five-sensor variant).
 - [~] Reproduce detection of a synthetic cross-stream skew (done: the demo MCAP triggers
