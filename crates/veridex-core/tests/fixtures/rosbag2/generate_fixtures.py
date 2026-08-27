@@ -203,6 +203,14 @@ RIG_TOPICS = [
     (6, "/tf_static", "tf2_msgs/msg/TFMessage", "cdr", ""),
 ]
 
+# The topics every real `ros2 bag record -a` also captures: node logging, parameter events, and
+# diagnostics. None of them observes the world, and each keeps its own arbitrary cadence.
+HOUSEKEEPING_TOPICS = [
+    (7, "/rosout", "rcl_interfaces/msg/Log", "cdr", ""),
+    (8, "/parameter_events", "rcl_interfaces/msg/ParameterEvent", "cdr", ""),
+    (9, "/diagnostics", "diagnostic_msgs/msg/DiagnosticArray", "cdr", ""),
+]
+
 TF_EDGES = [
     ("base_link", "lidar_link", (0.0, 0.0, 1.8)),
     ("base_link", "camera_front", (1.2, 0.0, 1.5)),
@@ -225,9 +233,8 @@ def rig_messages(n_lidar=20, camera_end_scale=1.0):
     for i in range(n_lidar * 2):
         ts = START + i * cam_dt
         msgs.append((2, ts, header_only("camera_front", ts, 256)))
-        # Real camera drivers publish CameraInfo alongside every frame, so it spans the same window
-        # the image stream does — a rig whose calibration channel stopped early is a fault, and the
-        # fixture must not carry one by accident.
+        # Most drivers publish CameraInfo alongside every frame. (Some latch it instead; either
+        # way it is not graded as a sensor — see `Modality::is_sensor`.)
         msgs.append((3, ts, camera_info("camera_front", ts)))
     for i in range(n_lidar * 10):
         ts = START + i * 10_000_000
@@ -240,22 +247,37 @@ def rig_messages(n_lidar=20, camera_end_scale=1.0):
     return msgs
 
 
+def housekeeping_messages():
+    """Node chatter on its own schedule: two log lines early, a parameter event at startup, and
+    diagnostics at 1 Hz — none of it covering the recording's full window."""
+    msgs = []
+    for i in range(2):
+        ts = START + 200_000_000 + i * 150_000_000
+        msgs.append((7, ts, header_only("", ts, 48)))
+    ts = START + 5_000_000
+    msgs.append((8, ts, header_only("", ts, 32)))
+    for i in range(2):
+        ts = START + 100_000_000 + i * 1_000_000_000
+        msgs.append((9, ts, header_only("", ts, 40)))
+    return msgs
+
+
 def per_topic_counts(msgs):
     counts = {}
     for topic_id, _, _ in msgs:
         counts[topic_id] = counts.get(topic_id, 0) + 1
-    by_id = {t[0]: (t[1], t[2]) for t in RIG_TOPICS}
+    by_id = {t[0]: (t[1], t[2]) for t in RIG_TOPICS + HOUSEKEEPING_TOPICS}
     return [(by_id[i][0], by_id[i][1], counts[i]) for i in sorted(counts)]
 
 
-def bag_dir(name, msgs, declared_count=None):
+def bag_dir(name, msgs, declared_count=None, topics=None):
     """A rosbag2 *directory*: one `.db3` plus the `metadata.yaml` a recording always ships."""
     d = os.path.join(HERE, name)
     if os.path.exists(d):
         shutil.rmtree(d)
     os.makedirs(d)
     db = f"{name}_0.db3"
-    write_bag(os.path.join(d, db), RIG_TOPICS, msgs)
+    write_bag(os.path.join(d, db), topics if topics else RIG_TOPICS, msgs)
     span = max(m[1] for m in msgs) - min(m[1] for m in msgs)
     with open(os.path.join(d, "metadata.yaml"), "w") as f:
         f.write(
@@ -276,6 +298,11 @@ def main():
     # The same rig, but the camera runs 1.4x slow on the shared clock: its stream ends well before
     # the others, which is the cross-stream drift TEMPORAL.CLOCK_SKEW exists to find.
     bag_dir("skewed_rig", rig_messages(camera_end_scale=0.6))
+
+    # The same synchronized rig with the topics every `ros2 bag record -a` also captures. Nothing
+    # about the rig changed, so nothing about the rig's verdict should.
+    noisy = sorted(rig_messages() + housekeeping_messages(), key=lambda m: m[1])
+    bag_dir("housekeeping", noisy, topics=RIG_TOPICS + HOUSEKEEPING_TOPICS)
 
     # A recording whose `.db3` lost its tail (the process was killed) while metadata.yaml still
     # claims every message it meant to write.

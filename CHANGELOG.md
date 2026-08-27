@@ -10,6 +10,47 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **A synchronized rig failed because `/rosout` was called a sensor.** `AUTONOMY.RIG_SYNC` compares
+  how long each stream spans and reports the spread as cross-sensor drift. It was comparing *every*
+  stream in a rig episode — and a real ROS recording carries far more than its rig. `ros2 bag record
+  -a` captures `/rosout`, `/parameter_events` and `/diagnostics` beside the sensors; a transform tree
+  is published once at startup; a `CameraInfo` channel is latched or runs at 1 Hz. None of them
+  samples the world, none keeps a sensor's cadence, and all of them are routinely short of the
+  recording's window.
+
+  So a perfectly synchronized five-sensor rig came back:
+
+  ```
+  [error] AUTONOMY.RIG_SYNC  episode 0
+      episode 0: rig sensors are out of sync — `/rosout` spans 150.0 ms but `/imu/data`
+      spans 1990.0 ms, a 1840.0 ms drift across 7 sensors
+  ```
+
+  Error severity, `FAIL`, on sound data, with a remedy — *re-synchronize the rig against a common
+  time base* — that sends the reader after something that is not wrong. This is the worse direction
+  for a false positive to run: a tool that fails good data teaches people to stop reading its output.
+
+  The check now compares what its own message and risk statement are about: streams that sample the
+  physical world (LiDAR/radar, camera, IMU, GNSS, CAN, ego-pose, audio, tactile). A new
+  `Modality::is_sensor` draws that line, distinct from the existing `is_rig_sensor`, which answers a
+  different question — "does this stream's presence mean we are looking at a rig" — and deliberately
+  excludes cameras because manipulation datasets have them. A camera is not evidence of a rig; in a
+  rig it is certainly a sensor, and one that dropped out early is exactly what this check is for.
+
+  A `CameraInfo` topic is now typed `ScalarState` rather than `Video`, in both the MCAP and rosbag2
+  paths. It carries a camera's calibration, not its imagery, on whatever cadence the driver chose —
+  and Veridex already decodes its content into `Dataset::calibration`, which is where intrinsics
+  belong. Typing it as imagery made a latched calibration topic a sensor whose span was compared
+  against a LiDAR's.
+
+  Nothing is silenced. A genuinely short sensor still fails, and now names the sensor rather than the
+  log topic that happened to be shortest. The non-sensor streams' timing is still reported by
+  `TEMPORAL.START_OFFSET` and `TEMPORAL.END_OFFSET`, which say what is true about them without
+  claiming they are sensors. What remains, and is documented rather than hidden: a transform tree
+  published once still draws `STRUCTURAL.SINGLE_FRAME_STREAM` and `TEMPORAL.END_OFFSET`, because
+  Veridex cannot tell a latched topic from a sensor that fired once and died — and treating the
+  second as the first is the error worth avoiding.
+
 - **A redacted report published what a producer attested.** Attested values are deliberately *not* in
   the CDM, so a redactor built from the dataset — which is how it is built — cannot know them, and
   the conflict finding quotes them verbatim: `license: recorded \`value#3\` → attested

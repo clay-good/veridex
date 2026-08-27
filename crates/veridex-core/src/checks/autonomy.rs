@@ -96,9 +96,19 @@ impl Check for RigSync {
             }
             // Every sensor with a measurable span (name, span, sampling period), sorted by
             // (span, name) so the tightest and widest are deterministic and ties break stably.
+            //
+            // `is_sensor`, not "every stream in the episode". A rig log carries more than its rig:
+            // `/rosout`, `/parameter_events`, `/diagnostics`, a latched transform tree, a
+            // `CameraInfo` channel. None of them samples the world, none keeps a sensor's cadence,
+            // and all of them are routinely short of the recording's window — so comparing their
+            // spans against a LiDAR's reported a synchronized rig as out of sync, at error severity,
+            // naming a log topic as the sensor that drifted. Their timing is still covered, by
+            // `TEMPORAL.START_OFFSET` / `TEMPORAL.END_OFFSET`, which say what is actually true about
+            // them without claiming they are sensors.
             let mut spans: Vec<(&str, i64, i64)> = ep
                 .streams
                 .iter()
+                .filter(|s| s.modality.is_sensor())
                 .filter_map(|s| {
                     span_bounds(s).map(|(lo, hi)| {
                         (

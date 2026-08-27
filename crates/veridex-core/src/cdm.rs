@@ -249,6 +249,29 @@ impl Modality {
                 | Modality::EgoPose
         )
     }
+
+    /// Whether this modality **samples the physical world** — a measurement of something outside the
+    /// process, on a cadence its hardware sets.
+    ///
+    /// Wider than [`Modality::is_rig_sensor`], and asking a different question. That one asks
+    /// "does the presence of this stream mean we are looking at an autonomy rig", which a camera
+    /// does not answer (manipulation datasets have cameras). This one asks "is this stream a sensor
+    /// at all", which a camera plainly is — and which `/rosout`, `/parameter_events`, a commanded
+    /// trajectory, and a `CameraInfo` channel plainly are not.
+    ///
+    /// `AUTONOMY.RIG_SYNC` compares spans across this set, because that check's whole claim is that
+    /// sensors recording one drive segment should cover the same window. A log topic writes when a
+    /// node has something to say and a parameter event fires at startup; neither has a window to
+    /// cover, and neither has observations to be mis-aligned. Every `ros2 bag record -a` captures
+    /// all three, so grading them as sensors failed a synchronized rig with an error naming
+    /// `/rosout` as the sensor that drifted.
+    pub fn is_sensor(self) -> bool {
+        self.is_rig_sensor()
+            || matches!(
+                self,
+                Modality::Video | Modality::Audio | Modality::TactileForceTorque
+            )
+    }
 }
 
 /// What a stream's timestamps actually are.

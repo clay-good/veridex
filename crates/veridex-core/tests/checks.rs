@@ -2294,6 +2294,84 @@ fn a_synced_rig_is_clean() {
 }
 
 #[test]
+fn node_chatter_beside_a_rig_is_not_a_rig_sensor() {
+    // Every `ros2 bag record -a` captures /rosout, /parameter_events and /diagnostics next to the
+    // sensors. None of them observes the world, none keeps a sensor's cadence, and all three are
+    // routinely short of the recording's window — a log line at 0.2 s and 0.35 s in a 1 s drive.
+    //
+    // Graded as rig sensors they made a perfectly synchronized rig FAIL: "rig sensors are out of
+    // sync — `/rosout` spans 150.0 ms but `/imu/data` spans 1990.0 ms, a 1840.0 ms drift across 7
+    // sensors". Error severity, on sound data, with a remedy (re-synchronize the rig) that sends
+    // the reader after nothing. The check's own risk statement is about a sensor's observations
+    // being mis-aligned from the other sensors; a log topic has no observations.
+    let mut chatter = stream("/rosout", "rig", None, &[200_000_000, 350_000_000]);
+    chatter.modality = Modality::ScalarState;
+    let mut params = stream("/parameter_events", "rig", None, &[5_000_000, 900_000_000]);
+    params.modality = Modality::Action;
+    let ep = episode(
+        0,
+        vec![
+            rig_stream("lidar", Modality::PointCloud, 1_000_000_000),
+            rig_stream("gnss", Modality::Gnss, 1_000_000_000),
+            rig_stream("imu", Modality::Imu, 1_000_000_000),
+            chatter,
+            params,
+        ],
+    );
+    assert!(
+        autonomy::RigSync::default()
+            .run(&dataset(vec![ep]))
+            .is_empty(),
+        "the rig is synchronized; the topics that are not sensors do not make it otherwise"
+    );
+}
+
+#[test]
+fn a_drifting_sensor_is_still_caught_beside_that_chatter() {
+    // The guard above must narrow *who is compared*, not soften the comparison: the same rig with a
+    // genuinely short IMU still fails, and still names the IMU.
+    let mut chatter = stream("/rosout", "rig", None, &[200_000_000, 350_000_000]);
+    chatter.modality = Modality::ScalarState;
+    let ep = episode(
+        0,
+        vec![
+            rig_stream("lidar", Modality::PointCloud, 1_000_000_000),
+            rig_stream("gnss", Modality::Gnss, 1_000_000_000),
+            rig_stream("imu", Modality::Imu, 700_000_000),
+            chatter,
+        ],
+    );
+    let f = autonomy::RigSync::default().run(&dataset(vec![ep]));
+    assert_eq!(f.len(), 1);
+    assert!(f[0].message.contains("imu"), "{}", f[0].message);
+    assert!(
+        !f[0].message.contains("/rosout"),
+        "the log topic is not one of the sensors compared: {}",
+        f[0].message
+    );
+}
+
+#[test]
+fn a_camera_is_a_rig_sensor_for_sync_even_though_it_does_not_mark_a_rig() {
+    // `Modality::is_rig_sensor` deliberately excludes Video, because a camera alone does not make a
+    // dataset a rig — manipulation datasets have cameras. But once the episode *is* a rig, a camera
+    // that dropped out early is exactly what this check is for, so the sync comparison must include
+    // it.
+    let ep = episode(
+        0,
+        vec![
+            rig_stream("lidar", Modality::PointCloud, 1_000_000_000),
+            rig_stream("gnss", Modality::Gnss, 1_000_000_000),
+            rig_stream("imu", Modality::Imu, 1_000_000_000),
+            rig_stream("camera", Modality::Video, 600_000_000),
+        ],
+    );
+    let f = autonomy::RigSync::default().run(&dataset(vec![ep]));
+    assert_eq!(f.len(), 1);
+    assert!(f[0].message.contains("camera"), "{}", f[0].message);
+}
+
+#[test]
 fn too_few_rig_sensors_is_not_a_rig() {
     // Only two AV-native sensors — below the rig threshold, so the rig check abstains entirely
     // (the pairwise TEMPORAL.CLOCK_SKEW still covers this case).

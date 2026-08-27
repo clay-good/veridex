@@ -64,8 +64,17 @@ pub(crate) fn infer_modality(schema_name: &str, topic: &str) -> Modality {
     );
     let has = |kw: &str| hay.contains(kw);
 
-    // Camera imagery first (a CameraInfo channel is camera-related telemetry, still Video here).
-    if has("image") || has("camera") || has("compressedimage") || has("video") {
+    // A `CameraInfo` channel carries a camera's calibration, not its imagery — and its cadence is
+    // whatever the driver chose, commonly latched or 1 Hz. Typing it `Video` made it a *sensor*, and
+    // the rig-sync check then compared a latched calibration topic's span against a LiDAR's and
+    // reported a synchronized rig as drifting. Its content is not lost: Veridex decodes it into
+    // `Dataset::calibration`, which is where a camera's intrinsics belong. Tested first, because the
+    // topic name almost always contains "camera".
+    if schema_is(schema_name, "CameraInfo") {
+        Modality::ScalarState
+    }
+    // Camera imagery.
+    else if has("image") || has("camera") || has("compressedimage") || has("video") {
         Modality::Video
     } else if has("pointcloud")
         || has("laserscan")

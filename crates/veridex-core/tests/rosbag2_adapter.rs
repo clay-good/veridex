@@ -18,6 +18,7 @@ use veridex_core::adapter::{
     Source,
 };
 use veridex_core::cdm::Modality;
+use veridex_core::check::Check;
 
 fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rosbag2")
@@ -78,6 +79,30 @@ fn the_ros_message_type_selects_the_modality() {
     assert_eq!(by_name("/imu/data"), Modality::Imu);
     assert_eq!(by_name("/odom"), Modality::EgoPose);
     assert_eq!(by_name("/camera/front/image_raw"), Modality::Video);
+    // A CameraInfo channel is a camera's calibration, not its imagery. Typing it `Video` made it a
+    // sensor for `AUTONOMY.RIG_SYNC`, which then compared a latched or 1 Hz calibration topic's span
+    // against a LiDAR's and failed a synchronized rig. Its content still reaches the CDM — as
+    // `Dataset::calibration`, which is where intrinsics belong.
+    assert_eq!(
+        by_name("/camera/front/camera_info"),
+        Modality::ScalarState,
+        "a CameraInfo topic is telemetry about a camera, not a camera"
+    );
+}
+
+#[test]
+fn a_rig_recorded_with_the_node_chatter_beside_it_is_still_a_synchronized_rig() {
+    // `housekeeping/` is the clean rig plus what every `ros2 bag record -a` also captures: /rosout,
+    // /parameter_events, /diagnostics. Nothing about the rig changed, so nothing about the rig's
+    // sync verdict should — and before the sensor filter it did: `AUTONOMY.RIG_SYNC` failed at
+    // error severity naming `/rosout` as the sensor that drifted.
+    let dataset = ingest("housekeeping").dataset;
+    let findings = veridex_core::checks::autonomy::RigSync::default().run(&dataset);
+    assert!(
+        findings.is_empty(),
+        "a synchronized rig must not be failed by the topics recorded beside it: {:?}",
+        findings.iter().map(|f| &f.message).collect::<Vec<_>>()
+    );
 }
 
 #[test]

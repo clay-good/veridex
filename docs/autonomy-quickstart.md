@@ -129,5 +129,12 @@ little to check.
   rather than decoded — `veridex inspect` lists exactly what was skipped.
 - **Per-sensor trigger/latency offsets** aren't modeled yet, so a rig with known constant offsets
   will report that drift as sync spread.
+- **A latched topic still draws timing warnings.** `AUTONOMY.RIG_SYNC` compares sensors only, so the
+  topics recorded beside a rig (`/rosout`, `/parameter_events`, `/diagnostics`, `/tf_static`, a
+  `CameraInfo` channel) no longer fail it. But a transform tree published once at startup is a
+  single-frame stream that ends at t=0, so `STRUCTURAL.SINGLE_FRAME_STREAM` and
+  `TEMPORAL.END_OFFSET` still name it — warnings, and true as stated. Veridex has no way to tell a
+  latched topic from a sensor that fired once and died, and treating one as the other is the error
+  worth avoiding.
 - **Coverage is never prescriptive.** Veridex reports scenario distribution and sparse cells; the
   right target balance is your call.
