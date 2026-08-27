@@ -186,6 +186,17 @@ would fail a sound bag. A bare `.db3` has no manifest at all, so there is nothin
 against and no recording distribution to record — and `inspect` says exactly that rather than
 leaving you to assume it was checked.
 
+A bag recorded with `--compression-mode file --compression-format zstd` — which is how any
+recording large enough to care about is stored — is read directly. rosbag2 compresses the finished
+shard to `<shard>.db3.zstd` and deletes the original; Veridex unpacks it under the same
+decompression budget that bounds every other container here, and bounded *during* the read rather
+than charged after it, so a bomb is stopped instead of billed for once the memory is gone. The same
+recording compressed and uncompressed produces identical streams, frames and content hashes; only
+the dataset's name differs. Per-*message* compression is refused by name: those tables are plain, so
+the bag would read — and every frame's fingerprint would be of a zstd frame rather than the message,
+and no AV header would decode, so a full rig would come back with no point fields, no calibration
+and no ego trajectory. A wrong answer is worse than a refusal.
+
 The SQLite reader is Veridex's own, hand-written and bounds-checked for the same reason the HDF5 and
 Zarr readers are: a `.db3` is an untrusted file, and a general-purpose database engine will follow a
 page chain a corrupt header points into with allocations no ingest budget can charge. This one

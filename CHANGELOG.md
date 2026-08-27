@@ -239,6 +239,31 @@ reproduced before it was fixed.*
 
 ### Added
 
+- **Compressed rosbag2 bags (`.db3.zstd`) are read directly.** `ros2 bag record --compression-mode
+  file --compression-format zstd` compresses each finished shard and deletes the original, which is
+  how any recording large enough to care about is stored — so the bags most worth checking were
+  exactly the ones Veridex turned away with "unsupported format". They are now ingested like any
+  other shard.
+
+  The shard is unpacked under the same decompression budget that bounds every other container in the
+  crate, and bounded *during* the read rather than charged after it: the cap handed to the decoder is
+  what the budget has left. The difference is not theoretical — a fixture that unpacks to 96 MiB from
+  3 KB reports `requested: 67108865` (one byte past the budget) rather than `100663296`, which is
+  what an implementation that decompressed first and charged afterwards would report, having already
+  spent the memory it is being refused for.
+
+  A compressed bag and the same bag uncompressed produce identical streams, frames, timestamps and
+  content hashes; only the dataset's name differs. That includes the name: `shard_0.db3.zstd`'s file
+  stem is `shard_0.db3`, and taking it would have identified the same recording differently depending
+  on how it was stored — and the id is bound into the content hash, so a certificate issued over the
+  uncompressed bag would not have verified against the compressed one.
+
+  Per-*message* compression (`--compression-mode message`) is refused by name. Those bags' tables are
+  plain, so Veridex would read them — and every frame's fingerprint would be of a zstd frame rather
+  than the message, and no AV message header would decode, so a full sensor rig would come back with
+  no point fields, no calibration and no ego trajectory. A wrong answer is worse than a refusal, and
+  the refusal names `ros2 bag convert` as the way out.
+
 - **ROS 2 rosbag2 (`.db3`) is the eighth format.** rosbag2 is what a ROS 2 robot records by default
   and where most existing robot logs are sitting, and until now Veridex could only read the *other*
   storage plugin the same recorder writes. `veridex check` now takes a bag directory (`metadata.yaml`

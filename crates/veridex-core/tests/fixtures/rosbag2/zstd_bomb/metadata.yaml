@@ -1,0 +1,15 @@
+rosbag2_bagfile_information:
+  version: 5
+  storage_identifier: sqlite3
+  relative_file_paths:
+    - zstd_bomb_0.db3.zstd
+  duration:
+    nanoseconds: 0
+  starting_time:
+    nanoseconds_since_epoch: 1700000000000000000
+  message_count: 0
+  topics_with_message_count:
+
+  compression_format: "zstd"
+  compression_mode: "FILE"
+  ros_distro: humble

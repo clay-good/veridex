@@ -33,7 +33,7 @@ Veridex Trust Report
 
 - **One command, any format.** LeRobot v3, RLDS/TFDS (what Open X-Embodiment ships in), HDF5 (what
   robomimic and most lab collectors write), Zarr (what Diffusion Policy and UMI ship in), MCAP,
-  ROS 2 rosbag2 (`.db3` — what a ROS 2 robot records by default), CAN+DBC, and ASAM MDF/MF4 all map
+  ROS 2 rosbag2 (`.db3` / `.db3.zstd` — what a ROS 2 robot records by default), CAN+DBC, and ASAM MDF/MF4 all map
   into one Canonical Dataset Model, so you check them the same way — no per-format tooling.
 - **Catches the failures that quietly ruin training.** Clock skew across sensors, broken episode
   boundaries, timeline gaps, duplicate frames, a video whose frame count no longer matches the
@@ -308,9 +308,10 @@ re-encoded video behind a camera stream; the v1 trust-score rubric, the `standar
 readiness profile;
 terminal, JSON, SARIF 2.1.0, and self-contained HTML reporting, each carrying rollups by category,
 episode and stream, and each shareable through `--redact`; **LeRobot v3, RLDS/TFDS, HDF5, Zarr, MCAP and ROS 2 rosbag2 (both with
-ROS-message decode into an autonomy rig; rosbag2 reads the `sqlite3` storage plugin through Veridex's
-own bounds-checked SQLite reader, reconciles the bag against its `metadata.yaml` message total, and
-discloses a message on an undeclared topic as unread rather than dropping it), CAN+DBC, and ASAM
+ROS-message decode into an autonomy rig; rosbag2 reads the `sqlite3` storage plugin — plain or
+zstd-compressed — through Veridex's own bounds-checked SQLite reader, reconciles the bag against its
+`metadata.yaml` message total, and discloses a message on an undeclared topic as unread rather than
+dropping it), CAN+DBC, and ASAM
 MDF/MF4 adapters** with a passing cross-format
 neutrality gate (the same logical dataset yields equivalent CDMs as LeRobot v3 and as MCAP); descriptive scenario-dimension coverage and **scenario/map/sim
 reference extraction** (OpenSCENARIO / OpenDRIVE / OSI / simulator, with the version read from the

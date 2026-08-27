@@ -18,6 +18,7 @@ import os
 import shutil
 import sqlite3
 import struct
+import subprocess
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -164,7 +165,22 @@ def write_bag(path, topics, messages):
     db.close()
 
 
-def metadata_yaml(relative_paths, message_count, per_topic, duration_ns, start_ns):
+def zstd_compress(path):
+    """Compress `path` in place to `path + '.zstd'` with the real `zstd` CLI, as rosbag2 does.
+
+    Shelled out rather than done in Python because the point of every fixture here is that a
+    third-party writer produced it — the same reason the `.db3` files come from Python's `sqlite3`
+    and not from this repository's reader run backwards. Requires `zstd` on PATH; the fixtures are
+    committed, so only regenerating them needs it.
+    """
+    # `-o` because the CLI defaults to `.zst` while rosbag2 writes `.zstd`.
+    subprocess.run(["zstd", "-q", "-f", "-o", path + ".zstd", path], check=True)
+    os.remove(path)
+    return path + ".zstd"
+
+
+def metadata_yaml(relative_paths, message_count, per_topic, duration_ns, start_ns,
+                  compression_format="", compression_mode=""):
     topics = "\n".join(
         f"""    - topic_metadata:
         name: {name}
@@ -187,8 +203,8 @@ def metadata_yaml(relative_paths, message_count, per_topic, duration_ns, start_n
   message_count: {message_count}
   topics_with_message_count:
 {topics}
-  compression_format: ""
-  compression_mode: ""
+  compression_format: "{compression_format}"
+  compression_mode: "{compression_mode}"
   ros_distro: humble
 """
 
@@ -270,14 +286,22 @@ def per_topic_counts(msgs):
     return [(by_id[i][0], by_id[i][1], counts[i]) for i in sorted(counts)]
 
 
-def bag_dir(name, msgs, declared_count=None, topics=None):
-    """A rosbag2 *directory*: one `.db3` plus the `metadata.yaml` a recording always ships."""
+def bag_dir(name, msgs, declared_count=None, topics=None, compress=None):
+    """A rosbag2 *directory*: one `.db3` plus the `metadata.yaml` a recording always ships.
+
+    `compress` mirrors `--compression-mode`: `"FILE"` compresses the finished shard to `.db3.zstd`
+    (what rosbag2 does), `"MESSAGE"` only *declares* per-message compression, which is enough to
+    prove Veridex refuses it rather than reading the bag wrong.
+    """
     d = os.path.join(HERE, name)
     if os.path.exists(d):
         shutil.rmtree(d)
     os.makedirs(d)
     db = f"{name}_0.db3"
     write_bag(os.path.join(d, db), topics if topics else RIG_TOPICS, msgs)
+    if compress == "FILE":
+        zstd_compress(os.path.join(d, db))
+        db += ".zstd"
     span = max(m[1] for m in msgs) - min(m[1] for m in msgs)
     with open(os.path.join(d, "metadata.yaml"), "w") as f:
         f.write(
@@ -287,6 +311,8 @@ def bag_dir(name, msgs, declared_count=None, topics=None):
                 per_topic_counts(msgs),
                 span,
                 min(m[1] for m in msgs),
+                compression_format="zstd" if compress else "",
+                compression_mode=compress or "",
             )
         )
 
@@ -303,6 +329,36 @@ def main():
     # about the rig changed, so nothing about the rig's verdict should.
     noisy = sorted(rig_messages() + housekeeping_messages(), key=lambda m: m[1])
     bag_dir("housekeeping", noisy, topics=RIG_TOPICS + HOUSEKEEPING_TOPICS)
+
+    # The same rig, stored the way any recording large enough to care about is: `ros2 bag record
+    # --compression-mode file --compression-format zstd`, which compresses the finished shard and
+    # deletes the original.
+    bag_dir("compressed_rig", rig_messages(), compress="FILE")
+
+    # A bag that declares per-message compression. Veridex must refuse it by name: the tables are
+    # plain, so it *would* read — and would fingerprint compressed bodies and decode no headers,
+    # returning an empty rig from a full bag.
+    bag_dir("message_compressed", rig_messages(), compress="MESSAGE")
+
+    # A shard that unpacks to 96 MiB of nothing from a few kilobytes on disk. It is not a database
+    # and never gets as far as being read as one: the point is that the decompression budget stops
+    # the unpacking, rather than charging for it once the memory is already gone.
+    d = os.path.join(HERE, "zstd_bomb")
+    if os.path.exists(d):
+        shutil.rmtree(d)
+    os.makedirs(d)
+    bomb = os.path.join(d, "zstd_bomb_0.db3")
+    with open(bomb, "wb") as f:
+        for _ in range(96):
+            f.write(bytes(1024 * 1024))
+    zstd_compress(bomb)
+    with open(os.path.join(d, "metadata.yaml"), "w") as f:
+        f.write(
+            metadata_yaml(
+                ["zstd_bomb_0.db3.zstd"], 0, [], 0, START,
+                compression_format="zstd", compression_mode="FILE",
+            )
+        )
 
     # A recording whose `.db3` lost its tail (the process was killed) while metadata.yaml still
     # claims every message it meant to write.

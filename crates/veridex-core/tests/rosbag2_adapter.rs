@@ -198,6 +198,103 @@ fn a_payload_spread_across_overflow_pages_is_reassembled_exactly() {
 }
 
 #[test]
+fn a_compressed_bag_reads_to_the_same_recording_as_the_uncompressed_one() {
+    // `ros2 bag record --compression-mode file --compression-format zstd` compresses the finished
+    // shard to `.db3.zstd` and deletes the original, which is how any recording large enough to care
+    // about is stored. `compressed_rig/` and `clean_rig/` hold the identical messages; only the
+    // storage differs, so only the dataset's name may differ.
+    let plain = ingest("clean_rig").dataset;
+    let packed = ingest("compressed_rig").dataset;
+    assert_eq!(packed.id, "compressed_rig");
+    assert_eq!(
+        packed.episodes[0].streams, plain.episodes[0].streams,
+        "compression is storage, not content: every stream, frame, timestamp and content hash \
+         must come back identical"
+    );
+    assert_eq!(packed.calibration, plain.calibration);
+    assert_eq!(packed.episodes[0].ego_poses, plain.episodes[0].ego_poses);
+
+    // And the compression is recorded rather than smoothed away — how a dataset was stored is a
+    // fact about it.
+    assert!(
+        packed
+            .metadata
+            .iter()
+            .any(|(k, v)| k == "rosbag2_compression" && v == "zstd"),
+        "{:?}",
+        packed.metadata
+    );
+}
+
+#[test]
+fn a_bare_compressed_shard_is_named_as_the_recording_not_as_the_file() {
+    // `shard_0.db3.zstd`'s file stem is `shard_0.db3`. Taking that as the dataset id would name the
+    // same recording differently depending on whether it happened to be compressed, and the id is
+    // bound into the content hash — so a certificate issued over the uncompressed bag would not
+    // verify against the compressed one.
+    let packed = ingest("compressed_rig/compressed_rig_0.db3.zstd").dataset;
+    assert_eq!(packed.id, "compressed_rig_0");
+}
+
+#[test]
+fn per_message_compression_is_refused_by_name_rather_than_read_wrong() {
+    // The tables of a MESSAGE-mode bag are plain, so it would read — and every frame's content hash
+    // would fingerprint a zstd frame instead of the message, and no AV header would decode, so a
+    // full rig would come back with no point fields, no calibration and no ego trajectory. That is a
+    // wrong answer, which is worse than a refusal.
+    match ingest_with("message_compressed", &IngestOptions::default()) {
+        Err(IngestError::Parse { message, .. }) => {
+            assert!(message.contains("MESSAGE"), "{message}");
+            assert!(
+                message.contains("FILE"),
+                "names what it does read: {message}"
+            );
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_zstd_bomb_is_stopped_by_the_budget_rather_than_billed_for_afterwards() {
+    // `zstd_bomb/` is a few kilobytes on disk that unpack to 96 MiB. It is not a database and never
+    // reaches the reader: the decompressor is handed a cap of what the budget has left, so the
+    // unpacking stops at the bound instead of completing and then being charged — which is the
+    // difference between a refusal and an out-of-memory kill inside someone's CI gate.
+    match ingest_with("zstd_bomb", &IngestOptions::default()) {
+        Err(IngestError::DecompressionBudgetExceeded {
+            format_id,
+            limit,
+            requested,
+        }) => {
+            assert_eq!(format_id, "rosbag2");
+            // The proof that the read stopped rather than finished: `requested` is what was actually
+            // unpacked, and it is one byte past the budget — not the 96 MiB the shard holds. An
+            // implementation that decompressed first and charged afterwards would report
+            // 100,663,296 here, having already spent the memory it is being refused for.
+            assert_eq!(
+                requested,
+                limit + 1,
+                "the decompressor was capped at the budget, not run to completion"
+            );
+            assert!(requested < 96 * 1024 * 1024);
+        }
+        other => panic!("expected a decompression-budget error, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_aggressive_ratio_does_not_squeeze_an_honest_small_bag() {
+    // The budget scales with the source but keeps a floor, so a small bag stays readable under a
+    // ratio a user set for a different reason. Pinned because the bomb test above would also pass
+    // if the floor were dropped, and dropping it would refuse ordinary recordings.
+    let options = IngestOptions {
+        max_decompression_ratio: Some(1),
+        ..IngestOptions::default()
+    };
+    assert!(ingest_with("compressed_rig", &options).is_ok());
+}
+
+#[test]
 fn a_recording_short_of_its_manifest_is_a_coverage_hole_not_a_clean_read() {
     // `interrupted/` is the clean bag with its last 40 messages missing, and a `metadata.yaml` that
     // still closes with the full count — a recorder killed mid-flush. Reading it as a complete bag

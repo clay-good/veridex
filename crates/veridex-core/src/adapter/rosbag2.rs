@@ -74,6 +74,12 @@ struct BagManifest {
     ros_distro: Option<String>,
     message_count: Option<u64>,
     relative_file_paths: Vec<String>,
+    /// `zstd`, or absent for an uncompressed bag. rosbag2 writes the key with an empty value when
+    /// nothing was compressed, which is read as absent.
+    compression_format: Option<String>,
+    /// `FILE` (the whole `.db3` compressed after writing) or `MESSAGE` (each message body compressed
+    /// individually). Only the first is read; the second is refused by name.
+    compression_mode: Option<String>,
 }
 
 /// Read the handful of scalar keys Veridex uses out of a rosbag2 `metadata.yaml`.
@@ -117,6 +123,10 @@ fn parse_manifest(text: &str) -> BagManifest {
                 m.storage_identifier = Some(value.to_string())
             }
             "ros_distro" if !value.is_empty() => m.ros_distro = Some(value.to_string()),
+            "compression_format" if !value.is_empty() => {
+                m.compression_format = Some(value.to_string())
+            }
+            "compression_mode" if !value.is_empty() => m.compression_mode = Some(value.to_string()),
             "message_count" => m.message_count = value.parse().ok(),
             "relative_file_paths" => in_paths = true,
             _ => {}
@@ -215,13 +225,33 @@ fn parse_error(message: impl Into<String>) -> IngestError {
     }
 }
 
+/// Whether a shard's name says it is zstd-compressed.
+///
+/// `ros2 bag record --compression-mode file` writes the shard, then compresses the finished `.db3`
+/// to `<shard>.db3.zstd` and deletes the original — which is how any recording large enough to care
+/// about is stored, and the only thing that stood between Veridex and those bags.
+fn is_zstd_shard(path: &Path) -> bool {
+    // rosbag2 writes `.zstd`; the `zstd` CLI defaults to `.zst`, so a hand-compressed shard is
+    // recognized too.
+    matches!(
+        path.extension().and_then(|e| e.to_str()),
+        Some("zstd") | Some("zst")
+    ) && path
+        .file_stem()
+        .map(Path::new)
+        .and_then(Path::extension)
+        .and_then(|e| e.to_str())
+        == Some("db3")
+}
+
 impl Rosbag2Adapter {
-    /// Whether `path` is a `.db3` file.
+    /// Whether `path` is a `.db3` shard, compressed or not.
     fn is_db3(path: &Path) -> bool {
-        path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("db3")
+        path.is_file()
+            && (path.extension().and_then(|e| e.to_str()) == Some("db3") || is_zstd_shard(path))
     }
 
-    /// The `.db3` files inside a bag directory, in name order.
+    /// The `.db3` shards inside a bag directory, in name order.
     ///
     /// Found by listing the directory, not by following `relative_file_paths`: the manifest is
     /// content, and a content-supplied path is never resolved out of the dataset.
@@ -253,7 +283,38 @@ fn read_shard(
     frames: &mut super::FrameBudget,
     bytes_budget: &mut super::DecompressionBudget,
 ) -> Result<(), IngestError> {
-    let bytes = std::fs::read(path).map_err(|e| IngestError::Io(e.to_string()))?;
+    let raw = std::fs::read(path).map_err(|e| IngestError::Io(e.to_string()))?;
+    // A compressed shard is unpacked under the same budget that bounds every other container in this
+    // crate, and bounded *during* the read rather than charged after it: the cap handed to the
+    // decoder is what the budget has left, so a zstd bomb is stopped by the bound instead of merely
+    // billed for once the memory is gone. The whole `.db3` has to be resident either way — SQLite is
+    // a random-access format and the b-tree walk seeks — so this is one allocation, not a stream.
+    let bytes = if is_zstd_shard(path) {
+        let cap = bytes_budget.remaining().unwrap_or(u64::MAX);
+        let decoder = zstd::stream::read::Decoder::new(raw.as_slice()).map_err(|e| {
+            parse_error(format!(
+                "{}: the zstd stream could not be opened: {e}",
+                display(path)
+            ))
+        })?;
+        let mut out = Vec::new();
+        // `cap + 1` so a stream that would exactly exhaust the budget is still distinguishable from
+        // one that overruns it, which the charge below then refuses by name.
+        std::io::copy(
+            &mut std::io::Read::take(decoder, cap.saturating_add(1)),
+            &mut out,
+        )
+        .map_err(|e| {
+            parse_error(format!(
+                "{}: the zstd stream failed to decompress: {e}",
+                display(path)
+            ))
+        })?;
+        bytes_budget.take(FORMAT, out.len() as u64)?;
+        out
+    } else {
+        raw
+    };
     let db = SqliteDb::open(&bytes).map_err(|e| parse_error(format!("{}: {e}", display(path))))?;
 
     // --- topics ------------------------------------------------------------------------------
@@ -485,12 +546,12 @@ impl Adapter for Rosbag2Adapter {
                 super::dataset_id_from_path(path, FORMAT),
             )
         } else {
-            let id = path
-                .canonicalize()
-                .ok()
-                .as_deref()
-                .and_then(Path::file_stem)
-                .or_else(|| path.file_stem())
+            let resolved = path.canonicalize().ok();
+            let named = resolved.as_deref().unwrap_or(path);
+            // `shard_0.db3.zstd`'s stem is `shard_0.db3`; the dataset is `shard_0`, and a compressed
+            // bag must not be identified differently from the same bag uncompressed.
+            let id = Path::new(named.file_stem().unwrap_or_default())
+                .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or(FORMAT)
                 .to_string();
@@ -504,6 +565,27 @@ impl Adapter for Rosbag2Adapter {
                     version: Some(version.clone()),
                     supported: SUPPORTED_VERSIONS,
                 });
+            }
+        }
+        // Per-message compression puts a zstd frame in every `data` blob. Veridex would still read
+        // the bag — the tables are plain — but every frame's content hash would fingerprint a
+        // compressed body rather than the message, and no AV header would decode, so the rig CDM
+        // would come back empty from a bag that is full. That is a wrong answer, not a missing one,
+        // so the bag is refused by name.
+        if let Some(mode) = &manifest.compression_mode {
+            if !mode.eq_ignore_ascii_case("file") {
+                return Err(parse_error(format!(
+                    "the bag declares compression mode `{mode}`; this adapter reads `FILE` mode \
+                     (whole-shard compression). Re-record or convert with `ros2 bag convert` to \
+                     file-mode or uncompressed storage"
+                )));
+            }
+        }
+        if let Some(fmt) = &manifest.compression_format {
+            if !fmt.eq_ignore_ascii_case("zstd") {
+                return Err(parse_error(format!(
+                    "the bag declares compression format `{fmt}`; this adapter decompresses `zstd`"
+                )));
             }
         }
         // A bag recorded through a different storage plugin keeps its messages somewhere this
@@ -658,6 +740,9 @@ impl Adapter for Rosbag2Adapter {
         }
         if let Some(s) = &manifest.storage_identifier {
             metadata.push(("rosbag2_storage".into(), s.clone()));
+        }
+        if let Some(fmt) = &manifest.compression_format {
+            metadata.push(("rosbag2_compression".into(), fmt.clone()));
         }
         if let Some(distro) = &manifest.ros_distro {
             metadata.push(("ros_distro".into(), distro.clone()));

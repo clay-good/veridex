@@ -42,8 +42,10 @@ No code until this change is approved; this is the build plan.
       that is absent or names a path out of the bag, and a `metadata.yaml` `message_count` the
       recording falls short of, all become `unread_sources` → `COVERAGE.SOURCE_UNREAD`. Fixtures are
       real Python-`sqlite3` output (`tests/fixtures/rosbag2/generate_fixtures.py`), with golden
-      payload hashes pinning the overflow-chain reassembly. Follow-ups: the compressed bag storage
-      (`.db3.zstd`), per-topic QoS profiles, and metadata-only ingestion from `metadata.yaml` alone.
+      payload hashes pinning the overflow-chain reassembly. `--compression-mode file` bags
+      (`.db3.zstd`) are decompressed under the ingest budget, bounded during the read; per-*message*
+      compression is refused by name rather than read wrong. Follow-ups: per-topic QoS profiles, and
+      metadata-only ingestion from `metadata.yaml` alone.
 - [~] ASAM MDF/MF4 adapter → CDM; record unmapped channels. `adapter/mdf4.rs` walks the MDF 4.x block
       graph (`##HD` → `##DG` → `##CG` → `##CN`), uses each channel group's time master as the
       timeline, and emits one stream per measured channel, applying identity/linear (`##CC` type 1)
