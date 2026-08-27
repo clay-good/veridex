@@ -62,10 +62,12 @@ maturin publish -m crates/veridex-py/Cargo.toml
 
 ## What is in the published crate, and what is not
 
-`veridex-core` excludes `tests/fixtures/**` — 2.3 MiB of binary Zarr and HDF5 stores that only this
-repo's own tests read. The tests themselves are packaged; they will not all pass from the published
-crate alone, which is why the source of truth for "does this work" is CI over the repository, not
-`cargo test` over the tarball.
+`veridex-core` excludes `tests/fixtures/**` — 3.5 MiB of binary Zarr, HDF5 and rosbag2 stores that
+only this repo's own tests read. The tests themselves are packaged; they will not all pass from the
+published crate alone, which is why the source of truth for "does this work" is CI over the
+repository, not `cargo test` over the tarball. `veridex-cli`'s end-to-end rosbag2 test reads those
+same fixtures across the workspace (`../veridex-core/tests/fixtures/rosbag2/`), so the caveat covers
+it too — nothing a *user* of either crate compiles or runs depends on a fixture.
 
 Check what a release would actually contain before sending it:
 

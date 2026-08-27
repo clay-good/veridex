@@ -11,6 +11,8 @@
 //! overflow-page chain, where an off-by-one in the local/overflow split produces bytes that still
 //! look like a message.
 
+use std::collections::BTreeMap;
+use std::io::Cursor;
 use std::path::PathBuf;
 
 use veridex_core::adapter::{
@@ -504,4 +506,118 @@ fn the_same_bag_read_twice_produces_the_same_content_hash() {
     // different name and carries none of the manifest's provenance.
     let bare = veridex_core::canonical::content_hash(&ingest("bare.db3").dataset);
     assert_ne!(a, bare);
+}
+
+// ---- cross-format neutrality ----
+
+/// (stream name, modality, frame timestamps).
+type StreamSig = (String, Modality, Vec<i64>);
+/// Per-episode structural signature: (episode index, its streams).
+type EpisodeSig = (u64, Vec<StreamSig>);
+
+/// (stream name, modality, frame timestamps) — the structural signature the ingestion spec's
+/// equivalence is defined over. Format-specific fields (clock id, declared rate, provenance) are
+/// deliberately excluded: a rosbag2 log clock is `rosbag2-log` and an MCAP one is `mcap-log`, and
+/// they are not meant to be the same string.
+fn signature(d: &veridex_core::cdm::Dataset) -> Vec<EpisodeSig> {
+    let mut eps: Vec<EpisodeSig> = d
+        .episodes
+        .iter()
+        .map(|ep| {
+            let mut streams: Vec<StreamSig> = ep
+                .streams
+                .iter()
+                .map(|s| {
+                    (
+                        s.name.clone(),
+                        s.modality,
+                        s.frames.iter().map(|f| f.ts).collect(),
+                    )
+                })
+                .collect();
+            streams.sort_by(|a, b| a.0.cmp(&b.0));
+            (ep.index, streams)
+        })
+        .collect();
+    eps.sort_by_key(|(i, _)| *i);
+    eps
+}
+
+/// Write an MCAP carrying the given `(schema, topic, log times)` channels.
+fn write_mcap(path: &std::path::Path, channels: &[(String, String, Vec<u64>)]) {
+    let mut out = Vec::new();
+    {
+        let mut w = mcap::Writer::new(Cursor::new(&mut out)).expect("an mcap writer");
+        for (schema, topic, times) in channels {
+            let sid = w.add_schema(schema, "ros2msg", b"").unwrap();
+            let cid = w.add_channel(sid, topic, "cdr", &BTreeMap::new()).unwrap();
+            for (seq, &t) in times.iter().enumerate() {
+                w.write_to_known_channel(
+                    &mcap::records::MessageHeader {
+                        channel_id: cid,
+                        sequence: seq as u32,
+                        log_time: t,
+                        publish_time: t,
+                    },
+                    b"x",
+                )
+                .unwrap();
+            }
+        }
+        w.finish().unwrap();
+    }
+    std::fs::write(path, &out).unwrap();
+}
+
+#[test]
+fn the_same_recording_as_a_bag_and_as_mcap_yields_equivalent_cdms() {
+    // rosbag2 and MCAP are the two storage plugins of one recorder, and the neutrality claim is that
+    // which one a team chose does not change what Veridex sees. This is the gate for that on the new
+    // adapter: take the bag fixture's own topics, ROS types and message times, replay them into an
+    // MCAP, and require the two CDMs to carry the same episodes, streams, modalities and timestamps.
+    //
+    // Worth having because the two paths reach the same place by different routes — one reads a
+    // SQLite `topics` table, the other MCAP channel and schema records — and a divergence would show
+    // up as a dataset that changes shape when a team switches storage, which is precisely the thing
+    // a cross-format verifier must not do.
+    let bag = ingest("clean_rig").dataset;
+
+    // The ROS type per topic, as `clean_rig` records them.
+    let types: &[(&str, &str)] = &[
+        ("/camera/front/camera_info", "sensor_msgs/msg/CameraInfo"),
+        ("/camera/front/image_raw", "sensor_msgs/msg/Image"),
+        ("/imu/data", "sensor_msgs/msg/Imu"),
+        ("/lidar/points", "sensor_msgs/msg/PointCloud2"),
+        ("/odom", "nav_msgs/msg/Odometry"),
+        ("/tf_static", "tf2_msgs/msg/TFMessage"),
+    ];
+    let channels: Vec<(String, String, Vec<u64>)> = types
+        .iter()
+        .map(|(topic, ty)| {
+            let times = bag.episodes[0]
+                .streams
+                .iter()
+                .find(|s| s.name == *topic)
+                .unwrap_or_else(|| panic!("the bag has {topic}"))
+                .frames
+                .iter()
+                .map(|f| f.ts as u64)
+                .collect();
+            (ty.to_string(), topic.to_string(), times)
+        })
+        .collect();
+
+    let dir = tempfile::tempdir().unwrap();
+    let mcap_path = dir.path().join("equiv.mcap");
+    write_mcap(&mcap_path, &channels);
+    let via_mcap = veridex_core::adapter::mcap::McapAdapter
+        .ingest(&Source::Local(mcap_path), &IngestOptions::default())
+        .expect("mcap ingest")
+        .dataset;
+
+    assert_eq!(
+        signature(&bag),
+        signature(&via_mcap),
+        "one recording stored two ways must produce equivalent CDMs"
+    );
 }

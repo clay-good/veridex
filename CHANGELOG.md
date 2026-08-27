@@ -257,6 +257,21 @@ reproduced before it was fixed.*
 
 ### Added
 
+- **rosbag2 is held to the cross-format neutrality gate.** The claim behind Veridex is that which
+  format a team stores their data in does not change what the tool sees, and until now that was
+  proven for one pair (LeRobot ⇄ MCAP). rosbag2 and MCAP are the two storage plugins of *one*
+  recorder, so a divergence between them would show up as a dataset that changes shape when a team
+  switches storage — the one thing a cross-format verifier must not do. A new gate replays the bag
+  fixture's own topics, ROS types and message times into an MCAP and requires the two CDMs to carry
+  the same episodes, streams, modalities and timestamps. The two paths reach that shape by different
+  routes: one reads a SQLite `topics` table, the other MCAP channel and schema records.
+
+  A rosbag2 end-to-end test now runs through the real binary as well: check, certify, verify offline,
+  and a certificate that correctly refuses to verify against a different bag. The parts that make a
+  certificate portable — autodetection, the dataset id taken from the path, the content hash — live
+  between the adapter and the CLI, so they are worth exercising there. It also pins the split
+  recording at CLI level, where the shard-ordering regression would show as exit 20.
+
 - **Compressed rosbag2 bags (`.db3.zstd`) are read directly.** `ros2 bag record --compression-mode
   file --compression-format zstd` compresses each finished shard and deletes the original, which is
   how any recording large enough to care about is stored — so the bags most worth checking were

@@ -172,6 +172,101 @@ fn temp_dir(tag: &str) -> std::path::PathBuf {
     p
 }
 
+/// A ROS 2 rosbag2 bag directory, from the core crate's committed fixtures.
+fn rosbag2_fixture(name: &str) -> String {
+    format!(
+        "{}/../veridex-core/tests/fixtures/rosbag2/{name}",
+        env!("CARGO_MANIFEST_DIR")
+    )
+}
+
+#[test]
+fn a_rosbag2_bag_goes_through_the_whole_trust_flow() {
+    // The end-to-end contract for the newest format, through the real binary: a ROS 2 bag is
+    // checked, certified, and verified offline like any other dataset. Worth running at this level
+    // rather than only against the adapter, because the parts that make a certificate portable —
+    // autodetection, the dataset id taken from the path, the content hash — all live between the
+    // adapter and the CLI.
+    let bag = rosbag2_fixture("clean_rig");
+
+    let (code, stdout, _) = run(&["check", &bag, "--json"]);
+    assert_eq!(code, 10, "the clean bag passes with warnings");
+    let report: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON report");
+    assert_eq!(report["verdict"]["status"], "pass-with-warnings");
+    let hash = report["verdict"]["cdm_content_hash"]
+        .as_str()
+        .expect("a bound content hash")
+        .to_string();
+
+    // The compressed copy of the same recording differs only in its name, so it reports the same
+    // findings — and a different hash, because the dataset id is part of what is bound.
+    let (code, packed, _) = run(&["check", &rosbag2_fixture("compressed_rig"), "--json"]);
+    assert_eq!(code, 10);
+    let packed: serde_json::Value = serde_json::from_str(&packed).expect("valid JSON report");
+    assert_eq!(
+        packed["verdict"]["findings"].as_array().map(Vec::len),
+        report["verdict"]["findings"].as_array().map(Vec::len),
+        "compression is storage, not content"
+    );
+
+    let dir = temp_dir("rosbag2-flow");
+    let key = dir.join("issuer");
+    let cert = dir.join("bag.veridex.json");
+    let (code, _, stderr) = run(&["keygen", key.to_str().unwrap()]);
+    assert_eq!(code, 0, "{stderr}");
+    // `certify` exits with the *verdict's* code, not its own success — so a `certify && publish`
+    // pipeline is not green over a dataset that failed. This bag passes with warnings, so 10.
+    let (code, _, stderr) = run(&[
+        "certify",
+        &bag,
+        "--key",
+        key.to_str().unwrap(),
+        "--out",
+        cert.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 10, "{stderr}");
+
+    let (code, stdout, stderr) = run(&[
+        "verify",
+        &bag,
+        "--certificate",
+        cert.to_str().unwrap(),
+        "--key",
+        &format!("{}.pub", key.to_str().unwrap()),
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    // `verify` prints the bound hash abbreviated, so match its prefix against what `check` reported:
+    // the two must be the same CDM, which is what makes the certificate portable.
+    assert!(
+        stdout.contains(&hash[..16]),
+        "the certificate binds the CDM `check` hashed ({hash}): {stdout}"
+    );
+
+    // And it does not verify against a different recording, which is the whole point of binding it.
+    let (code, _, _) = run(&[
+        "verify",
+        &rosbag2_fixture("skewed_rig"),
+        "--certificate",
+        cert.to_str().unwrap(),
+        "--key",
+        &format!("{}.pub", key.to_str().unwrap()),
+    ]);
+    assert_ne!(code, 0, "a certificate must not verify against another bag");
+}
+
+#[test]
+fn a_split_rosbag2_recording_passes_through_the_cli() {
+    // Twelve shards, read as one recording. A regression guard at the CLI level for the shard
+    // ordering: read by name rather than by number, this bag reports two TEMPORAL.NON_MONOTONIC
+    // errors and exits 20.
+    let (code, stdout, _) = run(&["check", &rosbag2_fixture("split")]);
+    assert_eq!(code, 10, "a sound split recording passes: {stdout}");
+    assert!(
+        !stdout.contains("NON_MONOTONIC"),
+        "shards must be read in recording order: {stdout}"
+    );
+}
+
 #[test]
 fn check_on_a_real_dataset_reports_and_exits_on_findings() {
     let dataset = fixture_dataset();
