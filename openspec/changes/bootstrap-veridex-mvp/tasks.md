@@ -48,7 +48,17 @@ the build plan.
       refused by name rather than mis-decoded, because a wrongly-decoded array is plausible numbers
       rather than an error. Boundaries that run backwards or past the arrays they index are refused;
       rows past the last boundary are disclosed. Tested against real `zarr`/`numcodecs` stores.
-- [~] Streaming/large-than-memory ingestion; remote (Hub) metadata-only ingestion. **Sampled
+- [~] Streaming/larger-than-memory ingestion. **Remote (Hub) metadata-only ingestion is in**
+      (`veridex check hf://org/name --metadata-only`, and the same from Python): `crate::remote`
+      fetches a fixed list of manifest paths over HTTPS to allowlisted Hub hosts, sends no
+      credential, caps each response and the total, host-checks every redirect, stages the manifest
+      in a temporary directory and hands it to the ordinary local adapter — so a remote and a local
+      read of one manifest are the same code on the same bytes. The dataset is identified by its
+      repository (`org/name`), and the run carries every metadata-only refusal. The socket sits
+      behind a `remote` cargo feature (on for the binary and the Python package, off for library
+      users) and everything above it behind a `FetchFile` trait, so the whole path is tested against
+      a fake Hub with no network. Downloading a remote dataset's *data* is refused by name; Veridex
+      validates rather than downloads. **Sampled
       ingestion is in** (`--sample-episodes` / `--sample-fraction` / `--sample-seed`, and the same
       arguments from Python): the LeRobot adapter resolves the draw from the declared episode set
       before reading any Parquet, so a skipped episode is never hashed, never accumulated into the
@@ -73,8 +83,8 @@ the build plan.
       in the verdict as `metadata_only` (and in its hash), every report prints it, and `certify` refuses
       it. An adapter must claim `Adapter::supports_metadata_only()` to be handed the option, so the six
       formats that keep their structure inside the container are refused by name, not silently degraded.
-      True streaming (never materializing the whole CDM) and remote Hub ingestion remain follow-ups;
-      `Source::Remote` is **refused** with `IngestError::NotImplemented` rather than silently ignored.
+      True streaming (never materializing the whole CDM) remains a follow-up;
+      a remote source that is not a readable Hub manifest is **refused** by name rather than silently ignored.
 - [x] **Gate test:** the same logical dataset as LeRobot v3 and MCAP yields equivalent CDMs
       (`tests/lerobot_adapter.rs::same_logical_dataset_yields_equivalent_cdms_across_formats`).
 

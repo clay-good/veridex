@@ -581,6 +581,9 @@ impl AdapterRegistry {
         source: &Source,
         options: &IngestOptions,
     ) -> Result<Ingested, IngestError> {
+        if let Source::Remote(spec) = source {
+            return self.ingest_remote(spec, options);
+        }
         check_source_exists(source)?;
         check_options_supported(source, options)?;
         let matches: Vec<&dyn Adapter> = self
@@ -612,6 +615,13 @@ impl AdapterRegistry {
         source: &Source,
         options: &IngestOptions,
     ) -> Result<Ingested, IngestError> {
+        if let Source::Remote(spec) = source {
+            // A remote read fetches a manifest and then ingests it locally, so the format is
+            // decided by what the manifest turns out to be — there is nothing here for `--format`
+            // to override that is not already determined.
+            let _ = format;
+            return self.ingest_remote(spec, options);
+        }
         check_source_exists(source)?;
         check_options_supported(source, options)?;
         match self.adapters.iter().find(|a| a.format_id() == format) {
@@ -626,6 +636,81 @@ impl AdapterRegistry {
                 requested: format.to_string(),
                 supported: self.supported_formats(),
             }),
+        }
+    }
+}
+
+impl AdapterRegistry {
+    /// Read a dataset's **manifest** from a remote repository and ingest that.
+    ///
+    /// Only ever a metadata-only read (see [`crate::remote`]): a full remote check would mean
+    /// downloading the dataset, and Veridex is a validator, not a downloader. The manifest is
+    /// fetched into a temporary directory and handed to the ordinary local path, so a remote run and
+    /// a local run of the same manifest are the same code reading the same bytes — the one thing
+    /// that keeps them from disagreeing.
+    ///
+    /// Nothing is written to the user's filesystem beyond that temporary directory, which is removed
+    /// when this returns.
+    fn ingest_remote(&self, spec: &str, options: &IngestOptions) -> Result<Ingested, IngestError> {
+        if !options.metadata_only {
+            return Err(IngestError::NotImplemented {
+                what: "reading a remote dataset's data",
+                hint: "a remote source can be checked from its manifest with --metadata-only; to check its data, fetch the dataset locally and check the path",
+            });
+        }
+        if options.sample.is_partial() {
+            return Err(IngestError::InvalidSample {
+                reason: "a remote read is already manifest-only; sampling episodes would describe a                          second, different partial coverage"
+                    .into(),
+            });
+        }
+        #[cfg(not(feature = "remote"))]
+        {
+            let _ = spec;
+            Err(IngestError::NotImplemented {
+                what: "remote ingestion",
+                hint: "this build of Veridex was compiled without the `remote` feature; rebuild                        with it, or fetch the dataset locally and check the path",
+            })
+        }
+        #[cfg(feature = "remote")]
+        {
+            self.ingest_remote_with(spec, options, &crate::remote::HubFetcher::new())
+        }
+    }
+
+    /// Read a remote dataset's manifest with the fetcher supplied, rather than a live HTTPS one.
+    ///
+    /// Public so the whole remote path — the staging, the identity override, the coverage, the CDM
+    /// that comes out — is exercised against a fake Hub in tests. A test that needs a network is a
+    /// test that does not run, and this is the layer where the interesting decisions are.
+    #[cfg(feature = "remote")]
+    pub fn ingest_remote_with(
+        &self,
+        spec: &str,
+        options: &IngestOptions,
+        fetch: &dyn crate::remote::FetchFile,
+    ) -> Result<Ingested, IngestError> {
+        {
+            let repo = crate::remote::HubRepo::parse(spec)?;
+            let tmp = tempfile::tempdir().map_err(|e| IngestError::Io(e.to_string()))?;
+            let dir = crate::remote::materialize(&repo, fetch, tmp.path())?;
+            let mut out = self.ingest(&Source::Local(dir), options)?;
+            // The dataset is the *repository*, not the temporary directory it was staged in. Two
+            // owners publishing a `pickplace` are two datasets, and the id is bound into the content
+            // hash — so it has to carry the owner.
+            out.dataset.id = repo.id();
+            out.dataset.metadata.push(("hub_repo".into(), repo.id()));
+            out.dataset
+                .metadata
+                .push(("hub_revision".into(), repo.revision.clone()));
+            out.report
+                .mapped_fields
+                .push("hub repository + revision -> dataset id and metadata".into());
+            out.report.omitted_fields.push(
+                "every file but the manifest (a remote read fetches `meta/` and the dataset card,                  and nothing else)"
+                    .into(),
+            );
+            Ok(out)
         }
     }
 }

@@ -39,12 +39,21 @@ jobs:
       - name: Test
         run: cargo test --all --all-features
 
+      # The `remote` feature is off by default, so a library user embedding `veridex-core` compiles
+      # no TLS stack. That build has to keep working, and `--all-features` never exercises it: every
+      # `#[cfg(not(feature = "remote"))]` arm is only compiled here.
+      - name: Test (default features)
+        run: cargo test -p veridex-core
+
       # docs.rs builds the published crate's documentation, and a failure there is invisible from
       # crates.io — a broken intra-doc link or a doc example that stopped compiling ships as a page
       # that never renders. Scoped to the two published crates: `veridex-py`'s lib and the `veridex`
       # binary collide on an output filename (rust-lang/cargo#6313), which is noise, not a defect.
+      # `--all-features` because that is what docs.rs is configured to build (see
+      # `[package.metadata.docs.rs]`), and the default-feature build does not compile the remote
+      # reader at all — a broken link inside it would ship to docs.rs unseen.
       - name: Docs
-        run: cargo doc --no-deps -p veridex-core -p veridex-cli
+        run: cargo doc --no-deps --all-features -p veridex-core -p veridex-cli
         env:
           RUSTDOCFLAGS: -D warnings
 

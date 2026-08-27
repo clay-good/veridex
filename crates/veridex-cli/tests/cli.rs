@@ -972,12 +972,34 @@ fn a_refusal_names_the_thing_that_was_wrong() {
         "must name the value, not blame the source: {stderr}"
     );
 
-    // A remote source is refused because remote ingestion is not built — not because the URL is a
-    // mistyped path, which is what "no such file or directory: https://…" reads as.
-    let (code, _, stderr) = run(&["check", "https://huggingface.co/datasets/x"]);
+    // A remote source is refused for what is actually true of it — not because the URL is a mistyped
+    // path, which is what "no such file or directory: https://…" reads as. Veridex reads a remote
+    // dataset's *manifest*, so a bare remote check names the option that would work.
+    let (code, _, stderr) = run(&["check", "https://huggingface.co/datasets/acme/x"]);
     assert_eq!(code, 2);
     assert!(
-        stderr.contains("remote ingestion is not implemented"),
+        stderr.contains("--metadata-only"),
+        "unexpected stderr {stderr}"
+    );
+    assert!(
+        !stderr.contains("no such file"),
+        "unexpected stderr {stderr}"
+    );
+
+    // And a remote scheme Veridex does not read says which one it is, rather than complaining that
+    // it is not a Hub reference — the user never claimed it was.
+    let (code, _, stderr) = run(&["check", "s3://bucket/key", "--metadata-only"]);
+    assert_eq!(code, 2);
+    assert!(
+        stderr.contains("`s3://` is not a source"),
+        "unexpected stderr {stderr}"
+    );
+
+    // A malformed Hub reference is reported as that, not as a missing directory.
+    let (code, _, stderr) = run(&["check", "hf://owner-with-no-name", "--metadata-only"]);
+    assert_eq!(code, 2);
+    assert!(
+        stderr.contains("`owner/name`"),
         "unexpected stderr {stderr}"
     );
 

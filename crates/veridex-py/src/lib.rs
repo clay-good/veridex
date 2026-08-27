@@ -19,8 +19,19 @@ fn to_py_err(e: impl std::fmt::Display) -> PyErr {
     PyValueError::new_err(e.to_string())
 }
 
+/// The source a path argument names — the same rule the CLI applies, so `veridex.check("hf://…",
+/// metadata_only=True)` behaves identically to `veridex check hf://… --metadata-only`.
+///
+/// A remote source Veridex cannot read is still refused by the core, by name; the point of drawing
+/// the distinction here is that a remote reference must not be read as a relative path that happens
+/// not to exist.
 fn source_for(path: &str) -> Source {
-    Source::Local(std::path::PathBuf::from(path))
+    const REMOTE_SCHEMES: &[&str] = &["hf://", "http://", "https://", "s3://", "gs://"];
+    if REMOTE_SCHEMES.iter().any(|s| path.starts_with(s)) {
+        Source::Remote(path.to_string())
+    } else {
+        Source::Local(std::path::PathBuf::from(path))
+    }
 }
 
 /// Current Unix time (seconds) as a string. The core never reads a clock (certificate timestamps are

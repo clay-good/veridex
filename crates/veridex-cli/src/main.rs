@@ -484,12 +484,29 @@ fn ingest_options(args: &Args) -> Result<IngestOptions, String> {
 }
 
 /// Ingest the dataset named by `args`, autodetecting or honoring `--format`.
+/// The source a path argument names: a remote repository when it carries a remote scheme, a local
+/// path otherwise.
+///
+/// Drawn here rather than in the core because the core is handed a `Source`, not a string, and the
+/// distinction is about what the *user typed*. A remote source that Veridex cannot read is still
+/// refused by name — `veridex_core::adapter` says which of "not a Hub reference", "this build has no
+/// remote support", and "a remote read is manifest-only" applies — rather than being read as a
+/// relative path that happens not to exist.
+fn source_for(path: &str) -> Source {
+    const REMOTE_SCHEMES: &[&str] = &["hf://", "http://", "https://", "s3://", "gs://"];
+    if REMOTE_SCHEMES.iter().any(|s| path.starts_with(s)) {
+        Source::Remote(path.to_string())
+    } else {
+        Source::Local(PathBuf::from(path))
+    }
+}
+
 fn ingest(args: &Args) -> Result<veridex_core::Ingested, ExitCode> {
     let Some(path) = &args.path else {
         eprintln!("veridex: missing dataset path");
         return Err(ExitCode::from(EXIT_TOOL_ERROR));
     };
-    let source = Source::Local(PathBuf::from(path));
+    let source = source_for(path);
     let registry = veridex_core::default_registry();
     let opts = match ingest_options(args) {
         Ok(o) => o,
@@ -650,7 +667,7 @@ fn cmd_check(rest: &[String]) -> ExitCode {
             return ExitCode::from(EXIT_TOOL_ERROR);
         }
     };
-    let source = Source::Local(PathBuf::from(path));
+    let source = source_for(path);
     let registry = veridex_core::default_registry();
     // The thresholds the profile *names* win over the config's: a readiness judgement is only
     // meaningful at those. The ones it does not name stay as the operator configured them — see
@@ -2312,6 +2329,17 @@ fn cmd_watch(rest: &[String]) -> ExitCode {
     };
     let run_config = config.to_run_config();
     let registry = veridex_core::default_registry();
+    // `watch` re-validates a dataset *as it is written*, by fingerprinting its files between ticks.
+    // There is nothing to fingerprint on a remote repository, and no half-written shard to wait for,
+    // so it is refused here rather than after the "Watching …" banner has already been printed.
+    if matches!(source_for(path), Source::Remote(_)) {
+        eprintln!(
+            "veridex: watch works on a dataset being written to this filesystem; `{path}` is \
+             remote. Check it once from its manifest with `veridex check {path} --metadata-only`, \
+             or watch the local directory it is being recorded into."
+        );
+        return ExitCode::from(EXIT_TOOL_ERROR);
+    }
     let source = Source::Local(PathBuf::from(path));
     let watched = std::path::Path::new(path);
 
@@ -2552,6 +2580,11 @@ fn print_help() {
     println!();
     println!("USAGE:");
     println!("    veridex <command> [options] <dataset>");
+    println!();
+    println!(
+        "    <dataset> is a path, or `hf://org/name` to read a Hugging Face dataset's manifest"
+    );
+    println!("    without downloading it (requires --metadata-only).");
     println!();
     println!("COMMANDS:");
     for (name, desc) in COMMANDS {

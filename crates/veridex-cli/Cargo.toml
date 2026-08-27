@@ -18,7 +18,10 @@ name = "veridex"
 path = "src/main.rs"
 
 [dependencies]
-veridex-core = { path = "../veridex-core", version = "0.1.0" }
+# The binary people run is the one that should be able to read a Hub manifest, so the CLI turns the
+# core's `remote` feature on. A library user embedding `veridex-core` still gets no TLS stack unless
+# they ask for one.
+veridex-core = { path = "../veridex-core", version = "0.1.0", features = ["remote"] }
 serde_json.workspace = true
 
 # Only to put SIGPIPE back to its default disposition, which Rust's runtime turns off. Already in

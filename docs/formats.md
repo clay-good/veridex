@@ -238,6 +238,34 @@ the payload it will assemble before the bytes are copied. It is tested against f
 Python's own `sqlite3` — a reader proven only against a writer from the same repository proves the
 two agree with each other, not that either matches the format.
 
+## Reading a dataset you have not downloaded
+
+One source is not a file at all. `veridex check hf://org/name --metadata-only` reads a LeRobot
+dataset's manifest straight from the Hugging Face Hub — `meta/` and the dataset card, a few hundred
+kilobytes — and runs the manifest half of the catalog over it. It is the fastest way to answer "is
+this the dataset I think it is, and does it declare what I need" for a repository too large to pull.
+
+The list of files requested is fixed in Veridex's source, not discovered from anything the server
+returns, so a hostile repository cannot enlarge it. Requests and any redirect they follow are
+restricted to the Hub's own hosts over HTTPS. No credential is read from your environment or your
+filesystem, so a private dataset answers 401 and is reported as private — forwarding a token you
+happen to have to a host you did not name in the command is not a validator's decision to make.
+
+The manifest is staged in a temporary directory and read by the ordinary local adapter, so a remote
+check and a local check of the same manifest are the same code reading the same bytes. Nothing is
+written outside that directory, and it is removed when the command returns. Two things follow:
+
+- The dataset is identified as `org/name` — the repository, not the temporary directory. A local
+  copy of the same dataset is identified by its directory instead, so the two are deliberately
+  different datasets to the content hash: one is "this Hub repository", the other "this directory".
+- A remote run is a metadata-only run, with every refusal that comes with one. It cannot pass a score
+  gate and cannot be certified.
+
+Anything past the manifest is refused rather than downloaded — `veridex check hf://org/name` without
+`--metadata-only` says so and names the option that works. Veridex validates; it is not a downloader.
+This is also the only network path in the tool: a certificate still verifies with no network at all.
+
+
 ## What no adapter does
 
 None of them decode pixels, and none infer a clock a format does not record. Where a format cannot

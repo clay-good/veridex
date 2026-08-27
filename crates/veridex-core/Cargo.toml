@@ -31,6 +31,20 @@ toml = "0.8"
 flate2 = "1"
 zstd = "0.13"
 lz4_flex = { version = "0.14", default-features = false, features = ["std", "frame"] }
+# Only the remote manifest read (`hf://…` with `--metadata-only`) uses these, so they sit behind the
+# `remote` feature: a library user embedding the core does not compile a TLS stack to validate a
+# local dataset, and nothing else in the crate acquires a network dependency.
+ureq = { version = "3", optional = true }
+tempfile = { version = "3", optional = true }
+
+# docs.rs should document the remote reader, which is off by default.
+[package.metadata.docs.rs]
+all-features = true
+
+[features]
+default = []
+# Read a dataset's manifest from the Hugging Face Hub. See `src/remote.rs`.
+remote = ["dep:ureq", "dep:tempfile"]
 
 [dev-dependencies]
 proptest = "1"

@@ -386,6 +386,44 @@ reproduced before it was fixed.*
 
 ### Added
 
+- **Remote (Hub) ingestion — check a dataset you have not downloaded.** `veridex check
+  hf://org/name --metadata-only` reads a LeRobot dataset's manifest straight from the Hugging Face
+  Hub: `meta/` and the dataset card, a few hundred kilobytes beside a repository that is routinely
+  hundreds of gigabytes. It answers "is this the dataset I think it is, does it declare what I need,
+  and is its manifest self-consistent" in a second. `https://huggingface.co/datasets/org/name` works
+  too, and `@revision` reads a branch, tag or commit.
+
+  Everything about the design is a bound:
+
+  - **The file list is fixed in Veridex's source**, not discovered from anything the server returns,
+    so a hostile repository cannot enlarge what is requested. A test asserts the requests never
+    leave that list.
+  - **Requests and every redirect they follow are host-checked** against the Hub's own hosts, over
+    HTTPS only — a 302 is the server choosing where Veridex connects next, and an allowlist covering
+    only the first hop is not an allowlist. Plaintext is refused even to the right host.
+  - **No credential of any kind is sent.** No token is read from the environment or the filesystem,
+    so a private or gated dataset answers 401 and is reported as private. Quietly forwarding a
+    credential a user happens to have to a host they did not name in the command is not a
+    validator's decision to make.
+  - **Responses are capped** per file and in total, and the read stops at the cap rather than
+    trusting `Content-Length`.
+  - **A remote run is a metadata-only run**, with every refusal that comes with one: no score gate,
+    no certificate. A remote source *without* `--metadata-only` is refused by name — Veridex
+    validates, it does not download.
+
+  The manifest is staged in a temporary directory and read by the ordinary local adapter, so a
+  remote check and a local check of the same manifest are the same code reading the same bytes. The
+  dataset is identified as `org/name` — the repository, not the staging directory, which is
+  differently named on every run and must not reach the CDM; a test pins that two reads of one
+  dataset hash identically, and that two owners publishing the same dataset name do not.
+
+  The socket lives behind a `remote` cargo feature, on for the `veridex` binary and the Python
+  package, off for anyone embedding `veridex-core` — validating a local dataset should not require
+  compiling a TLS stack. Everything above the socket is behind a `FetchFile` trait and tested
+  against a fake Hub, so none of it needs a network to run in CI, and CI now builds and tests the
+  feature-off configuration too. Nothing else in Veridex touches a network: a certificate still
+  verifies offline, which is the property the whole trust chain rests on.
+
 - **`--metadata-only` reads a rosbag2 bag from its manifest.** A bag can be a terabyte, and
   `metadata.yaml` already lists every topic, its ROS type, and how many messages it holds — so
   `check` and `inspect` can now answer "is this the recording I think it is, and does it carry the

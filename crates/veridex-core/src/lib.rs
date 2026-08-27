@@ -42,6 +42,7 @@ pub mod media;
 pub mod pipeline;
 pub mod profile;
 pub mod redact;
+pub mod remote;
 pub mod report;
 pub mod scenario;
 pub mod simref;

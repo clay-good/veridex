@@ -105,6 +105,7 @@ sequenceDiagram
 
 ```sh
 veridex check      <dataset> [--json | --sarif | --html] [--sample-episodes <n> | --sample-fraction <f> | --metadata-only]  # validate + report
+veridex check      hf://org/name --metadata-only                  # check a Hub dataset's manifest, without downloading it
 veridex check      --print-config [--config f.toml] [--profile p]  # print the effective config
 veridex check      <dataset> --redact                             # a report you can share
 veridex check      <dataset> --sarif --out veridex.sarif          # write the report to a file
@@ -327,9 +328,12 @@ core pipeline, with a CLI⇄Python parity test run in CI; and **sampled ingestio
 it could otherwise be mistaken for a full check; and **metadata-only ingestion** (`--metadata-only`,
 LeRobot and rosbag2), which checks the manifest — the declared episodes and stored statistics for
 LeRobot, the topic inventory and recorder for a bag — and the provenance, without opening a data
-file, with the frame-dependent checks abstaining rather than misfiring. Next up: remote (Hub)
-ingestion — until then a remote source is refused with a clear error, never silently ignored, and
-`--metadata-only` on a format that keeps its structure inside the container is refused by name.
+file, with the frame-dependent checks abstaining rather than misfiring — including from the **Hugging
+Face Hub** (`veridex check hf://org/name --metadata-only`), which fetches only the manifest, over
+HTTPS to the Hub's own hosts, with no credentials sent and a fixed file list a server cannot enlarge.
+A remote source without `--metadata-only` is refused by name: Veridex validates, it does not
+download. `--metadata-only` on a format that keeps its structure inside the container is refused by
+name too.
 
 What Veridex does **not** tell you, stated plainly because silence would read as a pass: it never
 decodes a pixel or a point, so it says nothing about the *content* of your imagery — no PII or face
