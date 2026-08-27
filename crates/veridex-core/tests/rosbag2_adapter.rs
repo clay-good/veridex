@@ -366,6 +366,65 @@ fn a_recording_short_of_its_manifest_is_a_coverage_hole_not_a_clean_read() {
 }
 
 #[test]
+fn a_bag_that_is_still_recording_is_read_rather_than_refused() {
+    // rosbag2 writes `metadata.yaml` when the recorder *closes*. A bag mid-recording is a directory
+    // with a growing `.db3` and nothing else — and requiring the manifest refused it as an
+    // unrecognized format, which broke `veridex watch` on exactly the case it exists for: catching a
+    // clock skew while the robot is still driving, when it is worth the most.
+    let out = ingest("recording");
+    assert_eq!(out.report.format_id, "rosbag2");
+    assert_eq!(out.dataset.episodes[0].streams.len(), 6);
+    // No manifest, so no version — the honest answer rather than a guessed default.
+    assert_eq!(out.report.source_version, None);
+    assert!(
+        out.report
+            .omitted_fields
+            .iter()
+            .any(|f| f.starts_with("metadata.yaml (the bag has not written one")),
+        "what the manifest would have supplied is reported missing, not assumed: {:?}",
+        out.report.omitted_fields
+    );
+    // And exactly one line about it, not one per key it would have carried.
+    assert_eq!(
+        out.report
+            .omitted_fields
+            .iter()
+            .filter(|f| f.starts_with("metadata.yaml"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_live_write_ahead_log_is_data_this_run_did_not_read() {
+    // `recording/` carries a real, uncheckpointed WAL holding 50 committed messages that the `.db3`
+    // itself does not. This reader walks the shard's own pages and does not replay a write-ahead log,
+    // so those messages exist, are committed, and were not read — and a report that stayed quiet
+    // about them would speak for a recording it only partly saw.
+    let out = ingest("recording");
+    let frames: usize = out.dataset.episodes[0]
+        .streams
+        .iter()
+        .map(|s| s.frames.len())
+        .sum();
+    assert_eq!(
+        frames, 401,
+        "the 50 messages committed into the WAL are genuinely not in this CDM"
+    );
+    let unread = &out.report.unread_sources;
+    assert_eq!(unread.len(), 1, "{unread:?}");
+    assert_eq!(unread[0].source_path, "recording_0.db3-wal");
+    assert!(
+        unread[0].note.contains("write-ahead log"),
+        "{}",
+        unread[0].note
+    );
+
+    // A closed bag has no sidecar and discloses nothing.
+    assert!(ingest("clean_rig").report.unread_sources.is_empty());
+}
+
+#[test]
 fn a_message_on_an_undeclared_topic_is_reported_unread() {
     let out = ingest("orphan_topic.db3");
     // The one declared topic still maps; the orphan is not invented into a stream.
@@ -441,12 +500,27 @@ fn detection_claims_a_bag_directory_and_a_bare_db3_and_nothing_else() {
         adapter.detect(&Source::Local(fixtures().join("bare.db3"))),
         Detection::Yes { version: None }
     );
-    // The fixture directory itself has `.db3` files in it but no `metadata.yaml`, so it is not
-    // claimed as a bag.
+    // A bag still recording has written no manifest yet, so it is claimed with no version rather
+    // than refused — `veridex watch` depends on this.
     assert_eq!(
-        adapter.detect(&Source::Local(fixtures())),
+        adapter.detect(&Source::Local(fixtures().join("recording"))),
+        Detection::Yes { version: None }
+    );
+    // A directory with no shard in it is not a bag, manifest or not.
+    let empty = tempfile::tempdir().unwrap();
+    assert_eq!(
+        adapter.detect(&Source::Local(empty.path().to_path_buf())),
+        Detection::No
+    );
+    std::fs::write(
+        empty.path().join("metadata.yaml"),
+        "rosbag2_bagfile_information:\n",
+    )
+    .unwrap();
+    assert_eq!(
+        adapter.detect(&Source::Local(empty.path().to_path_buf())),
         Detection::No,
-        "a directory without a metadata.yaml is not autodetected as a bag"
+        "a metadata.yaml with no .db3 beside it belongs to some other tool"
     );
 }
 

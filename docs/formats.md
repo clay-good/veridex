@@ -186,6 +186,21 @@ would fail a sound bag. A bare `.db3` has no manifest at all, so there is nothin
 against and no recording distribution to record — and `inspect` says exactly that rather than
 leaving you to assume it was checked.
 
+A bag that is **still being recorded** is read too, which is what makes `veridex watch` useful on
+one: point it at the directory while the robot is driving and each tick re-validates what has landed.
+rosbag2 writes `metadata.yaml` when the recorder *closes*, so a bag in progress is a directory with a
+growing `.db3` and nothing else — and Veridex says what the missing manifest would have supplied
+rather than assuming it. If SQLite is running in WAL mode, the `.db3-wal` beside the shard holds
+committed messages the shard itself does not carry; Veridex reads the shard's own pages and does not
+replay a write-ahead log, so those messages are disclosed as unread coverage rather than quietly
+missed:
+
+```sh
+cargo run -p veridex-cli -- watch crates/veridex-core/tests/fixtures/rosbag2/recording --iterations 1
+#   COVERAGE.SOURCE_UNREAD — recording_0.db3-wal: a SQLite write-ahead log sits beside this
+#   shard, holding transactions the `.db3` itself does not carry
+```
+
 A **split** recording — `ros2 bag record --max-bag-size`, which rolls a long bag into
 `bag_0.db3` … `bag_11.db3` — is read as one recording, in the order it was written. That order is
 not name order: a lexicographic sort puts `_10` and `_11` ahead of `_2`, and since frames keep the

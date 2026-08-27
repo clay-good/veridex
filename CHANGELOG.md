@@ -10,6 +10,28 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **A bag that was still recording could not be watched.** `veridex watch` exists to re-validate a
+  dataset *while it is being recorded* — where catching a clock skew is worth the most, because the
+  robot is still driving. rosbag2 writes `metadata.yaml` when the recorder closes, so a bag in
+  progress is a directory holding a growing `.db3` and nothing else, and requiring the manifest to
+  recognize a bag directory refused exactly that case as an unrecognized format. The flagship pairing
+  did not work.
+
+  A directory holding a `.db3` is now a bag, manifest or not — no other adapter here claims one, so
+  there is nothing to be ambiguous with. What the manifest would have supplied is reported as
+  omitted rather than assumed: no declared message total to reconcile the recording against, no
+  recording distribution, no shard order beyond the shards' own numbering. A `metadata.yaml` with no
+  shard beside it is still not a bag; it belongs to some other tool.
+
+  While proving that, a second gap: **a SQLite write-ahead log beside a shard is data this run did
+  not read.** Under `journal_mode=WAL` — rosbag2's resilient storage preset — recently committed
+  messages live in `<shard>.db3-wal` until a checkpoint folds them back. Veridex walks the shard's
+  own pages and does not replay a write-ahead log, so those messages exist, are committed, and were
+  not seen. That is now a `COVERAGE.SOURCE_UNREAD` disclosure naming the log and saying to check the
+  bag again once the recorder has closed it. The fixture is a real uncheckpointed WAL holding 50
+  committed messages, and the test asserts both halves: 401 frames read, not 451, and the log named
+  as unread.
+
 - **A split recording failed because `bag_10` sorted before `bag_2`.** `ros2 bag record
   --max-bag-size` rolls a long bag into `bag_0.db3` … `bag_11.db3`, and the shards were read in
   lexicographic name order. Frames are appended to their stream in the order their shards are read,

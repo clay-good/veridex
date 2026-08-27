@@ -19,6 +19,7 @@ import shutil
 import sqlite3
 import struct
 import subprocess
+import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -397,6 +398,35 @@ def main():
                 START,
             )
         )
+
+    # A bag caught mid-recording: no `metadata.yaml` yet (rosbag2 writes it when the recorder
+    # closes) and a real, uncheckpointed write-ahead log holding 50 committed messages the `.db3`
+    # itself does not carry. Generated in a child process that exits without closing the connection,
+    # because a clean close checkpoints the WAL away — which is the whole thing being reproduced.
+    d = os.path.join(HERE, "recording")
+    if os.path.exists(d):
+        shutil.rmtree(d)
+    os.makedirs(d)
+    shard = os.path.join(d, "recording_0.db3")
+    write_bag(shard, RIG_TOPICS, rig_messages())
+    child = f"""
+import os, sqlite3
+db = sqlite3.connect({shard!r}, isolation_level=None)
+db.execute("PRAGMA journal_mode=WAL")
+db.execute("BEGIN")
+for i in range(50):
+    db.execute("INSERT INTO messages(topic_id, timestamp, data) VALUES (?,?,?)",
+               (1, 1700000002000000000 + i * 1000,
+                sqlite3.Binary(b"\\x00\\x01\\x00\\x00" + bytes(64))))
+db.execute("COMMIT")
+os._exit(0)
+"""
+    subprocess.run([sys.executable, "-c", child], check=True)
+    # The shared-memory index is a runtime artifact, not data; only the log itself is kept.
+    shm = shard + "-shm"
+    if os.path.exists(shm):
+        os.remove(shm)
+    assert os.path.getsize(shard + "-wal") > 0, "the WAL must survive for this fixture to mean anything"
 
     # A recording whose `.db3` lost its tail (the process was killed) while metadata.yaml still
     # claims every message it meant to write.

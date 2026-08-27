@@ -278,14 +278,20 @@ impl Rosbag2Adapter {
         Ok(out)
     }
 
-    /// Whether `dir` looks like a rosbag2 bag directory: a `metadata.yaml` beside at least one
-    /// `.db3`. Both are required — a `metadata.yaml` alone belongs to some other tool, and a
-    /// directory of `.db3` files with no manifest is not something to claim as a bag by autodetection
-    /// (point Veridex at the file, or pass `--format rosbag2`).
+    /// Whether `dir` is a rosbag2 bag directory: it holds at least one `.db3` shard.
+    ///
+    /// The `metadata.yaml` is **not** required, and requiring it was wrong. rosbag2 writes the
+    /// manifest when the recorder *closes*, so a bag that is still being recorded — a directory with
+    /// a growing `rec_0.db3` and nothing else — was refused as an unrecognized format. That is
+    /// exactly the case `veridex watch` exists for: re-validating a dataset while it records, which
+    /// is where catching a clock skew is worth the most. A directory holding a `.db3` is
+    /// unambiguous; no other adapter here claims one.
+    ///
+    /// What the manifest supplies is still reported as missing when it is absent, so nothing is
+    /// assumed in its place: no declared message total to reconcile the recording against, no
+    /// recording distribution, no shard order beyond the shards' own numbering.
     fn is_bag_dir(dir: &Path) -> bool {
-        dir.is_dir()
-            && dir.join("metadata.yaml").is_file()
-            && Rosbag2Adapter::shards_in(dir).is_ok_and(|s| !s.is_empty())
+        dir.is_dir() && Rosbag2Adapter::shards_in(dir).is_ok_and(|s| !s.is_empty())
     }
 }
 
@@ -585,6 +591,8 @@ impl Adapter for Rosbag2Adapter {
             return Detection::No;
         };
         if Rosbag2Adapter::is_bag_dir(path) {
+            // `None` when the bag is still recording and has written no manifest yet — the honest
+            // answer, and distinct from a bag that names a version.
             let version = std::fs::read_to_string(path.join("metadata.yaml"))
                 .ok()
                 .and_then(|t| parse_manifest(&t).version);
@@ -611,9 +619,13 @@ impl Adapter for Rosbag2Adapter {
 
         let is_dir = Rosbag2Adapter::is_bag_dir(path);
         let (shards, manifest, dataset_id) = if is_dir {
-            let text = std::fs::read_to_string(path.join("metadata.yaml"))
-                .map_err(|e| IngestError::Io(e.to_string()))?;
-            let manifest = parse_manifest(&text);
+            // Absent while the recorder is still running: read it if it is there, and report what it
+            // would have supplied as omitted if it is not.
+            let manifest = match std::fs::read_to_string(path.join("metadata.yaml")) {
+                Ok(text) => parse_manifest(&text),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => BagManifest::default(),
+                Err(e) => return Err(IngestError::Io(e.to_string())),
+            };
             let found =
                 Rosbag2Adapter::shards_in(path).map_err(|e| IngestError::Io(e.to_string()))?;
             let ordered = in_manifest_order(found, &manifest.relative_file_paths);
@@ -708,6 +720,33 @@ impl Adapter for Rosbag2Adapter {
                 });
             }
         }
+        // A SQLite sidecar beside a shard holds committed transactions the main file does not yet.
+        // This reader walks the shard's own pages — it does not replay a write-ahead log or roll back
+        // a hot journal — so a bag caught mid-recording under `journal_mode=WAL` has messages that
+        // exist, are committed, and were not read. Silence there is the shape of defect this whole
+        // crate is built to refuse: a report that speaks for a recording it only partly saw.
+        for shard in &shards {
+            for (suffix, what) in [
+                ("-wal", "write-ahead log"),
+                ("-journal", "rollback journal"),
+            ] {
+                let sidecar = shard.with_file_name(format!("{}{suffix}", display(shard)));
+                let has_content = std::fs::metadata(&sidecar).is_ok_and(|m| m.len() > 0);
+                if has_content {
+                    unread_sources.push(UnmappedField {
+                        source_path: display(&sidecar),
+                        note: format!(
+                            "a SQLite {what} sits beside this shard, holding transactions the \
+                             `.db3` itself does not carry — a recording still in progress. Veridex \
+                             reads the shard's committed pages and does not replay it, so those \
+                             messages were not read; check the bag again once the recorder has \
+                             closed it"
+                        ),
+                    });
+                }
+            }
+        }
+
         for (topic_id, count) in &contents.orphan_topics {
             unread_sources.push(UnmappedField {
                 source_path: format!("messages.topic_id={topic_id}"),
@@ -912,6 +951,15 @@ impl Adapter for Rosbag2Adapter {
             omitted_fields.push(
                 "metadata.yaml (a bare .db3 was checked, so the bag declares no message count to \
                  compare against, no storage identifier, and no recorder)"
+                    .into(),
+            );
+        } else if !path.join("metadata.yaml").is_file() {
+            // One line, not three: with no manifest at all, naming each key it would have carried
+            // reads as three separate gaps in a bag that has one.
+            omitted_fields.push(
+                "metadata.yaml (the bag has not written one — rosbag2 writes the manifest when the \
+                 recorder closes, so this is what a recording in progress looks like; there is no \
+                 declared message count to reconcile the recording against and no recorder identity)"
                     .into(),
             );
         } else {
