@@ -187,11 +187,60 @@ fn column_index(columns: &[String], want: &str) -> Option<usize> {
     columns.iter().position(|c| c == want)
 }
 
+/// Whether an `offered_qos_profiles` value declares **transient-local** (latched) durability.
+///
+/// `Some(true)` for transient-local, `Some(false)` for volatile, `None` for anything else — a
+/// profile that says nothing about durability, one this reader is not certain it understood, or
+/// several publishers that disagree. Read rather than inferred, and read conservatively, because
+/// this flag makes three checks abstain: a false `Some(true)` silences a sensor that genuinely died
+/// after one sample, which is worse than leaving the flag unset and living with a warning.
+///
+/// rosbag2 has written this column three ways across bag versions — a YAML sequence, a JSON array,
+/// and (recently) policy *names* rather than the `rmw` enum numbers — so the value is scanned for
+/// `durability` and only the four spellings below are accepted.
+pub(crate) fn declares_latched(qos: &str) -> Option<bool> {
+    let hay = qos.to_ascii_lowercase();
+    let mut verdict: Option<bool> = None;
+    for (at, _) in hay.match_indices("durability") {
+        let rest = &hay[at + "durability".len()..];
+        // Step over a `durability_policy`-style suffix and the quoting a JSON key carries, then
+        // the separator.
+        let rest = rest.trim_start_matches(|c: char| {
+            c.is_alphanumeric() || c == '_' || c == '"' || c == '\'' || c == ' '
+        });
+        let Some(rest) = rest.strip_prefix(':') else {
+            continue;
+        };
+        let token: String = rest
+            .trim_start_matches([' ', '"', '\''])
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        // rmw_qos_durability_policy_t: 1 = TRANSIENT_LOCAL, 2 = VOLATILE. 0 (system default) and 3
+        // (unknown) say nothing, and neither does a spelling not listed here.
+        let this = match token.as_str() {
+            "1" | "transient_local" => Some(true),
+            "2" | "volatile" => Some(false),
+            _ => None,
+        };
+        match (verdict, this) {
+            (_, None) => continue,
+            (None, some) => verdict = some,
+            // Two publishers offering different durability is not something to pick a winner from.
+            (Some(a), Some(b)) if a != b => return None,
+            _ => {}
+        }
+    }
+    verdict
+}
+
 /// A topic row: what the bag declares about one recorded topic.
 struct TopicRow {
     name: String,
     ros_type: String,
     serialization_format: Option<String>,
+    /// Whether the topic's offered QoS declares transient-local (latched) durability.
+    latched: Option<bool>,
 }
 
 /// A stream being accumulated across every `.db3` in the bag.
@@ -199,6 +248,8 @@ struct StreamBuilder {
     modality: Modality,
     ros_type: String,
     frames: Vec<Frame>,
+    /// From the topic's recorded QoS durability, when it states one unambiguously.
+    latched: Option<bool>,
     point_fields: Option<Vec<PointField>>,
     frame_id: Option<String>,
 }
@@ -413,6 +464,7 @@ fn read_shard(
         column_index(&cols, "type"),
     );
     let i_fmt = column_index(&cols, "serialization_format");
+    let i_qos = column_index(&cols, "offered_qos_profiles");
     let (Some(i_id), Some(i_name), Some(i_type)) = (i_id, i_name, i_type) else {
         return Err(parse_error(format!(
             "{}: the `topics` table declares columns {cols:?}, which is not a rosbag2 topics table",
@@ -444,6 +496,10 @@ fn read_shard(
                     .and_then(Value::as_text)
                     .filter(|s| !s.trim().is_empty())
                     .map(str::to_string),
+                latched: i_qos
+                    .and_then(|i| row.get(i))
+                    .and_then(Value::as_text)
+                    .and_then(declares_latched),
             },
         );
         Ok(())
@@ -515,6 +571,7 @@ fn read_shard(
                 modality: super::mcap::infer_modality(&topic.ros_type, &topic.name),
                 ros_type: topic.ros_type.clone(),
                 frames: Vec::new(),
+                latched: topic.latched,
                 point_fields: None,
                 frame_id: None,
             });
@@ -782,6 +839,7 @@ impl Adapter for Rosbag2Adapter {
                 observed_saturation: None,
                 observed_non_finite: None,
                 observed_dim_stats: None,
+                latched: b.latched,
                 point_fields: b.point_fields,
                 media: None,
                 frame_id: b.frame_id,
@@ -915,13 +973,23 @@ impl Adapter for Rosbag2Adapter {
         if manifest.ros_distro.is_some() {
             mapped_fields.push("metadata.yaml ros_distro -> provenance.recorder".into());
         }
+        if dataset
+            .episodes
+            .iter()
+            .flat_map(|e| &e.streams)
+            .any(|s| s.latched.is_some())
+        {
+            mapped_fields.push("topics.offered_qos_profiles durability -> stream.latched".into());
+        }
 
         let mut unmapped_fields = vec![
             UnmappedField {
                 source_path: "topics.offered_qos_profiles".into(),
-                note: "the CDM has no shape for a per-topic QoS profile (reliability, durability, \
-                       history depth)"
-                    .into(),
+                note:
+                    "only the durability policy is read (into `Stream::latched`); the CDM has no \
+                       shape for the rest of a QoS profile — reliability, history depth, deadline, \
+                       lifespan, liveliness"
+                        .into(),
             },
             UnmappedField {
                 source_path: "messages.id".into(),
@@ -1067,6 +1135,59 @@ mod tests {
         // The manifest's order wins for what it names; a shard it does not name still gets read,
         // after them; a shard it names but that is absent is skipped here (and disclosed as unread).
         assert_eq!(ordered, vec!["a.db3", "b.db3", "z.db3"]);
+    }
+
+    #[test]
+    fn qos_durability_is_read_only_where_it_is_unambiguous() {
+        // The two spellings rosbag2 has written across bag versions: the `rmw` enum number and, more
+        // recently, the policy name.
+        assert_eq!(
+            declares_latched("- history: 3\n  depth: 0\n  reliability: 1\n  durability: 1\n"),
+            Some(true)
+        );
+        assert_eq!(
+            declares_latched("- history: 3\n  durability: 2\n"),
+            Some(false)
+        );
+        assert_eq!(
+            declares_latched("[{\"durability\": \"transient_local\"}]"),
+            Some(true)
+        );
+        assert_eq!(
+            declares_latched("[{\"durability\": \"volatile\"}]"),
+            Some(false)
+        );
+        assert_eq!(
+            declares_latched("durability_policy: transient_local"),
+            Some(true)
+        );
+
+        // Anything else leaves the flag unset rather than guessed: this suppresses three checks, so
+        // a wrong `Some(true)` silences a sensor that genuinely died after one sample.
+        assert_eq!(declares_latched(""), None);
+        assert_eq!(
+            declares_latched("- reliability: 1\n"),
+            None,
+            "no durability at all"
+        );
+        assert_eq!(
+            declares_latched("durability: 0"),
+            None,
+            "system default says nothing"
+        );
+        assert_eq!(
+            declares_latched("durability: 3"),
+            None,
+            "unknown says nothing"
+        );
+        assert_eq!(declares_latched("durability: sometimes"), None);
+        // Two publishers disagreeing is not something to pick a winner from.
+        assert_eq!(declares_latched("- durability: 1\n- durability: 2\n"), None);
+        // Two publishers agreeing is still an answer.
+        assert_eq!(
+            declares_latched("- durability: 1\n- durability: 1\n"),
+            Some(true)
+        );
     }
 
     #[test]

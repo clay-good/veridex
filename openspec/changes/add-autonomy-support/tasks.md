@@ -45,7 +45,10 @@ No code until this change is approved; this is the build plan.
       payload hashes pinning the overflow-chain reassembly. `--compression-mode file` bags
       (`.db3.zstd`) are decompressed under the ingest budget, bounded during the read; per-*message*
       compression is refused by name rather than read wrong. Follow-ups: per-topic QoS profiles, and
-      metadata-only ingestion from `metadata.yaml` alone.
+      metadata-only ingestion from `metadata.yaml` alone. The topic's recorded QoS **durability** is
+      read into `Stream::latched` (from a `.db3` and from an MCAP channel alike), which exempts a
+      latched topic from the four checks that ask whether streams cover the same window —
+      `CANONICAL_VERSION` bumped 7 → 8, since checks reach different verdicts on it.
 - [~] ASAM MDF/MF4 adapter → CDM; record unmapped channels. `adapter/mdf4.rs` walks the MDF 4.x block
       graph (`##HD` → `##DG` → `##CG` → `##CN`), uses each channel group's time master as the
       timeline, and emits one stream per measured channel, applying identity/linear (`##CC` type 1)

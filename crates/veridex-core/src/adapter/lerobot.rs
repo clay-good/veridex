@@ -1082,6 +1082,7 @@ fn ingest_metadata_only(
                     observed_non_finite: None,
                     observed_dim_stats: None,
                     media: None,
+                    latched: None,
                     point_fields: None,
                     frame_id: None,
                 })
@@ -1610,6 +1611,7 @@ impl Adapter for LeRobotAdapter {
                         observed_dim_stats: observed_dim_stats.get(name).cloned(),
                         media: media.get(&(name.clone(), index)).cloned(),
                         // LeRobot is a manipulation format: no point-cloud streams.
+                        latched: None,
                         point_fields: None,
                         // LeRobot declares no sensor coordinate frames (it is not a spatially-calibrated rig).
                         frame_id: None,

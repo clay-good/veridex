@@ -51,7 +51,13 @@ use crate::cdm::{
 /// step index. It decides which temporal checks can grade the stream at all, so the same frames are
 /// a synchronized rig under one value and an unmeasurable timeline under the other. Same rule as v4
 /// and v5: the hash binds whatever changes what a check can conclude.
-pub const CANONICAL_VERSION: u32 = 7;
+///
+/// v8 binds each stream's `latched` flag — whether the source declares the stream is published once
+/// and retained rather than sampled. `STRUCTURAL.SINGLE_FRAME_STREAM` and the start/end-offset
+/// checks abstain on a latched stream, so a rig whose transform tree is latched and one whose LiDAR
+/// died after a single sweep carry the same frames and reach opposite verdicts. Same rule as v4, v5
+/// and v7: the hash binds whatever changes what a check can conclude.
+pub const CANONICAL_VERSION: u32 = 8;
 
 const DOMAIN: &[u8] = b"veridex.cdm.v1\0";
 
@@ -307,6 +313,10 @@ impl Stream {
         // under `Measured` and as an unmeasurable one under `StepIndex`, so a passing dataset and an
         // ungraded one must not hash alike.
         e.str(self.clock_kind.tag());
+        // Whether the source declares the stream latched. Bound because three checks abstain on it:
+        // the same one-frame stream is a working transform tree under `Some(true)` and a sensor that
+        // died after one sample under `None`.
+        e.opt(&self.latched, |e, l| e.u8(u8::from(*l)));
         e.opt(&self.dtype, |e, d| e.str(d));
         e.opt(&self.shape, |e, sh| e.seq(sh, |e, d| e.u64(*d)));
         // Stored statistics (from the source manifest): the scalar summary and, for a multi-DoF

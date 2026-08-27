@@ -129,12 +129,14 @@ little to check.
   rather than decoded — `veridex inspect` lists exactly what was skipped.
 - **Per-sensor trigger/latency offsets** aren't modeled yet, so a rig with known constant offsets
   will report that drift as sync spread.
-- **A latched topic still draws timing warnings.** `AUTONOMY.RIG_SYNC` compares sensors only, so the
-  topics recorded beside a rig (`/rosout`, `/parameter_events`, `/diagnostics`, `/tf_static`, a
-  `CameraInfo` channel) no longer fail it. But a transform tree published once at startup is a
-  single-frame stream that ends at t=0, so `STRUCTURAL.SINGLE_FRAME_STREAM` and
-  `TEMPORAL.END_OFFSET` still name it — warnings, and true as stated. Veridex has no way to tell a
-  latched topic from a sensor that fired once and died, and treating one as the other is the error
+- **A latched topic is exempt only where the source says it is latched.** `AUTONOMY.RIG_SYNC`
+  compares sensors only, so the topics recorded beside a rig (`/rosout`, `/parameter_events`,
+  `/diagnostics`) do not fail it. A transform tree published once at startup is additionally exempt
+  from `STRUCTURAL.SINGLE_FRAME_STREAM`, `TEMPORAL.START_OFFSET`, `TEMPORAL.END_OFFSET` and
+  `TEMPORAL.CLOCK_SKEW` — but only when its recorded QoS declares transient-local durability
+  (rosbag2's `topics.offered_qos_profiles`, or the same on an MCAP channel). A source that records
+  no QoS still draws those warnings, and that is deliberate: a latched topic and a sensor that fired
+  once and died are identical in the data, so silencing the second to spare the first is the error
   worth avoiding.
 - **Coverage is never prescriptive.** Veridex reports scenario distribution and sparse cells; the
   right target balance is your call.

@@ -1015,6 +1015,7 @@ fn build_stream(
         // one. An integer array cannot hold a NaN, so reading it is enough to say it is clean.
         observed_non_finite: decodable.then(|| accum.non_finite()),
         observed_dim_stats: accum.dim_stats(),
+        latched: None,
         point_fields: None,
         media: None,
         frame_id: None,

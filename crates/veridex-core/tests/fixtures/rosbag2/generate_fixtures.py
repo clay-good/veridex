@@ -211,21 +211,29 @@ def metadata_yaml(relative_paths, message_count, per_topic, duration_ns, start_n
 
 
 START = 1_700_000_000_000_000_000
+
+# What rosbag2 writes into `topics.offered_qos_profiles`: a YAML sequence of the publisher's QoS.
+# `durability: 1` is TRANSIENT_LOCAL (latched); `2` is VOLATILE.
+QOS_VOLATILE = "- history: 3\n  depth: 0\n  reliability: 1\n  durability: 2\n"
+QOS_LATCHED = "- history: 3\n  depth: 0\n  reliability: 1\n  durability: 1\n"
+
 RIG_TOPICS = [
-    (1, "/lidar/points", "sensor_msgs/msg/PointCloud2", "cdr", ""),
-    (2, "/camera/front/image_raw", "sensor_msgs/msg/Image", "cdr", ""),
-    (3, "/camera/front/camera_info", "sensor_msgs/msg/CameraInfo", "cdr", ""),
-    (4, "/imu/data", "sensor_msgs/msg/Imu", "cdr", ""),
-    (5, "/odom", "nav_msgs/msg/Odometry", "cdr", ""),
-    (6, "/tf_static", "tf2_msgs/msg/TFMessage", "cdr", ""),
+    (1, "/lidar/points", "sensor_msgs/msg/PointCloud2", "cdr", QOS_VOLATILE),
+    (2, "/camera/front/image_raw", "sensor_msgs/msg/Image", "cdr", QOS_VOLATILE),
+    (3, "/camera/front/camera_info", "sensor_msgs/msg/CameraInfo", "cdr", QOS_VOLATILE),
+    (4, "/imu/data", "sensor_msgs/msg/Imu", "cdr", QOS_VOLATILE),
+    (5, "/odom", "nav_msgs/msg/Odometry", "cdr", QOS_VOLATILE),
+    # Latched, as every real ROS 2 stack publishes it: once at startup, retained for late
+    # subscribers.
+    (6, "/tf_static", "tf2_msgs/msg/TFMessage", "cdr", QOS_LATCHED),
 ]
 
 # The topics every real `ros2 bag record -a` also captures: node logging, parameter events, and
 # diagnostics. None of them observes the world, and each keeps its own arbitrary cadence.
 HOUSEKEEPING_TOPICS = [
-    (7, "/rosout", "rcl_interfaces/msg/Log", "cdr", ""),
-    (8, "/parameter_events", "rcl_interfaces/msg/ParameterEvent", "cdr", ""),
-    (9, "/diagnostics", "diagnostic_msgs/msg/DiagnosticArray", "cdr", ""),
+    (7, "/rosout", "rcl_interfaces/msg/Log", "cdr", QOS_VOLATILE),
+    (8, "/parameter_events", "rcl_interfaces/msg/ParameterEvent", "cdr", QOS_VOLATILE),
+    (9, "/diagnostics", "diagnostic_msgs/msg/DiagnosticArray", "cdr", QOS_VOLATILE),
 ]
 
 TF_EDGES = [

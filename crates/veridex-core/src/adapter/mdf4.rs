@@ -845,6 +845,7 @@ fn decode_channel_group(
             observed_saturation: None,
             observed_non_finite: None,
             observed_dim_stats: None,
+            latched: None,
             point_fields: None,
             // MF4 channels declare no coordinate frame.
             media: None,

@@ -135,6 +135,7 @@ mod tests {
                         observed_saturation: None,
                         observed_non_finite: None,
                         observed_dim_stats: None,
+                        latched: None,
                         point_fields: None,
                         media: None,
                         frame_id: None,
@@ -173,6 +174,7 @@ mod tests {
                         observed_saturation: None,
                         observed_non_finite: None,
                         observed_dim_stats: None,
+                        latched: None,
                         point_fields: None,
                         media: None,
                         frame_id: None,
@@ -384,7 +386,7 @@ mod tests {
         };
         let base = content_hash(&sample_dataset());
         type Mutator = fn(&mut Stream);
-        let mutate: [(&str, Mutator); 27] = [
+        let mutate: [(&str, Mutator); 28] = [
             // The fields the encoder has carried from the beginning. Absent from this table until a
             // mutation audit deleted `clock_kind` from `encode` and watched 692 tests pass: a
             // stream's frames are a synchronized rig under one value and an unmeasurable timeline
@@ -523,6 +525,10 @@ mod tests {
                 m.frame_count = Some(97);
                 s.media = Some(m);
             }),
+            // Three checks abstain on a latched stream, so the same frames reach opposite verdicts
+            // under `Some(true)` and `None` — and a certificate over the clean reading must not
+            // verify the other.
+            ("latched", |s| s.latched = Some(true)),
         ];
 
         // A compile-time census. Adding a field to `Stream` breaks this destructuring, which is the
@@ -537,6 +543,7 @@ mod tests {
                 declared_rate_hz: _,
                 clock_id: _,
                 clock_kind: _,
+                latched: _,
                 dtype: _,
                 shape: _,
                 frames: _,
@@ -653,6 +660,7 @@ mod proptests {
                 observed_saturation: None,
                 observed_non_finite: None,
                 observed_dim_stats: None,
+                latched: None,
                 point_fields: None,
                 media: None,
                 frame_id: None,

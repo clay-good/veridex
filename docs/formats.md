@@ -148,6 +148,15 @@ cargo run -p veridex-cli -- check crates/veridex-core/tests/fixtures/rosbag2/cle
 cargo run -p veridex-cli -- inspect crates/veridex-core/tests/fixtures/rosbag2/bare.db3
 ```
 
+A topic's recorded QoS is read for one thing: whether it declares **transient-local** (latched)
+durability — published once and retained for late subscribers, which is how every ROS 2 stack
+publishes `/tf_static`. A latched stream is exempt from the four checks that ask whether streams
+cover the same window (`STRUCTURAL.SINGLE_FRAME_STREAM`, `TEMPORAL.START_OFFSET`,
+`TEMPORAL.END_OFFSET`, `TEMPORAL.CLOCK_SKEW`), because it is not trying to. Read conservatively:
+only the four unambiguous spellings rosbag2 has written across bag versions count, two publishers
+disagreeing count for nothing, and nothing is inferred from the frames — a latched topic and a
+sensor that fired once and died are identical in the data.
+
 rosbag2's `sqlite3` storage plugin keeps the recording in two tables: `topics` (one row per recorded
 topic) and `messages` (one row per message, with its receive timestamp and its serialized body). Each
 topic becomes a stream, each message a frame on the bag's single log clock, and the ROS type names

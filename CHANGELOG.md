@@ -10,6 +10,37 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **A latched ROS topic cost a flawless bag eight points.** Every ROS 2 stack publishes `/tf_static`
+  *latched*: once at startup, retained for late subscribers. Graded as a sampled stream it drew
+  `STRUCTURAL.SINGLE_FRAME_STREAM` ("carries no temporal signal") and `TEMPORAL.END_OFFSET` ("ends
+  1990 ms before `/imu/data`") — both true as stated, neither describing a fault. The score deducts
+  per finding, so a clean bag reported `data 92`, and a recording with three latched topics
+  proportionally worse. The headline number was wrong on well-formed data, in the direction that
+  makes people stop trusting it.
+
+  A stream now carries what the source *declares* about delivery (`Stream::latched`), read from the
+  topic's recorded QoS durability — rosbag2's `topics.offered_qos_profiles` column, and the same
+  profile on an MCAP channel, because rosbag2 writes bags through both plugins and which one a team
+  picked must not change the verdict. A latched stream is exempt from the four checks that ask
+  whether streams cover the same window: `STRUCTURAL.SINGLE_FRAME_STREAM`, `TEMPORAL.START_OFFSET`,
+  `TEMPORAL.END_OFFSET` and `TEMPORAL.CLOCK_SKEW`. The clean bag now reports `data 100`.
+
+  Nothing is inferred from the frames, and that restraint is the point: a latched topic and a sensor
+  that fired once and died are identical in the data and opposite in meaning, so only a recorded
+  declaration exempts anything. The QoS reader accepts four unambiguous spellings (the `rmw` enum
+  numbers and the policy names, across the three ways rosbag2 has written that column), treats
+  `system_default` and `unknown` as saying nothing, and returns nothing when two publishers disagree
+  — a wrong `latched` silences a sensor that genuinely died, which is worse than the warning it
+  would have saved. A source that records no QoS keeps every check it had.
+
+  **`CANONICAL_VERSION` is now 8.** Checks reach different verdicts on this field, so the hash binds
+  it — without that, a rig whose transform tree is latched and one whose LiDAR died after a single
+  sweep would hash alike, and the clean one's certificate would verify the broken one. Certificates
+  issued under v7 do not verify under v8, by design: the version is mixed into the domain separator
+  so hashes from different encodings never collide. The golden vector is re-pinned in this commit,
+  and its fixture now carries a latched stream so the vector reaches the new encoder arm with a
+  value rather than the absent marker.
+
 - **A bag that was still recording could not be watched.** `veridex watch` exists to re-validate a
   dataset *while it is being recorded* — where catching a clock skew is worth the most, because the
   robot is still driving. rosbag2 writes `metadata.yaml` when the recorder closes, so a bag in

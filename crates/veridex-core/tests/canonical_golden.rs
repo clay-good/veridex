@@ -29,12 +29,12 @@ fn the_canonical_encoding_has_not_changed_without_a_version_bump() {
     let d: Dataset = serde_json::from_str(GOLDEN).expect("the golden fixture parses");
 
     assert_eq!(
-        CANONICAL_VERSION, 7,
+        CANONICAL_VERSION, 8,
         "the encoding version changed; re-pin the hash below in the same commit"
     );
     assert_eq!(
         content_hash(&d).to_hex(),
-        "a1bb70915b5fb9cea08a869033b14f9b9fec39c38733b17f7f701a99fbc1e436",
+        "cc2e5f34c87ff2296b5f2c7866f7333461db44af42cf05419a41f3905e6f42e3",
         "the canonical encoding changed. If that was deliberate, bump CANONICAL_VERSION and \
          re-pin this vector in the same commit — a hash change without a version bump means two \
          builds disagree about byte-identical data while both claiming the same encoding, and \
@@ -55,6 +55,10 @@ fn the_golden_fixture_still_covers_what_it_claims_to() {
     assert!(d.episodes.len() >= 2, "multi-episode ordering");
     let streams: Vec<_> = d.episodes.iter().flat_map(|e| e.streams.iter()).collect();
     assert!(streams.iter().any(|s| s.media.is_some()), "media arm");
+    assert!(
+        streams.iter().any(|s| s.latched == Some(true)),
+        "latched arm — the vector must reach the encoding with a value, not just the absent marker"
+    );
     assert!(streams.iter().any(|s| s.stats.is_some()), "stats arm");
     assert!(streams.iter().any(|s| s.dim_stats.is_some()), "dim arm");
     assert!(

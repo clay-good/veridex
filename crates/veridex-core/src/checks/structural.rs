@@ -669,6 +669,11 @@ impl DegenerateEpisode {
                         .with_risk("A stream with no frames breaks cross-stream alignment.")
                         .with_remedy("Remove the stream or repair the missing shard."),
                     ),
+                    // A stream the source declares *latched* is published once and retained for
+                    // late subscribers — one frame is what it is for, not a trajectory that was cut
+                    // short. Only a recorded declaration counts (see `Stream::latched`): a latched
+                    // topic and a sensor that fired once and stopped are identical in the data.
+                    1 if stream.latched == Some(true) => {}
                     1 => findings.push(
                         Finding::new(
                             self.id(),

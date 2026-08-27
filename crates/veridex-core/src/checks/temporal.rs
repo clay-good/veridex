@@ -21,6 +21,23 @@ fn measured_streams(episode: &Episode) -> impl Iterator<Item = &Stream> {
     episode.streams.iter().filter(|s| s.has_measured_time())
 }
 
+/// Measured-time streams that the source says are **sampled** over the episode.
+///
+/// The three cross-stream edge checks — `CLOCK_SKEW`, `START_OFFSET`, `END_OFFSET` — all ask one
+/// question: do these streams cover the same window? A stream the source declares *latched* is not
+/// trying to. A ROS transform tree is published once at startup and retained for late subscribers,
+/// so it starts at the recording's first instant and ends there too — which those checks reported,
+/// truthfully and uselessly, as a stream that ends two seconds before every sensor. Every ROS
+/// recording carries at least one, and the score deducts per finding, so a flawless bag lost points
+/// for a topic behaving exactly as designed.
+///
+/// Only a *recorded* declaration excludes a stream (see [`Stream::latched`]) — nothing is inferred
+/// from the frames, because a latched topic and a sensor that fired once and stopped are identical
+/// in the data and opposite in meaning.
+fn sampled_streams(episode: &Episode) -> impl Iterator<Item = &Stream> {
+    measured_streams(episode).filter(|s| s.latched != Some(true))
+}
+
 /// `min_ts`, `max_ts` over a stream's frames (frames are not assumed sorted).
 fn span_bounds(stream: &Stream) -> Option<(i64, i64)> {
     let mut it = stream.frames.iter().map(|f| f.ts);
@@ -665,10 +682,7 @@ impl Check for ClockSkew {
                 continue;
             }
             // (name, clock_id, span, sampling period) for streams with a measurable span.
-            let spans: Vec<(&str, &str, i64, i64)> = ep
-                .streams
-                .iter()
-                .filter(|s| s.has_measured_time())
+            let spans: Vec<(&str, &str, i64, i64)> = sampled_streams(ep)
                 .filter_map(|s| {
                     span_bounds(s).map(|(lo, hi)| {
                         (
@@ -776,7 +790,7 @@ impl Check for StartOffset {
             // Group each stream's start (min ts) by clock_id; BTreeMap keeps clocks in a stable
             // order so findings are deterministic.
             let mut by_clock: BTreeMap<&str, Vec<(&str, i64, i64)>> = BTreeMap::new();
-            for s in measured_streams(ep) {
+            for s in sampled_streams(ep) {
                 if let Some((lo, _hi)) = span_bounds(s) {
                     by_clock.entry(s.clock_id.as_str()).or_default().push((
                         s.name.as_str(),
@@ -885,7 +899,7 @@ impl Check for EndOffset {
             // Group each stream's end (max ts) by clock_id; BTreeMap keeps clocks in a stable
             // order so findings are deterministic.
             let mut by_clock: BTreeMap<&str, Vec<(&str, i64, i64)>> = BTreeMap::new();
-            for s in measured_streams(ep) {
+            for s in sampled_streams(ep) {
                 if let Some((_lo, hi)) = span_bounds(s) {
                     by_clock.entry(s.clock_id.as_str()).or_default().push((
                         s.name.as_str(),

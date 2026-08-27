@@ -1600,3 +1600,75 @@ fn a_record_length_inside_a_chunk_cannot_abort_the_run() {
         "the refusal must name the corrupt framing rather than abort: {err}"
     );
 }
+
+#[test]
+fn an_mcap_channel_declaring_latched_qos_is_read_the_same_as_a_db3_one() {
+    // rosbag2 writes bags through two storage plugins, and carries each publisher's QoS either way:
+    // in a `.db3`'s `topics.offered_qos_profiles` column, and on an MCAP channel's metadata. Reading
+    // it from one and not the other would make which plugin a team picked change the verdict — a
+    // latched transform tree drawing `STRUCTURAL.SINGLE_FRAME_STREAM` and `TEMPORAL.END_OFFSET` in
+    // MCAP and not in SQLite, for the same recording.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("qos.mcap");
+    let mut out = Vec::new();
+    {
+        let mut w = mcap::Writer::new(std::io::Cursor::new(&mut out)).unwrap();
+        let sid = w
+            .add_schema("tf2_msgs/msg/TFMessage", "ros2msg", b"")
+            .unwrap();
+        let latched: std::collections::BTreeMap<String, String> = [(
+            "offered_qos_profiles".to_string(),
+            "- history: 3\n  depth: 1\n  reliability: 1\n  durability: 1\n".to_string(),
+        )]
+        .into_iter()
+        .collect();
+        let cid = w.add_channel(sid, "/tf_static", "cdr", &latched).unwrap();
+
+        let sid2 = w.add_schema("sensor_msgs/msg/Imu", "ros2msg", b"").unwrap();
+        let cid2 = w
+            .add_channel(sid2, "/imu/data", "cdr", &std::collections::BTreeMap::new())
+            .unwrap();
+        w.write_to_known_channel(
+            &mcap::records::MessageHeader {
+                channel_id: cid,
+                sequence: 0,
+                log_time: 0,
+                publish_time: 0,
+            },
+            b"x",
+        )
+        .unwrap();
+        for (seq, t) in [0u64, 10_000_000, 20_000_000].iter().enumerate() {
+            w.write_to_known_channel(
+                &mcap::records::MessageHeader {
+                    channel_id: cid2,
+                    sequence: seq as u32,
+                    log_time: *t,
+                    publish_time: *t,
+                },
+                b"y",
+            )
+            .unwrap();
+        }
+        w.finish().unwrap();
+    }
+    std::fs::write(&path, &out).unwrap();
+
+    let d = veridex_core::adapter::mcap::McapAdapter
+        .ingest(
+            &veridex_core::adapter::Source::Local(path),
+            &veridex_core::adapter::IngestOptions::default(),
+        )
+        .expect("mcap ingest")
+        .dataset;
+    let by = |n: &str| {
+        d.episodes[0]
+            .streams
+            .iter()
+            .find(|s| s.name == n)
+            .unwrap_or_else(|| panic!("stream {n}"))
+    };
+    assert_eq!(by("/tf_static").latched, Some(true));
+    // A channel with no QoS metadata says nothing, and nothing is inferred for it.
+    assert_eq!(by("/imu/data").latched, None);
+}

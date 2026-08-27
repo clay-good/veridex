@@ -364,6 +364,23 @@ pub struct Stream {
     /// `statistical.extreme-outlier` check scans these so a spike buried in one joint of a 7-DoF
     /// `action` is caught, not just element 0.
     pub observed_dim_stats: Option<Vec<DimStats>>,
+    /// Whether the source **declares** this stream is delivered *latched* — published once and
+    /// retained for late subscribers, rather than sampled on a cadence.
+    ///
+    /// `None` means the source says nothing about delivery, which is most sources; it is never
+    /// inferred from the frames. A one-message stream and a latched stream look identical in the
+    /// data, and the difference is the whole point: one is a sensor that fired once and stopped, the
+    /// other is a transform tree doing exactly what it is supposed to. Only a recorded QoS profile
+    /// distinguishes them, so only a recorded QoS profile sets this.
+    ///
+    /// `Some(true)` suppresses `STRUCTURAL.SINGLE_FRAME_STREAM` and the start/end-offset checks for
+    /// the stream, whose statements — "no temporal signal", "ends before the others" — are true of
+    /// every latched topic by design and describe a fault in none of them. Bound into the content
+    /// hash (`canonical.rs`) since CANONICAL_VERSION v8, because checks reach different verdicts on
+    /// it: without that, a rig whose transform tree is latched and one whose LiDAR died after one
+    /// sweep would hash alike, and the clean one's certificate would verify the broken one.
+    #[serde(default)]
+    pub latched: Option<bool>,
     /// Declared per-point field layout (e.g. `x`, `y`, `z`, `intensity`, `ring`) for a point-cloud
     /// stream (LiDAR/radar). `None` for every non-cloud stream. Order is significant (it is the
     /// point record's field order), so it is preserved, not sorted. Veridex records the declared

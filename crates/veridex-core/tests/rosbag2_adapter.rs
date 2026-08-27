@@ -366,6 +366,84 @@ fn a_recording_short_of_its_manifest_is_a_coverage_hole_not_a_clean_read() {
 }
 
 #[test]
+fn a_latched_topic_is_read_from_its_qos_and_stops_deflating_the_score() {
+    // Every ROS 2 stack publishes `/tf_static` latched: once at startup, retained for late
+    // subscribers. Graded as a sampled stream it drew `STRUCTURAL.SINGLE_FRAME_STREAM` ("carries no
+    // temporal signal") and `TEMPORAL.END_OFFSET` ("ends 1990 ms before /imu/data") — both true as
+    // stated, neither describing a fault, and the score deducts per finding. A flawless bag scored
+    // `data 92` for a topic behaving exactly as designed, and a bag with three latched topics
+    // proportionally worse.
+    let dataset = ingest("clean_rig").dataset;
+    let by_name = |n: &str| {
+        dataset.episodes[0]
+            .streams
+            .iter()
+            .find(|s| s.name == n)
+            .unwrap_or_else(|| panic!("stream {n}"))
+    };
+    // Read from the topic's recorded QoS durability, not inferred from its one frame.
+    assert_eq!(by_name("/tf_static").latched, Some(true));
+    assert_eq!(by_name("/lidar/points").latched, Some(false));
+
+    let engine = veridex_core::checks::default_engine().expect("the standard catalog");
+    let hash = veridex_core::content_hash(&dataset);
+    let verdict = engine.run(&dataset, hash, &veridex_core::RunConfig::default());
+    let codes: Vec<&str> = verdict.findings.iter().map(|f| f.code.as_str()).collect();
+    assert!(
+        !codes.contains(&"STRUCTURAL.SINGLE_FRAME_STREAM"),
+        "a latched topic's single frame is what it is for: {codes:?}"
+    );
+    assert!(
+        !codes.contains(&"TEMPORAL.END_OFFSET"),
+        "a latched topic does not cover the recording's window: {codes:?}"
+    );
+    // The only thing left to say about this bag is that it declares no license.
+    assert_eq!(
+        codes
+            .iter()
+            .filter(|c| !c.starts_with("PROVENANCE.") && !c.starts_with("STATISTICAL."))
+            .count(),
+        0,
+        "{codes:?}"
+    );
+}
+
+#[test]
+fn a_stream_that_declares_nothing_about_delivery_is_still_graded() {
+    // The suppression is driven by a recorded declaration, never by the shape of the frames. A
+    // source that says nothing keeps every check it had — otherwise a sensor that fired once and
+    // stopped, which is what these checks exist to catch, would go quiet along with the transform
+    // trees.
+    let dataset = ingest("bare.db3").dataset;
+    let tf = dataset.episodes[0]
+        .streams
+        .iter()
+        .find(|s| s.name == "/tf_static")
+        .expect("the tf stream");
+    // `bare.db3` carries the same QoS column, so this is the latched case; the point below is the
+    // *engine* behavior when the flag is absent.
+    assert_eq!(tf.latched, Some(true));
+
+    let mut stripped = dataset.clone();
+    for s in &mut stripped.episodes[0].streams {
+        s.latched = None;
+    }
+    let engine = veridex_core::checks::default_engine().expect("the standard catalog");
+    let verdict = engine.run(
+        &stripped,
+        veridex_core::content_hash(&stripped),
+        &veridex_core::RunConfig::default(),
+    );
+    assert!(
+        verdict
+            .findings
+            .iter()
+            .any(|f| f.code == "STRUCTURAL.SINGLE_FRAME_STREAM"),
+        "with no declaration, a one-frame stream is still reported"
+    );
+}
+
+#[test]
 fn a_bag_that_is_still_recording_is_read_rather_than_refused() {
     // rosbag2 writes `metadata.yaml` when the recorder *closes*. A bag mid-recording is a directory
     // with a growing `.db3` and nothing else — and requiring the manifest refused it as an

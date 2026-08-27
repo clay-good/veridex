@@ -107,6 +107,8 @@ pub(crate) fn infer_modality(schema_name: &str, topic: &str) -> Modality {
 struct StreamBuilder {
     modality: Modality,
     frames: Vec<Frame>,
+    /// From the channel's `offered_qos_profiles` metadata, when rosbag2's MCAP writer recorded one.
+    latched: Option<bool>,
     /// Per-point field layout, decoded from the first `PointCloud2` message on this topic (if any).
     point_fields: Option<Vec<PointField>>,
     /// The coordinate frame this topic's messages declare, from the first message whose body starts
@@ -497,6 +499,15 @@ impl Adapter for McapAdapter {
                 .or_insert_with(|| StreamBuilder {
                     modality: infer_modality(schema_name, &topic),
                     frames: Vec::new(),
+                    // rosbag2's MCAP writer carries each publisher's QoS on the channel, so a bag
+                    // stored as MCAP declares a latched topic exactly as the `.db3` one does — and
+                    // must be read the same way, or which storage plugin a team picked changes the
+                    // verdict.
+                    latched: message
+                        .channel
+                        .metadata
+                        .get("offered_qos_profiles")
+                        .and_then(|qos| super::rosbag2::declares_latched(qos)),
                     point_fields: None,
                     frame_id: None,
                 });
@@ -570,6 +581,7 @@ impl Adapter for McapAdapter {
                 observed_non_finite: None,
                 observed_dim_stats: None,
                 // Per-point field layout decoded from a PointCloud2 header, when this is a cloud stream.
+                latched: b.latched,
                 point_fields: b.point_fields,
                 // The coordinate frame the sensor declares, from its message headers.
                 media: None,

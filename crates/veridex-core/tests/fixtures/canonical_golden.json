@@ -194,6 +194,7 @@
           "declared_rate_hz": 10.0,
           "clock_id": "rig",
           "clock_kind": "measured",
+          "latched": true,
           "dtype": "float32",
           "shape": [
             7
