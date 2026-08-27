@@ -10,6 +10,23 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **A metadata-only run accused a well-calibrated rig of having no extrinsics.** Found by diffing a
+  full report against a metadata-only one on the same bag, an hour after adding that path.
+  `autonomy.calibration-completeness` concludes from the *absence* of a transform tree and camera
+  intrinsics — and on a rig log both are decoded from message **bodies**, which a metadata-only run
+  never opens. So it read the absence it had created itself and reported a fully calibrated bag as
+  having "no transform (TF) tree", twice, at warning severity.
+
+  A check that fires on what a run declined to look at is measuring the request, not the data. It
+  now abstains when frames were not read — the same `CheckContext` the frame-based structural checks
+  already use. Unlike those, this one is not visible from the CDM alone: a metadata-only rig and a
+  genuinely uncalibrated one carry an identical `None` calibration, which is exactly why the
+  ingest's own answer has to be the one consulted.
+
+  `TEMPORAL.UNCOMPARED_STREAMS` is withheld there for a different reason — it is true, and
+  `COVERAGE.METADATA_ONLY` already states it in full, so saying it again is noise rather than
+  honesty. The bag now comes back `data 100` with the coverage disclosure and nothing else.
+
 - **The demo rig log did not publish `/tf_static` the way a real one does.** `make_demo_mcap --
   <out> av` claims to model an autonomy rig log, and a real one carries each publisher's QoS on the
   channel — including the transient-local (latched) profile every ROS 2 stack offers `/tf_static`.

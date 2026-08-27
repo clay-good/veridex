@@ -4,7 +4,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::cdm::{Dataset, Episode, Modality, Stream, Transform};
-use crate::check::{Category, Check, Finding, Location, Scope, Severity};
+use crate::check::{Category, Check, CheckContext, Finding, Location, Scope, Severity};
 
 /// Number of AV-native rig sensors (LiDAR/IMU/GNSS/CAN/ego-pose) an episode must carry to be treated
 /// as a sensor rig. At this threshold the dataset is unambiguously an autonomy rig, not a manipulation
@@ -648,6 +648,24 @@ impl Check for CalibrationCompleteness {
             }
         }
         findings
+    }
+    /// Abstains entirely under a metadata-only ingest.
+    ///
+    /// This check concludes from the *absence* of a transform tree and camera intrinsics — and on a
+    /// rig log both are decoded from message bodies, which a metadata-only run does not open. So it
+    /// read the absence it created itself and reported a fully calibrated bag as having "no
+    /// transform (TF) tree", twice, at warning severity. A check that fires on what a run declined
+    /// to look at is measuring the request, not the data.
+    ///
+    /// Unlike the frame-based checks this is not visible from the CDM alone: a metadata-only rig and
+    /// a genuinely uncalibrated one carry an identical `None` calibration, which is exactly why the
+    /// ingest's own answer has to be the one consulted. The coverage is disclosed by
+    /// `COVERAGE.METADATA_ONLY`, so the silence here is not the reader's only signal.
+    fn run_in(&self, dataset: &Dataset, context: &CheckContext) -> Vec<Finding> {
+        if !context.frames_read {
+            return Vec::new();
+        }
+        self.run(dataset)
     }
 }
 

@@ -1207,6 +1207,20 @@ impl Check for ClockMeasurability {
         // v2 adds `TEMPORAL.UNCOMPARED_STREAMS`.
         "2"
     }
+    /// `TEMPORAL.UNCOMPARED_STREAMS` is withheld under a metadata-only ingest.
+    ///
+    /// No episode has frames there, by request, so no two streams can be compared — but that is the
+    /// run's own shape, not the dataset's, and `COVERAGE.METADATA_ONLY` already states it in full
+    /// ("no timestamp, value, content hash, or media header was examined"). The other half,
+    /// `TEMPORAL.UNMEASURED_CLOCK`, still runs: it reports a property of the *streams* the manifest
+    /// declares, which a metadata-only run does read.
+    fn run_in(&self, dataset: &Dataset, context: &crate::check::CheckContext) -> Vec<Finding> {
+        let mut findings = self.run(dataset);
+        if !context.frames_read {
+            findings.retain(|f| f.code != "TEMPORAL.UNCOMPARED_STREAMS");
+        }
+        findings
+    }
     fn run(&self, dataset: &Dataset) -> Vec<Finding> {
         let mut findings = uncompared_streams_finding(dataset);
         // Reported once for the dataset, by clock: the clock is a property of the source format, so

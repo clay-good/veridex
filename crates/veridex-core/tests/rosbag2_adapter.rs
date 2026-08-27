@@ -672,6 +672,47 @@ fn a_bag_can_be_checked_from_its_manifest_without_opening_a_shard() {
 }
 
 #[test]
+fn a_metadata_only_run_does_not_accuse_a_rig_of_what_it_declined_to_read() {
+    // A rig log's transform tree and camera intrinsics are decoded from message *bodies*, which a
+    // metadata-only run does not open. `autonomy.calibration-completeness` concludes from their
+    // absence, so it read the absence the run had created and reported a fully calibrated bag as
+    // having "no transform (TF) tree" — twice, at warning severity. A check that fires on what a run
+    // declined to look at is measuring the request, not the data.
+    let out = ingest_with("clean_rig", &metadata_only()).expect("a manifest-only ingest");
+    let engine = veridex_core::checks::default_engine().expect("the standard catalog");
+    let verdict = engine.run_over(
+        &out.dataset,
+        veridex_core::content_hash(&out.dataset),
+        &veridex_core::RunConfig::default(),
+        veridex_core::engine::CoverageNote::MetadataOnly {
+            episodes_declared: 1,
+        },
+    );
+    let codes: Vec<&str> = verdict.findings.iter().map(|f| f.code.as_str()).collect();
+    assert!(
+        !codes.contains(&"AUTONOMY.CALIBRATION_INCOMPLETE"),
+        "{codes:?}"
+    );
+    // Nor does it say twice what the coverage disclosure already says: with no frames read, no two
+    // streams can be compared, which is the run's shape rather than the dataset's.
+    assert!(!codes.contains(&"TEMPORAL.UNCOMPARED_STREAMS"), "{codes:?}");
+
+    // The same bag read in full still reports its calibration as complete — the check is silenced by
+    // the *request*, not disabled.
+    let full = ingest("clean_rig").dataset;
+    let full_verdict = engine.run(
+        &full,
+        veridex_core::content_hash(&full),
+        &veridex_core::RunConfig::default(),
+    );
+    assert!(full.calibration.is_some());
+    assert!(!full_verdict
+        .findings
+        .iter()
+        .any(|f| f.code == "AUTONOMY.CALIBRATION_INCOMPLETE"));
+}
+
+#[test]
 fn a_manifest_whose_inventory_does_not_add_up_is_refused() {
     // `partial_inventory/` lists two of its six topics while still declaring the full total.
     // Presenting two topics as the bag's contents is invisible to the caller and is the exact shape
