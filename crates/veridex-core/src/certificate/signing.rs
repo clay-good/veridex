@@ -34,12 +34,30 @@ pub enum CertError {
         bound: String,
         /// The presented dataset's hash.
         presented: String,
-        /// A trailing clause naming a version difference between the issuing and the verifying
-        /// Veridex, when there is one. Empty otherwise. A content hash is only comparable within one
-        /// canonical encoding, and that encoding changes between releases — so an unchanged dataset
-        /// checked by a newer Veridex hashes differently, and without this the failure reads exactly
-        /// like tampering.
+        /// A trailing clause for a certificate that does **not** record the encoding it was issued
+        /// under, naming a release-version difference when there is one. Empty otherwise. Only the
+        /// fallback: [`CertError::EncodingVersionMismatch`] is the exact answer when the certificate
+        /// records its encoding.
         version_note: String,
+    },
+
+    /// The certificate was issued under a different CDM canonical encoding than this build computes,
+    /// so the two hashes are not comparable and no verdict about the data is possible.
+    ///
+    /// Distinct from [`CertError::ContentHashMismatch`] because the two mean opposite things to the
+    /// person reading them. That one says the data is not what was signed. This one says Veridex
+    /// changed how it hashes, and says nothing about the data at all — the certificate needs
+    /// re-issuing, not investigating. Reported separately rather than as a trailing note because a
+    /// message beginning "content-hash mismatch" is read as tampering whatever follows it.
+    ///
+    /// The declared encoding is inside the signed payload and the signature is checked first, so a
+    /// forger cannot reach this variant by claiming an encoding they did not use.
+    #[error("this certificate was issued under CDM encoding v{issued_under} and this build hashes at v{verifying_with}; the two hashes are not comparable, so this says nothing about whether the data changed — re-issue the certificate with this build (`veridex certify`)")]
+    EncodingVersionMismatch {
+        /// The canonical encoding version the certificate was issued under.
+        issued_under: u32,
+        /// The canonical encoding version this build computes.
+        verifying_with: u32,
     },
     /// The certificate was signed by a key other than the trusted issuer key provided.
     #[error("untrusted issuer: certificate key {found} does not match the expected issuer key")]
@@ -271,22 +289,45 @@ pub fn verify(
         .map_err(|_| CertError::SignatureMismatch)?;
 
     // Binding to the presented dataset (transplant check).
+    //
+    // Ordered after the signature check on purpose: everything below reads a field of the
+    // certificate, and until the signature verifies those fields are whatever the presenter wrote.
     if let Some(presented) = presented_cdm_hash {
         if presented != signed.certificate.cdm_content_hash {
+            // Two hashes computed under different canonical encodings are not comparable, so their
+            // difference is not evidence about the data. Answered from the encoding the certificate
+            // records rather than inferred from the release version, which is a proxy that fails
+            // exactly where it matters: the encoding can change between two builds carrying the same
+            // version string, and then the old note was suppressed and the failure read as tampering.
+            if let Some(issued_under) = signed.certificate.cdm_encoding_version {
+                if issued_under != crate::canonical::CANONICAL_VERSION {
+                    return Err(CertError::EncodingVersionMismatch {
+                        issued_under,
+                        verifying_with: crate::canonical::CANONICAL_VERSION,
+                    });
+                }
+            }
             let issued_by = &signed.certificate.veridex_version;
             return Err(CertError::ContentHashMismatch {
                 bound: signed.certificate.cdm_content_hash.clone(),
                 presented: presented.to_string(),
-                version_note: if issued_by == crate::VERSION {
-                    String::new()
-                } else {
-                    format!(
-                        " — note this certificate was issued by veridex {issued_by} and you are \
-                         verifying with {}; the canonical encoding can change between releases, \
-                         which rehashes byte-identical data, so re-issue the certificate before \
-                         reading this as tampering",
+                // Only reached when the certificate records no encoding version (issued before that
+                // field existed) or records this one — in which case the hashes *are* comparable and
+                // the mismatch is about the data.
+                version_note: match signed.certificate.cdm_encoding_version {
+                    Some(_) => String::new(),
+                    None if issued_by == crate::VERSION => " — note this certificate records no CDM \
+                         encoding version, so whether the two hashes are comparable cannot be \
+                         determined; if it predates this build, re-issue it before reading this as \
+                         tampering"
+                        .to_string(),
+                    None => format!(
+                        " — note this certificate records no CDM encoding version, was issued by \
+                         veridex {issued_by}, and you are verifying with {}; the canonical encoding \
+                         can change between builds, which rehashes byte-identical data, so re-issue \
+                         the certificate before reading this as tampering",
                         crate::VERSION
-                    )
+                    ),
                 },
             });
         }

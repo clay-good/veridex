@@ -22,6 +22,25 @@ attests — the hash it is bound to, the trust score, and, for a certificate iss
 form). Every line printed is covered by the signature that just verified, so a doctored readiness
 block fails verification rather than being read back.
 
+A content hash only means something within one **canonical encoding**, and that encoding changes
+when Veridex starts binding a field it did not before. So a certificate records the encoding version
+its hash was computed under, and `verify` uses it to tell two failures apart that look identical
+otherwise:
+
+- *the data is not what was signed* — the hashes are comparable and they differ. That is a
+  transplant or an alteration, and `verify` says so.
+- *Veridex hashes differently now* — the certificate was issued under an older encoding, so the two
+  numbers were never comparable. `verify` says exactly that, names both versions, and points at
+  `veridex certify` to re-issue. It deliberately does **not** lead with "content-hash mismatch",
+  because that phrase is read as an accusation whatever follows it, and this failure says nothing
+  about the data at all.
+
+The declared encoding sits inside the signed payload and the signature is checked first, so a
+certificate cannot claim an encoding it was not issued under. A certificate predating this field
+still verifies unchanged — the field is omitted rather than defaulted, so its bytes, and the
+signature over them, are exactly what they were — and when *its* hash does not match, `verify` says
+the comparability is unknown rather than picking one of the two stories.
+
 
 ## Producer attestation
 

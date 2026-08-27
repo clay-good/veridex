@@ -60,6 +60,23 @@ pub struct Certificate {
     pub cdm_content_hash: String,
     /// The `veridex-core` version that produced the verdict.
     pub veridex_version: String,
+    /// The **CDM canonical encoding version** the bound hash was computed under
+    /// ([`CANONICAL_VERSION`](crate::canonical::CANONICAL_VERSION)).
+    ///
+    /// A content hash is only comparable within one encoding. When the encoding changes, byte-
+    /// identical data hashes differently — and `verify` saw only "the hashes differ", which is the
+    /// wording of tampering. It inferred a possible encoding change from the *release* version
+    /// instead, which is a proxy that fails exactly when it is needed: the encoding can change
+    /// between two builds carrying the same version string, and then the note was suppressed.
+    ///
+    /// Recording it makes the answer exact rather than inferred, and it is inside the signed
+    /// payload, so a forger cannot claim a different encoding without breaking the signature.
+    ///
+    /// `None` on a certificate issued before this field existed; `verify` falls back to the release
+    /// proxy there and says that it is falling back. Skipped when absent, so an existing
+    /// certificate's bytes — and therefore its signature — are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cdm_encoding_version: Option<u32>,
     /// Overall verdict status.
     pub status: Status,
     /// Effective configuration used for the run.
@@ -293,6 +310,9 @@ impl Certificate {
             dataset_id: dataset_id.into(),
             cdm_content_hash: verdict.cdm_content_hash.clone(),
             veridex_version: verdict.veridex_version.clone(),
+            // The encoding the bound hash was computed under, so a later build can tell "we hash
+            // differently now" from "this data was altered".
+            cdm_encoding_version: Some(crate::canonical::CANONICAL_VERSION),
             status: verdict.status,
             effective_config: verdict.effective_config.clone(),
             checks_run: verdict

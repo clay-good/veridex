@@ -10,6 +10,31 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **A certificate issued under an older CDM encoding was reported as tampering.** A content hash
+  only means something within one canonical encoding, so when the encoding changes, byte-identical
+  data hashes differently and `verify` saw only "the hashes differ" — which is the wording of
+  tampering, aimed at someone who altered nothing.
+
+  There *was* a guard: a note appended when the certificate's *release* version differed from the
+  verifying build's. That is a proxy, and it fails exactly where it is needed — the encoding can
+  change between two builds carrying the same version string, which is what happened in this release
+  when `CANONICAL_VERSION` went 7 → 8 under `veridex 0.1.0`. Every certificate issued before that
+  commit now fails against untouched data with the note suppressed.
+
+  A certificate now records the encoding version its hash was computed under, and `verify` answers
+  from that rather than inferring: a separate failure that names both versions, says plainly that it
+  says nothing about whether the data changed, and points at `veridex certify` to re-issue. It is a
+  distinct case rather than a trailing note, because a message beginning "content-hash mismatch" is
+  read as an accusation whatever follows it.
+
+  Nothing is weakened. The declared encoding is inside the signed payload and the signature is
+  checked first, so editing it to claim an older encoding is a signature failure, not a softer
+  message — there is a test for that. A genuine transplant under the same encoding is still reported
+  as one, with nothing to caveat. And a certificate issued before this field existed still verifies:
+  the field is omitted rather than defaulted, so its bytes and the signature over them are exactly
+  what they were — also tested, because getting it wrong would invalidate every certificate already
+  issued, which is the one thing a portable trust document must never do.
+
 - **`file-10.parquet` was read before `file-1.parquet`, in three adapters.** Found by asking whether
   the rosbag2 shard-ordering bug fixed a commit earlier was a one-off. It was not: every adapter that
   reads a dataset spread over several files read them in **lexicographic** name order, and frames

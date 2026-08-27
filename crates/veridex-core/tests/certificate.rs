@@ -3,7 +3,7 @@
 
 use veridex_core::cdm::{ClockKind, Dataset, Episode, Frame, Modality, Stream, ValueRef};
 use veridex_core::certificate::{
-    score, sign, verify, CertError, Certificate, Issuance, ProvenanceCoverage,
+    score, sign, verify, CertError, Certificate, Issuance, ProvenanceCoverage, SignedCertificate,
 };
 use veridex_core::{content_hash, ContentHash, RunConfig, SigningKeypair};
 
@@ -701,4 +701,121 @@ fn a_crashed_check_costs_the_trust_score() {
         a < b,
         "a check that measured nothing must not be free: {a} vs {b}"
     );
+}
+
+// ---- the CDM encoding version a certificate is bound under ----
+
+#[test]
+fn a_certificate_records_the_encoding_its_hash_was_computed_under() {
+    let d = dataset(vec![stream("s", "c", &[0, 1_000_000])]);
+    let (cert, _) = issue_cert(&d);
+    assert_eq!(
+        cert.cdm_encoding_version,
+        Some(veridex_core::canonical::CANONICAL_VERSION)
+    );
+}
+
+#[test]
+fn a_hash_mismatch_under_a_different_encoding_is_not_reported_as_tampering() {
+    // The situation every encoding bump creates: the data is untouched, and this build hashes it
+    // differently than the build that issued the certificate. Saying "content-hash mismatch" there
+    // accuses the holder of altering data they did not touch, and sends them looking for a problem
+    // that is in Veridex, not in their dataset.
+    let d1 = dataset(vec![stream("s", "c", &[0, 1_000_000])]);
+    let (mut cert, _) = issue_cert(&d1);
+    // Issued by a build one encoding behind. Re-signed, so the signature is sound and *only* the
+    // encoding differs — which is the real case.
+    cert.cdm_encoding_version = Some(veridex_core::canonical::CANONICAL_VERSION - 1);
+    let signed = sign(cert, &keypair());
+
+    let d2 = dataset(vec![stream("s", "c", &[0, 9_000_000])]);
+    let h2 = content_hash(&d2);
+    match verify(&signed, Some(&h2.to_hex()), None) {
+        Err(CertError::EncodingVersionMismatch {
+            issued_under,
+            verifying_with,
+        }) => {
+            assert_eq!(issued_under, veridex_core::canonical::CANONICAL_VERSION - 1);
+            assert_eq!(verifying_with, veridex_core::canonical::CANONICAL_VERSION);
+            let msg = CertError::EncodingVersionMismatch {
+                issued_under,
+                verifying_with,
+            }
+            .to_string();
+            assert!(
+                msg.contains("says nothing about whether the data changed"),
+                "the message must not read as an accusation: {msg}"
+            );
+            assert!(!msg.starts_with("content-hash mismatch"), "{msg}");
+        }
+        other => panic!("expected an encoding-version refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_forged_encoding_version_does_not_reach_that_message() {
+    // The declared encoding is inside the signed payload, and the signature is checked first — so
+    // editing it to claim an older encoding produces a signature failure, not the softer message.
+    let d1 = dataset(vec![stream("s", "c", &[0, 1_000_000])]);
+    let (cert, _) = issue_cert(&d1);
+    let signed = sign(cert, &keypair());
+    let mut v: serde_json::Value = serde_json::to_value(&signed).unwrap();
+    v["certificate"]["cdm_encoding_version"] =
+        serde_json::json!(veridex_core::canonical::CANONICAL_VERSION - 1);
+    let forged: SignedCertificate = serde_json::from_value(v).unwrap();
+
+    let d2 = dataset(vec![stream("s", "c", &[0, 9_000_000])]);
+    match verify(&forged, Some(&content_hash(&d2).to_hex()), None) {
+        Err(CertError::SignatureMismatch) => {}
+        other => panic!("expected a signature failure, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_genuine_transplant_is_still_reported_as_one() {
+    // Same encoding on both sides, so the hashes *are* comparable and their difference is about the
+    // data. The new variant must not swallow this, and there is nothing to caveat.
+    let d1 = dataset(vec![stream("s", "c", &[0, 1_000_000])]);
+    let (cert, _) = issue_cert(&d1);
+    let signed = sign(cert, &keypair());
+    let d2 = dataset(vec![stream("s", "c", &[0, 9_000_000])]);
+    match verify(&signed, Some(&content_hash(&d2).to_hex()), None) {
+        Err(CertError::ContentHashMismatch { version_note, .. }) => {
+            assert!(version_note.is_empty(), "{version_note}");
+        }
+        other => panic!("expected a transplant refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_certificate_issued_before_this_field_existed_still_verifies() {
+    // The field is skipped when absent, so an older certificate's bytes — and therefore its
+    // signature over them — are unchanged. Getting this wrong would invalidate every certificate
+    // already issued, which is the one thing a portable trust document must never do.
+    let d1 = dataset(vec![stream("s", "c", &[0, 1_000_000])]);
+    let (mut cert, h1) = issue_cert(&d1);
+    cert.cdm_encoding_version = None;
+    let signed = sign(cert, &keypair());
+
+    // Re-serializing must not put the field back: if it did, an old certificate's signature would
+    // fail against its own bytes.
+    let round: serde_json::Value = serde_json::to_value(&signed).unwrap();
+    assert!(
+        round["certificate"].get("cdm_encoding_version").is_none(),
+        "an absent encoding version must stay absent: {round}"
+    );
+    verify(&signed, Some(&h1.to_hex()), None).expect("an older certificate still verifies");
+
+    // And when it does not match, the message says the comparability is unknown rather than
+    // accusing anyone.
+    let d2 = dataset(vec![stream("s", "c", &[0, 9_000_000])]);
+    match verify(&signed, Some(&content_hash(&d2).to_hex()), None) {
+        Err(CertError::ContentHashMismatch { version_note, .. }) => {
+            assert!(
+                version_note.contains("records no CDM encoding version"),
+                "{version_note}"
+            );
+        }
+        other => panic!("expected a hash mismatch, got {other:?}"),
+    }
 }
