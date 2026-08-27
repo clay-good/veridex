@@ -16,6 +16,7 @@ use parquet::arrow::ArrowWriter;
 
 use veridex_core::adapter::candbc::CanDbcAdapter;
 use veridex_core::adapter::lerobot::LeRobotAdapter;
+use veridex_core::adapter::rosbag2::Rosbag2Adapter;
 use veridex_core::adapter::{Adapter, IngestOptions, Source};
 use veridex_core::cdm::Dataset;
 use veridex_core::content_hash;
@@ -168,5 +169,69 @@ fn a_candbc_directory_is_named_the_same_from_inside_it() {
         content_hash(&absolute),
         "the same CAN dataset hashed two ways depending on how the path was spelled — a \
          certificate issued from outside the directory is rejected from inside it"
+    );
+}
+
+/// The rosbag2 fixtures, which are real Python-`sqlite3` output committed under the core crate.
+fn bag(name: &str) -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/rosbag2")
+        .join(name)
+}
+
+fn ingest_bag(p: &Path) -> Dataset {
+    Rosbag2Adapter
+        .ingest(&Source::Local(p.to_path_buf()), &IngestOptions::default())
+        .expect("rosbag2 ingest")
+        .dataset
+}
+
+#[test]
+fn a_bag_directory_is_named_the_same_from_inside_it() {
+    // Copied to a temp directory: `unnameable_spelling_of` creates a subdirectory, and a committed
+    // fixture is not something a test writes into.
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("clean_rig");
+    fs::create_dir_all(&dir).unwrap();
+    for entry in fs::read_dir(bag("clean_rig")).unwrap().flatten() {
+        fs::copy(entry.path(), dir.join(entry.file_name())).unwrap();
+    }
+
+    let absolute = ingest_bag(&dir);
+    // `<dir>/<something>/..` is the shape `veridex check .` reaches the adapter as: it resolves to
+    // the directory but has no `file_name()`.
+    let from_inside = ingest_bag(&unnameable_spelling_of(&dir));
+
+    assert_eq!(absolute.id, "clean_rig");
+    assert_eq!(
+        from_inside.id, "clean_rig",
+        "a path with no `file_name()` must still name the bag, not fall through to the `rosbag2` \
+         fallback"
+    );
+    assert_eq!(
+        content_hash(&from_inside),
+        content_hash(&absolute),
+        "a certificate issued for a bag from outside its directory must verify from inside it"
+    );
+}
+
+#[test]
+fn a_bare_shard_is_named_for_the_recording_however_it_is_stored() {
+    // A shard is identified by the recording, not by the file: `x.db3` and `x.db3.zstd` are one
+    // recording stored two ways, and the id is bound into the content hash — so naming the
+    // compressed one `compressed_rig_0.db3` (the file stem, which keeps an extension) would make a
+    // certificate issued over the uncompressed copy fail against the compressed one.
+    assert_eq!(ingest_bag(&bag("bare.db3")).id, "bare");
+    assert_eq!(
+        ingest_bag(&bag("compressed_rig/compressed_rig_0.db3.zstd")).id,
+        "compressed_rig_0"
+    );
+
+    // And a relative spelling names it the same as an absolute one.
+    let relative = bag("compressed_rig").join("..").join("bare.db3");
+    assert_eq!(ingest_bag(&relative).id, "bare");
+    assert_eq!(
+        content_hash(&ingest_bag(&relative)),
+        content_hash(&ingest_bag(&bag("bare.db3")))
     );
 }

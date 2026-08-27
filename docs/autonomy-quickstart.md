@@ -42,13 +42,19 @@ cargo run -p veridex-cli -- check /tmp/av.mcap
 ```
 
 ```
-  Status:   FAIL   Trust: 70 (C)  [data 73 · provenance 66%]
+  Status:   FAIL   Trust: 73 (C)  [data 77 · provenance 66%]
   [error] AUTONOMY.RIG_SYNC  episode 0
       rig sensors are out of sync — `/imu/data` spans 700.0 ms but `/odom` spans 1000.0 ms,
       a 300.0 ms drift across 5 sensors
       remedy: Re-synchronize the rig against a common time base, or record and apply per-sensor
               trigger/latency offsets before fusing.
 ```
+
+Three findings, all about the same rig fault: the IMU stops 300 ms early, so `RIG_SYNC` reports the
+spread and `TEMPORAL.END_OFFSET` reports the tail, and the rig has cameras but no `CameraInfo` to
+project points into them. Nothing here is about `/tf_static`, which this demo publishes latched —
+exactly as a real ROS 2 stack does — so the checks that ask whether a stream covers the recording's
+window leave it alone.
 
 The rig checks emit `AUTONOMY.RIG_SYNC`, `SEQUENCE_COMPLETE`, `EGO_POSE_CONTINUITY`,
 `EGO_POSE_NON_FINITE`, `CALIBRATION_INCOMPLETE`, and `SENSOR_FRAME_UNKNOWN` /

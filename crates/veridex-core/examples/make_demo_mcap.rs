@@ -218,8 +218,12 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(w: &mut mcap::Writer<W>, misc
     let tf_schema = w
         .add_schema("tf2_msgs/msg/TFMessage", "ros2msg", b"")
         .unwrap();
+    // The QoS a real ROS 2 stack offers `/tf_static`: transient-local, i.e. published once at
+    // startup and retained for late subscribers. rosbag2's MCAP writer carries each publisher's
+    // profile on the channel, so a demo that claims to model a rig log has to carry it too —
+    // without it the one-message transform tree is read as a sensor that fired once and stopped.
     let tf_channel = w
-        .add_channel(tf_schema, "/tf_static", "cdr", &BTreeMap::new())
+        .add_channel(tf_schema, "/tf_static", "cdr", &latched_qos())
         .unwrap();
     write_msg(w, tf_channel, 0, 0, &tf_message_body(tf_edges));
 
@@ -274,6 +278,16 @@ fn header_body(frame_id: &str, payload: u64) -> Vec<u8> {
 
 /// A `tf2_msgs/msg/TFMessage` CDR body holding one `TransformStamped` per `(parent, child)` edge,
 /// each an identity transform — the demo cares about the tree's *shape*, not its geometry.
+/// `offered_qos_profiles` as rosbag2 writes it for a latched (transient-local) publisher.
+fn latched_qos() -> BTreeMap<String, String> {
+    [(
+        "offered_qos_profiles".to_string(),
+        "- history: 3\n  depth: 1\n  reliability: 1\n  durability: 1\n".to_string(),
+    )]
+    .into_iter()
+    .collect()
+}
+
 fn tf_message_body(edges: &[(&str, &str)]) -> Vec<u8> {
     let mut buf: Vec<u8> = vec![0x00, 0x01, 0x00, 0x00]; // encapsulation: CDR_LE
     let align = |buf: &mut Vec<u8>, n: usize| {

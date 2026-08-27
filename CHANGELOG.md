@@ -10,6 +10,18 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **The demo rig log did not publish `/tf_static` the way a real one does.** `make_demo_mcap --
+  <out> av` claims to model an autonomy rig log, and a real one carries each publisher's QoS on the
+  channel — including the transient-local (latched) profile every ROS 2 stack offers `/tf_static`.
+  The demo wrote no QoS, so its one-message transform tree was read as a sensor that fired once and
+  stopped, and the run carried a `STRUCTURAL.SINGLE_FRAME_STREAM` warning and a
+  `TEMPORAL.END_OFFSET` about `/tf_static` alongside the rig fault it exists to show.
+
+  The demo now writes the profile. Its three remaining findings are all about the one thing that is
+  actually wrong — the IMU stops 300 ms early, reported by `RIG_SYNC` and by `END_OFFSET`, plus the
+  missing camera intrinsics — and the trust score moves from 70 to 73 (`data 73` → `77`). The
+  autonomy quickstart's transcript is updated to match, and was re-run to produce it.
+
 - **A certificate issued under an older CDM encoding was reported as tampering.** A content hash
   only means something within one canonical encoding, so when the encoding changes, byte-identical
   data hashes differently and `verify` saw only "the hashes differ" — which is the wording of
