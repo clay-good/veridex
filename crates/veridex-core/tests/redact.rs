@@ -271,7 +271,7 @@ fn a_path_a_finding_quotes_is_not_a_way_around_redaction() {
         Severity::Warning,
         Location::Dataset,
         "COVERAGE.SOURCE_UNREAD",
-        "1 source file(s) the dataset declares were not read \
+        "1 source(s) the dataset declares were not read \
              (data/acme-warehouse-pilot/chunk-000/file-001.parquet)",
     ));
     verdict.findings.push(Finding::new(

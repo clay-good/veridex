@@ -70,5 +70,5 @@ Rules:
 | `configuration` | Core | Config files, policy profiles, tolerances/thresholds, precedence. |
 | `extensibility` | Core | Plugin SDK: custom checks, adapters, extractors; check-packs; stable API. |
 | `security` | Core | Key management, signing trust model, guarantees/non-guarantees, threat model, audit. |
-| `autonomy-sensor-data` | **Core — priority after core** | Multi-sensor rig (LiDAR/radar/camera/CAN/GNSS/IMU/ego-pose): AV-native adapters (MF4, CAN+DBC, ROS bag), rig sync + calibration + ego-pose + sequence checks, world-model readiness profile. |
+| `autonomy-sensor-data` | **Core — priority after core** | Multi-sensor rig (LiDAR/radar/camera/CAN/GNSS/IMU/ego-pose): AV-native adapters (MF4, CAN+DBC, ROS 2 rosbag2/MCAP), rig sync + calibration + ego-pose + sequence checks, world-model readiness profile. |
 | `registry` | **Roadmap** | Hosted certification registry: publish/lookup, public verification, badges, revocation. Post-core. |

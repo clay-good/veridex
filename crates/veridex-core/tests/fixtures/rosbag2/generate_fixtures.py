@@ -1,0 +1,318 @@
+#!/usr/bin/env python3
+"""Regenerate the rosbag2 fixtures under this directory.
+
+The `.db3` files are written by **Python's own `sqlite3` module** — real SQLite, not this
+repository's reader spelled backwards. That is the whole point: `crates/veridex-core/src/adapter/
+sqlite.rs` is a hand-written reader, and a reader tested only against a writer from the same head
+proves the two agree, not that either matches the format. Every fixture here is third-party output,
+exactly as `tests/fixtures/hdf5` is real h5py output.
+
+The message bodies are ROS 2 CDR, encoded here by a small writer that mirrors the alignment rules in
+`adapter/cdr.rs`. Only the *headers* Veridex decodes are meaningful; the bulk payload of a cloud or
+an image is filler, because Veridex never reads it.
+
+Run:  python3 generate_fixtures.py
+"""
+
+import os
+import shutil
+import sqlite3
+import struct
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+# rosbag2's sqlite3 storage schema (rosbag2_storage_sqlite3), schema version 4 and later.
+SCHEMA = """
+CREATE TABLE topics(
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  type TEXT NOT NULL,
+  serialization_format TEXT NOT NULL,
+  offered_qos_profiles TEXT NOT NULL);
+CREATE TABLE messages(
+  id INTEGER PRIMARY KEY,
+  topic_id INTEGER NOT NULL,
+  timestamp INTEGER NOT NULL,
+  data BLOB NOT NULL);
+CREATE INDEX timestamp_idx ON messages (timestamp ASC);
+"""
+
+
+class Cdr:
+    """A CDR (XCDR1, little-endian) writer: what a ROS 2 publisher puts on the wire."""
+
+    def __init__(self):
+        # Encapsulation header: CDR_LE, options 0.
+        self.buf = bytearray(b"\x00\x01\x00\x00")
+
+    def _pos(self):
+        return len(self.buf) - 4
+
+    def align(self, n):
+        while self._pos() % n:
+            self.buf.append(0)
+
+    def u8(self, v):
+        self.buf.append(v & 0xFF)
+
+    def u32(self, v):
+        self.align(4)
+        self.buf += struct.pack("<I", v & 0xFFFFFFFF)
+
+    def i32(self, v):
+        self.align(4)
+        self.buf += struct.pack("<i", v)
+
+    def f64(self, v):
+        self.align(8)
+        self.buf += struct.pack("<d", v)
+
+    def string(self, s):
+        raw = s.encode("utf-8") + b"\x00"
+        self.u32(len(raw))
+        self.buf += raw
+
+    def header(self, frame_id, ts_ns):
+        self.i32(ts_ns // 1_000_000_000)
+        self.u32(ts_ns % 1_000_000_000)
+        self.string(frame_id)
+
+    def raw(self, b):
+        self.buf += b
+
+    def bytes(self):
+        return bytes(self.buf)
+
+
+def point_cloud2(frame_id, ts_ns, npoints=8):
+    c = Cdr()
+    c.header(frame_id, ts_ns)
+    c.u32(1)  # height
+    c.u32(npoints)  # width
+    fields = [("x", 0, 7), ("y", 4, 7), ("z", 8, 7), ("intensity", 12, 7), ("ring", 16, 4)]
+    c.u32(len(fields))
+    for name, offset, datatype in fields:
+        c.string(name)
+        c.u32(offset)
+        c.u8(datatype)
+        c.u32(1)
+    c.u8(0)  # is_bigendian
+    c.u32(18)  # point_step
+    c.u32(18 * npoints)  # row_step
+    c.u32(18 * npoints)  # data (sequence<uint8>) — filler; Veridex never reads it
+    c.raw(bytes(18 * npoints))
+    c.u8(1)  # is_dense
+    return c.bytes()
+
+
+def camera_info(frame_id, ts_ns, width=1920, height=1080):
+    c = Cdr()
+    c.header(frame_id, ts_ns)
+    c.u32(height)
+    c.u32(width)
+    c.string("plumb_bob")
+    d = [-0.31, 0.09, 0.0, 0.0, 0.0]
+    c.u32(len(d))
+    for v in d:
+        c.f64(v)
+    fx, fy, cx, cy = 1080.5, 1080.5, 960.0, 540.0
+    for v in [fx, 0.0, cx, 0.0, fy, cy, 0.0, 0.0, 1.0]:
+        c.f64(v)
+    return c.bytes()
+
+
+def odometry(frame_id, ts_ns, x, y):
+    c = Cdr()
+    c.header(frame_id, ts_ns)
+    c.string("base_link")
+    for v in [x, y, 0.0, 0.0, 0.0, 0.0, 1.0]:
+        c.f64(v)
+    return c.bytes()
+
+
+def tf_message(ts_ns, edges):
+    c = Cdr()
+    c.u32(len(edges))
+    for parent, child, (tx, ty, tz) in edges:
+        c.header(parent, ts_ns)
+        c.string(child)
+        for v in [tx, ty, tz, 0.0, 0.0, 0.0, 1.0]:
+            c.f64(v)
+    return c.bytes()
+
+
+def header_only(frame_id, ts_ns, filler=64):
+    """Any header-first message whose body Veridex does not decode (Image, Imu, …)."""
+    c = Cdr()
+    c.header(frame_id, ts_ns)
+    c.raw(bytes(filler))
+    return c.bytes()
+
+
+def write_bag(path, topics, messages):
+    """topics: [(id, name, type, serialization_format, qos)]; messages: [(topic_id, ts, blob)]."""
+    if os.path.exists(path):
+        os.remove(path)
+    db = sqlite3.connect(path)
+    db.executescript(SCHEMA)
+    db.executemany("INSERT INTO topics VALUES (?,?,?,?,?)", topics)
+    db.executemany(
+        "INSERT INTO messages(topic_id, timestamp, data) VALUES (?,?,?)",
+        [(t, ts, sqlite3.Binary(blob)) for t, ts, blob in messages],
+    )
+    db.commit()
+    db.close()
+
+
+def metadata_yaml(relative_paths, message_count, per_topic, duration_ns, start_ns):
+    topics = "\n".join(
+        f"""    - topic_metadata:
+        name: {name}
+        type: {typ}
+        serialization_format: cdr
+        offered_qos_profiles: ""
+      message_count: {count}"""
+        for name, typ, count in per_topic
+    )
+    files = "\n".join(f"    - {p}" for p in relative_paths)
+    return f"""rosbag2_bagfile_information:
+  version: 5
+  storage_identifier: sqlite3
+  relative_file_paths:
+{files}
+  duration:
+    nanoseconds: {duration_ns}
+  starting_time:
+    nanoseconds_since_epoch: {start_ns}
+  message_count: {message_count}
+  topics_with_message_count:
+{topics}
+  compression_format: ""
+  compression_mode: ""
+  ros_distro: humble
+"""
+
+
+START = 1_700_000_000_000_000_000
+RIG_TOPICS = [
+    (1, "/lidar/points", "sensor_msgs/msg/PointCloud2", "cdr", ""),
+    (2, "/camera/front/image_raw", "sensor_msgs/msg/Image", "cdr", ""),
+    (3, "/camera/front/camera_info", "sensor_msgs/msg/CameraInfo", "cdr", ""),
+    (4, "/imu/data", "sensor_msgs/msg/Imu", "cdr", ""),
+    (5, "/odom", "nav_msgs/msg/Odometry", "cdr", ""),
+    (6, "/tf_static", "tf2_msgs/msg/TFMessage", "cdr", ""),
+]
+
+TF_EDGES = [
+    ("base_link", "lidar_link", (0.0, 0.0, 1.8)),
+    ("base_link", "camera_front", (1.2, 0.0, 1.5)),
+    ("base_link", "imu_link", (0.0, 0.0, 0.4)),
+]
+
+
+def rig_messages(n_lidar=20, camera_end_scale=1.0):
+    """A 2-second rig recording at 10 Hz LiDAR / 20 Hz camera / 100 Hz IMU.
+
+    `camera_end_scale` stretches the camera's inter-frame period, so its stream spans a different
+    duration than the others on the same clock — a cross-stream skew.
+    """
+    msgs = []
+    lidar_dt = 100_000_000
+    for i in range(n_lidar):
+        ts = START + i * lidar_dt
+        msgs.append((1, ts, point_cloud2("lidar_link", ts)))
+    cam_dt = int(50_000_000 * camera_end_scale)
+    for i in range(n_lidar * 2):
+        ts = START + i * cam_dt
+        msgs.append((2, ts, header_only("camera_front", ts, 256)))
+        # Real camera drivers publish CameraInfo alongside every frame, so it spans the same window
+        # the image stream does — a rig whose calibration channel stopped early is a fault, and the
+        # fixture must not carry one by accident.
+        msgs.append((3, ts, camera_info("camera_front", ts)))
+    for i in range(n_lidar * 10):
+        ts = START + i * 10_000_000
+        msgs.append((4, ts, header_only("imu_link", ts, 96)))
+    for i in range(n_lidar * 5):
+        ts = START + i * 20_000_000
+        msgs.append((5, ts, odometry("odom", ts, i * 0.2, 0.0)))
+    msgs.append((6, START, tf_message(START, TF_EDGES)))
+    msgs.sort(key=lambda m: m[1])
+    return msgs
+
+
+def per_topic_counts(msgs):
+    counts = {}
+    for topic_id, _, _ in msgs:
+        counts[topic_id] = counts.get(topic_id, 0) + 1
+    by_id = {t[0]: (t[1], t[2]) for t in RIG_TOPICS}
+    return [(by_id[i][0], by_id[i][1], counts[i]) for i in sorted(counts)]
+
+
+def bag_dir(name, msgs, declared_count=None):
+    """A rosbag2 *directory*: one `.db3` plus the `metadata.yaml` a recording always ships."""
+    d = os.path.join(HERE, name)
+    if os.path.exists(d):
+        shutil.rmtree(d)
+    os.makedirs(d)
+    db = f"{name}_0.db3"
+    write_bag(os.path.join(d, db), RIG_TOPICS, msgs)
+    span = max(m[1] for m in msgs) - min(m[1] for m in msgs)
+    with open(os.path.join(d, "metadata.yaml"), "w") as f:
+        f.write(
+            metadata_yaml(
+                [db],
+                declared_count if declared_count is not None else len(msgs),
+                per_topic_counts(msgs),
+                span,
+                min(m[1] for m in msgs),
+            )
+        )
+
+
+def main():
+    # A clean five-sensor rig recording, as a full bag directory.
+    bag_dir("clean_rig", rig_messages())
+
+    # The same rig, but the camera runs 1.4x slow on the shared clock: its stream ends well before
+    # the others, which is the cross-stream drift TEMPORAL.CLOCK_SKEW exists to find.
+    bag_dir("skewed_rig", rig_messages(camera_end_scale=0.6))
+
+    # A recording whose `.db3` lost its tail (the process was killed) while metadata.yaml still
+    # claims every message it meant to write.
+    msgs = rig_messages()
+    bag_dir("interrupted", msgs[: len(msgs) - 40], declared_count=len(msgs))
+
+    # A bare `.db3` with no metadata.yaml beside it — what you get when someone hands you the one
+    # file out of the bag directory.
+    write_bag(os.path.join(HERE, "bare.db3"), RIG_TOPICS, rig_messages())
+
+    # A bag whose messages reference a topic id the `topics` table never declares.
+    write_bag(
+        os.path.join(HERE, "orphan_topic.db3"),
+        RIG_TOPICS[:1],
+        [(1, START, point_cloud2("lidar_link", START)), (99, START + 1, b"\x00\x01\x00\x00")],
+    )
+
+    # A database that is valid SQLite but is not a rosbag2 bag at all.
+    p = os.path.join(HERE, "not_a_bag.db3")
+    if os.path.exists(p):
+        os.remove(p)
+    db = sqlite3.connect(p)
+    db.execute("CREATE TABLE notes(id INTEGER PRIMARY KEY, body TEXT)")
+    db.execute("INSERT INTO notes(body) VALUES ('nothing to do with robots')")
+    db.commit()
+    db.close()
+
+    # A message blob far larger than one page, so the reader's overflow-chain path is exercised
+    # against a chain real SQLite laid out.
+    write_bag(
+        os.path.join(HERE, "overflow.db3"),
+        RIG_TOPICS[:1],
+        [(1, START + i, point_cloud2("lidar_link", START + i, npoints=2_000)) for i in range(2)],
+    )
+
+    print("wrote fixtures under", HERE)
+
+
+if __name__ == "__main__":
+    main()

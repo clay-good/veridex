@@ -8,7 +8,7 @@ This crate is the library behind the `veridex` CLI and the `veridex` Python pack
 - the **Canonical Dataset Model** (`cdm`) every adapter populates and every check reads, and its
   deterministic [content hash](https://docs.rs/veridex-core/latest/veridex_core/canonical/) —
   the same dataset bytes and the same Veridex version always hash alike;
-- the **adapters** that map LeRobot v3, RLDS/TFDS, HDF5, Zarr, MCAP, CAN+DBC and ASAM MDF/MF4 into
+- the **adapters** that map LeRobot v3, RLDS/TFDS, HDF5, Zarr, MCAP, ROS 2 rosbag2, CAN+DBC and ASAM MDF/MF4 into
   that one shape;
 - the **validation engine** and the [checks catalog](https://github.com/clay-good/veridex/blob/main/docs/checks.md)
   it runs — structural, temporal, statistical, semantic, video, provenance, and autonomy families;

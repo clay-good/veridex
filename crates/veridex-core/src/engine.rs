@@ -723,6 +723,11 @@ fn coverage_finding(coverage: &CoverageNote) -> Option<Finding> {
 /// disclosure is a note about the request. Data unread because a shard points outside the dataset
 /// directory was requested by nobody: the dataset misrepresented itself, and that is a defect in
 /// the data of exactly the kind this tool exists to report.
+///
+/// Worded as *sources*, not files, because not every one is a file. The rosbag2 adapter records a
+/// recording that falls short of the message total its own manifest declares, and a message on a
+/// topic the bag never declares — both are data the dataset says exists that this run did not read,
+/// which is the thing this finding is about, and calling them files would describe neither.
 fn unread_sources_finding(unread: &[crate::adapter::UnmappedField]) -> Option<Finding> {
     if unread.is_empty() {
         return None;
@@ -737,20 +742,21 @@ fn unread_sources_finding(unread: &[crate::adapter::UnmappedField]) -> Option<Fi
             crate::check::Location::Dataset,
             "COVERAGE.SOURCE_UNREAD",
             format!(
-                "{} source file(s) the dataset declares were not read ({}), so every result below \
+                "{} source(s) the dataset declares were not read ({}), so every result below \
                  speaks for the part that was",
                 unread.len(),
                 named.join(", ")
             ),
         )
         .with_risk(
-            "The data in those files was never opened, so no check measured it. A clean result over \
-             the remainder is not a clean result over the dataset, and read as one it waves through \
-             exactly the part Veridex could not see.",
+            "That data was never read, so no check measured it. A clean result over the remainder is \
+             not a clean result over the dataset, and read as one it waves through exactly the part \
+             Veridex could not see.",
         )
         .with_remedy(
-            "Re-export the dataset so every file it declares lives inside the dataset directory, \
-             then re-run. `veridex inspect` names each unread file and why it was skipped.",
+            "Re-export the dataset so everything it declares is present and inside the dataset \
+             directory, then re-run. `veridex inspect` names each unread source and why it was \
+             skipped.",
         ),
     )
 }

@@ -850,7 +850,7 @@ impl Check for ExtremeOutlier {
 /// The same reasoning as [`ClockMeasurability`](crate::checks::temporal::ClockMeasurability), one
 /// family over. Every statistical check reads either the source's *stored* summary statistics or the
 /// ones the adapter recomputed while fingerprinting the data. Four adapters populate neither: MCAP,
-/// CAN+DBC, ASAM MF4, and RLDS/TFDS fingerprint payload bytes without interpreting them, so
+/// rosbag2, CAN+DBC, ASAM MF4, and RLDS/TFDS fingerprint payload bytes without interpreting them, so
 /// `stats`, `observed_stats`, `observed_saturation`, and `observed_non_finite` are all `None`. Every
 /// check in the family then hits its `let Some(...) else { continue }` and produces nothing.
 ///

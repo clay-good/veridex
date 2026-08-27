@@ -1,0 +1,349 @@
+//! ROS 2 rosbag2 (`.db3`) adapter tests.
+//!
+//! Every fixture under `tests/fixtures/rosbag2/` is written by **Python's `sqlite3` module** — real
+//! SQLite, from a writer with nothing to do with this repository. That is deliberate:
+//! `adapter/sqlite.rs` is a hand-written reader, and a reader tested only against a writer from the
+//! same head proves the two agree with each other, not that either agrees with the format.
+//! `tests/fixtures/rosbag2/generate_fixtures.py` regenerates them.
+//!
+//! The golden SHA-256s pinned below were computed by that Python, over the bytes it inserted. They
+//! are the proof that this reader assembles a payload correctly — including one spread across an
+//! overflow-page chain, where an off-by-one in the local/overflow split produces bytes that still
+//! look like a message.
+
+use std::path::PathBuf;
+
+use veridex_core::adapter::{
+    default_registry, Adapter, Coverage, Detection, IngestError, IngestOptions, Ingested, Sample,
+    Source,
+};
+use veridex_core::cdm::Modality;
+
+fn fixtures() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rosbag2")
+}
+
+fn ingest(rel: &str) -> Ingested {
+    ingest_with(rel, &IngestOptions::default()).expect("the fixture ingests")
+}
+
+fn ingest_with(rel: &str, options: &IngestOptions) -> Result<Ingested, IngestError> {
+    default_registry().ingest(&Source::Local(fixtures().join(rel)), options)
+}
+
+fn hex(bytes: &[u8; 32]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[test]
+fn a_bag_directory_maps_every_topic_to_a_stream() {
+    let out = ingest("clean_rig");
+    assert_eq!(out.report.format_id, "rosbag2");
+    assert_eq!(out.report.source_version.as_deref(), Some("5"));
+    assert_eq!(out.report.coverage, Coverage::Full);
+    assert_eq!(out.dataset.id, "clean_rig");
+    assert_eq!(out.dataset.episodes.len(), 1, "a bag is one recording");
+
+    let ep = &out.dataset.episodes[0];
+    let names: Vec<&str> = ep.streams.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec![
+            "/camera/front/camera_info",
+            "/camera/front/image_raw",
+            "/imu/data",
+            "/lidar/points",
+            "/odom",
+            "/tf_static",
+        ]
+    );
+    // Every message in the bag became a frame, and none was lost or double-counted.
+    let frames: usize = ep.streams.iter().map(|s| s.frames.len()).sum();
+    assert_eq!(frames, 401, "the fixture holds 401 messages");
+    assert!(ep.streams.iter().all(|s| s.clock_id == "rosbag2-log"));
+}
+
+#[test]
+fn the_ros_message_type_selects_the_modality() {
+    let out = ingest("clean_rig");
+    let by_name = |n: &str| {
+        out.dataset.episodes[0]
+            .streams
+            .iter()
+            .find(|s| s.name == n)
+            .unwrap_or_else(|| panic!("stream {n}"))
+            .modality
+    };
+    assert_eq!(by_name("/lidar/points"), Modality::PointCloud);
+    assert_eq!(by_name("/imu/data"), Modality::Imu);
+    assert_eq!(by_name("/odom"), Modality::EgoPose);
+    assert_eq!(by_name("/camera/front/image_raw"), Modality::Video);
+}
+
+#[test]
+fn the_av_message_headers_populate_the_rig_cdm() {
+    let out = ingest("clean_rig");
+
+    // PointCloud2 -> per-point field layout, read from the message header, never the points.
+    let lidar = out.dataset.episodes[0]
+        .streams
+        .iter()
+        .find(|s| s.name == "/lidar/points")
+        .expect("the lidar stream");
+    let fields = lidar.point_fields.as_ref().expect("decoded point fields");
+    let field_names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(field_names, vec!["x", "y", "z", "intensity", "ring"]);
+    assert_eq!(fields[0].dtype.as_deref(), Some("float32"));
+    assert_eq!(fields[4].dtype.as_deref(), Some("uint16"));
+
+    // Every header-first message names the frame its data is expressed in.
+    assert_eq!(lidar.frame_id.as_deref(), Some("lidar_link"));
+
+    // TFMessage -> the transform tree; CameraInfo -> intrinsics.
+    let calib = out
+        .dataset
+        .calibration
+        .as_ref()
+        .expect("decoded calibration");
+    let edges: Vec<(&str, &str)> = calib
+        .transforms
+        .iter()
+        .map(|t| (t.parent_frame.as_str(), t.child_frame.as_str()))
+        .collect();
+    assert!(edges.contains(&("base_link", "lidar_link")), "{edges:?}");
+    assert!(edges.contains(&("base_link", "camera_front")), "{edges:?}");
+    assert_eq!(calib.intrinsics.len(), 1);
+    assert_eq!(calib.intrinsics[0].fx, 1080.5);
+    assert_eq!(calib.intrinsics[0].cx, 960.0);
+
+    // Odometry -> the ego trajectory, in timestamp order.
+    let poses = out.dataset.episodes[0]
+        .ego_poses
+        .as_ref()
+        .expect("decoded ego poses");
+    assert_eq!(poses.len(), 100);
+    assert!(poses.windows(2).all(|w| w[0].ts <= w[1].ts));
+}
+
+#[test]
+fn a_message_payload_is_fingerprinted_byte_for_byte() {
+    let out = ingest("clean_rig");
+    let lidar = out.dataset.episodes[0]
+        .streams
+        .iter()
+        .find(|s| s.name == "/lidar/points")
+        .expect("the lidar stream");
+    let first = &lidar.frames[0];
+    assert_eq!(first.value_ref.uri, "/lidar/points");
+    assert_eq!(first.value_ref.byte_len, Some(313));
+    // Golden, from Python's sqlite3 over the bytes it inserted.
+    assert_eq!(
+        hex(&first.value_ref.content_hash.expect("a content hash")),
+        "bd65d2a9cca4beb5fa30aceb83e124d606598d20e0685f7f79c5c6fcf5fa7599"
+    );
+}
+
+#[test]
+fn a_payload_spread_across_overflow_pages_is_reassembled_exactly() {
+    // 36 KB messages in a 4 KB-page database: each one keeps a computed prefix on its own page and
+    // the rest on a chain of overflow pages. An off-by-one in that split still yields plausible
+    // bytes, so the only test worth running is against hashes an independent writer produced.
+    let out = ingest("overflow.db3");
+    let stream = &out.dataset.episodes[0].streams[0];
+    assert_eq!(stream.frames.len(), 2);
+    let hashes: Vec<String> = stream
+        .frames
+        .iter()
+        .map(|f| hex(&f.value_ref.content_hash.expect("a content hash")))
+        .collect();
+    assert_eq!(
+        hashes,
+        vec![
+            "1a84521e983237640547cce523e9d95da9ed3a3fd6d38455b58335d88611f0b7".to_string(),
+            "3c1d97643503596945350adff3ce9a0baf35569b6cb1c7226e193503377833af".to_string(),
+        ]
+    );
+    assert!(stream
+        .frames
+        .iter()
+        .all(|f| f.value_ref.byte_len == Some(36169)));
+    // The header at the front of that reassembled payload still parses, which it would not if the
+    // prefix had been taken from the wrong offset.
+    assert_eq!(stream.frame_id.as_deref(), Some("lidar_link"));
+}
+
+#[test]
+fn a_recording_short_of_its_manifest_is_a_coverage_hole_not_a_clean_read() {
+    // `interrupted/` is the clean bag with its last 40 messages missing, and a `metadata.yaml` that
+    // still closes with the full count — a recorder killed mid-flush. Reading it as a complete bag
+    // is the exact failure this tool exists to prevent.
+    let out = ingest("interrupted");
+    let ingested: usize = out.dataset.episodes[0]
+        .streams
+        .iter()
+        .map(|s| s.frames.len())
+        .sum();
+    assert_eq!(ingested, 361);
+    let unread = &out.report.unread_sources;
+    assert_eq!(unread.len(), 1, "{unread:?}");
+    assert_eq!(unread[0].source_path, "metadata.yaml message_count");
+    assert!(
+        unread[0].note.contains("401") && unread[0].note.contains("361"),
+        "the disclosure names both numbers: {}",
+        unread[0].note
+    );
+
+    // The manifest total is *not* mapped to `declared_frame_count`: it counts every topic's
+    // messages, while that field is what each of an episode's streams should hold. Mapping it there
+    // would fail a sound bag on `STRUCTURAL.EPISODE_BOUNDARY`.
+    assert_eq!(out.dataset.episodes[0].declared_frame_count, None);
+    let clean = ingest("clean_rig");
+    assert!(
+        clean.report.unread_sources.is_empty(),
+        "a whole bag discloses nothing unread: {:?}",
+        clean.report.unread_sources
+    );
+}
+
+#[test]
+fn a_message_on_an_undeclared_topic_is_reported_unread() {
+    let out = ingest("orphan_topic.db3");
+    // The one declared topic still maps; the orphan is not invented into a stream.
+    assert_eq!(out.dataset.episodes[0].streams.len(), 1);
+    let unread = &out.report.unread_sources;
+    assert_eq!(unread.len(), 1, "{unread:?}");
+    assert_eq!(unread[0].source_path, "messages.topic_id=99");
+}
+
+#[test]
+fn a_bare_db3_is_read_and_says_what_it_therefore_cannot_know() {
+    let out = ingest("bare.db3");
+    assert_eq!(out.dataset.id, "bare");
+    assert_eq!(out.dataset.episodes[0].streams.len(), 6);
+    // No manifest, so no version to report — `None`, not a guessed default.
+    assert_eq!(out.report.source_version, None);
+    assert!(
+        out.report
+            .omitted_fields
+            .iter()
+            .any(|f| f.starts_with("metadata.yaml (")),
+        "{:?}",
+        out.report.omitted_fields
+    );
+    // And no recorder was invented for it.
+    assert!(!out.dataset.provenance[0]
+        .elements
+        .iter()
+        .any(|e| e.key == "recorder"));
+}
+
+#[test]
+fn the_manifests_recorder_is_recorded_as_provenance() {
+    let out = ingest("clean_rig");
+    let recorder = out.dataset.provenance[0]
+        .elements
+        .iter()
+        .find(|e| e.key == "recorder")
+        .expect("a recorder element");
+    assert_eq!(recorder.value.as_deref(), Some("rosbag2 (humble)"));
+}
+
+#[test]
+fn a_sqlite_database_that_is_not_a_bag_is_refused_by_name() {
+    match ingest_with("not_a_bag.db3", &IngestOptions::default()) {
+        Err(IngestError::Parse { format_id, message }) => {
+            assert_eq!(format_id, "rosbag2");
+            assert!(message.contains("topics"), "{message}");
+        }
+        other => panic!("expected a parse error, got {other:?}"),
+    }
+}
+
+#[test]
+fn detection_claims_a_bag_directory_and_a_bare_db3_and_nothing_else() {
+    let reg = default_registry();
+    // Autodetection resolves both without ambiguity — no other adapter claims them.
+    assert!(reg
+        .ingest(
+            &Source::Local(fixtures().join("clean_rig")),
+            &IngestOptions::default()
+        )
+        .is_ok());
+
+    let adapter = veridex_core::adapter::rosbag2::Rosbag2Adapter;
+    assert_eq!(
+        adapter.detect(&Source::Local(fixtures().join("clean_rig"))),
+        Detection::Yes {
+            version: Some("5".into())
+        }
+    );
+    assert_eq!(
+        adapter.detect(&Source::Local(fixtures().join("bare.db3"))),
+        Detection::Yes { version: None }
+    );
+    // The fixture directory itself has `.db3` files in it but no `metadata.yaml`, so it is not
+    // claimed as a bag.
+    assert_eq!(
+        adapter.detect(&Source::Local(fixtures())),
+        Detection::No,
+        "a directory without a metadata.yaml is not autodetected as a bag"
+    );
+}
+
+#[test]
+fn sampling_a_bag_is_refused_rather_than_silently_ignored() {
+    let options = IngestOptions {
+        sample: Sample::FirstEpisodes(1),
+        ..IngestOptions::default()
+    };
+    match ingest_with("clean_rig", &options) {
+        Err(IngestError::SamplingUnsupported { format_id, .. }) => {
+            assert_eq!(format_id, "rosbag2")
+        }
+        other => panic!("expected a sampling refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn metadata_only_is_refused_rather_than_read_as_a_full_check() {
+    let options = IngestOptions {
+        metadata_only: true,
+        ..IngestOptions::default()
+    };
+    match ingest_with("clean_rig", &options) {
+        Err(IngestError::NotImplemented { what, .. }) => {
+            assert!(what.contains("metadata-only"), "{what}")
+        }
+        other => panic!("expected a metadata-only refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_frame_budget_bounds_a_bag() {
+    let options = IngestOptions {
+        max_frames: Some(10),
+        ..IngestOptions::default()
+    };
+    match ingest_with("clean_rig", &options) {
+        Err(IngestError::FrameBudgetExceeded {
+            format_id, limit, ..
+        }) => {
+            assert_eq!(format_id, "rosbag2");
+            assert_eq!(limit, 10);
+        }
+        // The budget must surface as a budget error, not as the parse error the scan's visitor
+        // returns internally to stop the walk.
+        other => panic!("expected a frame-budget error, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_same_bag_read_twice_produces_the_same_content_hash() {
+    let a = veridex_core::canonical::content_hash(&ingest("clean_rig").dataset);
+    let b = veridex_core::canonical::content_hash(&ingest("clean_rig").dataset);
+    assert_eq!(a, b);
+    // And the bare `.db3` inside the bag is not the same dataset as the bag: it is identified by a
+    // different name and carries none of the manifest's provenance.
+    let bare = veridex_core::canonical::content_hash(&ingest("bare.db3").dataset);
+    assert_ne!(a, bare);
+}

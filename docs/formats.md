@@ -1,6 +1,6 @@
 # The formats, one at a time
 
-The claim behind Veridex is that one command reads seven formats into one shape and runs the same
+The claim behind Veridex is that one command reads eight formats into one shape and runs the same
 checks over all of them. This page is that claim, demonstrated: what each adapter reads, what it
 refuses to guess, and what it will not pretend to know.
 
@@ -136,6 +136,63 @@ reads `zlib`, `gzip`, `zstd`, `lz4`, and `blosc` (with `lz4`, `zstd`, or `zlib` 
 shuffle included), and refuses anything else by name with what to re-save it as. Every codec is tested
 by decoding the same values through all of them and requiring identical bytes.
 
+
+And on a **ROS 2 rosbag2** recording — what a ROS 2 robot writes by default, and the format most
+existing robot logs are sitting in:
+
+```sh
+# a bag directory: metadata.yaml beside its .db3, written by real SQLite as a test fixture
+cargo run -p veridex-cli -- check crates/veridex-core/tests/fixtures/rosbag2/clean_rig
+
+# or the one .db3 on its own, when that is all you were handed
+cargo run -p veridex-cli -- inspect crates/veridex-core/tests/fixtures/rosbag2/bare.db3
+```
+
+rosbag2's `sqlite3` storage plugin keeps the recording in two tables: `topics` (one row per recorded
+topic) and `messages` (one row per message, with its receive timestamp and its serialized body). Each
+topic becomes a stream, each message a frame on the bag's single log clock, and the ROS type names
+the modality. The AV message *headers* are CDR-decoded exactly as they are from MCAP — rosbag2's
+other storage plugin — so a `PointCloud2` supplies the per-point field layout, `CameraInfo` and
+`TFMessage` the intrinsics and the transform tree, and `Odometry` the ego trajectory. The bulk
+payload is fingerprinted, never decoded.
+
+Three things it will not do. **Columns are bound by name**, from each table's own `CREATE TABLE`
+statement, because rosbag2 has added columns across bag versions and reading position 3 because that
+is where `serialization_format` used to sit would report a type-description hash as a serialization
+format. **A message on a topic the `topics` table never declares** is not filed under an invented
+stream and not dropped in silence — it is disclosed as unread coverage, because a bag with half its
+rows unattributed must not produce the verdict an intact one does. And **`relative_file_paths` is
+content, so it is never followed out of the bag**: the `.db3` files read are the ones in the bag
+directory, and a manifest entry naming a path with a directory component, or naming a shard that is
+not there, is recorded as unread.
+
+The manifest's `message_count` is reconciled against what the recording actually yielded. A recorder
+killed mid-flush leaves a `.db3` short of the total `metadata.yaml` closed with, and the shortfall is
+reported as unread coverage rather than read as a complete bag:
+
+```sh
+cargo run -p veridex-cli -- check crates/veridex-core/tests/fixtures/rosbag2/interrupted
+#   [warning] COVERAGE.SOURCE_UNREAD — 1 source(s) the dataset declares were not read
+#             (metadata.yaml message_count), so every result below speaks for the part that was
+
+cargo run -p veridex-cli -- inspect crates/veridex-core/tests/fixtures/rosbag2/interrupted
+#   UNREAD: metadata.yaml message_count (the manifest declares 401 message(s) but 361 were
+#           read — 40 are missing from the bag's .db3 file(s))
+```
+
+That total is deliberately *not* mapped to the CDM's declared frame count: it counts every topic's
+messages, while that field is what each of an episode's streams should hold, and comparing the two
+would fail a sound bag. A bare `.db3` has no manifest at all, so there is nothing to reconcile
+against and no recording distribution to record — and `inspect` says exactly that rather than
+leaving you to assume it was checked.
+
+The SQLite reader is Veridex's own, hand-written and bounds-checked for the same reason the HDF5 and
+Zarr readers are: a `.db3` is an untrusted file, and a general-purpose database engine will follow a
+page chain a corrupt header points into with allocations no ingest budget can charge. This one
+refuses a page outside the file, refuses a b-tree or overflow chain that revisits a page, and caps
+the payload it will assemble before the bytes are copied. It is tested against fixtures written by
+Python's own `sqlite3` — a reader proven only against a writer from the same repository proves the
+two agree with each other, not that either matches the format.
 
 ## What no adapter does
 

@@ -62,7 +62,7 @@ signed certificate on the strength of a timeline nobody measured, so those strea
 
 | Check id | Finding code | Severity | Fires when |
 |---|---|---|---|
-| `statistical.value-measurability` | `STATISTICAL.UNMEASURED_VALUES` | info | A stream carries neither stored nor recomputed statistics, so every check in this family had nothing to measure on it. Reported for the same reason `TEMPORAL.UNMEASURED_CLOCK` is: MCAP, CAN+DBC, MF4 and RLDS fingerprint payload bytes without interpreting them, so a CAN log with a wheel speed pinned at its rail for 70% of the recording reported `data 100` with no statistical findings — while the certificate listed all five statistical checks as run with no categories skipped. A saturated actuator, a buried NaN, and a stale stored statistic all signed as checked-and-clean. Informational: a dataset is not worse for the container it was published in; what changes is what a passing verdict is evidence of. |
+| `statistical.value-measurability` | `STATISTICAL.UNMEASURED_VALUES` | info | A stream carries neither stored nor recomputed statistics, so every check in this family had nothing to measure on it. Reported for the same reason `TEMPORAL.UNMEASURED_CLOCK` is: MCAP, rosbag2, CAN+DBC, MF4 and RLDS fingerprint payload bytes without interpreting them, so a CAN log with a wheel speed pinned at its rail for 70% of the recording reported `data 100` with no statistical findings — while the certificate listed all five statistical checks as run with no categories skipped. A saturated actuator, a buried NaN, and a stale stored statistic all signed as checked-and-clean. Informational: a dataset is not worse for the container it was published in; what changes is what a passing verdict is evidence of. |
 | `statistical.value-measurability` | `STATISTICAL.NO_STORED_STATS` | info | A stream's values *were* read and summarized, but the source published no summary statistics of its own — so `statistical.stored-vs-observed` and the stored-range rules of `statistical.range-sanity` had nothing to compare against. This is HDF5 and Zarr, which recompute but carry no stored stats. The recomputed checks still apply; the source-agreement ones did not run. |
 | `statistical.range-sanity` | `STATISTICAL.NON_FINITE` | error | A stored min/max/mean/std is NaN or infinite. |
 | `statistical.range-sanity` | `STATISTICAL.RANGE_INVERTED` | error | Stored `min > max`. |
@@ -239,7 +239,7 @@ the terminal report, the JSON, the SARIF, the HTML, and the certificate's own su
 | Check | Says |
 |---|---|
 | `temporal.clock-measurability` | the source records no wall clock, so the timing checks graded a step index or nothing at all |
-| `statistical.value-measurability` | the adapter never read values (MCAP, CAN+DBC, MF4, RLDS), or read them but had no stored statistics to compare against (HDF5, Zarr) |
+| `statistical.value-measurability` | the adapter never read values (MCAP, rosbag2, CAN+DBC, MF4, RLDS), or read them but had no stored statistics to compare against (HDF5, Zarr) |
 | `structural.content-measurability` | frames carry no content fingerprint, so the duplicate-episode and stuck-stream checks had no bytes to compare |
 
 A fourth disclosure comes from the engine rather than the catalog. When a check *crashes* instead of
@@ -269,8 +269,12 @@ A run that read less than the whole dataset emits **`COVERAGE.SAMPLE`** or **`CO
 (info, check id `veridex.coverage`) alongside its findings.
 
 A run that read less than the whole dataset *without being asked to* emits
-**`COVERAGE.SOURCE_UNREAD`** (**warning**, same check id): the dataset declares a file that the
-adapter declined to read — today, a data shard that resolves outside the dataset directory. The
+**`COVERAGE.SOURCE_UNREAD`** (**warning**, same check id): the dataset declares data the adapter did
+not read. Today that is a data shard resolving outside the dataset directory, a rosbag2 shard the
+bag's `metadata.yaml` lists but does not ship, a rosbag2 recording that falls short of the message
+total its own manifest declares, and a rosbag2 message on a topic the bag's `topics` table never
+declares (there is no topic name to file it under, and inventing one would name a topic the bag does
+not). The
 verdict's `coverage` field cannot express this, because a `Coverage::Full` ingest is one that read
 everything it was *willing* to read, which is not the same as everything the dataset declared. Until
 this existed, a LeRobot dataset with one of its two Parquet shards symlinked out of the directory

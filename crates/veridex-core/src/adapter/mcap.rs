@@ -56,7 +56,7 @@ impl McapAdapter {
 /// NavSatFix, Odometry, CAN frames) so an AV rig log's streams are typed as the rig modalities the
 /// autonomy checks expect, falling back to the manipulation modalities and finally `ScalarState`.
 /// The order matters: more specific message types are tested first.
-fn infer_modality(schema_name: &str, topic: &str) -> Modality {
+pub(crate) fn infer_modality(schema_name: &str, topic: &str) -> Modality {
     let hay = format!(
         "{} {}",
         schema_name.to_ascii_lowercase(),
@@ -108,7 +108,7 @@ struct StreamBuilder {
 
 /// Match a ROS message schema name (e.g. `sensor_msgs/msg/PointCloud2`) by its final type segment,
 /// tolerant of the `pkg/msg/Type` and older `pkg/Type` spellings.
-fn schema_is(schema_name: &str, ty: &str) -> bool {
+pub(crate) fn schema_is(schema_name: &str, ty: &str) -> bool {
     schema_name
         .rsplit('/')
         .next()
@@ -365,7 +365,7 @@ fn read_records(bytes: &[u8]) -> McapRecords {
 /// lineage (design A3): sensor firmware, the calibration session, the platform/vehicle and drive/run
 /// identity, the capture region, the HD-map version, and the redaction/consent status — the last two
 /// being acute for public-road capture (design A7).
-fn provenance_key_for(meta_key: &str) -> Option<&'static str> {
+pub(crate) fn provenance_key_for(meta_key: &str) -> Option<&'static str> {
     match meta_key.trim().to_ascii_lowercase().as_str() {
         "license" | "spdx" | "spdx_license" | "license_id" => Some("license"),
         "sensor" | "sensors" | "device" | "camera_model" | "lidar_model" | "hardware" => {

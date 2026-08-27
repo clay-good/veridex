@@ -7,7 +7,7 @@ cargo install veridex-cli
 veridex check my-dataset/
 ```
 
-One command over LeRobot v3, RLDS/TFDS, HDF5, Zarr, MCAP, CAN+DBC and ASAM MDF/MF4: it reports
+One command over LeRobot v3, RLDS/TFDS, HDF5, Zarr, MCAP, ROS 2 rosbag2, CAN+DBC and ASAM MDF/MF4: it reports
 whether the data is structurally sound, correctly time-synchronized, and traceable to its origin,
 scores it 0–100, and can stamp it with a signed certificate that verifies offline.
 

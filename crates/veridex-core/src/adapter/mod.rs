@@ -20,6 +20,8 @@ pub mod lerobot;
 pub mod mcap;
 pub mod mdf4;
 pub mod rlds;
+pub mod rosbag2;
+pub(crate) mod sqlite;
 pub(crate) mod stats;
 pub mod zarr;
 
@@ -496,7 +498,7 @@ fn check_options_supported(source: &Source, options: &IngestOptions) -> Result<(
 
 /// Refuse a sampling request an adapter cannot honor, naming the format.
 ///
-/// Formats that ingest a recording as a single episode (MCAP, CAN+DBC, MF4) have no episode axis to
+/// Formats that ingest a recording as a single episode (MCAP, rosbag2, CAN+DBC, MF4) have no episode axis to
 /// sample along. Returning the whole recording labelled [`Coverage::Full`] would be correct output
 /// for a request that was never honored; saying so is not.
 pub fn reject_sampling(
@@ -700,12 +702,13 @@ fn looks_remote(text: &str) -> bool {
     REMOTE_SCHEMES.iter().any(|s| text.starts_with(s))
 }
 
-/// A registry preloaded with the standard adapters: LeRobot v3, MCAP, CAN+DBC, ASAM MF4, RLDS/TFDS,
-/// HDF5, and Zarr.
+/// A registry preloaded with the standard adapters: LeRobot v3, MCAP, ROS 2 rosbag2, CAN+DBC,
+/// ASAM MF4, RLDS/TFDS, HDF5, and Zarr.
 pub fn default_registry() -> AdapterRegistry {
     let mut reg = AdapterRegistry::new();
     reg.register(Box::new(lerobot::LeRobotAdapter));
     reg.register(Box::new(mcap::McapAdapter));
+    reg.register(Box::new(rosbag2::Rosbag2Adapter));
     reg.register(Box::new(candbc::CanDbcAdapter));
     reg.register(Box::new(mdf4::Mdf4Adapter));
     reg.register(Box::new(rlds::RldsAdapter));

@@ -28,6 +28,22 @@ No code until this change is approved; this is the build plan.
       adapter and proven end-to-end (`ros_message_bodies_populate_the_autonomy_cdm_end_to_end`) plus
       per-decoder unit tests. Validity ranges on decoded transforms/intrinsics are left open (time-
       varying calibration from per-message stamps is a refinement).
+- [x] ROS 2 **rosbag2** adapter (`.db3`, the `sqlite3` storage plugin) → CDM. `adapter/rosbag2.rs`
+      ingests either a bag directory (`metadata.yaml` beside one or more `.db3`) or a bare `.db3`,
+      mapping `topics` → streams, `messages` → frames on the bag's single log clock, and the ROS type
+      → the rig modality. Message bodies go through the same `adapter/cdr.rs` decoders MCAP uses, so
+      `PointCloud2`/`CameraInfo`/`TFMessage`/`Odometry` populate point fields, intrinsics, the
+      transform tree and the ego trajectory; payloads are fingerprinted, never decoded. Reads SQLite
+      through `adapter/sqlite.rs` — a hand-written, bounds-checked table-b-tree reader (no new
+      dependency) that refuses an out-of-range page, refuses a b-tree or overflow chain that revisits
+      a page, and caps the payload one row may assemble. Columns are bound by name from each table's
+      `CREATE TABLE`, so a bag version that adds a column does not shift what is read. Three
+      disclosures rather than silence: a message on a topic `topics` never declares, a manifest shard
+      that is absent or names a path out of the bag, and a `metadata.yaml` `message_count` the
+      recording falls short of, all become `unread_sources` → `COVERAGE.SOURCE_UNREAD`. Fixtures are
+      real Python-`sqlite3` output (`tests/fixtures/rosbag2/generate_fixtures.py`), with golden
+      payload hashes pinning the overflow-chain reassembly. Follow-ups: the compressed bag storage
+      (`.db3.zstd`), per-topic QoS profiles, and metadata-only ingestion from `metadata.yaml` alone.
 - [~] ASAM MDF/MF4 adapter → CDM; record unmapped channels. `adapter/mdf4.rs` walks the MDF 4.x block
       graph (`##HD` → `##DG` → `##CG` → `##CN`), uses each channel group's time master as the
       timeline, and emits one stream per measured channel, applying identity/linear (`##CC` type 1)

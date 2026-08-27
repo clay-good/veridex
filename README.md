@@ -33,8 +33,8 @@ Veridex Trust Report
 
 - **One command, any format.** LeRobot v3, RLDS/TFDS (what Open X-Embodiment ships in), HDF5 (what
   robomimic and most lab collectors write), Zarr (what Diffusion Policy and UMI ship in), MCAP,
-  CAN+DBC, and ASAM MDF/MF4 all map into one Canonical Dataset Model, so you check them the same
-  way — no per-format tooling.
+  ROS 2 rosbag2 (`.db3` — what a ROS 2 robot records by default), CAN+DBC, and ASAM MDF/MF4 all map
+  into one Canonical Dataset Model, so you check them the same way — no per-format tooling.
 - **Catches the failures that quietly ruin training.** Clock skew across sensors, broken episode
   boundaries, timeline gaps, duplicate frames, a video whose frame count no longer matches the
   actions it is paired with — each reported with the *training risk* it creates and a *remedy*.
@@ -64,7 +64,7 @@ also captures **provenance**.
 
 ```mermaid
 flowchart LR
-    A[Your dataset<br/>LeRobot · RLDS/TFDS · HDF5 · Zarr · MCAP · CAN+DBC · MF4] --> B[Adapter]
+    A[Your dataset<br/>LeRobot · RLDS/TFDS · HDF5 · Zarr · MCAP · rosbag2 · CAN+DBC · MF4] --> B[Adapter]
     B --> C[Canonical Dataset Model<br/>one neutral shape]
     C --> D[Validation engine<br/>structural · temporal · provenance checks]
     D --> E[Trust score<br/>0–100 · A–F grade]
@@ -241,7 +241,7 @@ verdict, and unknown keys, check ids, or invalid tolerances are rejected, not si
 
 | If you want to | Read |
 | --- | --- |
-| See it read LeRobot, RLDS/TFDS, HDF5, Zarr, MCAP, CAN+DBC, MF4 | [docs/formats.md](docs/formats.md) |
+| See it read LeRobot, RLDS/TFDS, HDF5, Zarr, MCAP, rosbag2, CAN+DBC, MF4 | [docs/formats.md](docs/formats.md) |
 | Sign, verify, and share a verdict — including producer attestation | [docs/trust-chain.md](docs/trust-chain.md) |
 | Check a dataset too large to read in full, and what that costs | [docs/partial-runs.md](docs/partial-runs.md) |
 | Run it in CI (GitHub Actions, GitLab, SARIF upload, regression gating) | [docs/ci-recipes.md](docs/ci-recipes.md) |
@@ -307,8 +307,11 @@ from the tree or has no chain of transforms to the camera); **video/media checks
 re-encoded video behind a camera stream; the v1 trust-score rubric, the `standard` / `strict` threshold profiles and the `world-model-ready`
 readiness profile;
 terminal, JSON, SARIF 2.1.0, and self-contained HTML reporting, each carrying rollups by category,
-episode and stream, and each shareable through `--redact`; **LeRobot v3, RLDS/TFDS, HDF5, Zarr, MCAP (with
-ROS-message decode into an autonomy rig), CAN+DBC, and ASAM MDF/MF4 adapters** with a passing cross-format
+episode and stream, and each shareable through `--redact`; **LeRobot v3, RLDS/TFDS, HDF5, Zarr, MCAP and ROS 2 rosbag2 (both with
+ROS-message decode into an autonomy rig; rosbag2 reads the `sqlite3` storage plugin through Veridex's
+own bounds-checked SQLite reader, reconciles the bag against its `metadata.yaml` message total, and
+discloses a message on an undeclared topic as unread rather than dropping it), CAN+DBC, and ASAM
+MDF/MF4 adapters** with a passing cross-format
 neutrality gate (the same logical dataset yields equivalent CDMs as LeRobot v3 and as MCAP); descriptive scenario-dimension coverage and **scenario/map/sim
 reference extraction** (OpenSCENARIO / OpenDRIVE / OSI / simulator, with the version read from the
 referenced sidecar's own ASAM header); Croissant + W3C PROV provenance emit (carrying attested provenance when one is

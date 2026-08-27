@@ -24,7 +24,7 @@ veridex check my-dataset/ --sample-fraction 0.1 --sample-seed 7   # a determinis
 The draw is resolved from the dataset's declared episode set *before* any data is read, so the
 episodes you skipped cost nothing — a sample of a dataset over the frame budget succeeds where the
 full ingest is refused. The same seed always draws the same episodes. Sampling applies to LeRobot,
-RLDS/TFDS, HDF5, and Zarr (which have an episode axis); MCAP, CAN+DBC, and MF4 ingest a recording as one episode and refuse the request rather than handing
+RLDS/TFDS, HDF5, and Zarr (which have an episode axis); MCAP, ROS 2 rosbag2, CAN+DBC, and MF4 ingest a recording as one episode and refuse the request rather than handing
 back everything labelled as a sample.
 
 A sampled run is never presented as a whole-dataset one. The verdict carries a `coverage` field
