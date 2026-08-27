@@ -10,6 +10,24 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **A split recording failed because `bag_10` sorted before `bag_2`.** `ros2 bag record
+  --max-bag-size` rolls a long bag into `bag_0.db3` … `bag_11.db3`, and the shards were read in
+  lexicographic name order. Frames are appended to their stream in the order their shards are read,
+  and the CDM preserves that order deliberately — reordering them would hide exactly the
+  out-of-order timestamps this tool exists to find — so a sound twelve-shard recording came back
+  `FAIL`, trust 43, with two `TEMPORAL.NON_MONOTONIC` errors and two `TEMPORAL.GAP` warnings. Split
+  recordings are the ordinary shape of any long bag, so this was most of the ones worth checking.
+
+  Shards are now ordered by their *number* (digit runs compared as numbers), then reordered by the
+  order `metadata.yaml` lists them — the bag's own record of how it wrote them. Taking an ordering
+  from the manifest follows no path anywhere; only the files already found by listing the bag
+  directory are ever opened, which is the same rule that governs which shards are read at all. The
+  same fixture now reports `data 100` with no errors.
+
+  Caught by running a twelve-shard fixture through the adapter shipped an hour earlier. Both
+  existing multi-shard behaviors were single-shard in every test until now, which is why the
+  ordering never came up.
+
 - **A synchronized rig failed because `/rosout` was called a sensor.** `AUTONOMY.RIG_SYNC` compares
   how long each stream spans and reports the spread as cross-sensor drift. It was comparing *every*
   stream in a rig episode — and a real ROS recording carries far more than its rig. `ros2 bag record

@@ -186,6 +186,15 @@ would fail a sound bag. A bare `.db3` has no manifest at all, so there is nothin
 against and no recording distribution to record — and `inspect` says exactly that rather than
 leaving you to assume it was checked.
 
+A **split** recording — `ros2 bag record --max-bag-size`, which rolls a long bag into
+`bag_0.db3` … `bag_11.db3` — is read as one recording, in the order it was written. That order is
+not name order: a lexicographic sort puts `_10` and `_11` ahead of `_2`, and since frames keep the
+order their shards were read in (reordering them would hide the out-of-order timestamps this tool
+exists to find), a sound twelve-shard bag came back with two `TEMPORAL.NON_MONOTONIC` errors. Shards
+are ordered by their number, then by the order the manifest lists them — the bag's own record of how
+it wrote them. Taking an ordering from the manifest follows no path: only the files already found in
+the bag directory are ever opened.
+
 A bag recorded with `--compression-mode file --compression-format zstd` — which is how any
 recording large enough to care about is stored — is read directly. rosbag2 compresses the finished
 shard to `<shard>.db3.zstd` and deletes the original; Veridex unpacks it under the same

@@ -198,6 +198,42 @@ fn a_payload_spread_across_overflow_pages_is_reassembled_exactly() {
 }
 
 #[test]
+fn a_split_recording_is_read_in_recording_order_not_name_order() {
+    // `ros2 bag record --max-bag-size` rolls a long bag into `split_0.db3` … `split_11.db3`, and a
+    // lexicographic sort puts `_10` and `_11` ahead of `_2`. Frames are appended to their stream in
+    // the order the shards are read, and the CDM preserves that order deliberately — reordering them
+    // would hide the out-of-order timestamps this tool exists to find. So reading the shards by name
+    // returned a sound twelve-shard recording with two `TEMPORAL.NON_MONOTONIC` errors and two
+    // `TEMPORAL.GAP` warnings, and split recordings are the ordinary shape of any long bag.
+    let ep = &ingest("split").dataset.episodes[0];
+    for stream in &ep.streams {
+        let ts: Vec<i64> = stream.frames.iter().map(|f| f.ts).collect();
+        assert!(
+            ts.windows(2).all(|w| w[0] < w[1]),
+            "stream `{}` is out of order at {:?}",
+            stream.name,
+            ts.windows(2)
+                .position(|w| w[0] >= w[1])
+                .map(|i| (ts[i], ts[i + 1]))
+        );
+    }
+    // All twelve shards were read, not just the ones that sorted first.
+    let frames: usize = ep.streams.iter().map(|s| s.frames.len()).sum();
+    assert_eq!(frames, 12 * 110);
+}
+
+#[test]
+fn a_split_recording_reads_the_same_whichever_order_the_directory_lists_it() {
+    // The shard order is a pure function of the names — natural order, then the order the manifest
+    // records — so the content hash does not depend on the order the filesystem happened to return
+    // its entries in. Two reads of the same bag must agree, which is what a certificate over a split
+    // recording depends on.
+    let a = veridex_core::canonical::content_hash(&ingest("split").dataset);
+    let b = veridex_core::canonical::content_hash(&ingest("split").dataset);
+    assert_eq!(a, b);
+}
+
+#[test]
 fn a_compressed_bag_reads_to_the_same_recording_as_the_uncompressed_one() {
     // `ros2 bag record --compression-mode file --compression-format zstd` compresses the finished
     // shard to `.db3.zstd` and deletes the original, which is how any recording large enough to care

@@ -360,6 +360,44 @@ def main():
             )
         )
 
+    # A split recording: `ros2 bag record --max-bag-size` rolls a long bag into `_0`, `_1`, … `_11`.
+    # Twelve shards is the smallest count that separates recording order from name order, because a
+    # lexicographic sort puts `_10` and `_11` ahead of `_2`.
+    d = os.path.join(HERE, "split")
+    if os.path.exists(d):
+        shutil.rmtree(d)
+    os.makedirs(d)
+    split_topics = [RIG_TOPICS[0], RIG_TOPICS[3]]
+    names = []
+    total = 0
+    for k in range(12):
+        base = START + k * 1_000_000_000
+        msgs = [
+            (1, base + i * 100_000_000, point_cloud2("lidar_link", base + i * 100_000_000))
+            for i in range(10)
+        ] + [
+            (4, base + i * 10_000_000, header_only("imu_link", base + i * 10_000_000, 96))
+            for i in range(100)
+        ]
+        msgs.sort(key=lambda m: m[1])
+        total += len(msgs)
+        name = f"split_{k}.db3"
+        names.append(name)
+        write_bag(os.path.join(d, name), split_topics, msgs)
+    with open(os.path.join(d, "metadata.yaml"), "w") as f:
+        f.write(
+            metadata_yaml(
+                names,
+                total,
+                [
+                    ("/lidar/points", "sensor_msgs/msg/PointCloud2", 120),
+                    ("/imu/data", "sensor_msgs/msg/Imu", 1200),
+                ],
+                12_000_000_000,
+                START,
+            )
+        )
+
     # A recording whose `.db3` lost its tail (the process was killed) while metadata.yaml still
     # claims every message it meant to write.
     msgs = rig_messages()

@@ -1,0 +1,37 @@
+rosbag2_bagfile_information:
+  version: 5
+  storage_identifier: sqlite3
+  relative_file_paths:
+    - split_0.db3
+    - split_1.db3
+    - split_2.db3
+    - split_3.db3
+    - split_4.db3
+    - split_5.db3
+    - split_6.db3
+    - split_7.db3
+    - split_8.db3
+    - split_9.db3
+    - split_10.db3
+    - split_11.db3
+  duration:
+    nanoseconds: 12000000000
+  starting_time:
+    nanoseconds_since_epoch: 1700000000000000000
+  message_count: 1320
+  topics_with_message_count:
+    - topic_metadata:
+        name: /lidar/points
+        type: sensor_msgs/msg/PointCloud2
+        serialization_format: cdr
+        offered_qos_profiles: ""
+      message_count: 120
+    - topic_metadata:
+        name: /imu/data
+        type: sensor_msgs/msg/Imu
+        serialization_format: cdr
+        offered_qos_profiles: ""
+      message_count: 1200
+  compression_format: ""
+  compression_mode: ""
+  ros_distro: humble

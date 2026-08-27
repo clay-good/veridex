@@ -251,17 +251,30 @@ impl Rosbag2Adapter {
             && (path.extension().and_then(|e| e.to_str()) == Some("db3") || is_zstd_shard(path))
     }
 
-    /// The `.db3` shards inside a bag directory, in name order.
+    /// The `.db3` shards inside a bag directory, in **recording order**.
     ///
     /// Found by listing the directory, not by following `relative_file_paths`: the manifest is
     /// content, and a content-supplied path is never resolved out of the dataset.
+    ///
+    /// Order matters, and plain name order is wrong for it. `ros2 bag record --max-bag-size` splits
+    /// a long recording into `bag_0.db3`, `bag_1.db3`, … `bag_11.db3`, and a lexicographic sort puts
+    /// `bag_10` and `bag_11` ahead of `bag_2`. Frames are appended to their stream in the order the
+    /// shards are read and the CDM preserves that order — deliberately, because reordering them
+    /// would hide the out-of-order timestamps this tool exists to find — so a sound twelve-shard
+    /// recording came back with two `TEMPORAL.NON_MONOTONIC` **errors** and two `TEMPORAL.GAP`
+    /// warnings, and split recordings are the ordinary shape of any long bag.
+    ///
+    /// So the shards are ordered by [`natural_key`] — digit runs compared as numbers — and the
+    /// caller then reorders by what the manifest lists, which is the bag's own record of the order
+    /// it wrote them in. Taking an *ordering* from the manifest follows no path anywhere; only the
+    /// file names already found by listing are ever opened.
     fn shards_in(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
         let mut out: Vec<PathBuf> = std::fs::read_dir(dir)?
             .filter_map(Result::ok)
             .map(|e| e.path())
             .filter(|p| Rosbag2Adapter::is_db3(p))
             .collect();
-        out.sort();
+        out.sort_by_key(|p| natural_key(&display(p)));
         Ok(out)
     }
 
@@ -274,6 +287,66 @@ impl Rosbag2Adapter {
             && dir.join("metadata.yaml").is_file()
             && Rosbag2Adapter::shards_in(dir).is_ok_and(|s| !s.is_empty())
     }
+}
+
+/// A sort key that compares digit runs as numbers, so `bag_2` precedes `bag_10`.
+///
+/// Each element is one run of the name: `(false, "", n)` for a run of digits, `(true, text, 0)` for
+/// everything else. Digits sort before other text at the same position, which is arbitrary but
+/// total — the property that matters is that the key is a pure function of the name, so the shard
+/// order (and therefore the CDM content hash) is the same on every machine and every run.
+fn natural_key(name: &str) -> Vec<(bool, String, u128)> {
+    let mut out = Vec::new();
+    let mut rest = name;
+    while !rest.is_empty() {
+        let digits = rest.find(|c: char| c.is_ascii_digit());
+        match digits {
+            Some(0) => {
+                let end = rest
+                    .find(|c: char| !c.is_ascii_digit())
+                    .unwrap_or(rest.len());
+                let (run, tail) = rest.split_at(end);
+                // A run longer than u128 holds is not a shard index; comparing it as text keeps the
+                // key total instead of saturating two different names to one value.
+                match run.parse::<u128>() {
+                    Ok(n) => out.push((false, String::new(), n)),
+                    Err(_) => out.push((true, run.to_string(), 0)),
+                }
+                rest = tail;
+            }
+            Some(at) => {
+                let (run, tail) = rest.split_at(at);
+                out.push((true, run.to_string(), 0));
+                rest = tail;
+            }
+            None => {
+                out.push((true, rest.to_string(), 0));
+                rest = "";
+            }
+        }
+    }
+    out
+}
+
+/// Reorder `found` into the order `listed` gives, appending anything the manifest does not name.
+///
+/// The manifest is the bag's own record of the order it wrote its shards in, which is the order
+/// their messages have to be concatenated in. Only names are matched — a manifest entry naming a
+/// path Veridex did not find is skipped here and separately disclosed as unread.
+fn in_manifest_order(found: Vec<PathBuf>, listed: &[String]) -> Vec<PathBuf> {
+    if listed.is_empty() {
+        return found;
+    }
+    let mut remaining = found;
+    let mut ordered = Vec::with_capacity(remaining.len());
+    for want in listed {
+        if let Some(at) = remaining.iter().position(|p| &display(p) == want) {
+            ordered.push(remaining.remove(at));
+        }
+    }
+    // Anything present but unlisted keeps its natural order, after what the manifest accounted for.
+    ordered.extend(remaining);
+    ordered
 }
 
 /// Read one `.db3` into `contents`, charging the ingest budgets as rows arrive.
@@ -540,11 +613,11 @@ impl Adapter for Rosbag2Adapter {
         let (shards, manifest, dataset_id) = if is_dir {
             let text = std::fs::read_to_string(path.join("metadata.yaml"))
                 .map_err(|e| IngestError::Io(e.to_string()))?;
-            (
-                Rosbag2Adapter::shards_in(path).map_err(|e| IngestError::Io(e.to_string()))?,
-                parse_manifest(&text),
-                super::dataset_id_from_path(path, FORMAT),
-            )
+            let manifest = parse_manifest(&text);
+            let found =
+                Rosbag2Adapter::shards_in(path).map_err(|e| IngestError::Io(e.to_string()))?;
+            let ordered = in_manifest_order(found, &manifest.relative_file_paths);
+            (ordered, manifest, super::dataset_id_from_path(path, FORMAT))
         } else {
             let resolved = path.canonicalize().ok();
             let named = resolved.as_deref().unwrap_or(path);
@@ -897,6 +970,55 @@ mod tests {
              offered_qos_profiles TEXT NOT NULL)",
         );
         assert_eq!(column_index(&v9, "serialization_format"), Some(4));
+    }
+
+    #[test]
+    fn shards_sort_by_their_number_not_their_spelling() {
+        let mut names: Vec<&str> = vec![
+            "bag_10.db3",
+            "bag_2.db3",
+            "bag_1.db3",
+            "bag_11.db3",
+            "bag_0.db3",
+        ];
+        names.sort_by_key(|n| natural_key(n));
+        assert_eq!(
+            names,
+            vec![
+                "bag_0.db3",
+                "bag_1.db3",
+                "bag_2.db3",
+                "bag_10.db3",
+                "bag_11.db3"
+            ]
+        );
+        // A digit run too long for a u128 must still order deterministically rather than collapsing
+        // two different names onto one key.
+        let huge = "9".repeat(60);
+        assert_ne!(
+            natural_key(&format!("a{huge}0")),
+            natural_key(&format!("a{huge}1"))
+        );
+    }
+
+    #[test]
+    fn the_manifest_orders_the_shards_it_names_and_keeps_the_rest() {
+        let found: Vec<PathBuf> = ["b.db3", "a.db3", "z.db3"]
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        let listed = vec![
+            "a.db3".to_string(),
+            "b.db3".to_string(),
+            "gone.db3".to_string(),
+        ];
+        let ordered: Vec<String> = in_manifest_order(found, &listed)
+            .iter()
+            .map(|p| display(p))
+            .collect();
+        // The manifest's order wins for what it names; a shard it does not name still gets read,
+        // after them; a shard it names but that is absent is skipped here (and disclosed as unread).
+        assert_eq!(ordered, vec!["a.db3", "b.db3", "z.db3"]);
     }
 
     #[test]
