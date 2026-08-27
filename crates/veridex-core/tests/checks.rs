@@ -2250,6 +2250,74 @@ fn non_finite_tolerances_are_sanitized_to_defaults() {
     assert!(clean.rate_deviation.is_finite() && clean.gap_factor.is_finite());
 }
 
+// ---- temporal: the cross-stream checks had nothing to compare ----
+
+#[test]
+fn a_dataset_where_nothing_could_be_compared_says_so() {
+    // `CLOCK_SKEW`, `START_OFFSET` and `END_OFFSET` are the three checks that answer whether a
+    // dataset's sensors are aligned, and all three need two streams on one clock. Given fewer they
+    // report nothing — which is the same silence a perfectly synchronized dataset produces, and it
+    // reaches the certificate's list of executed checks looking exactly like that.
+    //
+    // The sharp case is a ROS bag holding only latched topics: a transform tree and a robot
+    // description, each published once. No sensor data at all, and it scored `data 100` with not one
+    // temporal finding.
+    let mut tf = stream("/tf_static", "bag", None, &[0]);
+    tf.latched = Some(true);
+    let mut desc = stream("/robot_description", "bag", None, &[0]);
+    desc.latched = Some(true);
+    let f = temporal::ClockMeasurability.run(&dataset(vec![episode(0, vec![tf, desc])]));
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "TEMPORAL.UNCOMPARED_STREAMS");
+    assert_eq!(f[0].severity, Severity::Info);
+    assert!(f[0].message.contains("1 of 1 episode"), "{}", f[0].message);
+}
+
+#[test]
+fn two_comparable_streams_are_enough_to_stay_quiet() {
+    let ep = episode(
+        0,
+        vec![
+            stream("a", "bag", None, &[0, 1_000_000, 2_000_000]),
+            stream("b", "bag", None, &[0, 1_000_000, 2_000_000]),
+        ],
+    );
+    assert!(temporal::ClockMeasurability
+        .run(&dataset(vec![ep]))
+        .is_empty());
+}
+
+#[test]
+fn a_step_index_dataset_is_not_told_twice() {
+    // An episode with no measured time at all is already covered, in full, by
+    // `TEMPORAL.UNMEASURED_CLOCK`. Saying it twice is noise on every RLDS dataset — and the
+    // suppression is deliberately narrower than that finding's precondition, so nothing goes
+    // unreported: `UNMEASURED_CLOCK` fires for *any* step-index stream, so an episode with none
+    // measured always reaches it.
+    let mut a = stream("a", "step", None, &[0, 1, 2]);
+    a.clock_kind = ClockKind::StepIndex;
+    let f = temporal::ClockMeasurability.run(&dataset(vec![episode(0, vec![a])]));
+    let codes: Vec<&str> = f.iter().map(|x| x.code.as_str()).collect();
+    assert_eq!(codes, vec!["TEMPORAL.UNMEASURED_CLOCK"], "{f:?}");
+}
+
+#[test]
+fn an_episode_mixing_measured_and_step_index_streams_gets_both_disclosures() {
+    // The boundary the suppression above must not overshoot: one measured stream (too few to
+    // compare) beside a step-index one. Both facts are true and both are reported.
+    let measured = stream("measured", "wall", None, &[0, 1_000_000, 2_000_000]);
+    let mut indexed = stream("indexed", "step", None, &[0, 1, 2]);
+    indexed.clock_kind = ClockKind::StepIndex;
+    let f = temporal::ClockMeasurability.run(&dataset(vec![episode(0, vec![measured, indexed])]));
+    let mut codes: Vec<&str> = f.iter().map(|x| x.code.as_str()).collect();
+    codes.sort_unstable();
+    assert_eq!(
+        codes,
+        vec!["TEMPORAL.UNCOMPARED_STREAMS", "TEMPORAL.UNMEASURED_CLOCK"],
+        "{f:?}"
+    );
+}
+
 // ---- autonomy: rig-wide sync ----
 
 /// A rig-sensor stream of a given modality spanning `span_ns` from t=0.

@@ -47,6 +47,7 @@ signed certificate on the strength of a timeline nobody measured, so those strea
 | Check id | Finding code | Severity | Fires when |
 |---|---|---|---|
 | `temporal.clock-measurability` | `TEMPORAL.UNMEASURED_CLOCK` | info | A stream's timestamps are a positional step index rather than measured time, so the rate, gap, jitter, clock-skew, start/end-offset and episode-duration checks had nothing to grade. Reported once per clock for the dataset (the clock is a property of the source format, not of an episode), naming the streams. Not a defect in the data — what it changes is what a passing temporal result is *evidence of*: the absence of a measurement, not good timing. |
+| `temporal.clock-measurability` | `TEMPORAL.UNCOMPARED_STREAMS` | info | No two streams in an episode shared a clock with a measurable span, so `CLOCK_SKEW`, `START_OFFSET` and `END_OFFSET` — the three checks that answer whether a dataset's sensors are aligned — had nothing to compare. Their silence is indistinguishable from three checks that ran and found everything in order, and it reaches the certificate's list of executed checks looking exactly like that. The sharp case is a ROS bag holding only latched topics (a transform tree and a robot description, both published once): no sensor data at all, and `data 100` with no temporal finding. A single-stream dataset, and one whose streams each sit on their own clock, have the same shape. Reported once for the dataset, naming how many episodes of how many. Informational — the dataset is not worse for having one stream. |
 | `temporal.monotonicity` | `TEMPORAL.NON_MONOTONIC` | error | Timestamps within a stream do not strictly increase (out-of-order or duplicated frames). Streams sharing one timeline (a CAN or MF4 group off a single clock) are reported once, naming the others. |
 | `temporal.rate-validity` | `TEMPORAL.INVALID_RATE` | error | A stream declares a sampling rate that isn't a positive, finite number (`0`, negative, `NaN`, `inf`) — corrupt metadata the rate and gap checks would otherwise skip silently. |
 | `temporal.rate-conformance` | `TEMPORAL.RATE` | warning | The observed mean rate deviates from the declared rate beyond tolerance. |
@@ -238,7 +239,7 @@ the terminal report, the JSON, the SARIF, the HTML, and the certificate's own su
 
 | Check | Says |
 |---|---|
-| `temporal.clock-measurability` | the source records no wall clock, so the timing checks graded a step index or nothing at all |
+| `temporal.clock-measurability` | the source records no wall clock, so the timing checks graded a step index or nothing at all — and, separately, that no two streams shared a clock with a measurable span, so the three cross-stream checks had nothing to compare |
 | `statistical.value-measurability` | the adapter never read values (MCAP, rosbag2, CAN+DBC, MF4, RLDS), or read them but had no stored statistics to compare against (HDF5, Zarr) |
 | `structural.content-measurability` | frames carry no content fingerprint, so the duplicate-episode and stuck-stream checks had no bytes to compare |
 

@@ -369,6 +369,26 @@ reproduced before it was fixed.*
 
 ### Added
 
+- **`TEMPORAL.UNCOMPARED_STREAMS` — the three alignment checks now say when they had nothing to
+  compare.** `CLOCK_SKEW`, `START_OFFSET` and `END_OFFSET` are the checks that answer whether a
+  dataset's sensors are aligned, and all three need at least two streams sharing a clock. Given
+  fewer they reported nothing — which is the same silence a perfectly synchronized dataset produces,
+  and it reached the certificate's list of executed checks looking exactly like that.
+
+  Found while testing the latched-topic exemption above, which sharpened the case: a ROS bag holding
+  nothing but latched topics — a transform tree and a robot description, each published once, no
+  sensor data at all — came back `data 100` with not one temporal finding. The shape is not specific
+  to ROS: a single-stream dataset has it, and so does one whose streams each sit on their own clock.
+
+  Reported once for the dataset, naming how many episodes of how many, and informational, like the
+  other measurability disclosures: the dataset is not worse for having one stream, but what a
+  passing temporal result is *evidence of* is different. An episode with no measured time at all is
+  left alone — `TEMPORAL.UNMEASURED_CLOCK` already covers it in full, and saying it twice would put
+  a second line on every RLDS dataset. That suppression is deliberately narrower than the other
+  finding's precondition, so an episode mixing measured and step-index streams gets both; there is a
+  test for the boundary, because a suppression wider than the thing it defers to is how a defect
+  ends up reported by neither check.
+
 - **rosbag2 is held to the cross-format neutrality gate.** The claim behind Veridex is that which
   format a team stores their data in does not change what the tool sees, and until now that was
   proven for one pair (LeRobot ⇄ MCAP). rosbag2 and MCAP are the two storage plugins of *one*

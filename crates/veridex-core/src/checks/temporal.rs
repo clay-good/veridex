@@ -1189,7 +1189,7 @@ impl Check for ClockMeasurability {
         "temporal.clock-measurability"
     }
     fn finding_codes(&self) -> &'static [&'static str] {
-        &["TEMPORAL.UNMEASURED_CLOCK"]
+        &["TEMPORAL.UNMEASURED_CLOCK", "TEMPORAL.UNCOMPARED_STREAMS"]
     }
     fn title(&self) -> &'static str {
         "Timestamps are measured time"
@@ -1204,9 +1204,11 @@ impl Check for ClockMeasurability {
         Scope::Dataset
     }
     fn version(&self) -> &'static str {
-        "1"
+        // v2 adds `TEMPORAL.UNCOMPARED_STREAMS`.
+        "2"
     }
     fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        let mut findings = uncompared_streams_finding(dataset);
         // Reported once for the dataset, by clock: the clock is a property of the source format, so
         // one finding per episode would be the same fact repeated for every episode in the dataset.
         let mut unmeasured: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
@@ -1220,7 +1222,7 @@ impl Check for ClockMeasurability {
                 }
             }
         }
-        unmeasured
+        let by_clock = unmeasured
             .into_iter()
             .map(|(clock, streams)| {
                 let names: Vec<&str> = streams.into_iter().collect();
@@ -1262,6 +1264,79 @@ impl Check for ClockMeasurability {
                      from, or re-export in a format that carries per-frame timestamps.",
                 )
             })
-            .collect()
+            .collect::<Vec<_>>();
+        findings.extend(by_clock);
+        findings
     }
+}
+
+/// Disclose that the **cross-stream** timing checks had nothing to compare.
+///
+/// `TEMPORAL.CLOCK_SKEW`, `START_OFFSET` and `END_OFFSET` all need at least two streams sharing a
+/// clock, each spanning some time. An episode that offers fewer than that is not graded by any of
+/// them — and they say nothing, which is indistinguishable from three checks that ran and found
+/// everything in order. That silence reaches the report, the JSON, and the certificate's list of
+/// executed checks, where it reads as "the streams are synchronized".
+///
+/// A ROS bag holding nothing but latched topics — a transform tree and a robot description, both
+/// published once — is the sharp case: no sensor data at all, and it came back `data 100` with not
+/// one temporal finding. It is not hypothetical for any format: a single-stream dataset has the same
+/// shape, and so does one whose streams each sit on their own clock.
+///
+/// Informational, like the other measurability disclosures, and for the same reason: the dataset is
+/// not worse for having one stream. What changes is what a passing temporal result is evidence of.
+fn uncompared_streams_finding(dataset: &Dataset) -> Vec<Finding> {
+    let mut affected = 0usize;
+    let mut counted = 0usize;
+    for ep in &dataset.episodes {
+        // An episode whose streams carry no measured time at all is already covered, in full, by
+        // `TEMPORAL.UNMEASURED_CLOCK` — RLDS, and HDF5 or Zarr without declared units. Saying it
+        // twice is not more honest, it is noise on every dataset in those formats. The suppression
+        // is narrower than that finding's precondition on purpose: it fires for *any* step-index
+        // stream, so an episode with no measured-time stream always reaches it, and an episode that
+        // mixes the two still gets both disclosures.
+        if !ep.streams.iter().any(|s| s.has_measured_time()) {
+            continue;
+        }
+        counted += 1;
+        // The same predicate the three checks select on, so this cannot drift out of step with what
+        // they actually graded.
+        let mut per_clock: BTreeMap<&str, usize> = BTreeMap::new();
+        for s in sampled_streams(ep) {
+            if span_bounds(s).is_some_and(|(lo, hi)| hi > lo) {
+                *per_clock.entry(s.clock_id.as_str()).or_default() += 1;
+            }
+        }
+        if !per_clock.values().any(|n| *n >= 2) {
+            affected += 1;
+        }
+    }
+    if affected == 0 {
+        return Vec::new();
+    }
+    let total = counted;
+    // One finding for the dataset, naming the scale. One per episode would repeat a single fact
+    // fifty times and bury the findings that are about the data.
+    vec![Finding::new(
+        "temporal.clock-measurability",
+        Category::Temporal,
+        Severity::Info,
+        Location::Dataset,
+        "TEMPORAL.UNCOMPARED_STREAMS",
+        format!(
+            "in {affected} of {total} episode(s) no two streams shared a clock with a measurable \
+             span, so the clock-skew, start-offset and end-offset checks had nothing to compare"
+        ),
+    )
+    .with_risk(
+        "Those three checks are the ones that answer whether a dataset's sensors are aligned, and \
+         here they were not able to ask. Their silence is the absence of a comparison, not evidence \
+         that the streams line up — and it is the same silence a perfectly synchronized dataset \
+         produces.",
+    )
+    .with_remedy(
+        "If cross-sensor alignment matters for your use, check it against the source recording. A \
+         dataset with one stream, or one whose streams each sit on their own clock, cannot be \
+         graded on it by any tool that only reads the data.",
+    )]
 }

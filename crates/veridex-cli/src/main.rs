@@ -1239,12 +1239,22 @@ fn cmd_inspect(rest: &[String]) -> ExitCode {
             task
         );
         for s in &ep.streams {
+            // A latched stream is exempt from the checks that ask whether a stream covers the
+            // recording's window, so a reader who does not see a `SINGLE_FRAME_STREAM` warning
+            // against a one-frame topic should be able to see *why* — otherwise the exemption is
+            // invisible and reads as a check that failed to run.
+            let latched = if s.latched == Some(true) {
+                ", latched"
+            } else {
+                ""
+            };
             println!(
-                "      {} [{}] — {} frame(s), clock `{}`{}",
+                "      {} [{}] — {} frame(s), clock `{}`{}{}",
                 s.name,
                 s.modality.tag(),
                 s.frames.len(),
                 s.clock_id,
+                latched,
                 describe_schema(&s.dtype, &s.shape),
             );
         }
