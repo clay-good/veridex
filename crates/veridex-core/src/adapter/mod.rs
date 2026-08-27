@@ -673,6 +673,54 @@ fn check_source_exists(source: &Source) -> Result<(), IngestError> {
     Ok(())
 }
 
+/// A sort key that compares digit runs as numbers, so `file-2` precedes `file-10`.
+///
+/// Every adapter that reads a dataset spread over several files reads them in **name order**, and
+/// the frames land in their streams in the order the files are read. Plain lexicographic order is
+/// wrong for that: `bag_10` sorts before `bag_2`, `file-10.parquet` before `file-1.parquet`. The
+/// conventional exporters zero-pad, which hides it — until a re-export, a conversion script, or a
+/// hand-assembled subset does not, and then Veridex silently reorders the data and reports
+/// `TEMPORAL.NON_MONOTONIC` errors on a sound dataset. Reordering is never the answer: frame order
+/// is data-defined and preserved, because reordering would hide the out-of-order timestamps this
+/// tool exists to find. So the files are read in the order their numbers give.
+///
+/// Each element is one run of the name: `(false, "", n)` for a run of digits, `(true, text, 0)` for
+/// everything else. Digits sort before other text at the same position, which is arbitrary but
+/// total — the property that matters is that the key is a pure function of the name, so the read
+/// order (and therefore the CDM content hash) is the same on every machine and every run.
+pub(crate) fn natural_key(name: &str) -> Vec<(bool, String, u128)> {
+    let mut out = Vec::new();
+    let mut rest = name;
+    while !rest.is_empty() {
+        let digits = rest.find(|c: char| c.is_ascii_digit());
+        match digits {
+            Some(0) => {
+                let end = rest
+                    .find(|c: char| !c.is_ascii_digit())
+                    .unwrap_or(rest.len());
+                let (run, tail) = rest.split_at(end);
+                // A run longer than u128 holds is not a shard index; comparing it as text keeps the
+                // key total instead of saturating two different names to one value.
+                match run.parse::<u128>() {
+                    Ok(n) => out.push((false, String::new(), n)),
+                    Err(_) => out.push((true, run.to_string(), 0)),
+                }
+                rest = tail;
+            }
+            Some(at) => {
+                let (run, tail) = rest.split_at(at);
+                out.push((true, run.to_string(), 0));
+                rest = tail;
+            }
+            None => {
+                out.push((true, rest.to_string(), 0));
+                rest = "";
+            }
+        }
+    }
+    out
+}
+
 /// The dataset id to take from a source path: the name of the directory or file it really names.
 ///
 /// [`Path::file_name`] answers about the path *as written*, and returns `None` for one ending in a
@@ -726,6 +774,35 @@ mod tests {
             max_decompression_ratio: ratio,
             ..IngestOptions::default()
         }
+    }
+
+    #[test]
+    fn shards_sort_by_their_number_not_their_spelling() {
+        let mut names: Vec<&str> = vec![
+            "bag_10.db3",
+            "bag_2.db3",
+            "bag_1.db3",
+            "bag_11.db3",
+            "bag_0.db3",
+        ];
+        names.sort_by_key(|n| natural_key(n));
+        assert_eq!(
+            names,
+            vec![
+                "bag_0.db3",
+                "bag_1.db3",
+                "bag_2.db3",
+                "bag_10.db3",
+                "bag_11.db3"
+            ]
+        );
+        // A digit run too long for a u128 must still order deterministically rather than collapsing
+        // two different names onto one key.
+        let huge = "9".repeat(60);
+        assert_ne!(
+            natural_key(&format!("a{huge}0")),
+            natural_key(&format!("a{huge}1"))
+        );
     }
 
     #[test]

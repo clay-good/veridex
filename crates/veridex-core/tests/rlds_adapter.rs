@@ -1823,3 +1823,46 @@ fn a_map_entry_carrying_its_value_twice_is_refused() {
         "an ambiguous record must be refused, not resolved by last-wins"
     );
 }
+
+#[test]
+fn shards_are_read_in_numeric_order_not_lexicographic() {
+    // A shard set written `-0-of-12` … `-11-of-12` rather than TFDS's zero-padded form. Episodes are
+    // numbered by a counter running over the shards in read order, so reading `-10-of-12` third
+    // renumbers every episode after it — the same recording described with different episode indices
+    // depending on how its shards happened to be named, and a different content hash with it.
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    std::fs::write(dir.join("features.json"), features_json()).unwrap();
+    std::fs::write(
+        dir.join("dataset_info.json"),
+        dataset_info_json(Some(vec![12]), "tfrecord"),
+    )
+    .unwrap();
+    // Shard k holds one episode whose recorded source file names k, so where each episode landed is
+    // recoverable from the CDM rather than assumed.
+    for k in 0..12usize {
+        let record = episode_record(
+            3,
+            &["pick up the block"],
+            &format!("/raw/ep{k}.h5"),
+            k as f32 * 100.0,
+        );
+        std::fs::write(
+            dir.join(format!("demo_rlds-train.tfrecord-{k}-of-12")),
+            shard(&[record]),
+        )
+        .unwrap();
+    }
+
+    let d = ingest(dir).expect("ingest").dataset;
+    assert_eq!(d.episodes.len(), 12);
+    // Episode k must be the one from shard k.
+    for (k, ep) in d.episodes.iter().enumerate() {
+        assert_eq!(ep.index, k as u64);
+        let uri = &ep.streams[0].frames[0].value_ref.uri;
+        assert!(
+            uri.starts_with(&format!("demo_rlds-train.tfrecord-{k}-of-12")),
+            "episode {k} came from the wrong shard: {uri}"
+        );
+    }
+}

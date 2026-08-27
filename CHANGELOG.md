@@ -10,6 +10,28 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **`file-10.parquet` was read before `file-1.parquet`, in three adapters.** Found by asking whether
+  the rosbag2 shard-ordering bug fixed a commit earlier was a one-off. It was not: every adapter that
+  reads a dataset spread over several files read them in **lexicographic** name order, and frames
+  land in their stream in the order the files are read. `bag_10` before `bag_2`, `file-10.parquet`
+  before `file-1.parquet`, `-10-of-12` before `-2-of-12`.
+
+  The conventional exporters zero-pad, which is exactly why this stayed hidden — the bug is in what
+  Veridex *accepts*, not in what LeRobot or TFDS write, and a re-export, a conversion script, or a
+  hand-assembled subset does not have to pad. A twelve-shard LeRobot dataset named without padding
+  came back with its frames out of order at frame 19 and `TEMPORAL.NON_MONOTONIC` errors on sound
+  data. The same shape in RLDS is quieter and worse: episodes are numbered by a counter running over
+  the shards in read order, so the same recording got different episode indices — and a different
+  content hash — depending on how its shards happened to be named.
+
+  Reordering the frames is never the answer, because frame order is data-defined and preserved on
+  purpose: reordering would hide the out-of-order timestamps this tool exists to find. So the files
+  are read in the order their *numbers* give. `adapter::natural_key` — extracted from the rosbag2
+  fix, where it was written for this — now orders shards in the LeRobot, RLDS and rosbag2 adapters,
+  and the media walk beside them. Zarr and HDF5 were checked and are not affected: Zarr computes a
+  chunk's path from its coordinates rather than listing them, and HDF5 already parses the trailing
+  number out of a group name (`demo_10` → 10) instead of trusting name order.
+
 - **A latched ROS topic cost a flawless bag eight points.** Every ROS 2 stack publishes `/tf_static`
   *latched*: once at startup, retained for late subscribers. Graded as a sampled stream it drew
   `STRUCTURAL.SINGLE_FRAME_STREAM` ("carries no temporal signal") and `TEMPORAL.END_OFFSET` ("ends

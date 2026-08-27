@@ -325,7 +325,7 @@ impl Rosbag2Adapter {
             .map(|e| e.path())
             .filter(|p| Rosbag2Adapter::is_db3(p))
             .collect();
-        out.sort_by_key(|p| natural_key(&display(p)));
+        out.sort_by_key(|p| super::natural_key(&display(p)));
         Ok(out)
     }
 
@@ -344,45 +344,6 @@ impl Rosbag2Adapter {
     fn is_bag_dir(dir: &Path) -> bool {
         dir.is_dir() && Rosbag2Adapter::shards_in(dir).is_ok_and(|s| !s.is_empty())
     }
-}
-
-/// A sort key that compares digit runs as numbers, so `bag_2` precedes `bag_10`.
-///
-/// Each element is one run of the name: `(false, "", n)` for a run of digits, `(true, text, 0)` for
-/// everything else. Digits sort before other text at the same position, which is arbitrary but
-/// total — the property that matters is that the key is a pure function of the name, so the shard
-/// order (and therefore the CDM content hash) is the same on every machine and every run.
-fn natural_key(name: &str) -> Vec<(bool, String, u128)> {
-    let mut out = Vec::new();
-    let mut rest = name;
-    while !rest.is_empty() {
-        let digits = rest.find(|c: char| c.is_ascii_digit());
-        match digits {
-            Some(0) => {
-                let end = rest
-                    .find(|c: char| !c.is_ascii_digit())
-                    .unwrap_or(rest.len());
-                let (run, tail) = rest.split_at(end);
-                // A run longer than u128 holds is not a shard index; comparing it as text keeps the
-                // key total instead of saturating two different names to one value.
-                match run.parse::<u128>() {
-                    Ok(n) => out.push((false, String::new(), n)),
-                    Err(_) => out.push((true, run.to_string(), 0)),
-                }
-                rest = tail;
-            }
-            Some(at) => {
-                let (run, tail) = rest.split_at(at);
-                out.push((true, run.to_string(), 0));
-                rest = tail;
-            }
-            None => {
-                out.push((true, rest.to_string(), 0));
-                rest = "";
-            }
-        }
-    }
-    out
 }
 
 /// Reorder `found` into the order `listed` gives, appending anything the manifest does not name.
@@ -1086,35 +1047,6 @@ mod tests {
              offered_qos_profiles TEXT NOT NULL)",
         );
         assert_eq!(column_index(&v9, "serialization_format"), Some(4));
-    }
-
-    #[test]
-    fn shards_sort_by_their_number_not_their_spelling() {
-        let mut names: Vec<&str> = vec![
-            "bag_10.db3",
-            "bag_2.db3",
-            "bag_1.db3",
-            "bag_11.db3",
-            "bag_0.db3",
-        ];
-        names.sort_by_key(|n| natural_key(n));
-        assert_eq!(
-            names,
-            vec![
-                "bag_0.db3",
-                "bag_1.db3",
-                "bag_2.db3",
-                "bag_10.db3",
-                "bag_11.db3"
-            ]
-        );
-        // A digit run too long for a u128 must still order deterministically rather than collapsing
-        // two different names onto one key.
-        let huge = "9".repeat(60);
-        assert_ne!(
-            natural_key(&format!("a{huge}0")),
-            natural_key(&format!("a{huge}1"))
-        );
     }
 
     #[test]

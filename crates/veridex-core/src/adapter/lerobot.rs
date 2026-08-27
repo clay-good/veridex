@@ -306,7 +306,11 @@ fn find_parquet(
         return;
     };
     let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
-    paths.sort();
+    // Numeric order, not lexicographic: rows land in their episode in the order the shards are read,
+    // so `file-10.parquet` ahead of `file-1.parquet` puts a sound dataset's frames out of order and
+    // reports it as `TEMPORAL.NON_MONOTONIC`. LeRobot's own exporter zero-pads, which hides this
+    // until a re-export or a conversion script does not. See `super::natural_key`.
+    paths.sort_by_key(|p| super::natural_key(&p.to_string_lossy()));
     for p in paths {
         let Some(kind) = walk_entry(&p) else { continue };
         if kind == EntryKind::Dir {
@@ -424,7 +428,7 @@ fn find_media(dir: &Path, out: &mut Vec<PathBuf>) {
         return;
     };
     let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
-    paths.sort();
+    paths.sort_by_key(|p| super::natural_key(&p.to_string_lossy()));
     for p in paths {
         let Some(kind) = walk_entry(&p) else { continue };
         if kind == EntryKind::Dir {

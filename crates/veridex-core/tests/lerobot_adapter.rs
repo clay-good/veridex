@@ -1491,3 +1491,63 @@ fn a_parquet_that_expands_far_past_its_size_is_refused_while_decoding() {
         "expected a frame-budget refusal, got {err:?}"
     );
 }
+
+#[test]
+fn shards_are_read_in_numeric_order_not_lexicographic() {
+    // A dataset spread over twelve shards named without zero padding — a re-export, a conversion
+    // script, a hand-assembled subset. Rows land in their episode in the order the shards are read,
+    // and frame order is preserved deliberately (reordering would hide the out-of-order timestamps
+    // this tool exists to find), so reading `file-10.parquet` third put a sound dataset's frames out
+    // of order at frame 19 and reported it as `TEMPORAL.NON_MONOTONIC` errors.
+    //
+    // LeRobot's own exporter zero-pads, which is why this stayed hidden: the bug is in what Veridex
+    // accepts, not in what LeRobot writes.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join("meta")).unwrap();
+    fs::create_dir_all(root.join("data/chunk-0")).unwrap();
+    let info = serde_json::json!({
+        "codebase_version": "v3.0",
+        "fps": 10.0,
+        "robot_type": "so100",
+        "features": {"observation.state": {"dtype": "float32", "shape": [1]}},
+    });
+    fs::write(
+        root.join("meta/info.json"),
+        serde_json::to_string_pretty(&info).unwrap(),
+    )
+    .unwrap();
+    for k in 0..12i64 {
+        let rows: Vec<(i64, f64)> = (0..5).map(|i| (0i64, (k * 5 + i) as f64 / 10.0)).collect();
+        write_frames_parquet(&root.join(format!("data/chunk-0/file-{k}.parquet")), &rows);
+    }
+
+    let d = ingest_lerobot(root);
+    let ts: Vec<i64> = d.episodes[0].streams[0]
+        .frames
+        .iter()
+        .map(|f| f.ts)
+        .collect();
+    assert_eq!(ts.len(), 60);
+    assert!(
+        ts.windows(2).all(|w| w[0] < w[1]),
+        "frames out of order at {:?}",
+        ts.windows(2).position(|w| w[0] >= w[1])
+    );
+
+    // And end to end: the engine reports nothing about the timeline of a sound dataset.
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let verdict = engine.run(
+        &d,
+        veridex_core::content_hash(&d),
+        &veridex_core::RunConfig::default(),
+    );
+    assert!(
+        !verdict
+            .findings
+            .iter()
+            .any(|f| f.code == "TEMPORAL.NON_MONOTONIC"),
+        "{:?}",
+        verdict.findings.iter().map(|f| &f.code).collect::<Vec<_>>()
+    );
+}

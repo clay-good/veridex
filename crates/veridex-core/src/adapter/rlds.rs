@@ -872,7 +872,10 @@ fn find_shards(dir: &Path) -> Vec<PathBuf> {
             .collect(),
         Err(_) => Vec::new(),
     };
-    shards.sort();
+    // Numeric order: a shard set written `-0-of-12` … `-10-of-12` rather than TFDS's zero-padded
+    // form would otherwise be read with `-10` third, which renumbers every episode after it. See
+    // `super::natural_key`.
+    shards.sort_by_key(|p| super::natural_key(&p.to_string_lossy()));
     shards
 }
 
