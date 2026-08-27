@@ -255,6 +255,61 @@ fn a_rosbag2_bag_goes_through_the_whole_trust_flow() {
 }
 
 #[test]
+fn a_bag_can_be_checked_from_its_manifest_and_cannot_be_gated_or_certified_on() {
+    // The refusals are the reason `--metadata-only` is safe to offer at all: its data score is
+    // computed over checks that had no data, so it can only be higher than a real one. Pinned at the
+    // CLI level for the newest format, because they are the difference between a fast structural
+    // look and a green pipeline over a dataset nobody read.
+    let bag = rosbag2_fixture("clean_rig");
+
+    let (code, stdout, _) = run(&["check", &bag, "--metadata-only", "--json"]);
+    assert_eq!(code, 10, "the manifest-only run itself succeeds");
+    let report: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON report");
+    assert_eq!(report["verdict"]["coverage"]["kind"], "metadata_only");
+    let codes: Vec<&str> = report["verdict"]["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["code"].as_str().unwrap())
+        .collect();
+    assert!(
+        codes.contains(&"COVERAGE.METADATA_ONLY"),
+        "the coverage disclosure travels into the JSON: {codes:?}"
+    );
+    // And nothing accuses the rig of what this run declined to read.
+    assert!(
+        !codes.contains(&"AUTONOMY.CALIBRATION_INCOMPLETE"),
+        "{codes:?}"
+    );
+
+    // A score gate over it is refused outright — exit 2, not a pass and not a failure.
+    let (code, _, stderr) = run(&["check", &bag, "--metadata-only", "--min-score", "80"]);
+    assert_eq!(code, 2, "{stderr}");
+    assert!(stderr.contains("--min-score cannot gate"), "{stderr}");
+
+    // So is a certificate: a certificate speaks for a dataset's data.
+    let dir = temp_dir("rosbag2-meta");
+    let key = dir.join("issuer");
+    run(&["keygen", key.to_str().unwrap()]);
+    let (code, _, stderr) = run(&[
+        "certify",
+        &bag,
+        "--metadata-only",
+        "--key",
+        key.to_str().unwrap(),
+        "--out",
+        dir.join("c.json").to_str().unwrap(),
+    ]);
+    assert_ne!(code, 0, "{stderr}");
+    assert!(stderr.contains("metadata-only"), "{stderr}");
+
+    // A bare shard has no manifest, and says so rather than reading the shard anyway.
+    let (code, _, stderr) = run(&["check", &rosbag2_fixture("bare.db3"), "--metadata-only"]);
+    assert_eq!(code, 2, "{stderr}");
+    assert!(stderr.contains("bare .db3"), "{stderr}");
+}
+
+#[test]
 fn a_split_rosbag2_recording_passes_through_the_cli() {
     // Twelve shards, read as one recording. A regression guard at the CLI level for the shard
     // ordering: read by name rather than by number, this bag reports two TEMPORAL.NON_MONOTONIC
