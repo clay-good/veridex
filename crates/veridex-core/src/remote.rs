@@ -306,7 +306,11 @@ impl HubFetcher {
 /// against the current origin. A path-relative `Location` is legal HTTP and is deliberately *not*
 /// resolved: guessing at the base of one is how a redirect ends up somewhere nobody chose. Whatever
 /// comes out is host-checked by the caller either way.
-fn resolve_redirect(current: &str, location: &str) -> Option<String> {
+///
+/// Public, like [`is_allowed_url`], because both are policy about URLs rather than plumbing: they
+/// are worth reading, worth testing, and worth compiling in the default build where the socket
+/// itself is not.
+pub fn resolve_redirect(current: &str, location: &str) -> Option<String> {
     if location.starts_with("https://") || location.starts_with("http://") {
         return Some(location.to_string());
     }
