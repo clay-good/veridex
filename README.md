@@ -313,7 +313,7 @@ zstd-compressed — through Veridex's own bounds-checked SQLite reader, reconcil
 `metadata.yaml` message total, and discloses a message on an undeclared topic as unread rather than
 dropping it), CAN+DBC, and ASAM
 MDF/MF4 adapters** with a passing cross-format
-neutrality gate (the same logical dataset yields equivalent CDMs as LeRobot v3 and as MCAP); descriptive scenario-dimension coverage and **scenario/map/sim
+neutrality gate (the same logical dataset yields equivalent CDMs as LeRobot v3 and as MCAP, and as rosbag2 and as MCAP); descriptive scenario-dimension coverage and **scenario/map/sim
 reference extraction** (OpenSCENARIO / OpenDRIVE / OSI / simulator, with the version read from the
 referenced sidecar's own ASAM header); Croissant + W3C PROV provenance emit (carrying attested provenance when one is
 applied); Ed25519 **certificate signing with offline verification** (tamper + transplant rejection)
@@ -340,7 +340,8 @@ check's own abstention rules, are recorded in [docs/checks.md](docs/checks.md).
 
 And where a check *could not run at all*, the report says so rather than staying quiet. A source that
 records no wall clock, one whose values Veridex never interprets, one whose frames carry no content
-fingerprint, one whose video is not laid out per episode — each produces an informational finding
+fingerprint, one whose video is not laid out per episode, one that offers no two streams on a shared
+clock for the alignment checks to compare — each produces an informational finding
 naming the checks that had nothing to measure,
 and it travels into the JSON, the SARIF, the HTML, and the certificate. The alternative is what this
 tool exists to prevent: a CAN log with a wheel speed pinned at its rail for 70% of the recording
