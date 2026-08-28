@@ -1828,10 +1828,15 @@ impl Adapter for LeRobotAdapter {
         }
         for col in observed.keys() {
             if !declared_names.contains(col.as_str()) {
-                unmapped_fields.push(UnmappedField {
+                // Unread, not unmapped: the column's values are in the Parquet and no stream
+                // represents them, so every result is over less of the dataset than it looks. The
+                // rosbag2 adapter already treats the same situation — a message on a topic the
+                // manifest never declared — as unread coverage; these two must not disagree about
+                // what a column nobody declared means.
+                unread_sources.push(UnmappedField {
                     source_path: format!("data column `{col}`"),
                     note: "present in the Parquet data but not declared in meta/info.json \
-                           features; not represented as a stream"
+                           features, so no stream is built from it and its values went unread"
                         .into(),
                 });
             }

@@ -10,7 +10,7 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
-- **Two adapters filed data they never read as a field they could not map.** The distinction is the
+- **Three adapters filed data they never read as a field they could not map.** The distinction is the
   one this tool exists for: "unmapped" means the CDM has no shape for a field, which costs the
   reader nothing; **unread** means the data is there and nobody looked at it, so every result is
   over less of the source than it appears to be — and only unread raises `COVERAGE.SOURCE_UNREAD`
@@ -24,6 +24,11 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
   In **Zarr**, it covered an array this reader cannot open: one unsupported codec among readable
   arrays dropped that stream and raised nothing, so a store missing its camera looked complete.
+
+  In **LeRobot**, it covered a Parquet column the manifest never declared — whose values are in the
+  data and which no stream represents. The rosbag2 adapter already treated the same situation (a
+  message on an undeclared topic) as unread coverage; the two disagreed about what an undeclared
+  column means, and now do not.
 
   Both now reach the verdict. Each fix was verified red first: without it, the end-to-end test finds
   no `COVERAGE.SOURCE_UNREAD` among the findings.

@@ -1445,14 +1445,18 @@ fn parquet_columns_and_declared_features_are_reconciled_in_the_report() {
             &IngestOptions::default(),
         )
         .unwrap();
+    // Unread, not unmapped: the column's values are in the Parquet and no stream represents them,
+    // so this is a hole in the run's coverage and has to reach the verdict — which only
+    // `unread_sources` does. The rosbag2 adapter treats a message on an undeclared topic the same
+    // way; the two must not disagree about what an undeclared column means.
     assert!(
         ingested
             .report
-            .unmapped_fields
+            .unread_sources
             .iter()
             .any(|u| u.source_path.contains("observation.state")),
-        "an undeclared Parquet column must be reported as unmapped: {:?}",
-        ingested.report.unmapped_fields
+        "an undeclared Parquet column must be reported as unread: {:?}",
+        ingested.report.unread_sources
     );
     assert!(
         ingested
