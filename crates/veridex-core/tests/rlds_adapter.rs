@@ -1866,3 +1866,124 @@ fn shards_are_read_in_numeric_order_not_lexicographic() {
         );
     }
 }
+
+// ---- Reading the manifest alone ----
+
+fn metadata_only(dir: &Path) -> Result<veridex_core::adapter::Ingested, IngestError> {
+    RldsAdapter.ingest(
+        &Source::Local(dir.to_path_buf()),
+        &IngestOptions {
+            metadata_only: true,
+            ..IngestOptions::default()
+        },
+    )
+}
+
+#[test]
+fn the_manifest_alone_yields_the_declared_episodes_and_features() {
+    // The point of the mode: an Open X-Embodiment directory is hundreds of gigabytes and its two
+    // manifest files are a few kilobytes. What they answer — how many episodes, which features,
+    // with what dtypes and shapes, under what licence — is answered without opening a shard.
+    let tmp = tempfile::tempdir().unwrap();
+    write_dataset(tmp.path(), 3, 4);
+    // Deleting the shard proves the claim rather than asserting it: a run that opened one now fails.
+    std::fs::remove_file(tmp.path().join("demo_rlds-train.tfrecord-00000-of-00001")).unwrap();
+
+    let out = metadata_only(tmp.path()).expect("a manifest-only ingest");
+    assert_eq!(
+        out.report.coverage,
+        Coverage::MetadataOnly {
+            episodes_declared: 3
+        }
+    );
+    assert_eq!(out.dataset.episodes.len(), 3);
+    // Every declared per-step feature is a stream, and every stream is empty by request.
+    let full = ingest(tmp.path());
+    assert!(full.is_err(), "the shard really is gone: {full:?}");
+    let names: Vec<&str> = out.dataset.episodes[0]
+        .streams
+        .iter()
+        .map(|s| s.name.as_str())
+        .collect();
+    assert!(names.contains(&"action"), "{names:?}");
+    assert!(names.contains(&"observation/image"), "{names:?}");
+    assert!(out
+        .dataset
+        .episodes
+        .iter()
+        .all(|e| e.streams.iter().all(|s| s.frames.is_empty())));
+    // RLDS declares episodes per shard, never steps per episode. Nothing may invent one.
+    assert!(out
+        .dataset
+        .episodes
+        .iter()
+        .all(|e| e.declared_frame_count.is_none()));
+    // The licence off `redistributionInfo` is real provenance and survives.
+    assert!(out.dataset.provenance.iter().any(|p| p
+        .elements
+        .iter()
+        .any(|e| e.key == "license" && e.value.as_deref() == Some("Apache-2.0"))));
+    assert_eq!(out.dataset.id, "demo_rlds");
+}
+
+#[test]
+fn a_manifest_with_no_shard_lengths_is_refused_not_read_as_an_empty_dataset() {
+    // Without shard lengths there is no episode set, and this mode cannot go and find one. An empty
+    // dataset would score a clean 100 on a catalog that measured nothing.
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("features.json"), features_json()).unwrap();
+    std::fs::write(
+        tmp.path().join("dataset_info.json"),
+        dataset_info_json(None, "tfrecord"),
+    )
+    .unwrap();
+
+    match metadata_only(tmp.path()) {
+        Err(IngestError::Parse { message, .. }) => {
+            assert!(message.contains("shard lengths"), "{message}");
+            assert!(message.contains("full check"), "{message}");
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_declared_episode_count_is_not_reported_as_a_check_that_passed() {
+    // The episode set is derived from the declared total, so comparing the two is `n == n`. Left out
+    // of the CDM entirely, and said out loud, rather than passing a check that could not fail.
+    let tmp = tempfile::tempdir().unwrap();
+    write_dataset(tmp.path(), 3, 4);
+    let out = metadata_only(tmp.path()).unwrap();
+    assert!(out
+        .dataset
+        .metadata
+        .iter()
+        .all(|(k, _)| k != veridex_core::cdm::META_DECLARED_EPISODES));
+    assert!(
+        out.report
+            .omitted_fields
+            .iter()
+            .any(|f| f.contains("declared episode-count check")),
+        "{:?}",
+        out.report.omitted_fields
+    );
+}
+
+#[test]
+fn a_manifest_declaring_an_absurd_episode_total_is_refused_before_it_is_allocated() {
+    // `"shardLengths": ["100000000"]` is a hundred-byte file. Against the declared features it asks
+    // for hundreds of millions of streams, and no frame budget fires on a run that reads no frame —
+    // so the product is charged before the first `Stream` is built.
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("features.json"), features_json()).unwrap();
+    std::fs::write(
+        tmp.path().join("dataset_info.json"),
+        dataset_info_json(Some(vec![100_000_000]), "tfrecord"),
+    )
+    .unwrap();
+
+    match metadata_only(tmp.path()) {
+        Err(IngestError::FrameBudgetExceeded { .. }) => {}
+        other => panic!("expected the budget to refuse it, got {other:?}"),
+    }
+}

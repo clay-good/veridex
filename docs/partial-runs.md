@@ -38,6 +38,7 @@ entirely and check what the dataset *says about itself*:
 ```sh
 veridex check my-dataset/ --metadata-only     # LeRobot; reads meta/, opens no Parquet or video
 veridex check my-bag/      --metadata-only    # rosbag2; reads metadata.yaml, opens no .db3
+veridex check oxe-dataset/ --metadata-only    # RLDS/TFDS; reads the two manifest files, opens no shard
 veridex check hf://lerobot/svla_so101_pickplace --metadata-only   # the Hub, without downloading it
 ```
 
@@ -52,7 +53,7 @@ every refusal that comes with one, so it can neither pass a score gate nor be ce
 about Veridex touches a network: a certificate still verifies offline, which is the property the
 whole trust chain rests on.
 
-Two formats support it, because two formats keep a manifest outside the container. For a **rosbag2**
+Three formats support it, because three keep a manifest outside the container. For a **rosbag2**
 bag it reads `topics_with_message_count` — every topic's name, its ROS type and so its modality, the
 declared message total, the recording distribution, the storage and any compression — without
 opening a shard, which is the difference between seconds and a terabyte. What it cannot see is
@@ -74,6 +75,23 @@ refuses it — a sound manifest says nothing about the data. One nice detail: wh
 derived from `info.json`'s `total_episodes` alone, the declared-episode-count check is *withheld*
 rather than run, because comparing that number against a set built from it could not fail, and a
 check that cannot fail must not be reported as having passed.
+
+For **RLDS/TFDS** it is the mode the Open X-Embodiment corpus asks for: those directories run to
+hundreds of gigabytes and their manifest is two files of a few kilobytes. `dataset_info.json` gives
+the per-split shard lengths — so the declared episode count — plus the file format, version,
+citation and licence; `features.json` gives every per-step feature with its dtype and shape. Those
+become the episode set and one empty stream per feature.
+
+What it cannot see is everything inside a record: no steps, no values, no content hashes, no
+TFRecord CRC verification, no language instruction or episode task, and no
+`episode_metadata/file_path`, which is where an RLDS episode's upstream provenance lives — so a
+metadata-only run of a dataset scores *lower* on provenance than a full one, honestly, rather than
+claiming lineage it never read. Two things are refused instead of approximated: a manifest with no
+shard lengths, since there is then no episode set and an empty dataset would score a clean 100 on a
+catalog that measured nothing; and per-episode step counts, which RLDS simply never declares — every
+episode carries no declared frame count rather than one derived from a shard length that does not
+mean that. As with LeRobot, the declared-episode-count check is withheld, because the episode set
+came from that very number.
 
 
 ## Why the refusals exist

@@ -386,6 +386,31 @@ reproduced before it was fixed.*
 
 ### Added
 
+- **`--metadata-only` for RLDS/TFDS**, the format Open X-Embodiment ships in — where the mode earns
+  the most: those directories run to hundreds of gigabytes and their manifest is two files of a few
+  kilobytes. `dataset_info.json` gives the per-split shard lengths (so the declared episode count),
+  the file format, version, citation and licence; `features.json` gives every per-step feature with
+  its dtype and shape. No shard is opened — the test proves it by deleting the shard and checking
+  the dataset anyway.
+
+  What it cannot see, said rather than inferred: no steps, values, or content hashes, no TFRecord
+  CRC verification, no language instruction or episode task, and no `episode_metadata/file_path` —
+  which is where an RLDS episode's upstream lineage lives, so a metadata-only run scores *lower* on
+  provenance than a full one rather than claiming lineage it never read.
+
+  Three things are refused instead of approximated. A manifest with no shard lengths has no episode
+  set, and an empty dataset would score a clean 100 over a catalog that measured nothing — refused
+  by name, naming the splits at fault. Per-episode step counts are left absent, because RLDS
+  declares episodes per shard and never steps per episode; deriving one would hand
+  `STRUCTURAL.EPISODE_LENGTH_MISMATCH` a number Veridex made up. And the declared-episode-count
+  check is withheld, since the episode set came from that very total — the same reasoning the
+  LeRobot path already uses for `total_episodes`.
+
+  One bound comes with the mode: a run that reads no frame never fires the frame budget, and one
+  `Stream` is built per (episode × feature) from two numbers in a few hundred bytes of JSON.
+  `"shardLengths": ["100000000"]` is a hundred-byte file asking for hundreds of millions of streams,
+  so the product is charged against the frame budget before the first one is built.
+
 - **A remote check now says which commit it read.** `hf://org/name` reads the `main` branch, and a
   branch moves. Until now the run recorded only the revision it *asked for* — `main` — which names
   no particular bytes: the report could not be re-run, and its content hash could not be traced back

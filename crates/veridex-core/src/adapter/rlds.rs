@@ -937,6 +937,13 @@ impl Adapter for RldsAdapter {
         }
     }
 
+    /// The manifest — `dataset_info.json` and `features.json` — is a few kilobytes beside a
+    /// directory that, for an Open X-Embodiment dataset, runs to hundreds of gigabytes, and it is
+    /// what declares the episode count, the per-step features, and the licence.
+    fn supports_metadata_only(&self) -> bool {
+        true
+    }
+
     fn ingest(&self, source: &Source, options: &IngestOptions) -> Result<Ingested, IngestError> {
         let dir = match source {
             Source::Local(p) => p,
@@ -1035,6 +1042,21 @@ impl Adapter for RldsAdapter {
             }
             (saw_any && splits_without_lengths.is_empty()).then_some(total)
         });
+
+        // With the manifest read and the features resolved, a metadata-only run has everything it
+        // is going to get: no shard is opened past this point.
+        if options.metadata_only {
+            return ingest_metadata_only(
+                dir,
+                &info,
+                file_format,
+                &step_leaves,
+                declared_episodes,
+                &splits_without_lengths,
+                unmapped_fields,
+                options,
+            );
+        }
 
         // Resolve the sampling request into concrete episode ordinals before any shard is read.
         // `FirstEpisodes` needs no manifest — the first n ordinals are the first n records — while a
@@ -1439,6 +1461,227 @@ impl Adapter for RldsAdapter {
     }
 }
 
+/// Ingest a TFDS/RLDS dataset from `dataset_info.json` and `features.json` alone, opening no shard.
+///
+/// The two manifest files are a few kilobytes beside a directory that, for an Open X-Embodiment
+/// dataset, is routinely hundreds of gigabytes — and between them they answer the questions worth
+/// asking before a download: how many episodes the dataset declares, what per-step features it
+/// declares and with what dtypes and shapes, what file format the shards are in, and what licence
+/// and citation it ships under.
+///
+/// What it does **not** cover is everything a record would answer: no steps, no values, no content
+/// hashes, no CRC verification, no language instructions, and no per-episode length — RLDS records
+/// the episode *count* per shard, never the step count of an episode. Every episode therefore
+/// carries zero frames and no declared frame count *by request*, which is what
+/// [`Coverage::MetadataOnly`] tells the checks: abstain rather than read that absence as a defect.
+#[allow(clippy::too_many_arguments)]
+fn ingest_metadata_only(
+    dir: &Path,
+    info: &DatasetInfoJson,
+    file_format: &str,
+    step_leaves: &[&Leaf],
+    declared_episodes: Option<u64>,
+    splits_without_lengths: &[String],
+    mut unmapped_fields: Vec<UnmappedField>,
+    options: &IngestOptions,
+) -> Result<Ingested, IngestError> {
+    // The episode set can only come from the declared shard lengths — reading a shard is exactly
+    // what this mode does not do. Without them there is no episode set at all, and returning an
+    // empty dataset (which reads as a clean pass) is refused instead.
+    let Some(total) = declared_episodes else {
+        return Err(parse_error(if splits_without_lengths.is_empty() {
+            "dataset_info.json declares no split shard lengths, so a metadata-only check has no \
+             episode set to check — run a full check, which reads the episodes from the shards"
+                .into()
+        } else {
+            format!(
+                "dataset_info.json omits shard lengths for split(s) {}, so a metadata-only check \
+                 cannot know the episode set: a partial total would report a complete dataset as \
+                 truncated. Run a full check instead",
+                splits_without_lengths.join(", ")
+            )
+        }));
+    };
+
+    // No frame is read, so the frame budget — charged per frame — never fires, and nothing else
+    // bounds what this manifest can make Veridex allocate. It builds one `Stream` per
+    // (episode x feature), and both factors come from a few hundred bytes of JSON: a
+    // `"shardLengths": ["100000000"]` against 60 declared features is a 100-byte file asking for
+    // six billion streams. Charge the product before a single one is built, against the same
+    // ceiling the frame count uses, so `--max-frames` raises both together.
+    let declared_streams = total.saturating_mul(step_leaves.len() as u64);
+    let mut budget = FrameBudget::new(options);
+    budget.take(FORMAT_ID, declared_streams)?;
+
+    let episodes: Vec<Episode> = (0..total)
+        .map(|index| Episode {
+            index,
+            // No record was read, so there is no measured window, and RLDS has no wall clock to
+            // derive one from even if there were.
+            start_ts: None,
+            end_ts: None,
+            streams: step_leaves.iter().map(|l| empty_stream(l)).collect(),
+            // The language instruction is a per-step value inside a record. Left absent rather than
+            // guessed; the task checks abstain on `None`.
+            task: None,
+            labels: Vec::new(),
+            ego_poses: None,
+            // RLDS declares how many episodes each shard holds, never how many steps an episode
+            // holds. Left `None` rather than derived, so `STRUCTURAL.EPISODE_LENGTH_MISMATCH` has
+            // nothing to compare rather than a number Veridex made up.
+            declared_frame_count: None,
+        })
+        .collect();
+
+    let mut elements = vec![ProvenanceElement {
+        key: "source_format".into(),
+        value: Some(FORMAT_ID.into()),
+        class: ProvenanceClass::Known,
+    }];
+    if let Some(license) = info
+        .redistribution_info
+        .as_ref()
+        .and_then(|r| r.license.as_ref())
+    {
+        elements.push(ProvenanceElement {
+            key: "license".into(),
+            value: Some(license.clone()),
+            class: ProvenanceClass::Known,
+        });
+    }
+
+    let mut metadata: Vec<(String, String)> = vec![
+        ("source_format".into(), FORMAT_ID.into()),
+        ("tfds_file_format".into(), file_format.into()),
+    ];
+    if let Some(name) = &info.name {
+        metadata.push(("tfds_name".into(), name.clone()));
+    }
+    if let Some(version) = &info.version {
+        metadata.push(("tfds_version".into(), version.clone()));
+    }
+    if let Some(module) = &info.module_name {
+        metadata.push(("tfds_module".into(), module.clone()));
+    }
+    if let Some(citation) = &info.citation {
+        metadata.push(("citation".into(), citation.clone()));
+    }
+    // Deliberately no `META_DECLARED_EPISODES`: the episode set was derived from that very number,
+    // so the declared-count check would be comparing `n` against `n` — a check that cannot fail,
+    // whose pass would then be reported as though something had been verified.
+
+    let dataset = Dataset {
+        id: info
+            .name
+            .clone()
+            .unwrap_or_else(|| crate::adapter::dataset_id_from_path(dir, FORMAT_ID)),
+        metadata,
+        provenance: vec![Provenance {
+            scope: ProvenanceScope::Dataset,
+            elements,
+        }],
+        episodes,
+        calibration: None,
+    };
+
+    let mut mapped_fields = vec![
+        "features.json steps/* -> streams".into(),
+        "leaf dtype -> stream.dtype".into(),
+        "leaf shape -> stream.shape".into(),
+        "split shardLengths -> episode set (0..total)".into(),
+    ];
+    if info
+        .redistribution_info
+        .as_ref()
+        .and_then(|r| r.license.as_ref())
+        .is_some()
+    {
+        mapped_fields.push("redistributionInfo.license -> provenance.license".into());
+    }
+
+    let mut omitted_fields = vec![
+        "step values, step counts, and content hashes (no shard was opened)".into(),
+        "tfrecord masked CRC-32C verification (it is computed over record bytes, and no record was \
+         read)"
+            .into(),
+        "language instructions and episode tasks (they are per-step values inside a record)".into(),
+        "episode_metadata/file_path -> provenance.upstream (it is stored inside each record)".into(),
+        "per-episode step counts (RLDS declares episodes per shard, never steps per episode, so \
+         this is not a file that went unread — the manifest does not carry it)"
+            .into(),
+        "split shard lengths -> declared episode-count check (the episode set was derived from \
+         that same total, so the comparison could not fail)"
+            .into(),
+    ];
+    if info
+        .redistribution_info
+        .as_ref()
+        .and_then(|r| r.license.as_ref())
+        .is_none()
+    {
+        omitted_fields.push("license (dataset_info.json records no redistributionInfo)".into());
+    }
+    unmapped_fields.push(UnmappedField {
+        source_path: "tf.train.Example feature values".into(),
+        note: "no record was opened, so no key the records carry could be reconciled against \
+               features.json in either direction"
+            .into(),
+    });
+
+    Ok(Ingested {
+        report: IngestReport {
+            unread_sources: Vec::new(),
+            format_id: FORMAT_ID,
+            source_version: info.version.clone(),
+            coverage: Coverage::MetadataOnly {
+                episodes_declared: dataset.episodes.len() as u64,
+            },
+            mapped_fields,
+            unmapped_fields,
+            omitted_fields,
+        },
+        dataset,
+    })
+}
+
+/// The stream a declared `steps/*` leaf implies, with no frames in it.
+///
+/// Two callers, for two different reasons that must not be conflated in the report: a feature the
+/// records did not carry (an `STRUCTURAL.EMPTY_STREAM` defect), and a metadata-only run that opened
+/// no record at all (an abstention the coverage note states). The shape of the stream is the same;
+/// what differs is what the run says about why it is empty.
+fn empty_stream(leaf: &Leaf) -> Stream {
+    Stream {
+        name: leaf
+            .path
+            .strip_prefix(STEPS_PREFIX)
+            .unwrap_or(&leaf.path)
+            .to_string(),
+        modality: leaf.modality,
+        // RLDS declares no sampling rate, and none is invented from the step count.
+        declared_rate_hz: None,
+        clock_id: CLOCK_ID.into(),
+        // RLDS has no per-step timestamp: the timeline is the step index, and the CDM says so, so
+        // the temporal checks abstain instead of passing on a timeline nobody measured.
+        clock_kind: ClockKind::StepIndex,
+        dtype: leaf.dtype.clone(),
+        shape: leaf.shape.clone(),
+        frames: Vec::new(),
+        // TFDS stores no summary statistics, and this adapter does not decode values, so there is
+        // nothing to recompute from.
+        stats: None,
+        dim_stats: None,
+        observed_stats: None,
+        observed_saturation: None,
+        observed_non_finite: None,
+        observed_dim_stats: None,
+        latched: None,
+        point_fields: None,
+        media: None,
+        frame_id: None,
+    }
+}
+
 /// Turn one record into an episode: derive the step count from every step feature, require the
 /// answers to agree, and build one stream per feature.
 #[allow(clippy::too_many_arguments)]
@@ -1594,30 +1837,7 @@ fn build_episode(
     // A declared feature this record does not carry, as an empty stream — present in the CDM, bound
     // into the content hash, and reported as `STRUCTURAL.EMPTY_STREAM` rather than silently absent.
     for leaf in &absent {
-        streams.push(Stream {
-            name: leaf
-                .path
-                .strip_prefix(STEPS_PREFIX)
-                .unwrap_or(&leaf.path)
-                .to_string(),
-            modality: leaf.modality,
-            declared_rate_hz: None,
-            clock_id: CLOCK_ID.into(),
-            clock_kind: ClockKind::StepIndex,
-            dtype: leaf.dtype.clone(),
-            shape: leaf.shape.clone(),
-            frames: Vec::new(),
-            stats: None,
-            dim_stats: None,
-            observed_stats: None,
-            observed_saturation: None,
-            observed_non_finite: None,
-            observed_dim_stats: None,
-            latched: None,
-            point_fields: None,
-            media: None,
-            frame_id: None,
-        });
+        streams.push(empty_stream(leaf));
     }
 
     // The one lineage fact RLDS carries: the raw file each episode was converted from.
