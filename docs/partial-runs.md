@@ -40,6 +40,7 @@ veridex check my-dataset/ --metadata-only     # LeRobot; reads meta/, opens no P
 veridex check my-bag/      --metadata-only    # rosbag2; reads metadata.yaml, opens no .db3
 veridex check oxe-dataset/ --metadata-only    # RLDS/TFDS; reads the two manifest files, opens no shard
 veridex check buffer.zarr/ --metadata-only    # Zarr; reads .zarray/.zattrs + meta/, opens no data chunk
+veridex check drive.mcap   --metadata-only    # MCAP; reads the summary section at the end, opens no chunk
 veridex check hf://lerobot/svla_so101_pickplace --metadata-only   # the Hub, without downloading it
 ```
 
@@ -54,7 +55,7 @@ every refusal that comes with one, so it can neither pass a score gate nor be ce
 about Veridex touches a network: a certificate still verifies offline, which is the property the
 whole trust chain rests on.
 
-Four formats support it, because four keep their structure outside their data. For a **rosbag2**
+Five formats support it, because five state their structure somewhere other than in their data. For a **rosbag2**
 bag it reads `topics_with_message_count` — every topic's name, its ROS type and so its modality, the
 declared message total, the recording distribution, the storage and any compression — without
 opening a shard, which is the difference between seconds and a terabyte. What it cannot see is
@@ -108,6 +109,21 @@ episode set at all. And the clock is the store's own — whether a timeline arra
 its units is knowable from `.zattrs` alone, so a timed store reports its measured clock here rather
 than a step index. Reporting the step index would be this run's abstention dressed up as a fact
 about the source, and it would then be bound into the content hash as one.
+
+For **MCAP** the structure is inside the container, but at a known offset: an MCAP writes its own
+index at the *end* of the file — a Channel and a Schema record per topic, and a Statistics record
+carrying the message total, the per-channel totals and the recording's log-time span. Reading it is
+three seeks in front of a recording that is routinely tens of gigabytes, and no chunk is opened or
+decompressed. You get the topic inventory with each topic's modality, the message encodings the file
+declares, the declared counts, and the library that wrote it.
+
+Every offset used comes out of the file itself, so every one is checked against the file's real
+length before it is followed. Three cases are refused rather than approximated: a file whose footer
+says `summary_start = 0` — a streaming writer that never finalized, whose topics exist only in the
+records — is refused by name, because there is genuinely nothing to read without reading the file; a
+footer pointing outside the file is refused rather than followed; and a summary whose per-channel
+counts do not add up to its own total is refused, for the same reason a rosbag2 manifest is, since
+presenting three channels out of twelve as the recording's contents is invisible to the caller.
 
 
 ## Why the refusals exist

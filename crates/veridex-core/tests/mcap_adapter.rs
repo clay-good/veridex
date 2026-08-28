@@ -1672,3 +1672,201 @@ fn an_mcap_channel_declaring_latched_qos_is_read_the_same_as_a_db3_one() {
     // A channel with no QoS metadata says nothing, and nothing is inferred for it.
     assert_eq!(by("/imu/data").latched, None);
 }
+
+// ---- Reading the summary section alone ----
+
+fn metadata_only() -> IngestOptions {
+    IngestOptions {
+        metadata_only: true,
+        ..IngestOptions::default()
+    }
+}
+
+fn ingest_with(path: &std::path::Path, options: &IngestOptions) -> veridex_core::Ingested {
+    default_registry()
+        .ingest(&Source::Local(path.to_path_buf()), options)
+        .unwrap_or_else(|e| panic!("ingests: {e}"))
+}
+
+fn rig() -> Vec<Chan> {
+    vec![
+        Chan {
+            schema: "sensor_msgs/msg/Image",
+            topic: "/camera/image",
+            times: vec![0, 100_000_000, 200_000_000],
+        },
+        Chan {
+            schema: "sensor_msgs/msg/PointCloud2",
+            topic: "/lidar/points",
+            times: vec![0, 100_000_000],
+        },
+    ]
+}
+
+#[test]
+fn the_summary_alone_yields_the_topic_inventory_a_full_read_finds() {
+    // An MCAP writes its own index at the end of the file. What it declares there — the channels,
+    // their schemas, and the message totals — is what a full read finds, and reading it costs three
+    // seeks rather than the whole recording.
+    let path = write_temp_mcap(&build_mcap(&rig()));
+    let summary = ingest_with(&path, &metadata_only());
+    let full = ingest_with(&path, &IngestOptions::default());
+
+    assert_eq!(
+        summary.report.coverage,
+        Coverage::MetadataOnly {
+            episodes_declared: 1
+        }
+    );
+    let names = |i: &veridex_core::Ingested| -> Vec<String> {
+        i.dataset.episodes[0]
+            .streams
+            .iter()
+            .map(|s| s.name.clone())
+            .collect()
+    };
+    assert_eq!(names(&summary), names(&full));
+    let modalities = |i: &veridex_core::Ingested| -> Vec<Modality> {
+        i.dataset.episodes[0]
+            .streams
+            .iter()
+            .map(|s| s.modality)
+            .collect()
+    };
+    assert_eq!(modalities(&summary), modalities(&full));
+    // Nothing that lives in a message survives, because no message was read.
+    assert!(summary.dataset.episodes[0]
+        .streams
+        .iter()
+        .all(|s| s.frames.is_empty()));
+    assert_eq!(summary.dataset.episodes[0].start_ts, None);
+    // The declared total is the file's own claim, recorded and disclosed rather than left implicit.
+    assert!(
+        summary
+            .dataset
+            .metadata
+            .iter()
+            .any(|(k, v)| k == "mcap_message_count" && v == "5"),
+        "{:?}",
+        summary.dataset.metadata
+    );
+    assert!(
+        summary
+            .report
+            .unmapped_fields
+            .iter()
+            .any(|f| f.note.contains("were not read")),
+        "{:?}",
+        summary.report.unmapped_fields
+    );
+}
+
+#[test]
+fn a_summary_only_run_reads_none_of_the_recording() {
+    // Proved rather than asserted: every byte between the header and the summary section is
+    // overwritten. The summary-only run is unchanged — it never looks there — while a full read of
+    // the same file no longer agrees with itself.
+    // Written to one path, twice, because the dataset id comes from the file name: two temp files
+    // would differ in the CDM for a reason that has nothing to do with what was read.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("rig.mcap");
+    let bytes = build_mcap(&rig());
+    std::fs::write(&path, &bytes).unwrap();
+    let expected =
+        veridex_core::canonical::content_hash(&ingest_with(&path, &metadata_only()).dataset);
+
+    let mut wrecked = bytes.clone();
+    let summary_start = summary_start_of(&bytes) as usize;
+    for byte in wrecked[64..summary_start].iter_mut() {
+        *byte = 0x00;
+    }
+    std::fs::write(&path, &wrecked).unwrap();
+    assert_eq!(
+        veridex_core::canonical::content_hash(&ingest_with(&path, &metadata_only()).dataset),
+        expected,
+        "wrecking the records changed nothing, because none was read"
+    );
+    assert!(
+        default_registry()
+            .ingest(&Source::Local(path.clone()), &IngestOptions::default())
+            .is_err(),
+        "a full read of the same file must not be indifferent to those bytes"
+    );
+}
+
+/// The `summary_start` offset out of a file's own footer.
+fn summary_start_of(bytes: &[u8]) -> u64 {
+    let footer_at = bytes.len() - 8 - 29;
+    u64::from_le_bytes(bytes[footer_at + 9..footer_at + 17].try_into().unwrap())
+}
+
+#[test]
+fn a_file_with_no_summary_section_is_refused_by_name() {
+    // A streaming writer that never finalized writes `summary_start = 0`. Its topics exist only in
+    // the records themselves, so there is nothing to read without reading the file — said plainly,
+    // rather than reported as a recording with no topics.
+    let mut bytes = build_mcap(&rig());
+    let footer_at = bytes.len() - 8 - 29;
+    bytes[footer_at + 9..footer_at + 17].copy_from_slice(&0u64.to_le_bytes());
+    let path = write_temp_mcap(&bytes);
+
+    match default_registry().ingest(&Source::Local(path.to_path_buf()), &metadata_only()) {
+        Err(IngestError::NotImplemented { what, hint }) => {
+            assert!(what.contains("no summary section"), "{what}");
+            assert!(hint.contains("drop --metadata-only"), "{hint}");
+        }
+        other => panic!("expected a refusal, got ok={}", other.is_ok()),
+    }
+}
+
+#[test]
+fn a_footer_pointing_outside_the_file_is_refused_not_followed() {
+    // The offset comes out of the file, so it is a stranger's number. One past the end must be a
+    // refusal rather than a read.
+    let mut bytes = build_mcap(&rig());
+    let footer_at = bytes.len() - 8 - 29;
+    bytes[footer_at + 9..footer_at + 17].copy_from_slice(&u64::MAX.to_le_bytes());
+    let path = write_temp_mcap(&bytes);
+
+    match default_registry().ingest(&Source::Local(path.to_path_buf()), &metadata_only()) {
+        Err(IngestError::Parse { message, .. }) => {
+            assert!(message.contains("outside the file"), "{message}")
+        }
+        other => panic!("expected a refusal, got ok={}", other.is_ok()),
+    }
+}
+
+#[test]
+fn a_summary_whose_counts_do_not_add_up_is_refused_not_reported() {
+    // The inventory has to be whole, and the file's own total is what proves it. Presenting one
+    // channel out of two as the recording's contents is invisible to the caller.
+    let mut bytes = build_mcap(&rig());
+    let summary_start = summary_start_of(&bytes) as usize;
+    let footer_at = bytes.len() - 8 - 29;
+    // Find the Statistics record (opcode 0x0B) in the summary section and inflate its total.
+    let mut at = summary_start;
+    let mut patched = false;
+    while at + 9 <= footer_at {
+        let opcode = bytes[at];
+        let len = u64::from_le_bytes(bytes[at + 1..at + 9].try_into().unwrap()) as usize;
+        if opcode == 0x0B {
+            bytes[at + 9..at + 17].copy_from_slice(&9_999u64.to_le_bytes());
+            patched = true;
+            break;
+        }
+        at += 9 + len;
+    }
+    assert!(patched, "the fixture has a Statistics record to patch");
+    let path = write_temp_mcap(&bytes);
+
+    match default_registry().ingest(&Source::Local(path.to_path_buf()), &metadata_only()) {
+        Err(IngestError::Parse { message, .. }) => {
+            assert!(message.contains("9999"), "{message}");
+            assert!(
+                message.contains("did not read the whole inventory"),
+                "{message}"
+            );
+        }
+        other => panic!("expected a refusal, got ok={}", other.is_ok()),
+    }
+}

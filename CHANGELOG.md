@@ -386,6 +386,25 @@ reproduced before it was fixed.*
 
 ### Added
 
+- **`--metadata-only` for MCAP**, read from the summary section the format writes at the end of
+  every finalized file: a Channel and a Schema record per topic, and a Statistics record carrying
+  the message total, the per-channel totals and the recording's log-time span. Three seeks in front
+  of a recording that is routinely tens of gigabytes, with no chunk opened and nothing decompressed
+  — a test overwrites every byte between the header and the summary and the run is unchanged, while
+  a full read of the same file is not.
+
+  It yields the topic inventory with each topic's modality, the message encodings the file declares,
+  the declared counts, and the library that wrote it. Every offset it follows comes out of the file,
+  so every one is checked against the file's real length first, and the summary section's own size
+  is capped.
+
+  Three refusals rather than approximations: `summary_start = 0` — a streaming writer that never
+  finalized — is refused by name, because the topics then exist only in the records; a footer
+  pointing outside the file is refused rather than followed; and a summary whose per-channel counts
+  do not add up to its own total is refused, the same invariant the rosbag2 manifest path enforces,
+  because presenting three channels out of twelve as the recording's contents is invisible to the
+  caller.
+
 - **`--metadata-only` for Zarr**, where the structure is outside the data by construction: `.zarray`
   gives every array's dtype, per-row shape and row count, `.zattrs` the store's metadata and
   provenance, and the `meta/` group the episode boundaries — a few kilobytes in front of a replay

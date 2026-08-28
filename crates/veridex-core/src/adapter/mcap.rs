@@ -420,6 +420,14 @@ impl Adapter for McapAdapter {
         }
     }
 
+    /// An MCAP writes its own index at the end of the file: a Channel and a Schema record per
+    /// topic, and a Statistics record carrying the message total, the per-channel totals and the
+    /// recording's log-time span. That is a few kilobytes at a known offset in front of a recording
+    /// that is routinely tens of gigabytes, and reading it opens no chunk.
+    fn supports_metadata_only(&self) -> bool {
+        true
+    }
+
     fn ingest(&self, source: &Source, options: &IngestOptions) -> Result<Ingested, IngestError> {
         // An MCAP recording becomes one episode, so there is nothing to sample along.
         super::reject_sampling("mcap", options)?;
@@ -432,6 +440,13 @@ impl Adapter for McapAdapter {
                 })
             }
         };
+
+        // The summary section is a few kilobytes at a known offset at the end of the file, so a
+        // metadata-only run never reads the recording at all — three seeks rather than tens of
+        // gigabytes.
+        if options.metadata_only {
+            return ingest_summary_only(path, read_summary(path)?);
+        }
 
         let bytes = std::fs::read(path).map_err(|e| IngestError::Io(e.to_string()))?;
 
@@ -806,4 +821,482 @@ impl Adapter for McapAdapter {
 
         Ok(Ingested { dataset, report })
     }
+}
+
+/// Ingest an MCAP from its summary section alone, opening no chunk.
+///
+/// What this covers: the topic inventory — every channel's topic, its schema name and so its
+/// modality, and its message encoding — the file's declared message total and per-channel totals,
+/// its first and last log time, and the library that wrote it. What it cannot cover is everything a
+/// message carries: no timestamps, no message bytes, no content hashes, and no decoded rig
+/// calibration or ego trajectory, all of which come from message *bodies*.
+fn ingest_summary_only(path: &Path, summary: McapSummary) -> Result<Ingested, IngestError> {
+    let refuse = |message: String| IngestError::Parse {
+        format_id: "mcap",
+        message,
+    };
+    // The inventory has to be whole, and the file's own total is what proves it. Presenting three
+    // channels out of twelve as the recording's contents is invisible to the caller, so a summary
+    // whose per-channel counts do not add up to its own total is refused rather than reported.
+    if let Some(stats) = &summary.statistics {
+        let counted: u64 = stats.channel_message_counts.values().copied().sum();
+        if !stats.channel_message_counts.is_empty() && counted != stats.message_count {
+            return Err(refuse(format!(
+                "this file's MCAP summary declares {} message(s) in total but its per-channel \
+                 counts account for {counted} across {} channel(s) — Veridex did not read the \
+                 whole inventory, and will not present part of it as the recording's contents; \
+                 drop --metadata-only to read the file instead",
+                stats.message_count,
+                stats.channel_message_counts.len()
+            )));
+        }
+    }
+
+    let streams: Vec<Stream> = summary
+        .channels
+        .iter()
+        .map(|c| Stream {
+            name: c.topic.clone(),
+            modality: infer_modality(c.schema_name.as_deref().unwrap_or(""), &c.topic),
+            declared_rate_hz: None,
+            clock_id: CLOCK_ID.to_string(),
+            // The clock describes the source — an MCAP stamps every message with a log time — and
+            // this run simply did not read one. The temporal checks abstain here for want of
+            // frames, which the coverage note states.
+            clock_kind: ClockKind::Measured,
+            // A channel's delivery policy is written in its own metadata map in some profiles and
+            // in none in others, so nothing is claimed about it here.
+            latched: None,
+            dtype: None,
+            shape: None,
+            frames: Vec::new(),
+            stats: None,
+            dim_stats: None,
+            observed_stats: None,
+            observed_saturation: None,
+            observed_non_finite: None,
+            observed_dim_stats: None,
+            point_fields: None,
+            media: None,
+            frame_id: None,
+        })
+        .collect();
+
+    let mut metadata = vec![("source_format".into(), "mcap".to_string())];
+    let mut elements = vec![ProvenanceElement {
+        key: "source_format".into(),
+        value: Some("mcap".to_string()),
+        class: ProvenanceClass::Known,
+    }];
+    if let Some(profile) = &summary.profile {
+        metadata.push(("mcap_profile".into(), profile.clone()));
+    }
+    if let Some(library) = &summary.library {
+        metadata.push(("mcap_library".into(), library.clone()));
+        elements.push(ProvenanceElement {
+            key: "recorder".into(),
+            value: Some(library.clone()),
+            class: ProvenanceClass::Known,
+        });
+    }
+    // How the messages on each channel are serialized — `cdr`, `protobuf`, `json`. Recorded as the
+    // set the file declares, because it is what a reader needs to know whether these bytes are ones
+    // their tooling can open at all.
+    let encodings: BTreeSet<&str> = summary
+        .channels
+        .iter()
+        .map(|c| c.message_encoding.as_str())
+        .filter(|e| !e.is_empty())
+        .collect();
+    if !encodings.is_empty() {
+        metadata.push((
+            "mcap_message_encodings".into(),
+            encodings.into_iter().collect::<Vec<_>>().join(","),
+        ));
+    }
+
+    let mut mapped_fields = vec![
+        "summary Channel.topic -> stream.name".into(),
+        "summary Schema.name -> stream.modality".into(),
+        "summary Channel.message_encoding -> dataset metadata".into(),
+        "header library -> provenance.recorder".into(),
+    ];
+    let mut unmapped_fields = Vec::new();
+    if let Some(stats) = &summary.statistics {
+        metadata.push(("mcap_message_count".into(), stats.message_count.to_string()));
+        mapped_fields
+            .push("summary Statistics -> declared message counts and log-time span".into());
+        // A channel the Statistics record never counted is not a channel with no messages: it is a
+        // count this file did not declare, and the difference has to reach the report. Without
+        // this, a summary listing twelve channels and counting three reads as nine silent topics.
+        let uncounted: Vec<&str> = summary
+            .channels
+            .iter()
+            .filter(|c| !stats.channel_message_counts.contains_key(&c.id))
+            .map(|c| c.topic.as_str())
+            .collect();
+        if !stats.channel_message_counts.is_empty() && !uncounted.is_empty() {
+            unmapped_fields.push(UnmappedField {
+                source_path: uncounted.join(", "),
+                note:
+                    "this file's summary lists the channel but its Statistics record declares no \
+                       message count for it, so how much it carries is not stated"
+                        .into(),
+            });
+        }
+        unmapped_fields.push(UnmappedField {
+            source_path: "message records".into(),
+            note: format!(
+                "the file's {} declared message(s), spanning log times {}..{}, were not read: this \
+                 is a metadata-only ingest of {} chunk(s)",
+                stats.message_count,
+                stats.message_start_time,
+                stats.message_end_time,
+                stats.chunk_count
+            ),
+        });
+    } else {
+        // A summary section without a Statistics record is legal, and the difference matters: the
+        // topic inventory is then all there is, with no total to check it against.
+        unmapped_fields.push(UnmappedField {
+            source_path: "summary Statistics record".into(),
+            note: "this file's summary section carries no Statistics record, so it declares no \
+                   message total and no log-time span"
+                .into(),
+        });
+    }
+
+    let dataset = Dataset {
+        id: super::dataset_id_from_path(path, "mcap"),
+        metadata,
+        provenance: vec![Provenance {
+            scope: ProvenanceScope::Dataset,
+            elements,
+        }],
+        episodes: vec![Episode {
+            index: 0,
+            // The summary's log-time span describes the recording, not the frames in this CDM.
+            // Stamping it here would put a timeline on an episode with no frames to support it.
+            start_ts: None,
+            end_ts: None,
+            streams,
+            task: None,
+            labels: Vec::new(),
+            ego_poses: None,
+            // The message total is a count across every channel, not this episode's frame count,
+            // so it is recorded as metadata rather than as a claim the length check would grade.
+            declared_frame_count: None,
+        }],
+        calibration: None,
+    };
+
+    Ok(Ingested {
+        report: IngestReport {
+            format_id: "mcap",
+            source_version: summary.profile.clone(),
+            coverage: Coverage::MetadataOnly {
+                episodes_declared: 1,
+            },
+            mapped_fields,
+            unmapped_fields,
+            unread_sources: Vec::new(),
+            omitted_fields: vec![
+                "frames (no chunk was opened, so there are no timestamps, message bytes or content \
+                 hashes)"
+                    .into(),
+                "rig calibration and ego trajectory (both are decoded from message bodies)".into(),
+                "message schema contents (the summary names each schema; its definition is not \
+                 read)"
+                    .into(),
+            ],
+        },
+        dataset,
+    })
+}
+
+// ---- Reading an MCAP's summary section, without reading the file ----
+
+/// The MCAP opcodes this summary reader recognizes.
+const OP_HEADER: u8 = 0x01;
+const OP_FOOTER: u8 = 0x02;
+const OP_SCHEMA: u8 = 0x03;
+const OP_CHANNEL: u8 = 0x04;
+const OP_STATISTICS: u8 = 0x0B;
+
+/// The Footer record's fixed size on disk: opcode(1) + length(8) + payload(20).
+const FOOTER_RECORD_LEN: u64 = 29;
+/// The magic at both ends of an MCAP file.
+const MAGIC_LEN: u64 = 8;
+
+/// The ceiling on an MCAP's summary section.
+///
+/// The summary holds one Channel and one Schema record per topic plus a Statistics record — a few
+/// kilobytes for the rigs this reads, and the offsets that delimit it come from the file itself.
+/// A hostile footer can claim the summary starts at byte 0 of a 200 GB file; this is what stops
+/// that claim from becoming a 200 GB read.
+const MAX_SUMMARY_BYTES: u64 = 16 * 1024 * 1024;
+
+/// What an MCAP file says about itself in its own summary section.
+struct McapSummary {
+    /// `profile` and `library` from the Header record at the front of the file.
+    profile: Option<String>,
+    library: Option<String>,
+    /// Every channel in the summary: topic, schema name, message encoding.
+    channels: Vec<SummaryChannel>,
+    /// The Statistics record, when the file carries one.
+    statistics: Option<SummaryStatistics>,
+}
+
+struct SummaryChannel {
+    id: u16,
+    topic: String,
+    schema_name: Option<String>,
+    message_encoding: String,
+}
+
+struct SummaryStatistics {
+    message_count: u64,
+    channel_message_counts: BTreeMap<u16, u64>,
+    message_start_time: u64,
+    message_end_time: u64,
+    chunk_count: u32,
+}
+
+/// A bounds-checked cursor over a record payload.
+///
+/// Every length in an MCAP record is a number the file's author wrote, so each read is checked
+/// against what is left rather than trusted. A short read returns `None`, which every caller turns
+/// into "this record is malformed", never into a default value.
+struct Cursor<'a> {
+    bytes: &'a [u8],
+    at: usize,
+}
+
+impl<'a> Cursor<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Cursor { bytes, at: 0 }
+    }
+    fn take(&mut self, n: usize) -> Option<&'a [u8]> {
+        let out = self.bytes.get(self.at..self.at.checked_add(n)?)?;
+        self.at += n;
+        Some(out)
+    }
+    fn u16(&mut self) -> Option<u16> {
+        Some(u16::from_le_bytes(self.take(2)?.try_into().ok()?))
+    }
+    fn u32(&mut self) -> Option<u32> {
+        Some(u32::from_le_bytes(self.take(4)?.try_into().ok()?))
+    }
+    fn u64(&mut self) -> Option<u64> {
+        Some(u64::from_le_bytes(self.take(8)?.try_into().ok()?))
+    }
+    /// A `u32` length followed by that many bytes of UTF-8.
+    fn string(&mut self) -> Option<String> {
+        let len = self.u32()? as usize;
+        Some(String::from_utf8_lossy(self.take(len)?).into_owned())
+    }
+    /// A `u32` byte-length followed by that many bytes.
+    fn bytes(&mut self) -> Option<&'a [u8]> {
+        let len = self.u32()? as usize;
+        self.take(len)
+    }
+}
+
+/// Read the summary section of the MCAP at `path` — and nothing else of it.
+///
+/// This is the `--metadata-only` reader. An MCAP writes its own index at the end of the file: one
+/// Channel and one Schema record per topic, and a Statistics record carrying the message total, the
+/// per-channel totals, and the recording's first and last log time. That is a few kilobytes at a
+/// known offset in front of a recording that is routinely tens of gigabytes, and reading it needs
+/// three seeks — no chunk is opened and nothing is decompressed.
+///
+/// Every offset used here comes out of the file, so every one is bounds-checked against the file's
+/// real length before it is used. A file with no summary section is refused by name rather than
+/// read as a recording with no topics.
+fn read_summary(path: &Path) -> Result<McapSummary, IngestError> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let refuse = |message: String| IngestError::Parse {
+        format_id: "mcap",
+        message,
+    };
+    let mut file = std::fs::File::open(path).map_err(|e| IngestError::Io(e.to_string()))?;
+    let len = file
+        .metadata()
+        .map_err(|e| IngestError::Io(e.to_string()))?
+        .len();
+    if len < MAGIC_LEN * 2 + FOOTER_RECORD_LEN {
+        return Err(refuse(format!(
+            "this file is {len} bytes, too short to hold an MCAP footer, so it declares no summary \
+             section to read"
+        )));
+    }
+
+    // The Footer is the last record before the closing magic, and it is fixed-size, so its offset
+    // is arithmetic rather than a scan.
+    let footer_at = len - MAGIC_LEN - FOOTER_RECORD_LEN;
+    let mut footer = [0u8; FOOTER_RECORD_LEN as usize];
+    file.seek(SeekFrom::Start(footer_at))
+        .and_then(|_| file.read_exact(&mut footer))
+        .map_err(|e| IngestError::Io(e.to_string()))?;
+    if footer[0] != OP_FOOTER {
+        return Err(refuse(
+            "this file does not end in an MCAP footer record; it is truncated, or it was still \
+             being written — drop --metadata-only to read what is there"
+                .into(),
+        ));
+    }
+    let mut cur = Cursor::new(&footer[9..]);
+    let (Some(summary_start), Some(_summary_offset_start)) = (cur.u64(), cur.u64()) else {
+        return Err(refuse("this file's MCAP footer is malformed".into()));
+    };
+    if summary_start == 0 {
+        return Err(IngestError::NotImplemented {
+            what: "metadata-only ingestion of an MCAP with no summary section",
+            hint: "this file was written without a summary index — a streaming writer that never \
+                   finalized, or one configured not to write one — so the topics and counts exist \
+                   only in the records themselves; drop --metadata-only to read them",
+        });
+    }
+    if summary_start < MAGIC_LEN || summary_start > footer_at {
+        return Err(refuse(format!(
+            "this file's MCAP footer places the summary section at byte {summary_start}, which is \
+             outside the file's own {len} bytes; its framing is corrupt"
+        )));
+    }
+    let summary_len = footer_at - summary_start;
+    if summary_len > MAX_SUMMARY_BYTES {
+        return Err(refuse(format!(
+            "this file declares a {summary_len}-byte summary section, over the \
+             {MAX_SUMMARY_BYTES}-byte ceiling for a metadata-only read — drop --metadata-only to \
+             read the file itself"
+        )));
+    }
+    let mut summary = vec![0u8; summary_len as usize];
+    file.seek(SeekFrom::Start(summary_start))
+        .and_then(|_| file.read_exact(&mut summary))
+        .map_err(|e| IngestError::Io(e.to_string()))?;
+
+    // The Header is the first record after the opening magic, and it is the only thing worth
+    // reading from the front: the library that wrote the file, and the profile it claims.
+    let mut head = vec![0u8; (len - MAGIC_LEN).min(64 * 1024) as usize];
+    file.seek(SeekFrom::Start(MAGIC_LEN))
+        .and_then(|_| file.read_exact(&mut head))
+        .map_err(|e| IngestError::Io(e.to_string()))?;
+    let (mut profile, mut library) = (None, None);
+    if let Some((OP_HEADER, payload)) = first_record(&head) {
+        let mut cur = Cursor::new(payload);
+        profile = cur.string().filter(|s| !s.is_empty());
+        library = cur.string().filter(|s| !s.is_empty());
+    }
+
+    let mut channels: Vec<SummaryChannel> = Vec::new();
+    let mut schemas: BTreeMap<u16, String> = BTreeMap::new();
+    let mut statistics = None;
+    let mut pending: Vec<(u16, u16)> = Vec::new(); // (channel id, schema id)
+    for (opcode, payload) in records(&summary) {
+        match opcode {
+            OP_SCHEMA => {
+                let mut cur = Cursor::new(payload);
+                if let (Some(id), Some(name)) = (cur.u16(), cur.string()) {
+                    schemas.insert(id, name);
+                }
+            }
+            OP_CHANNEL => {
+                let mut cur = Cursor::new(payload);
+                let (Some(id), Some(schema_id), Some(topic), Some(encoding)) =
+                    (cur.u16(), cur.u16(), cur.string(), cur.string())
+                else {
+                    continue;
+                };
+                pending.push((id, schema_id));
+                channels.push(SummaryChannel {
+                    id,
+                    topic,
+                    schema_name: None,
+                    message_encoding: encoding,
+                });
+            }
+            OP_STATISTICS => {
+                let mut cur = Cursor::new(payload);
+                let (
+                    Some(message_count),
+                    Some(_schema_count),
+                    Some(_channel_count),
+                    Some(_attachment_count),
+                    Some(_metadata_count),
+                    Some(chunk_count),
+                    Some(message_start_time),
+                    Some(message_end_time),
+                ) = (
+                    cur.u64(),
+                    cur.u16(),
+                    cur.u32(),
+                    cur.u32(),
+                    cur.u32(),
+                    cur.u32(),
+                    cur.u64(),
+                    cur.u64(),
+                )
+                else {
+                    continue;
+                };
+                let mut channel_message_counts = BTreeMap::new();
+                if let Some(pairs) = cur.bytes() {
+                    let mut pairs = Cursor::new(pairs);
+                    while let (Some(id), Some(count)) = (pairs.u16(), pairs.u64()) {
+                        channel_message_counts.insert(id, count);
+                    }
+                }
+                statistics = Some(SummaryStatistics {
+                    message_count,
+                    channel_message_counts,
+                    message_start_time,
+                    message_end_time,
+                    chunk_count,
+                });
+            }
+            _ => {}
+        }
+    }
+    // A Schema record may follow the Channel that refers to it, so the names are resolved after the
+    // whole section is walked rather than as each channel is read.
+    for (channel, (_, schema_id)) in channels.iter_mut().zip(pending) {
+        channel.schema_name = schemas.get(&schema_id).cloned();
+    }
+    if channels.is_empty() {
+        return Err(refuse(
+            "this file's MCAP summary section declares no channels, so there is no topic inventory \
+             to check without reading the file — drop --metadata-only"
+                .into(),
+        ));
+    }
+    channels.sort_by(|a, b| a.topic.cmp(&b.topic));
+    Ok(McapSummary {
+        profile,
+        library,
+        channels,
+        statistics,
+    })
+}
+
+/// The first record in `bytes`, as `(opcode, payload)`.
+fn first_record(bytes: &[u8]) -> Option<(u8, &[u8])> {
+    records(bytes).next()
+}
+
+/// Walk `bytes` as a sequence of `opcode: u8, len: u64le, payload` records, stopping at the first
+/// one that does not fit. A length is the file author's number, so it is checked against what is
+/// left rather than used to index.
+fn records(bytes: &[u8]) -> impl Iterator<Item = (u8, &[u8])> {
+    let mut at = 0usize;
+    std::iter::from_fn(move || {
+        let opcode = *bytes.get(at)?;
+        let len = u64::from_le_bytes(bytes.get(at + 1..at + 9)?.try_into().ok()?);
+        let start = at.checked_add(9)?;
+        let end = start.checked_add(usize::try_from(len).ok()?)?;
+        let payload = bytes.get(start..end)?;
+        at = end;
+        Some((opcode, payload))
+    })
 }

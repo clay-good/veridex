@@ -2682,7 +2682,8 @@ fn print_help() {
                          check a deterministic fraction of episodes, f in (0, 1]
     --sample-seed <n>    fix the --sample-fraction draw (default 0)
     --metadata-only      check the manifest, stored stats, and provenance without reading any
-                         stream payload (check, inspect; LeRobot, ROS 2 rosbag2, RLDS/TFDS, Zarr)"
+                         stream payload (check, inspect; LeRobot, ROS 2 rosbag2, RLDS/TFDS, Zarr,
+                         MCAP)"
     );
     println!("    --allow-any-issuer   verify without pinning an issuer key — accepts ANY signer (verify)");
     println!("    --force              overwrite existing key files (keygen)");
