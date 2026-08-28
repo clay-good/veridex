@@ -400,6 +400,12 @@ reproduced before it was fixed.*
   `features.json` — is refused naming that file, rather than reported as "not a dataset this can
   read".
 
+- **The `--metadata-only` format list is asked of the registry, not written down.** `--help` builds
+  its list from the adapters that actually claim the capability, so it cannot drift; and a new test
+  fails when a supporting format is missing from `docs/partial-runs.md`, `docs/checks.md`, or the
+  README — the same guard `docs/checks.md` already has against an undocumented check. Verified by
+  temporarily renaming one format and watching the test name the document that omits it.
+
 - **A summary-only MCAP read now finds the provenance a full read finds.** It reported
   `provenance 0%` on a file that states its provenance perfectly well, which is a claim about the
   read rather than about the file — and provenance is 30% of the trust score. The summary carries a

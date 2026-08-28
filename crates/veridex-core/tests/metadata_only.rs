@@ -519,3 +519,39 @@ fn the_manifest_cannot_make_the_ingest_allocate_without_bound() {
     let ok = ingest(dir.path(), &metadata_only()).unwrap();
     assert_eq!(ok.dataset.episodes.len(), 50_000);
 }
+
+#[test]
+fn every_format_that_supports_it_is_named_in_the_docs() {
+    // Four documents tell a reader which formats can be checked from what they declare: the CLI's
+    // help (which builds its list from the registry, so it cannot drift), and three prose files that
+    // can. This is the guard for those three — the same guard `docs/checks.md` has against a new
+    // check going undocumented.
+    //
+    // The mapping is here rather than on the adapter because prose names a format the way its users
+    // do ("ROS 2 rosbag2"), and an id is not that. A new adapter fails this test until both the
+    // mapping and the documents mention it, which is the point.
+    let documented_as = |format_id: &str| -> &'static str {
+        match format_id {
+            "lerobot" => "LeRobot",
+            "mcap" => "MCAP",
+            "rosbag2" => "rosbag2",
+            "rlds" => "RLDS",
+            "hdf5" => "HDF5",
+            "zarr" => "Zarr",
+            other => panic!("no documented name known for the `{other}` adapter — add one here, and name the format in the three documents below"),
+        }
+    };
+
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+    for doc in ["docs/partial-runs.md", "docs/checks.md", "README.md"] {
+        let text = std::fs::read_to_string(format!("{root}/{doc}"))
+            .unwrap_or_else(|e| panic!("{doc} is readable: {e}"));
+        for format_id in veridex_core::default_registry().formats_supporting_metadata_only() {
+            let name = documented_as(format_id);
+            assert!(
+                text.contains(name),
+                "{doc} does not mention `{name}`, which supports --metadata-only"
+            );
+        }
+    }
+}

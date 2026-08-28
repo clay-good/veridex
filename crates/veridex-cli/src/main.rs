@@ -2675,15 +2675,20 @@ fn print_help() {
     --max-decompression-ratio <n>
                          ceiling on compressed expansion, as a multiple of the file's size (0 = no limit)"
     );
+    // The format list is asked of the registry rather than written here, so an adapter that starts
+    // or stops supporting the flag cannot leave this line claiming otherwise.
+    let metadata_only_formats = veridex_core::default_registry()
+        .formats_supporting_metadata_only()
+        .join(", ");
     println!(
         "    --sample-episodes <n>
                          check only the first n episodes (check, inspect; LeRobot, RLDS, HDF5, Zarr)
     --sample-fraction <f>
                          check a deterministic fraction of episodes, f in (0, 1]
     --sample-seed <n>    fix the --sample-fraction draw (default 0)
-    --metadata-only      check the manifest, stored stats, and provenance without reading any
-                         stream payload (check, inspect; LeRobot, ROS 2 rosbag2, RLDS/TFDS, Zarr,
-                         MCAP, HDF5)"
+    --metadata-only      check what the source declares about itself — the manifest, stored stats,
+                         and provenance — without reading any stream payload
+                         (check, inspect; {metadata_only_formats})"
     );
     println!("    --allow-any-issuer   verify without pinning an issuer key — accepts ANY signer (verify)");
     println!("    --force              overwrite existing key files (keygen)");

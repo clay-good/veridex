@@ -571,6 +571,19 @@ impl AdapterRegistry {
         self.adapters.iter().map(|a| a.format_id()).collect()
     }
 
+    /// The format ids that can be checked from what the source declares about itself, without
+    /// reading any stream payload ([`IngestOptions::metadata_only`]).
+    ///
+    /// Asked of the adapters rather than written down anywhere, so the CLI's help and this list
+    /// cannot disagree: an adapter that starts or stops claiming the capability changes both.
+    pub fn formats_supporting_metadata_only(&self) -> Vec<&'static str> {
+        self.adapters
+            .iter()
+            .filter(|a| a.supports_metadata_only())
+            .map(|a| a.format_id())
+            .collect()
+    }
+
     /// Ingest `source` by autodetection.
     ///
     /// Returns [`IngestError::UnsupportedFormat`] (listing supported formats) when nothing
