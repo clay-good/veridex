@@ -1069,3 +1069,65 @@ fn corrupt_chunks(dir: &std::path::Path, corrupted: &mut usize) {
         }
     }
 }
+
+#[test]
+fn an_array_this_reader_cannot_open_reaches_the_verdict_as_data_that_went_unread() {
+    // One unreadable array among readable ones must not fail the store — Python reads the rest of
+    // it happily — but it is *data that is there and was not read*, not a field the CDM has no
+    // shape for. Filed as unmapped it cost the reader nothing and raised no finding, so a store
+    // whose camera array used an unsupported codec came back looking complete.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("dp_replay.zarr");
+    copy_tree(&fixture("dp_replay.zarr"), &root);
+    let header = root.join("data/img/.zarray");
+    let text = std::fs::read_to_string(&header).unwrap();
+    // Fortran order is a layout this reader declines per array, by name.
+    std::fs::write(
+        &header,
+        text.replace("\"order\": \"C\"", "\"order\": \"F\""),
+    )
+    .unwrap();
+
+    let out = veridex_core::run_check(
+        &default_registry(),
+        &Source::Local(root),
+        None,
+        &IngestOptions::default(),
+    )
+    .expect("the rest of the store still reads");
+
+    // The other arrays are still streams.
+    assert!(out
+        .ingested
+        .dataset
+        .episodes
+        .iter()
+        .any(|e| e.streams.iter().any(|s| s.name == "action")));
+    assert!(!out
+        .ingested
+        .dataset
+        .episodes
+        .iter()
+        .any(|e| e.streams.iter().any(|s| s.name == "img")));
+    assert!(
+        out.ingested
+            .report
+            .unread_sources
+            .iter()
+            .any(|u| u.note.contains("could not be read")),
+        "{:?}",
+        out.ingested.report.unread_sources
+    );
+    assert!(
+        out.verdict
+            .findings
+            .iter()
+            .any(|f| f.code == "COVERAGE.SOURCE_UNREAD"),
+        "the verdict says nothing about the array it did not read: {:?}",
+        out.verdict
+            .findings
+            .iter()
+            .map(|f| f.code.as_str())
+            .collect::<Vec<_>>()
+    );
+}

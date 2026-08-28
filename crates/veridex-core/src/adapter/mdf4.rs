@@ -307,6 +307,14 @@ fn seconds_to_ns(seconds: f64) -> Option<i64> {
 struct GroupResult {
     streams: Vec<Stream>,
     unmapped: Vec<UnmappedField>,
+    /// Records this reader did not read — a compressed data block, an unsorted group, a channel
+    /// group behind a malformed link.
+    ///
+    /// Separate from `unmapped` because they mean different things to a reader of the verdict:
+    /// "unmapped" is a field the CDM has no shape for, which costs nothing; this is measurement
+    /// data that is *there* and went unread, so every result is over less of the file than it
+    /// appears to be. Only this one raises `COVERAGE.SOURCE_UNREAD`.
+    unread: Vec<UnmappedField>,
 }
 
 impl Adapter for Mdf4Adapter {
@@ -383,6 +391,10 @@ impl Adapter for Mdf4Adapter {
         // Walk the data groups, collecting streams and everything we could not decode.
         let mut streams: Vec<Stream> = Vec::new();
         let mut unmapped: Vec<UnmappedField> = Vec::new();
+        // Measurement data this reader did not read, kept apart from the fields the CDM cannot
+        // hold: only this list raises `COVERAGE.SOURCE_UNREAD`, and a file whose every data block
+        // is compressed used to come back with no frames and nothing in the verdict saying why.
+        let mut unread: Vec<UnmappedField> = Vec::new();
         let mut names_used: BTreeSet<String> = BTreeSet::new();
         // Next disambiguation suffix to try per colliding base name, so each collision is one probe.
         let mut next_suffix: std::collections::BTreeMap<String, u64> =
@@ -445,6 +457,7 @@ impl Adapter for Mdf4Adapter {
                 streams.push(stream);
             }
             unmapped.extend(result.unmapped);
+            unread.extend(result.unread);
             group_index += 1;
             dg_at = opt_link(&bytes, at, &dg, 0);
         }
@@ -507,7 +520,7 @@ impl Adapter for Mdf4Adapter {
         Ok(Ingested {
             dataset,
             report: IngestReport {
-                unread_sources: Vec::new(),
+                unread_sources: unread,
                 format_id: FORMAT_ID,
                 source_version: Some(version),
                 coverage: Coverage::Full,
@@ -540,6 +553,7 @@ fn ingest_data_group(
     let mut out = GroupResult {
         streams: Vec::new(),
         unmapped: Vec::new(),
+        unread: Vec::new(),
     };
     let locator = |what: &str| format!("##DG[{group_index}].{what}");
 
@@ -548,7 +562,7 @@ fn ingest_data_group(
         .unwrap_or(0);
     if rec_id_size != 0 {
         // An unsorted group interleaves records from several channel groups behind record ids.
-        out.unmapped.push(UnmappedField {
+        out.unread.push(UnmappedField {
             source_path: locator("records"),
             note: format!(
                 "unsorted data group (record id size {rec_id_size}) is not decoded; its channels contribute no frames"
@@ -562,7 +576,7 @@ fn ingest_data_group(
     let records: &[u8] = match data_link.and_then(|at| block_header(bytes, at).map(|h| (at, h))) {
         Some((at, h)) if &h.id == b"##DT" => data_section(bytes, at, &h).unwrap_or(&[]),
         Some((_, h)) => {
-            out.unmapped.push(UnmappedField {
+            out.unread.push(UnmappedField {
                 source_path: locator("data"),
                 note: format!(
                     "`{}` data block is not decoded (only uncompressed ##DT is); its channels contribute no frames",
@@ -589,7 +603,7 @@ fn ingest_data_group(
         // A sorted data group holds exactly one channel group. Decoding a second against the same
         // records from offset 0 would produce plausible-but-wrong values, so report and stop.
         if cg_index > 0 {
-            out.unmapped.push(UnmappedField {
+            out.unread.push(UnmappedField {
                 source_path: locator("channel-groups"),
                 note:
                     "sorted data group holds more than one channel group; only the first is decoded"
@@ -603,7 +617,7 @@ fn ingest_data_group(
         // at a malformed or non-`##CG` block lost its *entire* data group, and the run came back
         // with no streams, an empty `unmapped`, and `Coverage::Full`.
         let Some(cg) = block_header(bytes, at) else {
-            out.unmapped.push(UnmappedField {
+            out.unread.push(UnmappedField {
                 source_path: format!("##DG[{group_index}].##CG @{at}"),
                 note: "truncated or malformed channel-group block; this data group's channels \
                        contribute no frames"
@@ -612,7 +626,7 @@ fn ingest_data_group(
             break;
         };
         if &cg.id != b"##CG" {
-            out.unmapped.push(UnmappedField {
+            out.unread.push(UnmappedField {
                 source_path: format!("##DG[{group_index}].##CG @{at}"),
                 note: format!(
                     "expected a ##CG block, found `{}`; this data group's channels contribute no \
@@ -703,7 +717,7 @@ fn decode_channel_group(
         return false;
     }
     let Some(master) = channels.iter().find(|c| c.is_time_master()) else {
-        out.unmapped.push(UnmappedField {
+        out.unread.push(UnmappedField {
             source_path: locate("channels"),
             note: "channel group has no time master channel, so its samples carry no timestamps; nothing decoded".into(),
         });
@@ -712,7 +726,7 @@ fn decode_channel_group(
     if master.channel_type == 3 {
         // A virtual master's values are implied by the record index rather than stored; without the
         // sampling interval from its conversion this adapter cannot place samples in time honestly.
-        out.unmapped.push(UnmappedField {
+        out.unread.push(UnmappedField {
             source_path: locate("master"),
             note: "virtual master channel (implied timestamps) is not decoded; nothing decoded"
                 .into(),
@@ -720,7 +734,7 @@ fn decode_channel_group(
         return false;
     }
     if !master.is_decodable() {
-        out.unmapped.push(UnmappedField {
+        out.unread.push(UnmappedField {
             source_path: locate(&master.name),
             note: format!(
                 "time master is data type {} at bit offset {} × {} bits, which is not decoded; nothing decoded",
@@ -732,7 +746,7 @@ fn decode_channel_group(
     // An unapplied conversion on a signal costs that signal's values; on the master it silently
     // corrupts *every* stream's timestamps in the group, so it must stop the group, not be noted.
     if let Some(cc) = master.unapplied_conversion {
-        out.unmapped.push(UnmappedField {
+        out.unread.push(UnmappedField {
             source_path: locate(&master.name),
             note: format!(
                 "time master carries ##CC conversion type {cc}, which is not applied, so its timestamps would be wrong; nothing decoded"
@@ -749,7 +763,7 @@ fn decode_channel_group(
         available.min(cycle_count as usize)
     };
     if cycle_count as usize > available {
-        out.unmapped.push(UnmappedField {
+        out.unread.push(UnmappedField {
             source_path: locate("records"),
             note: format!(
                 "channel group declares {cycle_count} cycles but the data block holds {available}; read {count}"
@@ -773,7 +787,7 @@ fn decode_channel_group(
         // MDF marks a sample invalid with a per-record invalidation bit. Veridex does not evaluate
         // those bits, so a channel that declares them would present invalid samples as real values.
         if inval_bytes != 0 && channel.declares_invalidation() {
-            out.unmapped.push(UnmappedField {
+            out.unread.push(UnmappedField {
                 source_path: locate(&channel.name),
                 note: format!(
                     "channel declares per-sample invalidation (cn_flags 0x{:x}), which is not evaluated; its samples are not decoded",
@@ -783,7 +797,7 @@ fn decode_channel_group(
             continue;
         }
         if !channel.is_decodable() {
-            out.unmapped.push(UnmappedField {
+            out.unread.push(UnmappedField {
                 source_path: locate(&channel.name),
                 note: format!(
                     "channel is data type {} at bit offset {} × {} bits, which is not decoded",

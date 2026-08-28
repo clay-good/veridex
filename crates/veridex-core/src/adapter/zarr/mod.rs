@@ -120,6 +120,13 @@ fn parse_error(message: impl Into<String>) -> IngestError {
 #[derive(Default)]
 struct Notes {
     unmapped: Vec<UnmappedField>,
+    /// Arrays that hold data this reader could not read.
+    ///
+    /// Separate from `unmapped` because they mean different things to a reader of the verdict:
+    /// "unmapped" is a field the CDM has no shape for, which costs nothing; this is data that is
+    /// *there* and went unread, so every result is over less of the store than it appears to be.
+    /// Only this one raises `COVERAGE.SOURCE_UNREAD`.
+    unread: Vec<UnmappedField>,
     /// Numeric arrays too wide for per-dimension statistics.
     wide_arrays: BTreeSet<String>,
 }
@@ -559,7 +566,7 @@ impl Adapter for ZarrAdapter {
                 calibration: None,
             },
             report: IngestReport {
-                unread_sources: Vec::new(),
+                unread_sources: notes.unread,
                 format_id: FORMAT_ID,
                 source_version: Some("2".into()),
                 coverage,
@@ -579,8 +586,9 @@ impl Adapter for ZarrAdapter {
 /// codec, and the codec is what the user has to change.
 fn why_nothing_was_read(notes: &Notes) -> String {
     let reasons: Vec<&str> = notes
-        .unmapped
+        .unread
         .iter()
+        .chain(notes.unmapped.iter())
         .filter(|f| f.note.contains("could not be read"))
         .map(|f| f.note.as_str())
         .take(3)
@@ -683,7 +691,10 @@ fn collect_arrays(
             // *absent* is never mistaken for a stream that is clean.
             match ZarrArray::open(&child) {
                 Ok(array) => out.push(ArrayEntry { path, array }),
-                Err(e) => notes.unmapped.push(UnmappedField {
+                // Data that is in the store and was not read — not a field the CDM cannot hold.
+                // Filed as unmapped, a store whose every array used an unsupported codec came back
+                // with no streams and nothing in the verdict saying the data had gone unread.
+                Err(e) => notes.unread.push(UnmappedField {
                     source_path: path,
                     note: format!(
                         "this array could not be read, so no stream is built from it: {e}"

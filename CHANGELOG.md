@@ -10,6 +10,24 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **Two adapters filed data they never read as a field they could not map.** The distinction is the
+  one this tool exists for: "unmapped" means the CDM has no shape for a field, which costs the
+  reader nothing; **unread** means the data is there and nobody looked at it, so every result is
+  over less of the source than it appears to be — and only unread raises `COVERAGE.SOURCE_UNREAD`
+  in the verdict.
+
+  In **MF4**, that covered a compressed (`##DZ`) data block, an unsorted data group, a group with no
+  time master or an undecodable one, a second channel group dropped from a sorted group, a channel
+  declaring per-sample invalidation, an undecodable channel, and a group declaring more cycles than
+  its data block holds. A fleet log whose every data block is compressed — which is how loggers
+  write them — came back with no frames, `Coverage::Full`, and a verdict that said nothing about it.
+
+  In **Zarr**, it covered an array this reader cannot open: one unsupported codec among readable
+  arrays dropped that stream and raised nothing, so a store missing its camera looked complete.
+
+  Both now reach the verdict. Each fix was verified red first: without it, the end-to-end test finds
+  no `COVERAGE.SOURCE_UNREAD` among the findings.
+
 - **The `--metadata-only` refusal sent the reader to a second refusal.** It suggested sampling the
   dataset instead — but the two formats that reach it, CAN+DBC and MF4, ingest a recording as one
   episode and refuse a sample for that same reason. It now says what is true of each: a format with

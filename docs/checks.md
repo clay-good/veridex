@@ -300,6 +300,13 @@ this existed, a LeRobot dataset with one of its two Parquet shards symlinked out
 produced the same `coverage: Full`, the same findings, the same score, and a certifiable verdict
 naming the whole dataset over the half that was read; `diff` reported zero change between them.
 
+What counts as unread is a judgement each adapter makes, and the line is whether the data is *there*:
+a compressed MF4 data block this reader does not decode, an MF4 channel group with no time master, a
+Zarr array whose codec it cannot apply, a rosbag2 shard short of its manifest's message total, an
+MCAP short of the total in its own summary — all of it is data nobody looked at, so all of it lands
+here. A field the CDM has no shape for lands in `unmapped` instead and raises nothing, because it
+costs the reader nothing.
+
 It is a warning where the other two are info, and the difference is who asked. A sampled or
 metadata-only run is narrow because the operator requested it, so the disclosure is a note about the
 request. Data unread because a shard points outside the dataset was requested by nobody — the

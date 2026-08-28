@@ -398,6 +398,45 @@ fn an_unapplied_conversion_is_reported_rather_than_silently_ignored() {
 }
 
 #[test]
+fn a_compressed_measurement_reaches_the_verdict_as_data_that_went_unread() {
+    // The distinction this fixes: a `##DZ` data block is not a field the CDM cannot hold — it is
+    // the measurement, sitting in the file, that this reader did not decode. Filed as `unmapped` it
+    // cost the reader nothing and raised no finding, so a fleet log whose every data block is
+    // compressed came back with no frames, `Coverage::Full`, and a verdict that said nothing about
+    // it. It has to reach the verdict, which only `unread_sources` does.
+    let mut b = Mf4Builder::new(b"veridex ");
+    let dz = b.block(b"##DZ", &[], &[0u8; 32]);
+    let time = b.channel("t", 2, 1, FLOAT_LE, 0, 0, 64, None);
+    let cg = b.channel_group(3, 8);
+    b.patch_link(cg, 1, time);
+    let dg = b.data_group(0);
+    b.patch_link(dg, 1, cg);
+    b.patch_link(dg, 2, dz);
+    let bytes = b.finish(dg, 0);
+    let path = write_temp(&bytes, ".mf4");
+
+    let out = veridex_core::run_check(
+        &veridex_core::default_registry(),
+        &Source::Local(path.to_path_buf()),
+        None,
+        &IngestOptions::default(),
+    )
+    .expect("the file still ingests");
+    assert!(
+        out.verdict
+            .findings
+            .iter()
+            .any(|f| f.code == "COVERAGE.SOURCE_UNREAD"),
+        "the verdict says nothing about the data it did not read: {:?}",
+        out.verdict
+            .findings
+            .iter()
+            .map(|f| f.code.as_str())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn a_compressed_data_block_is_reported_and_contributes_no_frames() {
     let mut b = Mf4Builder::new(b"veridex ");
     // A ##DZ block stands in for compressed data; the adapter must decline rather than mis-read it.
@@ -414,11 +453,11 @@ fn a_compressed_data_block_is_reported_and_contributes_no_frames() {
     assert!(
         ingested
             .report
-            .unmapped_fields
+            .unread_sources
             .iter()
             .any(|u| u.note.contains("##DZ") && u.note.contains("not decoded")),
         "{:?}",
-        ingested.report.unmapped_fields
+        ingested.report.unread_sources
     );
 }
 
@@ -439,11 +478,11 @@ fn an_unsorted_data_group_is_reported_rather_than_mis_decoded() {
     assert!(
         ingested
             .report
-            .unmapped_fields
+            .unread_sources
             .iter()
             .any(|u| u.note.contains("unsorted data group")),
         "{:?}",
-        ingested.report.unmapped_fields
+        ingested.report.unread_sources
     );
 }
 
@@ -464,11 +503,11 @@ fn a_group_without_a_time_master_contributes_nothing_and_says_why() {
     assert!(
         ingested
             .report
-            .unmapped_fields
+            .unread_sources
             .iter()
             .any(|u| u.note.contains("no time master channel")),
         "{:?}",
-        ingested.report.unmapped_fields
+        ingested.report.unread_sources
     );
 }
 
@@ -496,11 +535,11 @@ fn an_over_declared_cycle_count_reads_what_is_there_and_discloses_the_shortfall(
     assert!(
         ingested
             .report
-            .unmapped_fields
+            .unread_sources
             .iter()
             .any(|u| u.note.contains("declares 100 cycles")),
         "{:?}",
-        ingested.report.unmapped_fields
+        ingested.report.unread_sources
     );
 }
 
@@ -627,11 +666,11 @@ fn a_conversion_on_the_time_master_that_cannot_be_applied_stops_the_group() {
 
     assert!(ingested.dataset.episodes[0].streams.is_empty());
     assert!(
-        ingested.report.unmapped_fields.iter().any(|u| u
+        ingested.report.unread_sources.iter().any(|u| u
             .note
             .contains("time master carries ##CC conversion type 2")),
         "{:?}",
-        ingested.report.unmapped_fields
+        ingested.report.unread_sources
     );
 }
 
@@ -661,11 +700,11 @@ fn a_channel_declaring_invalidation_bits_is_not_decoded() {
     assert!(
         ingested
             .report
-            .unmapped_fields
+            .unread_sources
             .iter()
             .any(|u| u.note.contains("per-sample invalidation")),
         "{:?}",
-        ingested.report.unmapped_fields
+        ingested.report.unread_sources
     );
 }
 
