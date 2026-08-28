@@ -211,7 +211,7 @@ What each format offers is different, because their manifests are:
 | ROS 2 rosbag2 | `metadata.yaml` — the topic inventory with each topic's ROS type, the declared message total, the recorder and storage |
 | RLDS/TFDS | `dataset_info.json` + `features.json` — the per-split shard lengths (so the episode count), the file format and version, the citation and licence, and every per-step feature's dtype and shape |
 | Zarr | `.zarray` / `.zattrs` per array and the `meta/` group — the episode boundaries and their lengths, every array's dtype and per-row shape, and the store's own metadata |
-| MCAP | the summary section at the end of the file — the channel inventory with each topic's schema, the declared message totals and log-time span, the message encodings, and the writing library |
+| MCAP | the summary section at the end of the file — the channel inventory with each topic's schema, the declared message totals and log-time span, the message encodings, the writing library, and (through the summary's own indexes) every Metadata record and attachment name, so the provenance matches a full read |
 | HDF5 | the group tree and array headers — every episode group, each array's datatype and per-row shape, each group's declared length attribute, and every object attribute |
 
 What still applies, because it is all manifest content:

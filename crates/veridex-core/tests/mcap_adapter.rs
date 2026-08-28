@@ -8,7 +8,7 @@ use veridex_core::adapter::mcap::McapAdapter;
 use veridex_core::adapter::{
     default_registry, Adapter, Coverage, Detection, IngestError, IngestOptions, Source,
 };
-use veridex_core::cdm::Modality;
+use veridex_core::cdm::{Modality, ProvenanceClass};
 use veridex_core::check::Check;
 use veridex_core::checks::autonomy::{RigSync, SequenceComplete};
 use veridex_core::checks::temporal::ClockSkew;
@@ -1937,4 +1937,79 @@ fn a_file_with_no_summary_says_the_reconciliation_could_not_run() {
         "{:?}",
         out.report.unmapped_fields
     );
+}
+
+#[test]
+fn a_summary_only_read_finds_the_provenance_a_full_read_finds() {
+    // Provenance is 30% of the trust score, and a summary-only run that reported none of it would
+    // be making a claim about the file rather than about the read. The summary indexes the Metadata
+    // records and the attachments, so both are reachable without opening a chunk.
+    let path = write_temp_mcap(&build_mcap_with_provenance());
+    let summary = ingest_with(&path, &metadata_only());
+    let full = ingest_with(&path, &IngestOptions::default());
+
+    let elements = |i: &veridex_core::Ingested| -> Vec<String> {
+        let mut out: Vec<String> = i
+            .dataset
+            .provenance
+            .iter()
+            .flat_map(|p| p.elements.iter())
+            .map(|e| format!("{}={:?} {:?}", e.key, e.value, e.class))
+            .collect();
+        out.sort();
+        out
+    };
+    assert_eq!(
+        elements(&summary),
+        elements(&full),
+        "the summary indexes everything a full read maps provenance from"
+    );
+    // Including the attachment-name heuristic, which stays `Asserted` here as it is there.
+    assert!(summary.dataset.provenance.iter().any(|p| p
+        .elements
+        .iter()
+        .any(|e| e.key == "calibration" && e.class == ProvenanceClass::Asserted)));
+    assert!(
+        summary
+            .report
+            .mapped_fields
+            .iter()
+            .any(|f| f.contains("MetadataIndex")),
+        "{:?}",
+        summary.report.mapped_fields
+    );
+}
+
+#[test]
+fn a_metadata_index_pointing_outside_the_file_is_skipped_not_followed() {
+    // Every offset in the index is the file's own number. One that points past the end is skipped —
+    // the rest of the index is still usable, and the topic inventory is legible either way — but it
+    // is never followed.
+    let mut bytes = build_mcap_with_provenance();
+    let summary_start = summary_start_of(&bytes) as usize;
+    let footer_at = bytes.len() - 8 - 29;
+    let mut at = summary_start;
+    let mut patched = false;
+    while at + 9 <= footer_at {
+        let opcode = bytes[at];
+        let len = u64::from_le_bytes(bytes[at + 1..at + 9].try_into().unwrap()) as usize;
+        if opcode == 0x0D {
+            bytes[at + 9..at + 17].copy_from_slice(&u64::MAX.to_le_bytes());
+            patched = true;
+            break;
+        }
+        at += 9 + len;
+    }
+    assert!(patched, "the fixture has a MetadataIndex record to patch");
+    let path = write_temp_mcap(&bytes);
+
+    let out = ingest_with(&path, &metadata_only());
+    // The channels still read, and the provenance that came from the metadata record is simply
+    // absent rather than invented.
+    assert!(!out.dataset.episodes[0].streams.is_empty());
+    assert!(!out
+        .dataset
+        .provenance
+        .iter()
+        .any(|p| p.elements.iter().any(|e| e.key == "license")));
 }

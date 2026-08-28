@@ -947,6 +947,82 @@ fn ingest_summary_only(path: &Path, summary: McapSummary) -> Result<Ingested, In
         value: Some("mcap".to_string()),
         class: ProvenanceClass::Known,
     }];
+    // The Metadata records the summary's index pointed at. This is where a producer writes the
+    // licence, the sensor and the clock source, and reading them is what keeps a summary-only run
+    // from reporting `provenance 0%` on a file that states its provenance perfectly well — a claim
+    // about the read, not about the file. Mapped exactly as a full read maps them.
+    let mut mapped: BTreeSet<&'static str> = BTreeSet::new();
+    let mut scenario_dims: BTreeSet<&'static str> = BTreeSet::new();
+    let mut scenario_labels: Vec<Label> = Vec::new();
+    let mut sim_refs: Vec<(crate::simref::SimRefKind, String)> = Vec::new();
+    let mut sim_kinds: BTreeSet<crate::simref::SimRefKind> = BTreeSet::new();
+    for (name, pairs) in &summary.metadata {
+        for (k, v) in pairs {
+            if v.trim().is_empty() {
+                continue;
+            }
+            metadata.push((format!("mcap_meta.{name}.{k}"), v.clone()));
+            if let Some(pk) = provenance_key_for(k) {
+                if mapped.insert(pk) {
+                    elements.push(ProvenanceElement {
+                        key: pk.into(),
+                        value: Some(v.clone()),
+                        class: ProvenanceClass::Known,
+                    });
+                }
+            }
+            if let Some(dim) = crate::scenario::scenario_dim_for(k) {
+                if scenario_dims.insert(dim) {
+                    scenario_labels.push(Label {
+                        key: dim.into(),
+                        value: v.clone(),
+                        ts: None,
+                    });
+                }
+            }
+            if let Some(kind) = crate::simref::simref_key_for(k) {
+                if sim_kinds.insert(kind) {
+                    sim_refs.push((kind, v.clone()));
+                }
+            }
+        }
+    }
+    // Scenario/map/simulation references, exactly as a full read maps them — except for the version,
+    // which a full read prefers to take from the referenced sidecar's own ASAM header. Opening that
+    // file is reading a second recording's data, which this mode does not do, so only a version the
+    // recorded value itself carries is used, and the difference is disclosed.
+    for (kind, value) in &sim_refs {
+        elements.push(ProvenanceElement {
+            key: kind.provenance_key().into(),
+            value: Some(value.clone()),
+            class: ProvenanceClass::Known,
+        });
+        if let Some(version_key) = kind.version_key() {
+            if let Some(version) = crate::simref::version_from_value(value) {
+                if mapped.insert(version_key) {
+                    elements.push(ProvenanceElement {
+                        key: version_key.into(),
+                        value: Some(version),
+                        class: ProvenanceClass::Known,
+                    });
+                }
+            }
+        }
+    }
+    // Attachments: their names and media types are in the summary's own index, so recording them
+    // costs no extra read and opens no attachment. A calibration-looking *name* supplies the
+    // `calibration` element the same way a full read does — classed `Asserted`, because it is a
+    // name heuristic rather than extracted calibration content.
+    for (name, media_type) in &summary.attachments {
+        metadata.push((format!("mcap_attachment.{name}"), media_type.clone()));
+        if name.to_ascii_lowercase().contains("calib") && mapped.insert("calibration") {
+            elements.push(ProvenanceElement {
+                key: "calibration".into(),
+                value: Some(name.clone()),
+                class: ProvenanceClass::Asserted,
+            });
+        }
+    }
     if let Some(profile) = &summary.profile {
         metadata.push(("mcap_profile".into(), profile.clone()));
     }
@@ -980,6 +1056,17 @@ fn ingest_summary_only(path: &Path, summary: McapSummary) -> Result<Ingested, In
         "summary Channel.message_encoding -> dataset metadata".into(),
         "header library -> provenance.recorder".into(),
     ];
+    if !summary.metadata.is_empty() {
+        mapped_fields.push(
+            "summary MetadataIndex -> metadata records -> dataset metadata + provenance".into(),
+        );
+    }
+    if !summary.attachments.is_empty() {
+        mapped_fields.push("summary AttachmentIndex -> dataset metadata (+ calibration)".into());
+    }
+    if !sim_refs.is_empty() {
+        mapped_fields.push("scenario/map/sim references -> provenance".into());
+    }
     let mut unmapped_fields = Vec::new();
     if let Some(stats) = &summary.statistics {
         metadata.push(("mcap_message_count".into(), stats.message_count.to_string()));
@@ -1040,7 +1127,7 @@ fn ingest_summary_only(path: &Path, summary: McapSummary) -> Result<Ingested, In
             end_ts: None,
             streams,
             task: None,
-            labels: Vec::new(),
+            labels: scenario_labels,
             ego_poses: None,
             // The message total is a count across every channel, not this episode's frame count,
             // so it is recorded as metadata rather than as a claim the length check would grade.
@@ -1067,6 +1154,13 @@ fn ingest_summary_only(path: &Path, summary: McapSummary) -> Result<Ingested, In
                 "message schema contents (the summary names each schema; its definition is not \
                  read)"
                     .into(),
+                "scenario/map/simulation sidecar versions (resolving one opens the referenced \
+                 file beside the recording, which this mode does not do; a version the recorded \
+                 value itself carries is still used)"
+                    .into(),
+                "attachment contents (the summary's index names each attachment and its media \
+                 type; its bytes are never opened)"
+                    .into(),
             ],
         },
         dataset,
@@ -1081,6 +1175,9 @@ const OP_FOOTER: u8 = 0x02;
 const OP_SCHEMA: u8 = 0x03;
 const OP_CHANNEL: u8 = 0x04;
 const OP_STATISTICS: u8 = 0x0B;
+const OP_METADATA: u8 = 0x0C;
+const OP_METADATA_INDEX: u8 = 0x0D;
+const OP_ATTACHMENT_INDEX: u8 = 0x0A;
 
 /// The Footer record's fixed size on disk: opcode(1) + length(8) + payload(20).
 const FOOTER_RECORD_LEN: u64 = 29;
@@ -1095,6 +1192,15 @@ const MAGIC_LEN: u64 = 8;
 /// that claim from becoming a 200 GB read.
 const MAX_SUMMARY_BYTES: u64 = 16 * 1024 * 1024;
 
+/// Ceilings on the Metadata records a summary-only read will follow its index to.
+///
+/// A Metadata record is where a producer writes the licence, the sensor, the clock source — the
+/// provenance that is 30% of the trust score, and that a summary-only read would otherwise report
+/// as entirely absent. The index that names them is the file's own, so both the count and the total
+/// size are bounded here rather than trusted.
+const MAX_METADATA_RECORDS: usize = 256;
+const MAX_METADATA_BYTES: u64 = 4 * 1024 * 1024;
+
 /// What an MCAP file says about itself in its own summary section.
 struct McapSummary {
     /// `profile` and `library` from the Header record at the front of the file.
@@ -1104,6 +1210,11 @@ struct McapSummary {
     channels: Vec<SummaryChannel>,
     /// The Statistics record, when the file carries one.
     statistics: Option<SummaryStatistics>,
+    /// Every Metadata record the summary's index pointed at, as `(name, key/value pairs)`.
+    metadata: Vec<(String, Vec<(String, String)>)>,
+    /// Every attachment the summary indexes, as `(name, media type)`. Both are *in* the index
+    /// record, so this costs no extra read and never opens an attachment's bytes.
+    attachments: Vec<(String, String)>,
 }
 
 struct SummaryChannel {
@@ -1252,6 +1363,8 @@ fn read_summary(path: &Path) -> Result<McapSummary, IngestError> {
     let mut channels: Vec<SummaryChannel> = Vec::new();
     let mut schemas: BTreeMap<u16, String> = BTreeMap::new();
     let mut statistics = None;
+    let mut metadata_index: Vec<(u64, u64)> = Vec::new(); // (offset, length)
+    let mut attachments: Vec<(String, String)> = Vec::new();
     let mut pending: Vec<(u16, u16)> = Vec::new(); // (channel id, schema id)
     for (opcode, payload) in records(&summary) {
         match opcode {
@@ -1315,9 +1428,74 @@ fn read_summary(path: &Path) -> Result<McapSummary, IngestError> {
                     chunk_count,
                 });
             }
+            OP_ATTACHMENT_INDEX => {
+                // offset, length, log_time, create_time, data_size, then the name and media type —
+                // which are in the index itself, so nothing is read from the attachment.
+                let mut cur = Cursor::new(payload);
+                let (Some(_), Some(_), Some(_), Some(_), Some(_)) =
+                    (cur.u64(), cur.u64(), cur.u64(), cur.u64(), cur.u64())
+                else {
+                    continue;
+                };
+                if let (Some(name), Some(media_type)) = (cur.string(), cur.string()) {
+                    if attachments.len() < MAX_METADATA_RECORDS {
+                        attachments.push((name, media_type));
+                    }
+                }
+            }
+            OP_METADATA_INDEX => {
+                let mut cur = Cursor::new(payload);
+                if let (Some(offset), Some(length)) = (cur.u64(), cur.u64()) {
+                    if metadata_index.len() < MAX_METADATA_RECORDS {
+                        metadata_index.push((offset, length));
+                    }
+                }
+            }
             _ => {}
         }
     }
+
+    // Follow the index to the Metadata records themselves. This is where a producer writes the
+    // licence, the sensor and the clock source — the provenance a summary-only read would otherwise
+    // report as entirely absent, which is a claim about the file rather than about the read. Each
+    // record is a few hundred bytes at an offset the *file* chose, so every one is bounds-checked
+    // against the file's real length and the whole set is capped.
+    let mut metadata = Vec::new();
+    let mut spent = 0u64;
+    for (offset, length) in metadata_index {
+        if offset < MAGIC_LEN || length == 0 || offset.saturating_add(length) > footer_at {
+            // An entry pointing outside the file is skipped rather than followed: the rest of the
+            // index is still usable, and refusing the whole read over one bad pointer would make a
+            // slightly-wrong file unreadable when its topics are perfectly legible.
+            continue;
+        }
+        spent = spent.saturating_add(length);
+        if spent > MAX_METADATA_BYTES {
+            break;
+        }
+        let mut record = vec![0u8; length as usize];
+        if file
+            .seek(SeekFrom::Start(offset))
+            .and_then(|_| file.read_exact(&mut record))
+            .is_err()
+        {
+            continue;
+        }
+        let Some((OP_METADATA, payload)) = first_record(&record) else {
+            continue;
+        };
+        let mut cur = Cursor::new(payload);
+        let Some(name) = cur.string() else { continue };
+        let mut pairs = Vec::new();
+        if let Some(map) = cur.bytes() {
+            let mut map = Cursor::new(map);
+            while let (Some(key), Some(value)) = (map.string(), map.string()) {
+                pairs.push((key, value));
+            }
+        }
+        metadata.push((name, pairs));
+    }
+
     // A Schema record may follow the Channel that refers to it, so the names are resolved after the
     // whole section is walked rather than as each channel is read.
     for (channel, (_, schema_id)) in channels.iter_mut().zip(pending) {
@@ -1336,6 +1514,8 @@ fn read_summary(path: &Path) -> Result<McapSummary, IngestError> {
         library,
         channels,
         statistics,
+        metadata,
+        attachments,
     })
 }
 

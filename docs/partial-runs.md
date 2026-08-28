@@ -116,7 +116,14 @@ index at the *end* of the file — a Channel and a Schema record per topic, and 
 carrying the message total, the per-channel totals and the recording's log-time span. Reading it is
 three seeks in front of a recording that is routinely tens of gigabytes, and no chunk is opened or
 decompressed. You get the topic inventory with each topic's modality, the message encodings the file
-declares, the declared counts, and the library that wrote it.
+declares, the declared counts, and the library that wrote it — and, by following the summary's own
+Metadata and Attachment indexes, the same **provenance** a full read extracts: the licence, sensor,
+clock and annotator a producer wrote into Metadata records, and the calibration attachment's name.
+That matters because provenance is 30% of the trust score, and reporting none of it would have been
+a claim about the file rather than about the read. The one difference is the version of a
+scenario/map sidecar, which a full read prefers to take from the referenced file's own header:
+opening that file is reading a second recording, so only a version the recorded value itself carries
+is used here, and the difference is disclosed.
 
 Every offset used comes out of the file itself, so every one is checked against the file's real
 length before it is followed. Three cases are refused rather than approximated: a file whose footer

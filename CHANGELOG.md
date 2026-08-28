@@ -400,6 +400,21 @@ reproduced before it was fixed.*
   `features.json` — is refused naming that file, rather than reported as "not a dataset this can
   read".
 
+- **A summary-only MCAP read now finds the provenance a full read finds.** It reported
+  `provenance 0%` on a file that states its provenance perfectly well, which is a claim about the
+  read rather than about the file — and provenance is 30% of the trust score. The summary carries a
+  Metadata index and an Attachment index, so both are reachable without opening a chunk: the licence,
+  sensor, clock and annotator a producer wrote into Metadata records, the scenario/map references and
+  the scenario dimensions, and the calibration attachment's name (still `Asserted`, since it is a
+  name heuristic). On the demo rig the provenance block is now byte-identical to the full read's.
+
+  Every offset followed is the file's own number, so each is bounds-checked against the file's real
+  length and the set is capped at 256 records and 4 MiB; an index entry pointing outside the file is
+  skipped rather than followed, leaving the rest of the inventory legible. The one thing still not
+  resolved is a scenario sidecar's version, which a full read takes from the referenced file's own
+  ASAM header — opening that is reading a second recording — so only a version the recorded value
+  itself carries is used, and the difference is disclosed.
+
 - **The corruption sweep now runs every damaged file twice — full and `--metadata-only`.** A
   metadata-only run follows offsets and lengths the file states about *itself*: an MCAP's summary
   pointer, an HDF5 object header, a Zarr `.zarray`. It reaches that arithmetic without the frame
