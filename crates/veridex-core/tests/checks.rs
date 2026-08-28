@@ -818,6 +818,55 @@ fn a_recording_uploaded_forty_times_is_still_a_near_duplicate() {
 }
 
 #[test]
+fn an_abstention_does_not_swallow_the_near_duplicates_already_found() {
+    // The failure this pins: the abstention *replaced* the result. One boilerplate-only episode
+    // among a thousand, or one pair past the tracking ceiling, and every near-duplicate the check
+    // had already found was thrown away behind a note saying some episodes were not examined. A
+    // reader saw an info line about coverage and no warning at all — the copy was not absent from
+    // the report, it was deleted from it.
+    //
+    // The dataset: 600 episodes sharing one boilerplate frame content (past the per-hash ceiling,
+    // so those are skipped), plus two episodes that are genuine near-duplicates of each other on
+    // their own content.
+    let boilerplate: Vec<u8> = (0..12).collect();
+    let original: Vec<u8> = (100..112).collect();
+    let trimmed: Vec<u8> = (100..110).collect();
+    let mut episodes: Vec<_> = (0..600u64)
+        .map(|i| {
+            episode(
+                i,
+                vec![near_stream("s", i as i64 * 1_000_000_000, &boilerplate)],
+            )
+        })
+        .collect();
+    episodes.push(episode(600, vec![near_stream("s", 0, &original)]));
+    episodes.push(episode(
+        601,
+        vec![near_stream("s", 9_000_000_000, &trimmed)],
+    ));
+
+    let f = near_duplicate().run(&dataset(episodes));
+    let codes: Vec<&str> = f.iter().map(|x| x.code.as_str()).collect();
+    assert!(
+        codes.contains(&"STRUCTURAL.NEAR_DUPLICATE_EPISODE"),
+        "the pair the check did find must survive the abstention: {codes:?}"
+    );
+    assert!(
+        codes.contains(&"STRUCTURAL.NEAR_DUPLICATE_UNCHECKED"),
+        "and the abstention must still be said: {codes:?}"
+    );
+    let pair = f
+        .iter()
+        .find(|x| x.code == "STRUCTURAL.NEAR_DUPLICATE_EPISODE")
+        .expect("the pair");
+    assert!(
+        pair.message.contains("600") && pair.message.contains("601"),
+        "{}",
+        pair.message
+    );
+}
+
+#[test]
 fn episodes_the_boilerplate_rule_skipped_are_reported_not_passed_over() {
     // Past the boilerplate ceiling the check stops comparing — which is the right call for a home
     // position shared by every episode, and the wrong thing to do *silently* when it means an

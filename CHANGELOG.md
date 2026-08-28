@@ -10,6 +10,18 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **A near-duplicate abstention deleted the near-duplicates it had already found.**
+  `structural.near-duplicate-episode` returns an info finding when it could not examine every
+  episode — one whose every frame hash is shared past the boilerplate ceiling, or a pair count past
+  what it tracks at once. That return happened *before* the pairs it had already counted were
+  flagged, so a single boilerplate-only episode among six hundred was enough to throw away a genuine
+  re-upload: the reader saw one info line about coverage and no warning at all. The copy was not
+  absent from the report, it was deleted from it.
+
+  An abstention says what was *not* looked at; it must not replace what was. Both findings are now
+  emitted. Pinned by a test that puts a real near-duplicate pair alongside enough boilerplate to
+  trigger the abstention, and verified red against the old behavior.
+
 - **Four adapters filed data they never read as a field they could not map.** The distinction is the
   one this tool exists for: "unmapped" means the CDM has no shape for a field, which costs the
   reader nothing; **unread** means the data is there and nobody looked at it, so every result is

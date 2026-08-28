@@ -1125,10 +1125,16 @@ impl Check for NearDuplicateEpisode {
         }
 
         let unexamined = evidence.len() - examined.len();
-        if overflowed || unexamined > 0 {
-            // Abstention is a finding: a check that ran out of room and said nothing is
-            // indistinguishable from a check that looked and found nothing.
-            return vec![Finding::new(
+        // Abstention is a finding: a check that ran out of room and said nothing is
+        // indistinguishable from a check that looked and found nothing.
+        //
+        // Held aside rather than returned. It used to return here, which threw away every pair the
+        // check had *already* found: one boilerplate-only episode, or one pair past the tracking
+        // ceiling, and a genuine near-duplicate went unreported behind a note saying some episodes
+        // were not examined. An abstention says what was not looked at; it must not replace what
+        // was.
+        let abstention = (overflowed || unexamined > 0).then(|| {
+            Finding::new(
                 self.id(),
                 Category::Structural,
                 Severity::Info,
@@ -1157,8 +1163,8 @@ impl Check for NearDuplicateEpisode {
             .with_remedy(
                 "Check the dataset in parts (each shard or split on its own), where the pair count \
                  is within reach.",
-            )];
-        }
+            )
+        });
 
         // Pairs the exact check already speaks for. Computed with its own signature so this
         // suppression is exactly as wide as what it reports — never wider.
@@ -1206,7 +1212,7 @@ impl Check for NearDuplicateEpisode {
             }
         }
         if flagged.is_empty() {
-            return Vec::new();
+            return abstention.into_iter().collect();
         }
 
         // Cluster the flagged pairs, so a group of three near-identical episodes is one finding
@@ -1235,9 +1241,9 @@ impl Check for NearDuplicateEpisode {
             entry.1 = entry.1.min(*overlap);
         }
 
-        groups
-            .into_values()
-            .map(|(indices, overlap)| {
+        abstention
+            .into_iter()
+            .chain(groups.into_values().map(|(indices, overlap)| {
                 let list = indices
                     .iter()
                     .map(u64::to_string)
@@ -1264,7 +1270,7 @@ impl Check for NearDuplicateEpisode {
                     "Compare these episodes at the source: keep the longest or the original \
                      recording and drop the copies, or record why the overlap is intentional.",
                 )
-            })
+            }))
             .collect()
     }
 }
