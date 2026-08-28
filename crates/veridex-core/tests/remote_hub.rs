@@ -16,23 +16,32 @@ use std::collections::BTreeMap;
 use veridex_core::adapter::{
     default_registry, Coverage, IngestError, IngestOptions, Sample, Source,
 };
-use veridex_core::remote::FetchFile;
+use veridex_core::remote::{FetchFile, Fetched};
 
-/// A Hub that answers from a fixed map.
-struct FakeHub(BTreeMap<String, Vec<u8>>);
+/// A Hub that answers from a fixed map, optionally naming the commit it served from.
+struct FakeHub {
+    files: BTreeMap<String, Vec<u8>>,
+    commit: Option<String>,
+}
 
 impl FetchFile for FakeHub {
-    fn get(&self, url: &str, max_bytes: u64) -> Result<Option<Vec<u8>>, IngestError> {
-        match self.0.iter().find(|(k, _)| url.ends_with(k.as_str())) {
+    fn get(&self, url: &str, max_bytes: u64) -> Result<Option<Fetched>, IngestError> {
+        match self.files.iter().find(|(k, _)| url.ends_with(k.as_str())) {
             Some((_, body)) if body.len() as u64 > max_bytes => Err(IngestError::Parse {
                 format_id: "hub",
                 message: "over the cap".into(),
             }),
-            Some((_, body)) => Ok(Some(body.clone())),
+            Some((_, body)) => Ok(Some(Fetched {
+                body: body.clone(),
+                commit: self.commit.clone(),
+            })),
             None => Ok(None),
         }
     }
 }
+
+/// A commit id shaped the way the Hub's `X-Repo-Commit` header is.
+const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
 
 /// A LeRobot v3 manifest as the Hub would serve it: two features, three episodes with declared
 /// lengths, and a dataset card carrying the licence.
@@ -51,8 +60,8 @@ fn lerobot_manifest() -> FakeHub {
     let episodes = "{\"episode_index\": 0, \"length\": 10}\n\
                     {\"episode_index\": 1, \"length\": 10}\n\
                     {\"episode_index\": 2, \"length\": 10}\n";
-    FakeHub(
-        [
+    FakeHub {
+        files: [
             ("meta/info.json", serde_json::to_string(&info).unwrap()),
             ("meta/episodes.jsonl", episodes.to_string()),
             (
@@ -63,7 +72,16 @@ fn lerobot_manifest() -> FakeHub {
         .into_iter()
         .map(|(k, v)| (k.to_string(), v.into_bytes()))
         .collect(),
-    )
+        commit: None,
+    }
+}
+
+/// The same manifest, served by a Hub that names the commit it came from.
+fn lerobot_manifest_at(commit: &str) -> FakeHub {
+    FakeHub {
+        commit: Some(commit.to_string()),
+        ..lerobot_manifest()
+    }
 }
 
 fn metadata_only() -> IngestOptions {
@@ -215,7 +233,10 @@ fn a_remote_run_carries_every_refusal_a_metadata_only_run_does() {
 
 #[test]
 fn a_repository_that_is_not_a_lerobot_dataset_is_refused_not_read_as_empty() {
-    let empty = FakeHub(BTreeMap::new());
+    let empty = FakeHub {
+        files: BTreeMap::new(),
+        commit: None,
+    };
     match default_registry().ingest_remote_with("hf://someone/notes", &metadata_only(), &empty) {
         Err(IngestError::Parse { message, .. }) => {
             assert!(message.contains("meta/info.json"), "{message}");
@@ -237,7 +258,7 @@ fn a_manifest_that_contradicts_itself_is_still_checked_as_one() {
         "total_frames": 40,
         "features": { "action": { "dtype": "float32", "shape": [6] } },
     });
-    hub.0.insert(
+    hub.files.insert(
         "meta/info.json".into(),
         serde_json::to_string(&info).unwrap().into_bytes(),
     );
@@ -261,5 +282,73 @@ fn a_manifest_that_contradicts_itself_is_still_checked_as_one() {
             .any(|f| f.code == "STRUCTURAL.EPISODE_COUNT_MISMATCH"),
         "{:?}",
         verdict.findings.iter().map(|f| &f.code).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn the_commit_served_is_recorded_and_binds_into_the_hash() {
+    // `hf://org/name` reads a branch, and a branch moves. Without the commit, a report can only say
+    // it read "main" — which names no bytes, so the run cannot be re-run and the hash cannot be
+    // traced to anything. With it, two reads of one repository at two commits are two datasets.
+    let out = default_registry()
+        .ingest_remote_with(
+            "hf://lerobot/pickplace",
+            &metadata_only(),
+            &lerobot_manifest_at(COMMIT),
+        )
+        .unwrap();
+    assert!(
+        out.dataset
+            .metadata
+            .iter()
+            .any(|(k, v)| k == "hub_commit" && v == COMMIT),
+        "the commit is missing from {:?}",
+        out.dataset.metadata
+    );
+    // And it is disclosed as something Veridex read, not left as an unexplained field.
+    assert!(
+        out.report
+            .mapped_fields
+            .iter()
+            .any(|f| f.contains("hub commit") && f.contains(COMMIT)),
+        "{:?}",
+        out.report.mapped_fields
+    );
+
+    let other = "fedcba9876543210fedcba9876543210fedcba98";
+    let moved = default_registry()
+        .ingest_remote_with(
+            "hf://lerobot/pickplace",
+            &metadata_only(),
+            &lerobot_manifest_at(other),
+        )
+        .unwrap()
+        .dataset;
+    assert_ne!(
+        veridex_core::content_hash(&out.dataset),
+        veridex_core::content_hash(&moved),
+        "the same manifest at two commits must not hash alike"
+    );
+}
+
+#[test]
+fn a_hub_that_names_no_commit_says_so_rather_than_inventing_one() {
+    // The honest outcome when the header is absent: no `hub_commit`, and the gap disclosed where
+    // every other thing this run did not read is disclosed.
+    let out = default_registry()
+        .ingest_remote_with(
+            "hf://lerobot/pickplace",
+            &metadata_only(),
+            &lerobot_manifest(),
+        )
+        .unwrap();
+    assert!(out.dataset.metadata.iter().all(|(k, _)| k != "hub_commit"));
+    assert!(
+        out.report
+            .omitted_fields
+            .iter()
+            .any(|f| f.contains("commit the manifest was served from")),
+        "{:?}",
+        out.report.omitted_fields
     );
 }

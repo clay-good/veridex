@@ -386,6 +386,29 @@ reproduced before it was fixed.*
 
 ### Added
 
+- **A remote check now says which commit it read.** `hf://org/name` reads the `main` branch, and a
+  branch moves. Until now the run recorded only the revision it *asked for* — `main` — which names
+  no particular bytes: the report could not be re-run, and its content hash could not be traced back
+  to anything. Veridex now keeps the commit the Hub served the manifest from (the `X-Repo-Commit`
+  response header) as the dataset's `hub_commit` metadata, so it binds into the content hash and
+  `veridex inspect` prints it beside the hash it produced:
+
+  ```
+  source:   hf://lerobot/pickplace@main (commit 0c1e9f…)
+  ```
+
+  Re-running against `hf://org/name@<commit>` pins the read to those bytes. Two reads of one
+  repository at two commits are now two datasets to the hash, which is the point — a hash that could
+  not tell them apart would let yesterday's result stand for today's data.
+
+  Two bounds come with it. A manifest is five requests, so a branch can move part-way through one: a
+  read whose responses name two different commits is **refused by name**, and the refusal gives the
+  commit to pin to, rather than stitching half of each into a dataset that existed at no commit. And
+  the header is a stranger's string that reaches the content hash, so anything that is not 40 hex
+  digits is treated as if it were absent — where the Hub names no commit, nothing is recorded and
+  the gap is disclosed among the run's omitted fields, because an invented commit would be worse
+  than none.
+
 - **Remote (Hub) ingestion — check a dataset you have not downloaded.** `veridex check
   hf://org/name --metadata-only` reads a LeRobot dataset's manifest straight from the Hugging Face
   Hub: `meta/` and the dataset card, a few hundred kilobytes beside a repository that is routinely

@@ -1216,6 +1216,19 @@ fn cmd_inspect(rest: &[String]) -> ExitCode {
     println!("Dataset: {}", d.id);
     println!("  format:   {}", ingested.report.format_id);
     println!("  CDM hash: {}", veridex_core::content_hash(d));
+    // A remote read is the one source that can change under the reader: `hf://org/name` is a
+    // branch, and a branch moves. The commit the Hub served is what makes this run re-runnable, so
+    // it is printed beside the hash it produced rather than left only in the CDM.
+    if let Some(repo) = meta(d, "hub_repo") {
+        let revision = meta(d, "hub_revision").unwrap_or("main");
+        match meta(d, "hub_commit") {
+            Some(commit) => println!("  source:   hf://{repo}@{revision} (commit {commit})"),
+            None => println!(
+                "  source:   hf://{repo}@{revision} (the Hub named no commit, so this run \
+                 identifies only the revision it asked for)"
+            ),
+        }
+    }
     // A sampled inspect describes a subset. Said up front, next to the hash it produced, so the
     // summary below is not read as the shape of the whole dataset.
     match &ingested.report.coverage {
@@ -1299,6 +1312,14 @@ fn cmd_inspect(rest: &[String]) -> ExitCode {
     print!("{}", veridex_core::simref::render_references(d));
     print!("{}", veridex_core::scenario::render_coverage(d));
     ExitCode::SUCCESS
+}
+
+/// One of the dataset's metadata values by key, if it recorded one.
+fn meta<'a>(d: &'a veridex_core::cdm::Dataset, key: &str) -> Option<&'a str> {
+    d.metadata
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.as_str())
 }
 
 /// Render the dataset's provenance coverage: the count known/asserted/unknown (the certificate's 30%

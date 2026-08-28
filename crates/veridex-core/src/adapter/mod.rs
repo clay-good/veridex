@@ -693,8 +693,8 @@ impl AdapterRegistry {
         {
             let repo = crate::remote::HubRepo::parse(spec)?;
             let tmp = tempfile::tempdir().map_err(|e| IngestError::Io(e.to_string()))?;
-            let dir = crate::remote::materialize(&repo, fetch, tmp.path())?;
-            let mut out = self.ingest(&Source::Local(dir), options)?;
+            let staged = crate::remote::materialize(&repo, fetch, tmp.path())?;
+            let mut out = self.ingest(&Source::Local(staged.dir), options)?;
             // The dataset is the *repository*, not the temporary directory it was staged in. Two
             // owners publishing a `pickplace` are two datasets, and the id is bound into the content
             // hash — so it has to carry the owner.
@@ -703,6 +703,26 @@ impl AdapterRegistry {
             out.dataset
                 .metadata
                 .push(("hub_revision".into(), repo.revision.clone()));
+            // The revision is what was *asked for*, and `main` moves. The commit is what was
+            // *served*, and it is what makes the run re-runnable and the content hash mean a
+            // particular set of bytes. When the Hub did not say, nothing is recorded: an invented
+            // commit would be worse than none.
+            match &staged.commit {
+                Some(commit) => {
+                    out.dataset
+                        .metadata
+                        .push(("hub_commit".into(), commit.clone()));
+                    out.report.mapped_fields.push(format!(
+                        "hub commit the manifest was served from -> `hub_commit` metadata \
+                         ({commit})"
+                    ));
+                }
+                None => out.report.omitted_fields.push(
+                    "the commit the manifest was served from (the Hub named none, so this run \
+                     records only the revision it asked for)"
+                        .into(),
+                ),
+            }
             out.report
                 .mapped_fields
                 .push("hub repository + revision -> dataset id and metadata".into());

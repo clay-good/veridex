@@ -261,6 +261,29 @@ written outside that directory, and it is removed when the command returns. Two 
 - A remote run is a metadata-only run, with every refusal that comes with one. It cannot pass a score
   gate and cannot be certified.
 
+### Which commit was read
+
+`hf://org/name` names a branch, and a branch moves. The commit the Hub actually served the manifest
+from is recorded as the dataset's `hub_commit` metadata, so it binds into the content hash and is
+printed by `veridex inspect` beside the hash it produced:
+
+```
+Dataset: lerobot/pickplace
+  format:   lerobot
+  CDM hash: 6b1f…
+  source:   hf://lerobot/pickplace@main (commit 0c1e9f…)
+```
+
+Re-run against that commit — `veridex check hf://org/name@0c1e9f… --metadata-only` — and the read is
+pinned to those exact bytes. Two reads of one repository at two commits are two datasets to the
+content hash, which is the point: a hash that could not tell them apart would let yesterday's result
+stand for today's data.
+
+A manifest is several requests, so a branch can move part-way through one. Veridex refuses a read
+whose responses name two different commits rather than stitching half of each into a dataset that
+never existed, and the refusal names the commit to pin to. If the Hub names no commit at all, nothing
+is recorded and the run says so — an invented commit would be worse than none.
+
 Anything past the manifest is refused rather than downloaded — `veridex check hf://org/name` without
 `--metadata-only` says so and names the option that works. Veridex validates; it is not a downloader.
 This is also the only network path in the tool: a certificate still verifies with no network at all.

@@ -191,13 +191,47 @@ fn cap_for(spent: u64) -> u64 {
     MAX_FILE_BYTES.min(MAX_TOTAL_BYTES.saturating_sub(spent))
 }
 
+/// One file as the Hub served it: the bytes, and the commit it says they came from.
+///
+/// The commit is the whole reason this is a struct rather than a `Vec<u8>`. `hf://org/name` reads
+/// the `main` branch, and a branch moves: without the commit, a report can only say it read "main",
+/// which names no particular bytes and cannot be re-run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fetched {
+    /// The file's bytes.
+    pub body: Vec<u8>,
+    /// The commit the Hub served this from, when it said — the `X-Repo-Commit` response header.
+    ///
+    /// `None` is the honest answer when the response carried no such header, and it is never
+    /// replaced by a guess: the requested revision is what was asked for, not what was served.
+    pub commit: Option<String>,
+}
+
+/// Whether a server-supplied string is a git commit id this module will record.
+///
+/// The value goes into the CDM's metadata and therefore into the content hash, so it is bounded
+/// here rather than trusted: a header is a stranger's string, and one that is not a commit id is
+/// treated as if the header were absent.
+pub fn is_commit_id(value: &str) -> bool {
+    value.len() == 40 && value.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// Fetches one file by URL. The socket lives behind this so everything above it is testable.
 pub trait FetchFile {
     /// Read `url`, refusing past `max_bytes`.
     ///
     /// `Ok(None)` means the file is not in the repository — which is ordinary for four of the five
     /// manifest paths, and must not be confused with a failure to reach the Hub.
-    fn get(&self, url: &str, max_bytes: u64) -> Result<Option<Vec<u8>>, IngestError>;
+    fn get(&self, url: &str, max_bytes: u64) -> Result<Option<Fetched>, IngestError>;
+}
+
+/// A staged manifest: where it was written, and the commit it was read at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Materialized {
+    /// The directory the local adapter should read.
+    pub dir: std::path::PathBuf,
+    /// The commit every file in it was served from, when the Hub said.
+    pub commit: Option<String>,
 }
 
 /// Assemble a dataset's manifest under `root`, returning the directory the local adapter should read.
@@ -213,16 +247,17 @@ pub fn materialize(
     repo: &HubRepo,
     fetch: &dyn FetchFile,
     root: &Path,
-) -> Result<std::path::PathBuf, IngestError> {
+) -> Result<Materialized, IngestError> {
     let dir = root.join(&repo.name);
     std::fs::create_dir_all(dir.join("meta")).map_err(|e| IngestError::Io(e.to_string()))?;
 
     let mut spent: u64 = 0;
     let mut got_required = false;
+    let mut commit: Option<String> = None;
     for (path, required) in MANIFEST_FILES {
         let cap = cap_for(spent);
-        let body = fetch.get(&repo.url_for(path), cap)?;
-        let Some(body) = body else {
+        let fetched = fetch.get(&repo.url_for(path), cap)?;
+        let Some(fetched) = fetched else {
             if *required {
                 return Err(IngestError::Parse {
                     format_id: "hub",
@@ -235,6 +270,28 @@ pub fn materialize(
             }
             continue;
         };
+        // A manifest read is several requests, and a branch can move between them. Two different
+        // commits in one read is not a manifest — it is half of each of two datasets, hashed as
+        // though it were one. Refuse it by name rather than reporting the first commit seen.
+        if let Some(served) = fetched.commit.as_deref().filter(|c| is_commit_id(c)) {
+            match &commit {
+                None => commit = Some(served.to_string()),
+                Some(first) if first != served => {
+                    return Err(IngestError::Parse {
+                        format_id: "hub",
+                        message: format!(
+                            "{} moved while its manifest was being read (`{first}` then \
+                             `{served}`) — re-run against a pinned revision, \
+                             `{}@{served}`, so the read describes one commit",
+                            repo.id(),
+                            repo.id()
+                        ),
+                    });
+                }
+                Some(_) => {}
+            }
+        }
+        let body = fetched.body;
         spent = spent.saturating_add(body.len() as u64);
         if spent > MAX_TOTAL_BYTES {
             return Err(IngestError::Parse {
@@ -252,7 +309,7 @@ pub fn materialize(
         std::fs::write(dir.join(path), &body).map_err(|e| IngestError::Io(e.to_string()))?;
     }
     debug_assert!(got_required, "a missing required file returns above");
-    Ok(dir)
+    Ok(Materialized { dir, commit })
 }
 
 /// The real client: an HTTPS read of one Hub URL, bounded and host-checked.
@@ -346,7 +403,7 @@ pub fn is_allowed_url(url: &str) -> bool {
 
 #[cfg(feature = "remote")]
 impl FetchFile for HubFetcher {
-    fn get(&self, url: &str, max_bytes: u64) -> Result<Option<Vec<u8>>, IngestError> {
+    fn get(&self, url: &str, max_bytes: u64) -> Result<Option<Fetched>, IngestError> {
         use std::io::Read;
 
         let refuse = |m: String| IngestError::Parse {
@@ -362,6 +419,9 @@ impl FetchFile for HubFetcher {
         }
 
         let mut current = url.to_string();
+        // The commit is announced on the Hub's own response; the CDN it redirects to serves bytes
+        // and says nothing about the repository, so the first hop that names one is kept.
+        let mut commit: Option<String> = None;
         // Bounded by hand: each hop is a host the server picked, and each must be allowlisted.
         for _ in 0..5 {
             if !is_allowed_url(&current) {
@@ -394,6 +454,14 @@ impl FetchFile for HubFetcher {
                 }
                 Err(e) => return Err(IngestError::Io(format!("fetching `{current}`: {e}"))),
             };
+
+            if commit.is_none() {
+                commit = response
+                    .headers()
+                    .get("x-repo-commit")
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_string);
+            }
 
             let status = response.status().as_u16();
             if (300..400).contains(&status) {
@@ -430,7 +498,7 @@ impl FetchFile for HubFetcher {
                      read — download the dataset and check the local copy"
                 )));
             }
-            return Ok(Some(body));
+            return Ok(Some(Fetched { body, commit }));
         }
         Err(refuse(format!("`{url}` redirected more than 5 times")))
     }
@@ -574,17 +642,26 @@ mod tests {
     struct FakeHub {
         files: BTreeMap<String, Vec<u8>>,
         asked: RefCell<Vec<String>>,
+        /// The commit each answer claims, in the order the answers are given; `None` for a
+        /// response that names none. A shorter list than the number of files answers `None`
+        /// thereafter.
+        commits: Vec<Option<String>>,
     }
 
     impl FetchFile for FakeHub {
-        fn get(&self, url: &str, max_bytes: u64) -> Result<Option<Vec<u8>>, IngestError> {
+        fn get(&self, url: &str, max_bytes: u64) -> Result<Option<Fetched>, IngestError> {
+            let nth = self.asked.borrow().len();
             self.asked.borrow_mut().push(url.to_string());
+            let commit = self.commits.get(nth).cloned().flatten();
             match self.files.iter().find(|(k, _)| url.ends_with(k.as_str())) {
                 Some((_, body)) if body.len() as u64 > max_bytes => Err(IngestError::Parse {
                     format_id: "hub",
                     message: "over the cap".into(),
                 }),
-                Some((_, body)) => Ok(Some(body.clone())),
+                Some((_, body)) => Ok(Some(Fetched {
+                    body: body.clone(),
+                    commit,
+                })),
                 None => Ok(None),
             }
         }
@@ -597,6 +674,7 @@ mod tests {
                 .map(|(k, v)| (k.to_string(), v.as_bytes().to_vec()))
                 .collect(),
             asked: RefCell::new(Vec::new()),
+            commits: Vec::new(),
         }
     }
 
@@ -626,7 +704,7 @@ mod tests {
             ("README.md", "---\nlicense: apache-2.0\n---\n"),
         ]);
         let tmp = tempfile::tempdir().unwrap();
-        let dir = materialize(&repo, &h, tmp.path()).unwrap();
+        let dir = materialize(&repo, &h, tmp.path()).unwrap().dir;
         assert_eq!(dir.file_name().unwrap(), "pickplace");
         assert!(dir.join("meta/info.json").is_file());
         assert!(dir.join("README.md").is_file());
@@ -677,8 +755,11 @@ mod tests {
         // Every individual file within its cap, and the set of them over the total.
         struct Big;
         impl FetchFile for Big {
-            fn get(&self, _url: &str, max_bytes: u64) -> Result<Option<Vec<u8>>, IngestError> {
-                Ok(Some(vec![b'x'; max_bytes.min(4096) as usize]))
+            fn get(&self, _url: &str, max_bytes: u64) -> Result<Option<Fetched>, IngestError> {
+                Ok(Some(Fetched {
+                    body: vec![b'x'; max_bytes.min(4096) as usize],
+                    commit: None,
+                }))
             }
         }
         // With the real ceilings a five-file manifest cannot reach the total, so the accumulation is
@@ -692,5 +773,68 @@ mod tests {
         let repo = HubRepo::parse("hf://a/b").unwrap();
         let tmp = tempfile::tempdir().unwrap();
         assert!(materialize(&repo, &Big, tmp.path()).is_ok());
+    }
+
+    const COMMIT_A: &str = "0123456789abcdef0123456789abcdef01234567";
+    const COMMIT_B: &str = "89abcdef0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn the_commit_the_hub_served_is_what_comes_back_not_the_branch_asked_for() {
+        // `main` names no particular bytes. The commit does, and it is the only thing that makes a
+        // remote run re-runnable.
+        let repo = HubRepo::parse("hf://lerobot/pickplace").unwrap();
+        let mut h = hub(&[("meta/info.json", "{}")]);
+        h.commits = vec![Some(COMMIT_A.to_string())];
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = materialize(&repo, &h, tmp.path()).unwrap();
+        assert_eq!(staged.commit.as_deref(), Some(COMMIT_A));
+        assert_eq!(repo.revision, "main");
+    }
+
+    #[test]
+    fn a_hub_that_names_no_commit_yields_none_rather_than_a_guess() {
+        let repo = HubRepo::parse("hf://lerobot/pickplace").unwrap();
+        let h = hub(&[("meta/info.json", "{}")]);
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(materialize(&repo, &h, tmp.path()).unwrap().commit, None);
+    }
+
+    #[test]
+    fn a_commit_header_that_is_not_a_commit_id_is_ignored() {
+        // The header is a stranger's string and its value reaches the content hash. Anything that
+        // is not 40 hex digits is treated as if the header were absent.
+        assert!(is_commit_id(COMMIT_A));
+        assert!(!is_commit_id("main"));
+        assert!(!is_commit_id(""));
+        assert!(!is_commit_id(&"z".repeat(40)));
+        assert!(!is_commit_id(&COMMIT_A[..39]));
+
+        let repo = HubRepo::parse("hf://lerobot/pickplace").unwrap();
+        let mut h = hub(&[("meta/info.json", "{}")]);
+        h.commits = vec![Some("../../etc/passwd".to_string())];
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(materialize(&repo, &h, tmp.path()).unwrap().commit, None);
+    }
+
+    #[test]
+    fn a_repository_that_moves_mid_read_is_refused_not_stitched_together() {
+        // Five requests read one manifest. A branch that moves between them would otherwise be
+        // reported — and content-hashed — as a single dataset that never existed at any commit.
+        let repo = HubRepo::parse("hf://lerobot/pickplace").unwrap();
+        let mut h = hub(&[("meta/info.json", "{}"), ("meta/stats.json", "{}")]);
+        h.commits = vec![Some(COMMIT_A.to_string()), None, Some(COMMIT_B.to_string())];
+        let tmp = tempfile::tempdir().unwrap();
+        match materialize(&repo, &h, tmp.path()) {
+            Err(IngestError::Parse { message, .. }) => {
+                assert!(message.contains(COMMIT_A), "{message}");
+                assert!(message.contains(COMMIT_B), "{message}");
+                // The remedy has to be the pinned re-run, not "try again".
+                assert!(
+                    message.contains(&format!("lerobot/pickplace@{COMMIT_B}")),
+                    "{message}"
+                );
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
     }
 }

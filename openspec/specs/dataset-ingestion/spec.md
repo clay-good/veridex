@@ -66,6 +66,18 @@ the source permits range reads.
 - **THEN** Veridex streams only the metadata and shards required for those checks
 - **AND** it does not download stream payloads that no requested check needs
 
+#### Scenario: A remote read identifies the revision it actually read
+- **WHEN** a remote source names a moving revision (a branch) rather than a commit
+- **THEN** Veridex records the commit the host served the metadata from, and binds it into the
+  content hash so two commits of one repository are two datasets
+- **AND** where the host names no commit, Veridex records none and discloses the gap rather than
+  reporting the requested revision as if it identified particular bytes
+
+#### Scenario: A remote source that moves mid-read is refused
+- **WHEN** the responses making up one remote metadata read name two different commits
+- **THEN** Veridex refuses the read and names the commit to pin to
+- **AND** it does not assemble the responses into a single dataset that existed at no commit
+
 ### Requirement: Fidelity and adapter self-declaration
 Each adapter SHALL record, in the CDM, exactly which source fields it mapped, which it could not
 represent, and which the source omitted. Ingestion SHALL never silently discard information that

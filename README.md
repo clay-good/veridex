@@ -330,7 +330,10 @@ LeRobot and rosbag2), which checks the manifest — the declared episodes and st
 LeRobot, the topic inventory and recorder for a bag — and the provenance, without opening a data
 file, with the frame-dependent checks abstaining rather than misfiring — including from the **Hugging
 Face Hub** (`veridex check hf://org/name --metadata-only`), which fetches only the manifest, over
-HTTPS to the Hub's own hosts, with no credentials sent and a fixed file list a server cannot enlarge.
+HTTPS to the Hub's own hosts, with no credentials sent and a fixed file list a server cannot enlarge,
+and which records the **commit** the Hub served it from — so the run names particular bytes rather
+than a branch that moves, is re-runnable by pinning that commit, and is refused outright if the
+repository moves part-way through the read.
 A remote source without `--metadata-only` is refused by name: Veridex validates, it does not
 download. `--metadata-only` on a format that keeps its structure inside the container is refused by
 name too.
