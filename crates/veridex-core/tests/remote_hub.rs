@@ -232,14 +232,17 @@ fn a_remote_run_carries_every_refusal_a_metadata_only_run_does() {
 }
 
 #[test]
-fn a_repository_that_is_not_a_lerobot_dataset_is_refused_not_read_as_empty() {
+fn a_repository_holding_no_manifest_at_all_is_refused_not_read_as_empty() {
     let empty = FakeHub {
         files: BTreeMap::new(),
         commit: None,
     };
     match default_registry().ingest_remote_with("hf://someone/notes", &metadata_only(), &empty) {
         Err(IngestError::Parse { message, .. }) => {
+            // Both layouts are named, with the file each was looked for by — so a reader whose
+            // dataset is one of them can see which path was missing.
             assert!(message.contains("meta/info.json"), "{message}");
+            assert!(message.contains("dataset_info.json"), "{message}");
         }
         other => panic!("expected a refusal, got {other:?}"),
     }
@@ -351,4 +354,140 @@ fn a_hub_that_names_no_commit_says_so_rather_than_inventing_one() {
         "{:?}",
         out.report.omitted_fields
     );
+}
+
+/// A TFDS/RLDS manifest as the Hub would serve one: the two files that describe the export, in a
+/// version subdirectory the way `tensorflow_datasets` publishes it.
+fn rlds_manifest(prefix: &str) -> FakeHub {
+    let info = serde_json::json!({
+        "name": "demo_rlds",
+        "version": "1.0.0",
+        "fileFormat": "tfrecord",
+        "redistributionInfo": {"license": "Apache-2.0"},
+        "splits": [{"name": "train", "shardLengths": ["2", "3"]}],
+    });
+    let features = serde_json::json!({
+        "pythonClassName": "tensorflow_datasets.core.features.features_dict.FeaturesDict",
+        "featuresDict": {"features": {
+            "steps": {
+                "pythonClassName": "tensorflow_datasets.core.features.dataset_feature.Dataset",
+                "sequence": {"feature": {"featuresDict": {"features": {
+                    "action": {"pythonClassName": "tensorflow_datasets.core.features.tensor_feature.Tensor",
+                               "tensor": {"shape": {"dimensions": ["7"]}, "dtype": "float32", "encoding": "none"}},
+                    "observation": {"featuresDict": {"features": {
+                        "state": {"pythonClassName": "tensorflow_datasets.core.features.tensor_feature.Tensor",
+                                  "tensor": {"shape": {"dimensions": ["3"]}, "dtype": "float32", "encoding": "none"}},
+                    }}},
+                }}}},
+            },
+        }},
+    });
+    FakeHub {
+        files: [
+            (
+                format!("{prefix}dataset_info.json"),
+                serde_json::to_string(&info).unwrap(),
+            ),
+            (
+                format!("{prefix}features.json"),
+                serde_json::to_string(&features).unwrap(),
+            ),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k, v.into_bytes()))
+        .collect(),
+        commit: None,
+    }
+}
+
+#[test]
+fn a_tfds_export_on_the_hub_is_checked_from_its_two_manifest_files() {
+    // The second layout a remote read knows. Which one a repository holds is settled by asking for
+    // each layout's first required file — one request per layout, all of them fixed in the source.
+    let out = default_registry()
+        .ingest_remote_with("hf://acme/oxe-demo", &metadata_only(), &rlds_manifest(""))
+        .expect("a manifest-only remote ingest of a TFDS export");
+
+    assert_eq!(out.report.format_id, "rlds");
+    assert_eq!(
+        out.report.coverage,
+        Coverage::MetadataOnly {
+            episodes_declared: 5
+        },
+        "the split's two shards declare 2 + 3 episodes"
+    );
+    assert_eq!(out.dataset.id, "acme/oxe-demo");
+    let names: Vec<&str> = out.dataset.episodes[0]
+        .streams
+        .iter()
+        .map(|s| s.name.as_str())
+        .collect();
+    assert_eq!(names, vec!["action", "observation/state"]);
+    assert!(out.dataset.provenance.iter().any(|p| p
+        .elements
+        .iter()
+        .any(|e| e.key == "license" && e.value.as_deref() == Some("Apache-2.0"))));
+}
+
+#[test]
+fn a_directory_inside_the_repository_is_named_by_the_caller_never_discovered() {
+    // A TFDS export is usually published one version directory deep. The caller names it; Veridex
+    // never goes looking, because a path the server chose would undo the fixed file list.
+    let hub = rlds_manifest("demo_rlds/1.0.0/");
+    let out = default_registry()
+        .ingest_remote_with("hf://acme/oxe-demo/demo_rlds/1.0.0", &metadata_only(), &hub)
+        .expect("the named subdirectory is read");
+    assert_eq!(out.report.format_id, "rlds");
+
+    // Two directories in one repository are two datasets: the id carries the path, so their content
+    // hashes cannot collide.
+    assert_eq!(out.dataset.id, "acme/oxe-demo/demo_rlds/1.0.0");
+    let root = default_registry()
+        .ingest_remote_with("hf://acme/oxe-demo", &metadata_only(), &rlds_manifest(""))
+        .unwrap();
+    assert_ne!(
+        veridex_core::content_hash(&out.dataset),
+        veridex_core::content_hash(&root.dataset)
+    );
+
+    // And the same reference without the subdirectory finds nothing, which is the proof that the
+    // path was used rather than searched for.
+    match default_registry().ingest_remote_with("hf://acme/oxe-demo", &metadata_only(), &hub) {
+        Err(IngestError::Parse { message, .. }) => {
+            assert!(message.contains("holds none of the manifests"), "{message}")
+        }
+        other => panic!("expected a refusal, got ok={}", other.is_ok()),
+    }
+}
+
+#[test]
+fn a_path_that_would_climb_out_of_the_repository_is_refused() {
+    for source in [
+        "hf://acme/oxe-demo/../../etc",
+        "hf://acme/oxe-demo/a/./b",
+        "hf://acme/oxe-demo/a b",
+    ] {
+        assert!(
+            default_registry()
+                .ingest_remote_with(source, &metadata_only(), &rlds_manifest(""))
+                .is_err(),
+            "{source} must be refused"
+        );
+    }
+}
+
+#[test]
+fn a_layout_missing_its_second_required_file_says_which_one() {
+    // `dataset_info.json` alone identifies the layout but cannot describe it: without
+    // `features.json` there are no per-step features, so there is no timeline. Named, rather than
+    // reported as "not a dataset this can read".
+    let mut hub = rlds_manifest("");
+    hub.files.remove("features.json");
+    match default_registry().ingest_remote_with("hf://acme/oxe-demo", &metadata_only(), &hub) {
+        Err(IngestError::Parse { message, .. }) => {
+            assert!(message.contains("RLDS/TFDS"), "{message}");
+            assert!(message.contains("features.json"), "{message}");
+        }
+        other => panic!("expected a refusal, got ok={}", other.is_ok()),
+    }
 }

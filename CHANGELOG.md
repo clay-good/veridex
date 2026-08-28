@@ -386,6 +386,20 @@ reproduced before it was fixed.*
 
 ### Added
 
+- **A remote check reads an RLDS/TFDS export too, not only LeRobot.** Which layout a repository
+  holds is settled by asking for each one's first required file — `meta/info.json`, then
+  `dataset_info.json` — one request per layout, every path still fixed in Veridex's source. A TFDS
+  export is usually published one version directory deep, so the directory can be named in the
+  reference: `veridex check hf://org/name/my_dataset/1.0.0 --metadata-only`. It is named by the
+  caller and never discovered, because a path the server chose would undo the point of a fixed file
+  list, and two directories in one repository are two datasets — the id carries the path so their
+  hashes cannot collide.
+
+  A repository holding neither layout is refused naming both and the file each was looked for by. A
+  repository holding a layout's first file but not its second — a TFDS directory with no
+  `features.json` — is refused naming that file, rather than reported as "not a dataset this can
+  read".
+
 - **`--metadata-only` for MCAP**, read from the summary section the format writes at the end of
   every finalized file: a Channel and a Schema record per topic, and a Statistics record carrying
   the message total, the per-channel totals and the recording's log-time span. Three seeks in front

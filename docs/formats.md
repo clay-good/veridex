@@ -240,10 +240,18 @@ two agree with each other, not that either matches the format.
 
 ## Reading a dataset you have not downloaded
 
-One source is not a file at all. `veridex check hf://org/name --metadata-only` reads a LeRobot
-dataset's manifest straight from the Hugging Face Hub — `meta/` and the dataset card, a few hundred
+One source is not a file at all. `veridex check hf://org/name --metadata-only` reads a dataset's
+manifest straight from the Hugging Face Hub — `meta/` and the dataset card, a few hundred
 kilobytes — and runs the manifest half of the catalog over it. It is the fastest way to answer "is
 this the dataset I think it is, and does it declare what I need" for a repository too large to pull.
+
+Two layouts are read: a **LeRobot** dataset (`meta/info.json` and what sits beside it) and an
+**RLDS/TFDS** export (`dataset_info.json` + `features.json`). Which one a repository holds is settled
+by asking for each layout's first required file in turn — one request per layout, against a path
+fixed in the source. A TFDS export is usually published one version directory deep, so the directory
+can be named in the reference: `veridex check hf://org/name/my_dataset/1.0.0 --metadata-only`. It is
+named by you and never discovered, because a path the server chose would undo the fixed file list —
+and two directories in one repository are two datasets, so the id carries the path.
 
 The list of files requested is fixed in Veridex's source, not discovered from anything the server
 returns, so a hostile repository cannot enlarge it. Requests and any redirect they follow are

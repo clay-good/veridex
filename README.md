@@ -331,7 +331,8 @@ statistics for LeRobot, the topic inventory and recorder for a bag, the declared
 per-step feature schema for an Open X-Embodiment-style TFDS directory, the array metadata and episode
 boundaries for a Zarr replay buffer, the summary section an MCAP writes at the end of itself — and
 the provenance, without opening a data file, with the frame-dependent checks abstaining rather than misfiring — including from the **Hugging
-Face Hub** (`veridex check hf://org/name --metadata-only`), which fetches only the manifest, over
+Face Hub** (`veridex check hf://org/name --metadata-only`, LeRobot or RLDS/TFDS, with a TFDS version
+directory named in the reference), which fetches only the manifest, over
 HTTPS to the Hub's own hosts, with no credentials sent and a fixed file list a server cannot enlarge,
 and which records the **commit** the Hub served it from — so the run names particular bytes rather
 than a branch that moves, is re-runnable by pinning that commit, and is refused outright if the

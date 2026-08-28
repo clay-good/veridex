@@ -57,19 +57,37 @@ pub const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 /// Ceiling on everything one remote ingest fetches.
 pub const MAX_TOTAL_BYTES: u64 = 128 * 1024 * 1024;
 
-/// The manifest files a metadata-only LeRobot ingest reads, and whether the dataset is unreadable
-/// without each.
+/// The manifest files a metadata-only **LeRobot** ingest reads, and whether the dataset is
+/// unreadable without each.
 ///
 /// Fixed here rather than discovered from the repository listing, deliberately: a discovered list is
 /// a list the server chooses, and this one has to be the list Veridex chose. Adding a path here is
 /// the only way to widen what a remote run requests.
-pub const MANIFEST_FILES: &[(&str, bool)] = &[
+pub const LEROBOT_MANIFEST: &[(&str, bool)] = &[
     ("meta/info.json", true),
     ("meta/episodes.jsonl", false),
     ("meta/stats.json", false),
     ("meta/tasks.jsonl", false),
     ("README.md", false),
 ];
+
+/// The manifest files a metadata-only **RLDS/TFDS** ingest reads.
+///
+/// Both are required, and that is the format rather than a choice: `dataset_info.json` declares the
+/// splits and their shard lengths, `features.json` declares the per-step features. A TFDS directory
+/// missing either is one no reader can describe.
+pub const RLDS_MANIFEST: &[(&str, bool)] = &[
+    ("dataset_info.json", true),
+    ("features.json", true),
+    ("README.md", false),
+];
+
+/// Every manifest layout a remote read knows, in the order they are probed.
+///
+/// Probing is one request per layout against its first required file, which keeps the whole set of
+/// paths that can ever be requested fixed in this source — the property the file list exists for.
+pub const MANIFEST_LAYOUTS: &[(&str, &[(&str, bool)])] =
+    &[("LeRobot", LEROBOT_MANIFEST), ("RLDS/TFDS", RLDS_MANIFEST)];
 
 /// A dataset repository on the Hub.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,6 +98,12 @@ pub struct HubRepo {
     pub name: String,
     /// The git revision to read — a branch, tag, or commit. `main` unless the source names one.
     pub revision: String,
+    /// The directory within the repository the manifest sits in; empty for the repository root.
+    ///
+    /// A TFDS export is usually published one version directory deep (`my_dataset/1.0.0/`), and the
+    /// caller names it. Never discovered from a repository listing: a path the server chose would
+    /// undo the fixed file list.
+    pub subdir: String,
 }
 
 /// Whether a Hub owner/name/revision segment is one this module will put in a URL and a path.
@@ -148,7 +172,8 @@ impl HubRepo {
             return refuse("expected `hf://owner/name` or a huggingface.co dataset URL");
         };
 
-        let Some((owner, name)) = body.split_once('/') else {
+        let mut segments = body.split('/');
+        let (Some(owner), Some(name)) = (segments.next(), segments.next()) else {
             return refuse("a repository is `owner/name`");
         };
         if !is_safe_segment(owner) || !is_safe_segment(name) {
@@ -157,10 +182,22 @@ impl HubRepo {
         if !is_safe_segment(&revision) {
             return refuse("the revision must be a plain branch, tag, or commit");
         }
+        // Anything past `owner/name` is a directory *within* the repository — which is how a TFDS
+        // export is usually published, one version directory per release. It has to be named by the
+        // caller rather than discovered: a path the server chose is exactly what the fixed file
+        // list exists to prevent.
+        let subdir: Vec<&str> = segments.filter(|s| !s.is_empty()).collect();
+        if !subdir.iter().all(|s| is_safe_segment(s)) {
+            return refuse(
+                "a directory inside the repository must be plain path segments (no `.`, `..`, or \
+                 anything that would climb out of it)",
+            );
+        }
         Ok(HubRepo {
             owner: owner.to_string(),
             name: name.to_string(),
             revision,
+            subdir: subdir.join("/"),
         })
     }
 
@@ -170,13 +207,24 @@ impl HubRepo {
     /// `pickplace` are two datasets, and a hash that could not tell them apart would let a
     /// certificate for one match the other.
     pub fn id(&self) -> String {
-        format!("{}/{}", self.owner, self.name)
+        if self.subdir.is_empty() {
+            format!("{}/{}", self.owner, self.name)
+        } else {
+            // Two TFDS versions in one repository are two datasets, and the id has to tell them
+            // apart for the same reason it has to carry the owner.
+            format!("{}/{}/{}", self.owner, self.name, self.subdir)
+        }
     }
 
     /// The URL a repo-relative manifest path is read from.
     pub fn url_for(&self, path: &str) -> String {
+        let prefix = if self.subdir.is_empty() {
+            String::new()
+        } else {
+            format!("{}/", self.subdir)
+        };
         format!(
-            "https://huggingface.co/datasets/{}/{}/resolve/{}/{path}",
+            "https://huggingface.co/datasets/{}/{}/resolve/{}/{prefix}{path}",
             self.owner, self.name, self.revision
         )
     }
@@ -237,52 +285,105 @@ pub struct Materialized {
 /// Assemble a dataset's manifest under `root`, returning the directory the local adapter should read.
 ///
 /// The layout written is exactly the one a `huggingface-cli download` of those paths would leave, so
-/// the local LeRobot adapter reads it with no remote-specific code path — which is the point. A
-/// remote metadata-only ingest and a local one of the same manifest then cannot disagree, because
-/// they are the same code reading the same bytes.
+/// the local adapter reads it with no remote-specific code path — which is the point. A remote
+/// metadata-only ingest and a local one of the same manifest then cannot disagree, because they are
+/// the same code reading the same bytes.
 ///
-/// Nothing is written outside `root`: the only paths joined onto it are the fixed ones in
-/// [`MANIFEST_FILES`] and the validated repository name.
+/// Which layout the repository holds is settled by asking for each one's first required file in
+/// turn: one request per layout, against a path fixed in this source. Nothing is written outside
+/// `root`: the only paths joined onto it are the fixed ones in [`MANIFEST_LAYOUTS`] and the
+/// validated repository name.
 pub fn materialize(
     repo: &HubRepo,
     fetch: &dyn FetchFile,
     root: &Path,
 ) -> Result<Materialized, IngestError> {
     let dir = root.join(&repo.name);
-    std::fs::create_dir_all(dir.join("meta")).map_err(|e| IngestError::Io(e.to_string()))?;
+    std::fs::create_dir_all(&dir).map_err(|e| IngestError::Io(e.to_string()))?;
 
-    let mut spent: u64 = 0;
-    let mut got_required = false;
-    let mut commit: Option<String> = None;
-    for (path, required) in MANIFEST_FILES {
-        let cap = cap_for(spent);
-        let fetched = fetch.get(&repo.url_for(path), cap)?;
-        let Some(fetched) = fetched else {
-            if *required {
-                return Err(IngestError::Parse {
-                    format_id: "hub",
-                    message: format!(
-                        "{} has no `{path}`, so it is not a LeRobot dataset this can read from its \
-                         manifest — check the repository id, or that the dataset is public",
-                        repo.id()
-                    ),
-                });
-            }
+    let mut state = Staging {
+        dir,
+        spent: 0,
+        commit: None,
+    };
+    for (layout, files) in MANIFEST_LAYOUTS {
+        let (first, _) = files[0];
+        let Some(fetched) = state.fetch(repo, fetch, first)? else {
             continue;
+        };
+        state.write(first, fetched)?;
+        for (path, required) in &files[1..] {
+            let Some(fetched) = state.fetch(repo, fetch, path)? else {
+                if *required {
+                    return Err(IngestError::Parse {
+                        format_id: "hub",
+                        message: format!(
+                            "{} looks like a {layout} dataset — it has `{first}` — but it has no \
+                             `{path}`, which that format needs to describe itself; there is nothing \
+                             here to check from the manifest alone",
+                            repo.id()
+                        ),
+                    });
+                }
+                continue;
+            };
+            state.write(path, fetched)?;
+        }
+        return Ok(Materialized {
+            dir: state.dir,
+            commit: state.commit,
+        });
+    }
+    Err(IngestError::Parse {
+        format_id: "hub",
+        message: format!(
+            "{} holds none of the manifests a remote read knows ({}), so there is nothing to check \
+             without downloading it — check the reference, that the dataset is public, and that a \
+             TFDS directory nested under a version subdirectory is named in full \
+             (`hf://owner/name/dataset/1.0.0`)",
+            repo.id(),
+            MANIFEST_LAYOUTS
+                .iter()
+                .map(|(layout, files)| format!("{layout}: `{}`", files[0].0))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    })
+}
+
+/// One manifest read in progress: where the files land, what the read has spent, and the commit
+/// every response so far agreed on.
+struct Staging {
+    dir: std::path::PathBuf,
+    spent: u64,
+    commit: Option<String>,
+}
+
+impl Staging {
+    /// Fetch one repo-relative path, holding the read to its byte budget and to one commit.
+    fn fetch(
+        &mut self,
+        repo: &HubRepo,
+        fetch: &dyn FetchFile,
+        path: &str,
+    ) -> Result<Option<Fetched>, IngestError> {
+        let cap = cap_for(self.spent);
+        let Some(fetched) = fetch.get(&repo.url_for(path), cap)? else {
+            return Ok(None);
         };
         // A manifest read is several requests, and a branch can move between them. Two different
         // commits in one read is not a manifest — it is half of each of two datasets, hashed as
         // though it were one. Refuse it by name rather than reporting the first commit seen.
         if let Some(served) = fetched.commit.as_deref().filter(|c| is_commit_id(c)) {
-            match &commit {
-                None => commit = Some(served.to_string()),
+            match &self.commit {
+                None => self.commit = Some(served.to_string()),
                 Some(first) if first != served => {
                     return Err(IngestError::Parse {
                         format_id: "hub",
                         message: format!(
                             "{} moved while its manifest was being read (`{first}` then \
-                             `{served}`) — re-run against a pinned revision, \
-                             `{}@{served}`, so the read describes one commit",
+                             `{served}`) — re-run against a pinned revision, `{}@{served}`, so the \
+                             read describes one commit",
                             repo.id(),
                             repo.id()
                         ),
@@ -291,25 +392,27 @@ pub fn materialize(
                 Some(_) => {}
             }
         }
-        let body = fetched.body;
-        spent = spent.saturating_add(body.len() as u64);
-        if spent > MAX_TOTAL_BYTES {
+        Ok(Some(fetched))
+    }
+
+    /// Write one fetched file into the staging directory, charging the total budget first.
+    fn write(&mut self, path: &str, fetched: Fetched) -> Result<(), IngestError> {
+        self.spent = self.spent.saturating_add(fetched.body.len() as u64);
+        if self.spent > MAX_TOTAL_BYTES {
             return Err(IngestError::Parse {
                 format_id: "hub",
                 message: format!(
-                    "{}'s manifest is over the {MAX_TOTAL_BYTES}-byte ceiling for a remote read — \
-                     fetch the dataset locally and check the path",
-                    repo.id()
+                    "this manifest is over the {MAX_TOTAL_BYTES}-byte ceiling for a remote read — \
+                     fetch the dataset locally and check the path"
                 ),
             });
         }
-        if *required {
-            got_required = true;
+        let target = self.dir.join(path);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| IngestError::Io(e.to_string()))?;
         }
-        std::fs::write(dir.join(path), &body).map_err(|e| IngestError::Io(e.to_string()))?;
+        std::fs::write(target, &fetched.body).map_err(|e| IngestError::Io(e.to_string()))
     }
-    debug_assert!(got_required, "a missing required file returns above");
-    Ok(Materialized { dir, commit })
 }
 
 /// The real client: an HTTPS read of one Hub URL, bounded and host-checked.
@@ -687,13 +790,18 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         materialize(&repo, &h, tmp.path()).unwrap();
         let asked = h.asked.borrow().clone();
-        assert_eq!(asked.len(), MANIFEST_FILES.len());
+        // Every request, probe included, lands on a path spelled out in this file.
         for url in &asked {
             assert!(
-                MANIFEST_FILES.iter().any(|(p, _)| url.ends_with(p)),
+                MANIFEST_LAYOUTS
+                    .iter()
+                    .flat_map(|(_, files)| files.iter())
+                    .any(|(p, _)| url.ends_with(p)),
                 "requested something outside the fixed list: {url}"
             );
         }
+        // The LeRobot probe hit, so no other layout's paths were asked for at all.
+        assert_eq!(asked.len(), LEROBOT_MANIFEST.len());
     }
 
     #[test]
@@ -765,7 +873,7 @@ mod tests {
         // With the real ceilings a five-file manifest cannot reach the total, so the accumulation is
         // checked directly instead of by allocating 128 MiB in a unit test.
         let mut spent = 0u64;
-        for _ in 0..MANIFEST_FILES.len() {
+        for _ in 0..LEROBOT_MANIFEST.len() {
             spent = spent.saturating_add(cap_for(spent).min(4096));
         }
         assert!(spent <= MAX_TOTAL_BYTES);
