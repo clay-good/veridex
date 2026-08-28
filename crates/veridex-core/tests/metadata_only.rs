@@ -369,8 +369,12 @@ fn a_format_that_cannot_honor_it_is_refused_by_name() {
     match veridex_core::default_registry()
         .ingest(&Source::Local(src.to_path_buf()), &metadata_only())
     {
-        Err(IngestError::NotImplemented { what, .. }) => {
-            assert!(what.contains("metadata-only"), "{what}")
+        Err(IngestError::NotImplemented { what, hint }) => {
+            assert!(what.contains("metadata-only"), "{what}");
+            // A CAN log has no episode axis either, so the hint must not send the reader to a
+            // second refusal by suggesting a sample.
+            assert!(!hint.contains("sample the dataset instead"), "{hint}");
+            assert!(hint.contains("check it in full"), "{hint}");
         }
         other => panic!("expected a refusal, got ok={}", other.is_ok()),
     }

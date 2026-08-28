@@ -327,21 +327,25 @@ and disclosed by the key that signed it; a working CLI (`check`, `inspect`, `che
 bindings** (`import veridex`, exposing `check`/`check_sarif`/`check_html`/`inspect`/`content_hash`/`catalog`/`provenance`/`diff`/`keygen`/`certify`/`verify`/`effective_config`/`label`/`attest`/`version`) that call the same
 core pipeline, with a CLI⇄Python parity test run in CI; and **sampled ingestion** (`--sample-episodes`
 / `--sample-fraction`), resolved before any data is read and reported as partial coverage everywhere
-it could otherwise be mistaken for a full check; and **metadata-only ingestion** (`--metadata-only`,
-LeRobot, rosbag2, RLDS/TFDS, Zarr, MCAP, and HDF5), which checks the manifest — the declared episodes and stored
-statistics for LeRobot, the topic inventory and recorder for a bag, the declared episode count and
-per-step feature schema for an Open X-Embodiment-style TFDS directory, the array metadata and episode
-boundaries for a Zarr replay buffer, the summary section an MCAP writes at the end of itself, the group tree and
-array headers of an HDF5 file — and the provenance, without opening a data file, with the frame-dependent checks abstaining rather than misfiring — including from the **Hugging
-Face Hub** (`veridex check hf://org/name --metadata-only`, LeRobot or RLDS/TFDS, with a TFDS version
-directory named in the reference), which fetches only the manifest, over
-HTTPS to the Hub's own hosts, with no credentials sent and a fixed file list a server cannot enlarge,
-and which records the **commit** the Hub served it from — so the run names particular bytes rather
-than a branch that moves, is re-runnable by pinning that commit, and is refused outright if the
-repository moves part-way through the read.
-A remote source without `--metadata-only` is refused by name: Veridex validates, it does not
-download. `--metadata-only` on a format that keeps its structure inside the container is refused by
-name too.
+it could otherwise be mistaken for a full check; and **metadata-only ingestion** (`--metadata-only`), which
+checks what a dataset says about itself — its structure and its provenance — without opening a data
+file, with the frame-dependent checks abstaining rather than misfiring.
+
+Six formats support it, each reading the thing that describes the dataset without being it:
+LeRobot's `meta/`, a bag's `metadata.yaml`, a TFDS export's `dataset_info.json` + `features.json`,
+a Zarr store's `.zarray`/`.zattrs` and episode boundaries, the summary section an MCAP writes at the
+end of itself, and an HDF5 file's group tree and array headers. One test holds all of them to the
+invariant the mode rests on: the same episodes, streams, datatypes and shapes a full read finds,
+minus the frames. CAN+DBC and MF4 interleave structure with data and are refused by name.
+
+The same check runs against the **Hugging Face Hub** without downloading anything
+(`veridex check hf://org/name --metadata-only`, LeRobot or RLDS/TFDS, with a TFDS version directory
+named in the reference). It fetches only the manifest, over HTTPS to the Hub's own hosts, with no
+credentials sent and a fixed file list a server cannot enlarge, and it records the **commit** the
+Hub served — so the run names particular bytes rather than a branch that moves, is re-runnable by
+pinning that commit, and is refused outright if the repository moves part-way through the read. A
+remote source without `--metadata-only` is refused by name: Veridex validates, it does not
+download.
 
 What Veridex does **not** tell you, stated plainly because silence would read as a pass: it never
 decodes a pixel or a point, so it says nothing about the *content* of your imagery — no PII or face

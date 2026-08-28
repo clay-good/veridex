@@ -10,6 +10,15 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **The `--metadata-only` refusal sent the reader to a second refusal.** It suggested sampling the
+  dataset instead — but the two formats that reach it, CAN+DBC and MF4, ingest a recording as one
+  episode and refuse a sample for that same reason. It now says what is true of each: a format with
+  an episode axis is pointed at sampling, one without is told to check it in full. The wording is
+  fixed too: "keeps its structure inside the container" stopped being the distinguishing property
+  when MCAP and HDF5 gained the mode — what these two do is interleave structure with data, so
+  there is nothing that describes the recording without being it. The README said the same stale
+  thing and now says the accurate one.
+
 - **A metadata-only run accused a well-calibrated rig of having no extrinsics.** Found by diffing a
   full report against a metadata-only one on the same bag, an hour after adding that path.
   `autonomy.calibration-completeness` concludes from the *absence* of a transform tree and camera

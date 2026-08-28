@@ -772,9 +772,15 @@ fn check_adapter_supports_options(
     if options.metadata_only && !adapter.supports_metadata_only() {
         return Err(IngestError::NotImplemented {
             what: "metadata-only ingestion for this format",
-            hint:
-                "this format keeps its structure inside the container, so there is no manifest to \
-                   read on its own — drop --metadata-only, or sample the dataset instead",
+            // Two hints, because the remedy differs: a format with an episode axis can still be
+            // checked cheaply by sampling it, and one without cannot. Suggesting a sample to a
+            // CAN log — which refuses sampling for the same "one recording, one episode" reason —
+            // sends the reader to a second refusal.
+            hint: if adapter.supports_sampling() {
+                "this format interleaves its structure with its data, so there is nothing that                  describes the dataset without being it — drop --metadata-only, or sample the                  dataset instead"
+            } else {
+                "this format interleaves its structure with its data, so there is nothing that                  describes the recording without being it, and it has no episode axis to sample                  along either — drop --metadata-only and check it in full"
+            },
         });
     }
     Ok(())
