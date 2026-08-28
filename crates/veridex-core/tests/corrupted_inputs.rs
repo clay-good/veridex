@@ -87,7 +87,13 @@ fn mutations(bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
 /// which is correct behavior and also means the parsing code is never reached. Forcing the format
 /// is what a user does when detection is ambiguous, and it is what makes an adapter read a file it
 /// would otherwise refuse — which is exactly where this repo's four historical crashes lived.
-fn survives_as(path: &Path, format: Option<&str>) -> Result<(), String> {
+///
+/// `metadata_only` chooses whether the ingest reads the data or only what the source declares about
+/// itself. Both matter, and they are different code: a metadata-only run follows offsets and lengths the
+/// file states about *itself* — an MCAP's summary pointer, an HDF5 object header, a Zarr `.zarray` —
+/// and does so without the frame reading that would otherwise trip over the same corruption first.
+/// A hostile file must not be able to panic either one.
+fn survives_with(path: &Path, format: Option<&str>, metadata_only: bool) -> Result<(), String> {
     let result = catch_unwind(AssertUnwindSafe(|| {
         let registry = default_registry();
         let source = Source::Local(path.to_path_buf());
@@ -98,6 +104,7 @@ fn survives_as(path: &Path, format: Option<&str>) -> Result<(), String> {
         // precisely to be expensive.
         let options = IngestOptions {
             max_frames: Some(20_000),
+            metadata_only,
             ..IngestOptions::default()
         };
         let ingested = match format {
@@ -175,12 +182,19 @@ fn no_damaged_store_takes_the_process_down() {
             std::fs::write(store.join(relative), &damaged).expect("write damaged member");
             checked += 1;
             for forced in [None, Some("zarr")] {
-                if let Err(message) = survives_as(&store, forced) {
-                    let how = forced.map_or("detected", |_| "forced");
-                    failures.push(format!(
-                        "{}: {label} ({how}) → panic: {message}",
-                        relative.display()
-                    ));
+                for metadata_only in [false, true] {
+                    if let Err(message) = survives_with(&store, forced, metadata_only) {
+                        let how = forced.map_or("detected", |_| "forced");
+                        let mode = if metadata_only {
+                            "metadata-only"
+                        } else {
+                            "full"
+                        };
+                        failures.push(format!(
+                            "{}: {label} ({how}, {mode}) → panic: {message}",
+                            relative.display()
+                        ));
+                    }
                 }
             }
         }
@@ -254,10 +268,19 @@ fn no_damaged_file_takes_the_process_down() {
             let path = dir.path().join(format!("damaged.{extension}"));
             std::fs::write(&path, &damaged).expect("write damaged fixture");
             for forced in [None, Some(format.as_str())] {
-                checked += 1;
-                if let Err(message) = survives_as(&path, forced) {
-                    let how = forced.map_or("detected", |_| "forced");
-                    failures.push(format!("{name}: {label} ({how}) → panic: {message}"));
+                for metadata_only in [false, true] {
+                    checked += 1;
+                    if let Err(message) = survives_with(&path, forced, metadata_only) {
+                        let how = forced.map_or("detected", |_| "forced");
+                        let mode = if metadata_only {
+                            "metadata-only"
+                        } else {
+                            "full"
+                        };
+                        failures.push(format!(
+                            "{name}: {label} ({how}, {mode}) → panic: {message}"
+                        ));
+                    }
                 }
             }
         }

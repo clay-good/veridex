@@ -400,6 +400,13 @@ reproduced before it was fixed.*
   `features.json` — is refused naming that file, rather than reported as "not a dataset this can
   read".
 
+- **The corruption sweep now runs every damaged file twice — full and `--metadata-only`.** A
+  metadata-only run follows offsets and lengths the file states about *itself*: an MCAP's summary
+  pointer, an HDF5 object header, a Zarr `.zarray`. It reaches that arithmetic without the frame
+  reading that would otherwise trip over the same corruption first, so it is a different code path
+  and a hostile file must not be able to panic it either. Verified reachable rather than assumed: a
+  temporary panic inside the summary reader fires 85 times across the sweep.
+
 - **A full MCAP read is now reconciled against the total the file declares about itself.** An MCAP
   closes with a Statistics record counting the messages it holds. A file truncated after that record
   was written, or one whose chunks this reader could not walk to the end of, yields fewer — and was
