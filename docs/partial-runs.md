@@ -39,6 +39,7 @@ entirely and check what the dataset *says about itself*:
 veridex check my-dataset/ --metadata-only     # LeRobot; reads meta/, opens no Parquet or video
 veridex check my-bag/      --metadata-only    # rosbag2; reads metadata.yaml, opens no .db3
 veridex check oxe-dataset/ --metadata-only    # RLDS/TFDS; reads the two manifest files, opens no shard
+veridex check buffer.zarr/ --metadata-only    # Zarr; reads .zarray/.zattrs + meta/, opens no data chunk
 veridex check hf://lerobot/svla_so101_pickplace --metadata-only   # the Hub, without downloading it
 ```
 
@@ -53,7 +54,7 @@ every refusal that comes with one, so it can neither pass a score gate nor be ce
 about Veridex touches a network: a certificate still verifies offline, which is the property the
 whole trust chain rests on.
 
-Three formats support it, because three keep a manifest outside the container. For a **rosbag2**
+Four formats support it, because four keep their structure outside their data. For a **rosbag2**
 bag it reads `topics_with_message_count` — every topic's name, its ROS type and so its modality, the
 declared message total, the recording distribution, the storage and any compression — without
 opening a shard, which is the difference between seconds and a terabyte. What it cannot see is
@@ -92,6 +93,21 @@ catalog that measured nothing; and per-episode step counts, which RLDS simply ne
 episode carries no declared frame count rather than one derived from a shard length that does not
 mean that. As with LeRobot, the declared-episode-count check is withheld, because the episode set
 came from that very number.
+
+For **Zarr** the structure is already outside the data by construction: `.zarray` states every
+array's dtype, per-row shape and row count, `.zattrs` carries the store's own metadata and
+provenance, and the `meta/` group holds the episode boundaries. Those are a few kilobytes in front
+of a replay buffer that may be hundreds of gigabytes of chunks, and this mode opens none of the
+`data/` ones — a test corrupts every one of them and the run is unchanged. Each episode carries the
+length its boundaries declare, and one empty stream per array, with the same dtype, shape and
+modality a full run reports.
+
+Two details are worth stating. The `meta/` group *is* read: the episode boundaries are the store's
+manifest, a few bytes saying where each episode starts and ends, and without them there is no
+episode set at all. And the clock is the store's own — whether a timeline array exists and declares
+its units is knowable from `.zattrs` alone, so a timed store reports its measured clock here rather
+than a step index. Reporting the step index would be this run's abstention dressed up as a fact
+about the source, and it would then be bound into the content hash as one.
 
 
 ## Why the refusals exist

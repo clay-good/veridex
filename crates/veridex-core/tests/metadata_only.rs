@@ -354,9 +354,10 @@ fn a_dataset_that_declares_no_episode_set_is_refused_not_passed() {
 
 #[test]
 fn a_format_that_cannot_honor_it_is_refused_by_name() {
-    // Every other adapter keeps its structure inside the container. Reading everything anyway and
-    // labelling it metadata-only would answer a question that was never asked.
-    let src = Path::new("tests/fixtures/zarr/dp_replay.zarr");
+    // The remaining adapters keep their structure *inside* the container — an HDF5 file's group
+    // tree, an MCAP's chunks — so there is no manifest to read on its own. Reading everything anyway
+    // and labelling it metadata-only would answer a question that was never asked.
+    let src = Path::new("tests/fixtures/hdf5/flat_single_episode.h5");
     match veridex_core::default_registry()
         .ingest(&Source::Local(src.to_path_buf()), &metadata_only())
     {

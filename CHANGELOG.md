@@ -386,6 +386,20 @@ reproduced before it was fixed.*
 
 ### Added
 
+- **`--metadata-only` for Zarr**, where the structure is outside the data by construction: `.zarray`
+  gives every array's dtype, per-row shape and row count, `.zattrs` the store's metadata and
+  provenance, and the `meta/` group the episode boundaries — a few kilobytes in front of a replay
+  buffer that may be hundreds of gigabytes of chunks. A test corrupts every `data/` chunk in the
+  store and the run is unchanged, which is the claim rather than a comment about it.
+
+  Each episode carries the length its boundaries declare and one empty stream per array, with the
+  same dtype, shape and modality a full run reports. Two decisions worth naming. The `meta/` group
+  *is* read — the boundaries are the store's manifest, and without them there is no episode set to
+  check. And the clock is the store's own: whether a timeline array exists and states its units is
+  knowable from `.zattrs` alone, so a timed store reports `zarr-time` here, not a step index.
+  Reporting the step index would be this run's abstention dressed up as a fact about the source,
+  and the content hash would then bind it as one.
+
 - **`--metadata-only` for RLDS/TFDS**, the format Open X-Embodiment ships in — where the mode earns
   the most: those directories run to hundreds of gigabytes and their manifest is two files of a few
   kilobytes. `dataset_info.json` gives the per-split shard lengths (so the declared episode count),

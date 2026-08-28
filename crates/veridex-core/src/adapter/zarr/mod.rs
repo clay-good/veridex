@@ -198,6 +198,14 @@ impl Adapter for ZarrAdapter {
         Detection::No
     }
 
+    /// A Zarr store keeps its structure *outside* its data: `.zarray` states every array's dtype,
+    /// per-row shape and row count, `.zattrs` carries the store's own metadata, and `meta/` holds
+    /// the episode boundaries — a few kilobytes in front of a replay buffer that may be hundreds of
+    /// gigabytes of chunks, none of which this mode opens.
+    fn supports_metadata_only(&self) -> bool {
+        true
+    }
+
     fn ingest(&self, source: &Source, options: &IngestOptions) -> Result<Ingested, IngestError> {
         let Source::Local(root) = source else {
             return Err(parse_error("remote Zarr ingestion is not supported"));
@@ -273,6 +281,11 @@ impl Adapter for ZarrAdapter {
         // one read serves every episode; a group-per-episode layout has one timeline per group, and
         // taking the first one found would stamp every episode with another episode's recorded times.
         let mut timelines: BTreeMap<u64, Option<Vec<i64>>> = BTreeMap::new();
+        // Whether each episode's own arrays declare a timeline with usable units. Only consulted
+        // under `--metadata-only`, where no stamps are read and the clock has to come from the
+        // metadata — and per episode, because a group-per-episode layout has one timeline per
+        // group, so a store-wide answer would put a neighbour's clock on an untimed episode.
+        let mut declares_clock: BTreeMap<u64, bool> = BTreeMap::new();
         for slice in &slices {
             if !selected.contains(&slice.index) {
                 continue;
@@ -281,7 +294,17 @@ impl Adapter for ZarrAdapter {
                 .iter()
                 .filter(|a| slice.stream_name(&a.path).is_some())
                 .collect();
-            let timeline = read_timeline(&owned, &mut decompression, &mut notes)?;
+            // A metadata-only run opens no chunk, so it reads no stamps — but *whether* the store
+            // records measured time is declared in `.zarray`/`.zattrs`, and that is a fact about
+            // the source rather than about the ingest. Resolved either way, so the clock the CDM
+            // reports is the store's own.
+            let timeline = if options.metadata_only {
+                let declared = resolve_timeline(&owned, &mut notes)?.is_some();
+                declares_clock.insert(slice.index, declared);
+                None
+            } else {
+                read_timeline(&owned, &mut decompression, &mut notes)?
+            };
             timelines.insert(slice.index, timeline);
         }
         let store_name = crate::adapter::dataset_id_from_path(root, FORMAT_ID);
@@ -298,16 +321,28 @@ impl Adapter for ZarrAdapter {
                 let Some(name) = slice.stream_name(&entry.path) else {
                     continue;
                 };
-                if let Some(stream) = build_stream(
-                    entry,
-                    name,
-                    slice,
-                    &store_name,
-                    timeline,
-                    &mut budget,
-                    &mut decompression,
-                    &mut notes,
-                )? {
+                let built = if options.metadata_only {
+                    declared_stream(
+                        entry,
+                        name,
+                        slice,
+                        declares_clock.get(&slice.index).copied().unwrap_or(false),
+                        &mut budget,
+                        &mut notes,
+                    )?
+                } else {
+                    build_stream(
+                        entry,
+                        name,
+                        slice,
+                        &store_name,
+                        timeline,
+                        &mut budget,
+                        &mut decompression,
+                        &mut notes,
+                    )?
+                };
+                if let Some(stream) = built {
                     streams.push(stream);
                 }
             }
@@ -366,8 +401,13 @@ impl Adapter for ZarrAdapter {
                     .unwrap_or_default(),
                 // A Zarr replay buffer records no ego trajectory.
                 ego_poses: None,
-                // Zarr declares no per-episode length of its own: the boundaries *are* the length.
-                declared_frame_count: None,
+                // On a full run the boundaries *are* the length, so recording it as a separate
+                // claim would give the length check `n` to compare against `n`. A metadata-only run
+                // reads no rows, so the boundaries are the only length there is — recorded, so the
+                // report can say how long the store declares each episode to be.
+                declared_frame_count: options
+                    .metadata_only
+                    .then(|| slice.end.saturating_sub(slice.start)),
             });
         }
         episodes.sort_by_key(|e| e.index);
@@ -425,9 +465,14 @@ impl Adapter for ZarrAdapter {
             "array -> stream (first dimension -> frames)".into(),
             ".zarray dtype -> stream.dtype".into(),
             ".zarray shape after the first dimension -> stream.shape".into(),
-            "row bytes -> frame.value_ref.content_hash (SHA-256)".into(),
             ".zattrs -> dataset metadata".into(),
         ];
+        if options.metadata_only {
+            mapped_fields
+                .push(".zarray shape[0] + meta/episode_ends -> declared episode lengths".into());
+        } else {
+            mapped_fields.push("row bytes -> frame.value_ref.content_hash (SHA-256)".into());
+        }
         if episodes
             .iter()
             .flat_map(|e| e.streams.iter())
@@ -448,6 +493,19 @@ impl Adapter for ZarrAdapter {
              period to grade against)"
                 .into(),
         ];
+        if options.metadata_only {
+            omitted_fields.push(
+                "row values, frame timestamps, and content hashes (no data chunk was opened; only \
+                 the `.zarray`/`.zattrs` metadata and the `meta/` group that delimits the episodes \
+                 were read)"
+                    .into(),
+            );
+            omitted_fields.push(
+                "recomputed statistics, saturation and non-finite counts (every one is derived \
+                 from values, and no value was read)"
+                    .into(),
+            );
+        }
         if measured {
             mapped_fields.push(format!(
                 "timeline array + `{UNITS_ATTR}` attribute -> frame.ts (measured)"
@@ -475,7 +533,11 @@ impl Adapter for ZarrAdapter {
         }
 
         let episodes_ingested = episodes.len() as u64;
-        let coverage = if options.sample.is_partial() {
+        let coverage = if options.metadata_only {
+            Coverage::MetadataOnly {
+                episodes_declared: episodes_ingested,
+            }
+        } else if options.sample.is_partial() {
             Coverage::Sample {
                 sample: options.sample.clone(),
                 episodes_ingested,
@@ -835,11 +897,15 @@ fn trailing_number(name: &str) -> Option<u64> {
 }
 
 /// The store's timeline in nanoseconds, when it records one with declared units.
-fn read_timeline(
-    arrays: &[&ArrayEntry],
-    budget: &mut DecompressionBudget,
+/// The array that carries this episode's clock, and the nanoseconds one of its units is worth.
+///
+/// Everything here is read from `.zarray` and `.zattrs` — which array looks like a timeline, and
+/// whether it states its units — so a run that opens no chunk can still answer *whether the store
+/// records measured time*, which is a fact about the source rather than about the ingest.
+fn resolve_timeline<'a>(
+    arrays: &[&'a ArrayEntry],
     notes: &mut Notes,
-) -> Result<Option<Vec<i64>>, IngestError> {
+) -> Result<Option<(&'a ArrayEntry, f64)>, IngestError> {
     let Some(entry) = arrays.iter().find(|a| {
         TIME_LEAVES.contains(&a.leaf())
             && a.array.dtype.numeric
@@ -874,6 +940,17 @@ fn read_timeline(
         });
         return Ok(None);
     };
+    Ok(Some((entry, scale)))
+}
+
+fn read_timeline(
+    arrays: &[&ArrayEntry],
+    budget: &mut DecompressionBudget,
+    notes: &mut Notes,
+) -> Result<Option<Vec<i64>>, IngestError> {
+    let Some((entry, scale)) = resolve_timeline(arrays, notes)? else {
+        return Ok(None);
+    };
     let mut reader = RowReader::new(&entry.array, budget)?;
     let count = entry.array.shape[0];
     let mut stamps = Vec::with_capacity(count.min(1 << 20) as usize);
@@ -903,6 +980,89 @@ fn ns_per_unit(units: &str) -> Option<f64> {
         "ns" | "nanosecond" | "nanoseconds" => Some(1.0),
         _ => None,
     }
+}
+
+/// The stream an array implies over one episode's rows, with no frames in it.
+///
+/// The `--metadata-only` counterpart to [`build_stream`]: `.zarray` states the dtype, the per-row
+/// shape and how many rows the array holds, which is everything the CDM needs to describe the
+/// stream — and none of it requires opening a chunk. What is missing is every fact that lives in
+/// the rows: the frames, their content hashes, and the statistics recomputed from their values.
+///
+/// The two disclosures [`build_stream`] makes about an array too short for its episode are made
+/// here too, from the same shapes, because that defect is visible in the metadata alone.
+fn declared_stream(
+    entry: &ArrayEntry,
+    name: &str,
+    slice: &EpisodeSlice,
+    declares_clock: bool,
+    budget: &mut FrameBudget,
+    notes: &mut Notes,
+) -> Result<Option<Stream>, IngestError> {
+    let array = &entry.array;
+    let rows = array.shape[0];
+    let (start, end) = (slice.start.min(rows), slice.end.min(rows));
+    if end <= start {
+        if slice.start != slice.end {
+            notes.unmapped.push(UnmappedField {
+                source_path: format!("{}[{}..{}]", entry.path, slice.start, slice.end),
+                note: format!(
+                    "this array holds {rows} row(s), so it has none in episode {}'s range; no \
+                     stream is built from it for that episode",
+                    slice.index
+                ),
+            });
+        }
+        return Ok(None);
+    }
+    if end < slice.end {
+        notes.unmapped.push(UnmappedField {
+            source_path: format!("{}[{}..{}]", entry.path, slice.start, slice.end),
+            note: format!(
+                "this array holds only {rows} row(s), short of episode {}'s range; the stream \
+                 covers what exists",
+                slice.index
+            ),
+        });
+    }
+    // No frame is read, so the frame budget never fires on its own — and one `Stream` is built per
+    // (episode x array), both of which come from a handful of bytes of JSON. Charge one unit per
+    // stream against the same ceiling, so a store declaring a million episodes is refused here
+    // rather than in the allocator.
+    budget.take(FORMAT_ID, 1)?;
+
+    let (clock_kind, clock_id) = if declares_clock {
+        // The clock describes the source, not this ingest: the store records measured time and
+        // says what its units are. The temporal checks abstain here for want of frames, which the
+        // coverage note states, rather than for want of a clock.
+        (ClockKind::Measured, CLOCK_TIME)
+    } else {
+        (ClockKind::StepIndex, CLOCK_STEP_INDEX)
+    };
+
+    Ok(Some(Stream {
+        name: name.to_string(),
+        modality: modality_for(leaf_of(name), array),
+        // Zarr declares no sampling rate.
+        declared_rate_hz: None,
+        clock_id: clock_id.into(),
+        clock_kind,
+        dtype: Some(array.dtype.name.clone()),
+        shape: (array.shape.len() > 1).then(|| array.shape[1..].to_vec()),
+        frames: Vec::new(),
+        // Zarr stores no summary statistics, and every recomputed one comes from values this run
+        // did not read.
+        stats: None,
+        dim_stats: None,
+        observed_stats: None,
+        observed_saturation: None,
+        observed_non_finite: None,
+        observed_dim_stats: None,
+        media: None,
+        latched: None,
+        point_fields: None,
+        frame_id: None,
+    }))
 }
 
 /// Build one stream: one array's rows over one episode's range.

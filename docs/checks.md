@@ -199,7 +199,7 @@ the catalog: a check that abstains must say so, or its silence reads as a pass.
 
 ## What a metadata-only run checks
 
-`veridex check --metadata-only <dataset>` (LeRobot, ROS 2 rosbag2, and RLDS/TFDS) answers a narrower question — *does
+`veridex check --metadata-only <dataset>` (LeRobot, ROS 2 rosbag2, RLDS/TFDS, and Zarr) answers a narrower question — *does
 the manifest hold together?* — without opening a single Parquet, shard, or video file. It is the
 fast CI gate for a dataset too large to read on every commit, and the shape a remote Hub check takes.
 

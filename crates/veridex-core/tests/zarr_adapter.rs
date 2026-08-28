@@ -909,3 +909,163 @@ fn an_episode_beyond_every_array_is_reported_not_a_panic() {
         Err(other) => panic!("unexpected error: {other:?}"),
     }
 }
+
+// ---- Reading the store's metadata without opening a chunk ----
+
+fn metadata_only() -> IngestOptions {
+    IngestOptions {
+        metadata_only: true,
+        ..IngestOptions::default()
+    }
+}
+
+#[test]
+fn the_store_metadata_alone_yields_the_episodes_streams_and_declared_lengths() {
+    // A replay buffer's structure lives outside its data: `.zarray` per array, `.zattrs`, and the
+    // tiny `meta/` group that delimits the episodes. That is what this mode reads, and the chunks
+    // — which are the hundreds of gigabytes — are what it does not.
+    let ingested = ingest("dp_replay.zarr", metadata_only());
+    let full = ingest("dp_replay.zarr", IngestOptions::default());
+
+    assert_eq!(
+        ingested.report.coverage,
+        Coverage::MetadataOnly {
+            episodes_declared: full.dataset.episodes.len() as u64
+        }
+    );
+    // The same episodes and the same streams as a full run, described from the same metadata.
+    assert_eq!(
+        ingested
+            .dataset
+            .episodes
+            .iter()
+            .map(|e| e.index)
+            .collect::<Vec<_>>(),
+        full.dataset
+            .episodes
+            .iter()
+            .map(|e| e.index)
+            .collect::<Vec<_>>()
+    );
+    let declared = stream_of(&ingested, 1, "action");
+    let read = stream_of(&full, 1, "action");
+    assert_eq!(declared.dtype, read.dtype);
+    assert_eq!(declared.shape, read.shape);
+    assert_eq!(declared.modality, read.modality);
+    // Nothing that lives in a row survives, because no row was read.
+    assert!(declared.frames.is_empty());
+    assert!(declared.observed_stats.is_none());
+    assert!(declared.observed_non_finite.is_none());
+    // The boundaries are the only length there is here, so they are recorded as the declared one.
+    assert_eq!(
+        ingested.dataset.episodes[1].declared_frame_count,
+        Some(read.frames.len() as u64)
+    );
+    assert!(
+        ingested
+            .report
+            .omitted_fields
+            .iter()
+            .any(|f| f.contains("no data chunk was opened")),
+        "{:?}",
+        ingested.report.omitted_fields
+    );
+    assert!(
+        !ingested
+            .report
+            .mapped_fields
+            .iter()
+            .any(|f| f.contains("content_hash")),
+        "a run that read no row must not claim to have hashed one: {:?}",
+        ingested.report.mapped_fields
+    );
+}
+
+#[test]
+fn the_clock_reported_is_the_stores_own_not_a_consequence_of_reading_nothing() {
+    // Whether the store records measured time is declared in `.zattrs`, so it is knowable without
+    // opening a chunk. Reporting a step index here would be this run's abstention dressed up as a
+    // fact about the source — and it would then be bound into the content hash as one.
+    let timed = ingest("timed.zarr", metadata_only());
+    let action = stream_of(&timed, 1, "action");
+    assert_eq!(action.clock_kind, ClockKind::Measured);
+    assert_eq!(action.clock_id, "zarr-time");
+    assert!(action.frames.is_empty(), "no stamp was read, only declared");
+
+    // And a store whose timeline states no units is still not on a clock.
+    assert_eq!(
+        stream_of(&ingest("untimed.zarr", metadata_only()), 0, "action").clock_kind,
+        ClockKind::StepIndex
+    );
+}
+
+#[test]
+fn a_metadata_only_run_opens_no_data_chunk() {
+    // Proved rather than asserted: every chunk under `data/` is replaced with bytes no codec can
+    // decode. The metadata-only run is unaffected, because it opens none of them; the full run of
+    // the same store is not, because it opens all of them.
+    //
+    // `meta/episode_ends` is deliberately left intact, and that is the honest boundary of the
+    // claim: the episode boundaries *are* the store's manifest, a few bytes that say where each
+    // episode starts and ends, and reading them is what makes the mode able to describe the store
+    // at all. Everything that is actually large — every `data/` array — stays unopened.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("dp_replay.zarr");
+    copy_tree(&fixture("dp_replay.zarr"), &root);
+    let mut corrupted = 0;
+    corrupt_chunks(&root.join("data"), &mut corrupted);
+    assert!(corrupted > 0, "the fixture has chunk files to corrupt");
+
+    let out = default_registry()
+        .ingest(&Source::Local(root.clone()), &metadata_only())
+        .expect("the metadata alone still describes the store");
+    let intact = ingest("dp_replay.zarr", metadata_only());
+    assert_eq!(
+        veridex_core::canonical::content_hash(&out.dataset),
+        veridex_core::canonical::content_hash(&intact.dataset),
+        "corrupting every chunk changed nothing, because none was read"
+    );
+
+    let full = default_registry().ingest(&Source::Local(root), &IngestOptions::default());
+    match full {
+        Err(_) => {}
+        Ok(read) => assert_ne!(
+            veridex_core::canonical::content_hash(&read.dataset),
+            veridex_core::canonical::content_hash(&intact.dataset),
+            "a full run must not be indifferent to the bytes in the chunks"
+        ),
+    }
+}
+
+/// Copy a fixture store so a test can mutate it.
+fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap().filter_map(|e| e.ok()) {
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+/// Overwrite every chunk file (anything that is not a `.z*` metadata file) with undecodable bytes.
+fn corrupt_chunks(dir: &std::path::Path, corrupted: &mut usize) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if entry.file_type().unwrap().is_dir() {
+            corrupt_chunks(&path, corrupted);
+        } else if !path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with(".z"))
+        {
+            std::fs::write(&path, b"not a chunk").unwrap();
+            *corrupted += 1;
+        }
+    }
+}
