@@ -3,7 +3,7 @@
 //! absence as a defect, and that the resulting verdict is never mistaken for a full one.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use arrow::array::{ArrayRef, Float32Array, Float64Array, Int64Array};
@@ -553,5 +553,139 @@ fn every_format_that_supports_it_is_named_in_the_docs() {
                 "{doc} does not mention `{name}`, which supports --metadata-only"
             );
         }
+    }
+}
+
+// ---- The invariant across every format that supports the flag ----
+
+/// A dataset in one format, and the adapter id that reads it.
+struct Sample2 {
+    format: &'static str,
+    path: PathBuf,
+    /// Kept alive: several of these are written into a temporary directory.
+    _keep: Option<tempfile::TempDir>,
+}
+
+fn repo_fixture(relative: &str) -> PathBuf {
+    PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures")).join(relative)
+}
+
+/// One dataset per format that claims `--metadata-only`, so the invariant below is checked against
+/// every one of them rather than against whichever the author happened to think of.
+fn one_dataset_per_supporting_format() -> Vec<Sample2> {
+    let lerobot = tempfile::tempdir().unwrap();
+    write_dataset(lerobot.path(), 3, 20, None);
+    let lerobot_path = lerobot.path().to_path_buf();
+
+    let mcap = tempfile::tempdir().unwrap();
+    let mcap_path = mcap.path().join("demo.mcap");
+    std::fs::copy(
+        PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../veridex-cli/tests/fixtures/demo.mcap"
+        )),
+        &mcap_path,
+    )
+    .expect("the CLI's committed MCAP fixture");
+
+    vec![
+        Sample2 {
+            format: "lerobot",
+            path: lerobot_path,
+            _keep: Some(lerobot),
+        },
+        Sample2 {
+            format: "mcap",
+            path: mcap_path,
+            _keep: Some(mcap),
+        },
+        Sample2 {
+            format: "rosbag2",
+            path: repo_fixture("rosbag2/clean_rig"),
+            _keep: None,
+        },
+        Sample2 {
+            format: "hdf5",
+            path: repo_fixture("hdf5/robomimic_small.h5"),
+            _keep: None,
+        },
+        Sample2 {
+            format: "zarr",
+            path: repo_fixture("zarr/dp_replay.zarr"),
+            _keep: None,
+        },
+    ]
+}
+
+/// Every stream in the dataset, as `episode/name dtype shape modality clock`.
+fn structure(ingested: &veridex_core::Ingested) -> Vec<String> {
+    let mut out: Vec<String> = ingested
+        .dataset
+        .episodes
+        .iter()
+        .flat_map(|e| {
+            e.streams.iter().map(move |s| {
+                format!(
+                    "{}/{} {:?} {:?} {:?} {}",
+                    e.index, s.name, s.dtype, s.shape, s.modality, s.clock_id
+                )
+            })
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+#[test]
+fn a_metadata_only_run_describes_the_same_dataset_minus_the_frames() {
+    // The invariant the whole mode rests on: what it *does* say must agree with a full read. A
+    // metadata-only run that named different streams, or gave them different types, would not be a
+    // narrower answer to the same question — it would be a different answer, and the coverage note
+    // would make it look like the first.
+    //
+    // Driven by the registry rather than by a list, so a seventh adapter claiming the flag fails
+    // here until it has a dataset to check the invariant against.
+    // RLDS is the one exemption, and it is about the *fixture*, not the invariant: a full read of a
+    // TFDS export needs a real TFRecord shard, and the writer for one lives in `rlds_adapter.rs`,
+    // deliberately as a second implementation of the wire format. The same invariant is checked
+    // there, against a shard, by `the_manifest_alone_yields_the_declared_episodes_and_features`.
+    const EXEMPT: &[&str] = &["rlds"];
+
+    let samples = one_dataset_per_supporting_format();
+    for format in veridex_core::default_registry().formats_supporting_metadata_only() {
+        if EXEMPT.contains(&format) {
+            continue;
+        }
+        let sample = samples
+            .iter()
+            .find(|s| s.format == format)
+            .unwrap_or_else(|| panic!("`{format}` claims --metadata-only but has no dataset here"));
+
+        let full = ingest(&sample.path, &IngestOptions::default())
+            .unwrap_or_else(|e| panic!("{format} full ingest: {e}"));
+        let partial = ingest(&sample.path, &metadata_only())
+            .unwrap_or_else(|e| panic!("{format} metadata-only ingest: {e}"));
+
+        assert_eq!(
+            structure(&partial),
+            structure(&full),
+            "{format}: the metadata-only run describes a different dataset"
+        );
+        assert!(
+            partial
+                .dataset
+                .episodes
+                .iter()
+                .all(|e| e.streams.iter().all(|s| s.frames.is_empty())),
+            "{format}: a metadata-only run read frames"
+        );
+        assert!(
+            matches!(
+                partial.report.coverage,
+                veridex_core::adapter::Coverage::MetadataOnly { .. }
+            ),
+            "{format}: coverage is {:?}",
+            partial.report.coverage
+        );
     }
 }

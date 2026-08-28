@@ -417,6 +417,16 @@ reproduced before it was fixed.*
   worked; the two are now consistent. A test pins which formats declare which, so gaining or losing
   an episode axis is a deliberate change.
 
+- **One test now holds every format to the invariant the mode rests on**: a metadata-only run must
+  describe the *same* dataset a full read does — the same episodes, streams, datatypes, shapes,
+  modalities and clocks — minus the frames. A run that named different streams would not be a
+  narrower answer to the same question but a different answer, which the coverage note would then
+  make look like the first. The loop is driven by the registry, so a seventh adapter claiming the
+  flag fails until it has a dataset to check against. Five formats pass it today; RLDS is exempted
+  by fixture rather than by invariant (a full read needs a real TFRecord shard, and the writer for
+  one lives in `rlds_adapter.rs`, where the same check runs against it). Verified to bite by
+  renaming one adapter's streams and watching it name the format.
+
 - **The `--metadata-only` format list is asked of the registry, not written down.** `--help` builds
   its list from the adapters that actually claim the capability, so it cannot drift; and a new test
   fails when a supporting format is missing from `docs/partial-runs.md`, `docs/checks.md`, or the
