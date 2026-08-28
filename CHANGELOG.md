@@ -400,6 +400,22 @@ reproduced before it was fixed.*
   `features.json` — is refused naming that file, rather than reported as "not a dataset this can
   read".
 
+- **`--metadata-only` for HDF5**, where the structure is in the container but not in the *data*: the
+  group tree, each array's datatype and per-row shape, and every object attribute are headers, and
+  reading them touches no chunk. On a robomimic-shaped file of hundreds of gigabytes that is the
+  difference between a manifest check and a full read.
+
+  It yields the same episodes, streams, datatypes and shapes a full run reports, plus each group's
+  declared length attribute where the file writes one. The proof is precise rather than approximate:
+  the test finds a byte whose corruption a *full* read catches as a chunk checksum failure — so that
+  byte is chunk data, not a header — and checks that the header-only read of the same file is
+  untouched by it. As with Zarr, whether the file records measured time is a header fact, so a file
+  with a units-declaring timestamp array reports `hdf5-time` here rather than a step index.
+
+  With this, the refusal for a format that cannot honor the flag applies to the two that genuinely
+  interleave structure with data — CAN+DBC and MDF4 — and the test that pins that refusal now uses
+  a CAN log rather than an HDF5 file.
+
 - **`--metadata-only` for MCAP**, read from the summary section the format writes at the end of
   every finalized file: a Channel and a Schema record per topic, and a Statistics record carrying
   the message total, the per-channel totals and the recording's log-time span. Three seeks in front

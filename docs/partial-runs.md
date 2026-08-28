@@ -41,6 +41,7 @@ veridex check my-bag/      --metadata-only    # rosbag2; reads metadata.yaml, op
 veridex check oxe-dataset/ --metadata-only    # RLDS/TFDS; reads the two manifest files, opens no shard
 veridex check buffer.zarr/ --metadata-only    # Zarr; reads .zarray/.zattrs + meta/, opens no data chunk
 veridex check drive.mcap   --metadata-only    # MCAP; reads the summary section at the end, opens no chunk
+veridex check demos.h5     --metadata-only    # HDF5; reads the group tree and array headers, opens no chunk
 veridex check hf://lerobot/svla_so101_pickplace --metadata-only   # the Hub, without downloading it
 ```
 
@@ -55,7 +56,7 @@ every refusal that comes with one, so it can neither pass a score gate nor be ce
 about Veridex touches a network: a certificate still verifies offline, which is the property the
 whole trust chain rests on.
 
-Five formats support it, because five state their structure somewhere other than in their data. For a **rosbag2**
+Six formats support it, because six state their structure somewhere other than in their data. For a **rosbag2**
 bag it reads `topics_with_message_count` — every topic's name, its ROS type and so its modality, the
 declared message total, the recording distribution, the storage and any compression — without
 opening a shard, which is the difference between seconds and a terabyte. What it cannot see is

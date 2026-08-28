@@ -354,10 +354,18 @@ fn a_dataset_that_declares_no_episode_set_is_refused_not_passed() {
 
 #[test]
 fn a_format_that_cannot_honor_it_is_refused_by_name() {
-    // The remaining adapters keep their structure *inside* the container — an HDF5 file's group
-    // tree, an MCAP's chunks — so there is no manifest to read on its own. Reading everything anyway
-    // and labelling it metadata-only would answer a question that was never asked.
-    let src = Path::new("tests/fixtures/hdf5/flat_single_episode.h5");
+    // Two formats interleave their structure with their data — a CAN log is a stream of frames with
+    // no inventory in front of it, and MDF4's channel groups are read through the same block walk as
+    // its records — so there is no header set that describes the recording on its own. Reading
+    // everything anyway and labelling it metadata-only would answer a question that was never asked.
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(
+        dir.path().join("vehicle.dbc"),
+        "BO_ 100 Speed: 8 ECU\n SG_ wheel : 0|16@1+ (0.01,0) [0|655] \"kph\" X\n",
+    )
+    .unwrap();
+    fs::write(dir.path().join("drive.log"), "(1.000000) can0 064#0000\n").unwrap();
+    let src = dir.path();
     match veridex_core::default_registry()
         .ingest(&Source::Local(src.to_path_buf()), &metadata_only())
     {

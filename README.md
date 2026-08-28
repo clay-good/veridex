@@ -326,11 +326,11 @@ bindings** (`import veridex`, exposing `check`/`check_sarif`/`check_html`/`inspe
 core pipeline, with a CLI⇄Python parity test run in CI; and **sampled ingestion** (`--sample-episodes`
 / `--sample-fraction`), resolved before any data is read and reported as partial coverage everywhere
 it could otherwise be mistaken for a full check; and **metadata-only ingestion** (`--metadata-only`,
-LeRobot, rosbag2, RLDS/TFDS, Zarr, and MCAP), which checks the manifest — the declared episodes and stored
+LeRobot, rosbag2, RLDS/TFDS, Zarr, MCAP, and HDF5), which checks the manifest — the declared episodes and stored
 statistics for LeRobot, the topic inventory and recorder for a bag, the declared episode count and
 per-step feature schema for an Open X-Embodiment-style TFDS directory, the array metadata and episode
-boundaries for a Zarr replay buffer, the summary section an MCAP writes at the end of itself — and
-the provenance, without opening a data file, with the frame-dependent checks abstaining rather than misfiring — including from the **Hugging
+boundaries for a Zarr replay buffer, the summary section an MCAP writes at the end of itself, the group tree and
+array headers of an HDF5 file — and the provenance, without opening a data file, with the frame-dependent checks abstaining rather than misfiring — including from the **Hugging
 Face Hub** (`veridex check hf://org/name --metadata-only`, LeRobot or RLDS/TFDS, with a TFDS version
 directory named in the reference), which fetches only the manifest, over
 HTTPS to the Hub's own hosts, with no credentials sent and a fixed file list a server cannot enlarge,

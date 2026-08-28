@@ -1375,3 +1375,138 @@ fn a_dataset_chunked_one_row_at_a_time_reads_in_linear_time() {
         "reading 16,000 one-row chunks took {elapsed:?} — the per-row rescan is back"
     );
 }
+
+// ---- Reading the file's headers without reading a chunk ----
+
+fn metadata_only() -> IngestOptions {
+    IngestOptions {
+        metadata_only: true,
+        ..IngestOptions::default()
+    }
+}
+
+#[test]
+fn the_headers_alone_yield_the_episodes_streams_and_types() {
+    // An HDF5 file keeps its structure in the container, but not in its data: the group tree, each
+    // array's datatype and shape, and every attribute are headers. Reading them describes the file
+    // without touching a chunk.
+    let summary = ingest("robomimic_small.h5", metadata_only());
+    let full = ingest("robomimic_small.h5", IngestOptions::default());
+
+    assert_eq!(
+        summary.report.coverage,
+        Coverage::MetadataOnly {
+            episodes_declared: full.dataset.episodes.len() as u64
+        }
+    );
+    // Every episode's streams, rendered as text: name, datatype, per-row shape.
+    fn shape(i: &veridex_core::adapter::Ingested) -> Vec<String> {
+        i.dataset
+            .episodes
+            .iter()
+            .flat_map(|e| {
+                e.streams
+                    .iter()
+                    .map(move |s| format!("{}/{} {:?} {:?}", e.index, s.name, s.dtype, s.shape))
+            })
+            .collect()
+    }
+    assert_eq!(
+        shape(&summary),
+        shape(&full),
+        "the episodes, streams, datatypes and shapes all come from headers a full read uses too"
+    );
+    assert!(summary
+        .dataset
+        .episodes
+        .iter()
+        .all(|e| e.streams.iter().all(|s| s.frames.is_empty())));
+    // Every statistic HDF5 offers is recomputed from values, and no value was read. `None`, not
+    // `Some(0)`: that difference is what tells a clean stream from an unread one.
+    assert!(summary
+        .dataset
+        .episodes
+        .iter()
+        .all(|e| e.streams.iter().all(|s| s.observed_non_finite.is_none())));
+    assert!(
+        !summary
+            .report
+            .mapped_fields
+            .iter()
+            .any(|f| f.contains("content_hash") || f.contains("recomputed")),
+        "a run that read no row must not claim to have hashed or summarized one: {:?}",
+        summary.report.mapped_fields
+    );
+}
+
+#[test]
+fn the_clock_reported_is_the_files_own_not_a_consequence_of_reading_nothing() {
+    // Whether the file records measured time — a timestamp array that declares its units — is in
+    // the headers, so it is knowable without a chunk. Reporting a step index here would be this
+    // run's abstention dressed up as a fact about the file, bound into the content hash as one.
+    let timed = ingest("timed_rig.h5", metadata_only());
+    let actions = timed.dataset.episodes[0]
+        .streams
+        .iter()
+        .find(|s| s.name == "actions")
+        .expect("actions");
+    assert_eq!(actions.clock_id, "hdf5-time");
+    assert_eq!(actions.clock_kind, ClockKind::Measured);
+    assert!(actions.frames.is_empty(), "declared, not read");
+
+    // A timestamp array that states no units is still not a clock.
+    let untimed = ingest("untimed_units.h5", metadata_only());
+    assert!(untimed.dataset.episodes[0]
+        .streams
+        .iter()
+        .all(|s| s.clock_kind == ClockKind::StepIndex));
+}
+
+#[test]
+fn a_metadata_only_run_reads_no_chunk() {
+    // Proved rather than asserted, and precisely: find a byte whose corruption a *full* read catches
+    // as a chunk checksum failure — so that byte is chunk data, not a header — and check that the
+    // header-only run of the same file is untouched by it.
+    let bytes = std::fs::read(fixture("timed_rig.h5")).expect("read fixture");
+    let dir = tempfile::tempdir().expect("temp dir");
+    let intact = dir.path().join("intact.h5");
+    std::fs::write(&intact, &bytes).unwrap();
+    let expected = veridex_core::canonical::content_hash(
+        &default_registry()
+            .ingest(&Source::Local(intact), &metadata_only())
+            .expect("headers describe the file")
+            .dataset,
+    );
+
+    let mut proved = 0;
+    for offset in (bytes.len() / 2..bytes.len()).step_by(97) {
+        let mut patched = bytes.clone();
+        patched[offset] ^= 0xFF;
+        // One name for both reads: the dataset id comes from the file name, so two paths would
+        // differ in the CDM for a reason that has nothing to do with what was read.
+        let path = dir.path().join("intact.h5");
+        std::fs::write(&path, &patched).expect("write");
+        let full =
+            default_registry().ingest(&Source::Local(path.clone()), &IngestOptions::default());
+        let Err(IngestError::Parse { message, .. }) = &full else {
+            continue;
+        };
+        if !(message.contains("fletcher32") && message.contains("corrupt")) {
+            continue;
+        }
+        // That byte is chunk data. The header-only run must not notice.
+        let summary = default_registry()
+            .ingest(&Source::Local(path), &metadata_only())
+            .unwrap_or_else(|e| panic!("corrupting chunk data broke the header-only read: {e}"));
+        assert_eq!(
+            veridex_core::canonical::content_hash(&summary.dataset),
+            expected,
+            "corrupting a byte only a full read can see changed what the header-only read produced"
+        );
+        proved += 1;
+    }
+    assert!(
+        proved > 0,
+        "no byte was found that a full read catches as chunk corruption, so this proves nothing"
+    );
+}

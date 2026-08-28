@@ -171,6 +171,14 @@ impl Adapter for Hdf5Adapter {
         }
     }
 
+    /// An HDF5 file keeps its structure in the container, but not in its *data*: the group tree,
+    /// each array's datatype and shape, and every object attribute are headers, and reading them
+    /// touches no chunk. On a robomimic-shaped file of hundreds of gigabytes, that is the whole
+    /// difference between a manifest check and a full read.
+    fn supports_metadata_only(&self) -> bool {
+        true
+    }
+
     fn ingest(&self, source: &Source, options: &IngestOptions) -> Result<Ingested, IngestError> {
         let Source::Local(path) = source else {
             return Err(parse_error("remote HDF5 ingestion is not supported"));
@@ -262,8 +270,15 @@ impl Adapter for Hdf5Adapter {
             if !selected.contains(&index) {
                 continue;
             }
-            let episode =
-                build_episode(&mut file, group, index, &file_uri, &mut budget, &mut notes)?;
+            let episode = build_episode(
+                &mut file,
+                group,
+                index,
+                &file_uri,
+                options.metadata_only,
+                &mut budget,
+                &mut notes,
+            )?;
             provenance.push(Provenance {
                 scope: ProvenanceScope::Episode(index),
                 elements: vec![ProvenanceElement {
@@ -405,11 +420,7 @@ impl Adapter for Hdf5Adapter {
             "array -> stream (first dimension -> frames)".into(),
             "array datatype -> stream.dtype".into(),
             "array shape after the first dimension -> stream.shape".into(),
-            "row bytes -> frame.value_ref.content_hash (SHA-256)".into(),
             "object attributes -> dataset metadata".into(),
-            "numeric array values -> recomputed per-dimension statistics, saturation, and \
-             non-finite counts"
-                .into(),
         ];
         let mut omitted_fields = vec![
             "image/point payload decoding (frames are fingerprints, not pixels)".into(),
@@ -417,6 +428,28 @@ impl Adapter for Hdf5Adapter {
              period to grade against)"
                 .into(),
         ];
+        if options.metadata_only {
+            mapped_fields.push(
+                "array header rows + group length attribute -> declared episode lengths".into(),
+            );
+            omitted_fields.push(
+                "row values, frame timestamps, and content hashes (no chunk was read; only the \
+                 group tree, the array headers and the object attributes were)"
+                    .into(),
+            );
+            omitted_fields.push(
+                "recomputed statistics, saturation and non-finite counts (every one is derived \
+                 from values, and no value was read)"
+                    .into(),
+            );
+        } else {
+            mapped_fields.push("row bytes -> frame.value_ref.content_hash (SHA-256)".into());
+            mapped_fields.push(
+                "numeric array values -> recomputed per-dimension statistics, saturation, and \
+                 non-finite counts"
+                    .into(),
+            );
+        }
         if !notes.wide_arrays.is_empty() {
             let named: Vec<String> = notes.wide_arrays.iter().take(4).cloned().collect();
             let rest = notes.wide_arrays.len().saturating_sub(named.len());
@@ -444,7 +477,11 @@ impl Adapter for Hdf5Adapter {
             ));
         }
 
-        let coverage = if options.sample.is_partial() {
+        let coverage = if options.metadata_only {
+            Coverage::MetadataOnly {
+                episodes_declared: episodes_ingested,
+            }
+        } else if options.sample.is_partial() {
             Coverage::Sample {
                 sample: options.sample.clone(),
                 episodes_ingested,
@@ -650,12 +687,18 @@ fn collect_arrays(
 /// and the offset never advances), so a 24 MB input grew past 2.6 GB with no ceiling and no error a
 /// CI gate could report. The identical construction on a non-timeline array was refused instantly,
 /// because `build_stream` charges first.
-fn read_timeline(
+/// The array carrying this episode's clock, the nanoseconds one of its units is worth, and how many
+/// rows it holds.
+///
+/// Everything here comes from the array's *header* and its attributes — which array looks like a
+/// timeline, and whether it states its units — so a run that reads no chunk can still answer
+/// *whether this episode records measured time*, which is a fact about the file rather than about
+/// the ingest.
+fn resolve_timeline<'a>(
     file: &mut H5File,
-    arrays: &[ArrayEntry],
+    arrays: &'a [ArrayEntry],
     notes: &mut Notes,
-    budget: &mut FrameBudget,
-) -> Result<Option<(u64, Vec<i64>)>, IngestError> {
+) -> Result<Option<(&'a ArrayEntry, f64, u64)>, IngestError> {
     let Some(entry) = arrays.iter().find(|a| {
         TIME_LEAVES.contains(&leaf_name(&a.path))
             && a.info.datatype.is_numeric()
@@ -691,6 +734,19 @@ fn read_timeline(
                  (s, ms, us, ns)"
             ),
         });
+        return Ok(None);
+    };
+    let rows = entry.info.dims.first().copied().unwrap_or(0);
+    Ok(Some((entry, scale, rows)))
+}
+
+fn read_timeline(
+    file: &mut H5File,
+    arrays: &[ArrayEntry],
+    notes: &mut Notes,
+    budget: &mut FrameBudget,
+) -> Result<Option<(u64, Vec<i64>)>, IngestError> {
+    let Some((entry, scale, _)) = resolve_timeline(file, arrays, notes)? else {
         return Ok(None);
     };
     let count = entry.info.dims.first().copied().unwrap_or(0);
@@ -738,6 +794,7 @@ fn build_episode(
     group: &EpisodeGroup,
     index: u64,
     file_uri: &str,
+    metadata_only: bool,
     budget: &mut FrameBudget,
     notes: &mut Notes,
 ) -> Result<Episode, IngestError> {
@@ -747,7 +804,16 @@ fn build_episode(
     // Sorted by path so the streams of an episode are built in a file-independent order.
     arrays.sort_by(|a, b| a.path.cmp(&b.path));
 
-    let timeline = read_timeline(file, &arrays, notes, budget)?;
+    // A metadata-only run resolves *whether* this episode is on a measured clock, and over how many
+    // rows, without reading a stamp: both are in the timeline array's header and attributes.
+    let (timeline, declared_clock_rows) = if metadata_only {
+        let rows = resolve_timeline(file, &arrays, notes)?.map(|(_, _, rows)| rows);
+        // `Some(0)` when the file records no timeline at all, so every stream compares unequal and
+        // lands on the step index — the same answer a full read gives.
+        (None, Some(rows.unwrap_or(0)))
+    } else {
+        (read_timeline(file, &arrays, notes, budget)?, None)
+    };
 
     let header = file.object_header(group.addr)?;
     let attrs = read_attributes(file, &header, &mut notes.skipped_attrs);
@@ -776,6 +842,7 @@ fn build_episode(
             group,
             file_uri,
             timeline.as_ref(),
+            declared_clock_rows,
             budget,
             notes,
         )? {
@@ -896,12 +963,14 @@ fn unmappable_reason(info: &DatasetInfo) -> String {
 }
 
 /// Build one stream from one array, or `None` when the array carries no timeline.
+#[allow(clippy::too_many_arguments)]
 fn build_stream(
     file: &mut H5File,
     entry: &ArrayEntry,
     group: &EpisodeGroup,
     file_uri: &str,
     timeline: Option<&(u64, Vec<i64>)>,
+    declared_clock_rows: Option<u64>,
     budget: &mut FrameBudget,
     notes: &mut Notes,
 ) -> Result<Option<Stream>, IngestError> {
@@ -910,6 +979,52 @@ fn build_stream(
         return Ok(None);
     }
     let rows = info.dims[0];
+    // A metadata-only run reads no row, so the array's header is all there is — and it is enough to
+    // describe the stream: the datatype, the per-row shape, and whether the episode's timeline
+    // covers these rows. Returned here, before the frame budget is charged for rows nobody will
+    // read, and before a single chunk is touched.
+    if let Some(clock_rows) = declared_clock_rows {
+        // One unit per stream rather than one per row: no frame is allocated, but a `Stream` is,
+        // and the file's group tree is what decides how many.
+        budget.take(FORMAT_ID, 1)?;
+        // `clock_rows > 0` because a file with no timeline reports zero, and a zero-row array would
+        // otherwise compare equal to it and be reported as measured.
+        let measured = clock_rows > 0 && clock_rows == rows;
+        return Ok(Some(Stream {
+            name: entry.path.clone(),
+            modality: modality_for(&entry.path, &info),
+            declared_rate_hz: None,
+            clock_id: if measured {
+                CLOCK_TIME
+            } else {
+                CLOCK_STEP_INDEX
+            }
+            .to_string(),
+            // The clock describes the file — it stores a timestamp array and declares its units —
+            // not this ingest. The temporal checks abstain here for want of frames, which the
+            // coverage note states, rather than for want of a clock.
+            clock_kind: if measured {
+                ClockKind::Measured
+            } else {
+                ClockKind::StepIndex
+            },
+            dtype: Some(info.datatype.name()),
+            shape: (info.dims.len() > 1).then(|| info.dims[1..].to_vec()),
+            frames: Vec::new(),
+            // Every statistic HDF5 offers is recomputed from values, and no value was read. `None`
+            // rather than `Some(0)`: the difference is what tells a clean stream from an unread one.
+            stats: None,
+            dim_stats: None,
+            observed_stats: None,
+            observed_saturation: None,
+            observed_non_finite: None,
+            observed_dim_stats: None,
+            latched: None,
+            point_fields: None,
+            media: None,
+            frame_id: None,
+        }));
+    }
     budget.take(FORMAT_ID, rows)?;
 
     // A stream is on measured time only when the episode's timeline covers exactly its rows.
