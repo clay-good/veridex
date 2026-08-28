@@ -338,9 +338,13 @@ impl Adapter for Mdf4Adapter {
         }
     }
 
+    /// An MF4 file is one recording, ingested as one episode, so there is no episode axis to sample.
+    fn supports_sampling(&self) -> bool {
+        false
+    }
+
     fn ingest(&self, source: &Source, options: &IngestOptions) -> Result<Ingested, IngestError> {
         // An MF4 measurement becomes one episode, so there is nothing to sample along.
-        super::reject_sampling(FORMAT_ID, options)?;
         let Source::Local(path) = source else {
             return Err(IngestError::Parse {
                 format_id: FORMAT_ID,

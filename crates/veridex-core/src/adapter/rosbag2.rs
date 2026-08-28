@@ -875,9 +875,13 @@ impl Adapter for Rosbag2Adapter {
         true
     }
 
+    /// A bag is one recording, ingested as one episode, so there is no episode axis to sample.
+    fn supports_sampling(&self) -> bool {
+        false
+    }
+
     fn ingest(&self, source: &Source, options: &IngestOptions) -> Result<Ingested, IngestError> {
         // A bag is one continuous recording, so there is no episode axis to sample along.
-        super::reject_sampling(FORMAT, options)?;
         let Source::Local(path) = source else {
             return Err(IngestError::NotImplemented {
                 what: "remote rosbag2 ingestion",

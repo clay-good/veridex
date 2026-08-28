@@ -466,7 +466,40 @@ fn a_single_episode_format_refuses_a_sample_rather_than_returning_everything() {
         Err(IngestError::SamplingUnsupported { format_id, .. }) => assert_eq!(format_id, "mcap"),
         other => panic!("expected mcap to refuse a sample, got ok={}", other.is_ok()),
     }
+    // And when the format is forced rather than detected. The refusal lives in the registry, above
+    // both paths, so neither can be the one that forgot it.
+    match registry.ingest_as("mcap", &source, &options(Sample::FirstEpisodes(1))) {
+        Err(IngestError::SamplingUnsupported { format_id, .. }) => assert_eq!(format_id, "mcap"),
+        other => panic!(
+            "expected mcap to refuse a forced sample, got ok={}",
+            other.is_ok()
+        ),
+    }
     assert!(registry.ingest(&source, &options(Sample::All)).is_ok());
+}
+
+#[test]
+fn which_formats_have_an_episode_axis_is_declared_not_left_to_each_adapter() {
+    // The refusal is enforced once, in the registry, on what each adapter declares — so an adapter
+    // cannot be the one that forgot it, and the CLI's help builds its list from the same answer.
+    // This pins the declarations themselves: a format that gains or loses an episode axis has to
+    // change this list deliberately.
+    let registry = veridex_core::default_registry();
+    let mut sampling = registry.formats_supporting_sampling();
+    sampling.sort();
+    assert_eq!(sampling, vec!["hdf5", "lerobot", "rlds", "zarr"]);
+
+    let mut single_episode: Vec<&str> = registry
+        .supported_formats()
+        .into_iter()
+        .filter(|f| !sampling.contains(f))
+        .collect();
+    single_episode.sort();
+    assert_eq!(
+        single_episode,
+        vec!["candbc", "mcap", "mf4", "rosbag2"],
+        "each of these ingests a recording as one episode"
+    );
 }
 
 #[test]

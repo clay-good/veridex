@@ -2677,12 +2677,12 @@ fn print_help() {
     );
     // The format list is asked of the registry rather than written here, so an adapter that starts
     // or stops supporting the flag cannot leave this line claiming otherwise.
-    let metadata_only_formats = veridex_core::default_registry()
-        .formats_supporting_metadata_only()
-        .join(", ");
+    let registry = veridex_core::default_registry();
+    let metadata_only_formats = registry.formats_supporting_metadata_only().join(", ");
+    let sampling_formats = registry.formats_supporting_sampling().join(", ");
     println!(
         "    --sample-episodes <n>
-                         check only the first n episodes (check, inspect; LeRobot, RLDS, HDF5, Zarr)
+                         check only the first n episodes (check, inspect; {sampling_formats})
     --sample-fraction <f>
                          check a deterministic fraction of episodes, f in (0, 1]
     --sample-seed <n>    fix the --sample-fraction draw (default 0)

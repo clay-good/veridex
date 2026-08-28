@@ -496,26 +496,6 @@ fn check_options_supported(source: &Source, options: &IngestOptions) -> Result<(
     options.sample.validate()
 }
 
-/// Refuse a sampling request an adapter cannot honor, naming the format.
-///
-/// Formats that ingest a recording as a single episode (MCAP, rosbag2, CAN+DBC, MF4) have no episode axis to
-/// sample along. Returning the whole recording labelled [`Coverage::Full`] would be correct output
-/// for a request that was never honored; saying so is not.
-pub fn reject_sampling(
-    format_id: &'static str,
-    options: &IngestOptions,
-) -> Result<(), IngestError> {
-    if options.sample.is_partial() {
-        return Err(IngestError::SamplingUnsupported {
-            format_id,
-            reason: "this format ingests a recording as a single episode, so there is no episode \
-                     axis to sample along"
-                .into(),
-        });
-    }
-    Ok(())
-}
-
 /// The contract every format adapter implements.
 ///
 /// Object-safe: adapters are stored as `Box<dyn Adapter>` in an [`AdapterRegistry`].
@@ -532,12 +512,25 @@ pub trait Adapter: Send + Sync {
     /// Whether this adapter can populate the CDM from the source's manifest alone, without reading
     /// any stream payload ([`IngestOptions::metadata_only`]).
     ///
-    /// Defaults to `false`, and the registry refuses the request on that answer — so a format whose
-    /// structure lives *inside* its container (MCAP, HDF5, Zarr, RLDS, CAN, MF4) is refused by name
-    /// rather than reading everything anyway and labelling it metadata-only. A new adapter is
-    /// therefore safe by default: it has to claim the capability to be handed the option.
+    /// Defaults to `false`, and the registry refuses the request on that answer — so a format that
+    /// interleaves its structure with its data (CAN+DBC, MF4) is refused by name rather than
+    /// reading everything anyway and labelling it metadata-only. A new adapter is therefore safe by
+    /// default: it has to claim the capability to be handed the option.
     fn supports_metadata_only(&self) -> bool {
         false
+    }
+
+    /// Whether this adapter has an episode axis to sample along ([`IngestOptions::sample`]).
+    ///
+    /// Defaults to `true`, because most formats do. A format that ingests a recording as a single
+    /// episode (MCAP, ROS 2 rosbag2, CAN+DBC, MF4) overrides it, and the registry then refuses the
+    /// request by name — handing back the whole recording labelled [`Coverage::Full`] would be
+    /// correct output for a request that was never honored.
+    ///
+    /// Asked here rather than inside each `ingest` so the refusal cannot be forgotten, which is the
+    /// same reason [`Adapter::supports_metadata_only`] lives here.
+    fn supports_sampling(&self) -> bool {
+        true
     }
 
     /// Ingest `source` into the CDM, honoring `options` and recording fidelity.
@@ -569,6 +562,18 @@ impl AdapterRegistry {
     /// The format ids this registry can ingest.
     pub fn supported_formats(&self) -> Vec<&'static str> {
         self.adapters.iter().map(|a| a.format_id()).collect()
+    }
+
+    /// The format ids with an episode axis to sample along ([`IngestOptions::sample`]).
+    ///
+    /// Asked of the adapters rather than written down anywhere, for the same reason as
+    /// [`AdapterRegistry::formats_supporting_metadata_only`].
+    pub fn formats_supporting_sampling(&self) -> Vec<&'static str> {
+        self.adapters
+            .iter()
+            .filter(|a| a.supports_sampling())
+            .map(|a| a.format_id())
+            .collect()
     }
 
     /// The format ids that can be checked from what the source declares about itself, without
@@ -756,6 +761,14 @@ fn check_adapter_supports_options(
     adapter: &dyn Adapter,
     options: &IngestOptions,
 ) -> Result<(), IngestError> {
+    if options.sample.is_partial() && !adapter.supports_sampling() {
+        return Err(IngestError::SamplingUnsupported {
+            format_id: adapter.format_id(),
+            reason: "this format ingests a recording as a single episode, so there is no episode \
+                     axis to sample along"
+                .into(),
+        });
+    }
     if options.metadata_only && !adapter.supports_metadata_only() {
         return Err(IngestError::NotImplemented {
             what: "metadata-only ingestion for this format",

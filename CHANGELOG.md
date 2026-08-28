@@ -400,6 +400,14 @@ reproduced before it was fixed.*
   `features.json` — is refused naming that file, rather than reported as "not a dataset this can
   read".
 
+- **Whether a format has an episode axis to sample is now declared, not enforced four times.** Each
+  single-episode adapter called `reject_sampling` from inside its own `ingest`, which is the shape
+  that lets the fifth one forget. Adapters now declare `supports_sampling`, the registry refuses the
+  request before the adapter is handed the source — on both the detected and the `--format` path —
+  and `--help` builds its list from the same answer. That is exactly how `--metadata-only` already
+  worked; the two are now consistent. A test pins which formats declare which, so gaining or losing
+  an episode axis is a deliberate change.
+
 - **The `--metadata-only` format list is asked of the registry, not written down.** `--help` builds
   its list from the adapters that actually claim the capability, so it cannot drift; and a new test
   fails when a supporting format is missing from `docs/partial-runs.md`, `docs/checks.md`, or the

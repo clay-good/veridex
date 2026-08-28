@@ -319,9 +319,13 @@ impl Adapter for CanDbcAdapter {
         }
     }
 
+    /// A CAN log is one recording, ingested as one episode, so there is no episode axis to sample.
+    fn supports_sampling(&self) -> bool {
+        false
+    }
+
     fn ingest(&self, source: &Source, options: &IngestOptions) -> Result<Ingested, IngestError> {
         // A CAN log becomes one episode, so there is nothing to sample along.
-        super::reject_sampling("candbc", options)?;
         let Source::Local(dir) = source else {
             return Err(IngestError::Parse {
                 format_id: "candbc",

@@ -428,9 +428,13 @@ impl Adapter for McapAdapter {
         true
     }
 
+    /// An MCAP is one recording, ingested as one episode, so there is no episode axis to sample.
+    fn supports_sampling(&self) -> bool {
+        false
+    }
+
     fn ingest(&self, source: &Source, options: &IngestOptions) -> Result<Ingested, IngestError> {
         // An MCAP recording becomes one episode, so there is nothing to sample along.
-        super::reject_sampling("mcap", options)?;
         let path = match source {
             Source::Local(p) => p,
             Source::Remote(_) => {
