@@ -203,13 +203,23 @@ the catalog: a check that abstains must say so, or its silence reads as a pass.
 the manifest hold together?* — without opening a single Parquet, shard, or video file. It is the
 fast CI gate for a dataset too large to read on every commit, and the shape a remote Hub check takes.
 
+What each format offers is different, because their manifests are:
+
+| Format | Read without touching the data |
+|---|---|
+| LeRobot | `meta/` — the declared episode set and per-episode lengths, every feature's dtype/shape/rate, the stored statistics, and the dataset card's licence |
+| ROS 2 rosbag2 | `metadata.yaml` — the topic inventory with each topic's ROS type, the declared message total, the recorder and storage |
+| RLDS/TFDS | `dataset_info.json` + `features.json` — the per-split shard lengths (so the episode count), the file format and version, the citation and licence, and every per-step feature's dtype and shape |
+| Zarr | `.zarray` / `.zattrs` per array and the `meta/` group — the episode boundaries and their lengths, every array's dtype and per-row shape, and the store's own metadata |
+| MCAP | the summary section at the end of the file — the channel inventory with each topic's schema, the declared message totals and log-time span, the message encodings, and the writing library |
+
 What still applies, because it is all manifest content:
 
 | Family | Still checked |
 |---|---|
 | Structural | declared vs. actual episode count, duplicate episode indices, cross-episode dtype/shape consistency, stream-presence consistency, episode-index gaps |
-| Statistical | every stored-statistics check over `meta/stats.json` — inverted ranges, non-finite values, a mean outside its own min/max, an impossible standard deviation |
-| Provenance | the whole family: license, sensor, source format, and every completeness/consistency rule |
+| Statistical | every stored-statistics check over `meta/stats.json` — inverted ranges, non-finite values, a mean outside its own min/max, an impossible standard deviation (LeRobot is the only one of the five that stores statistics) |
+| Provenance | the whole family: license, sensor, source format, and every completeness/consistency rule — noting that a provenance element living inside the data is *absent* here rather than assumed, so an RLDS export scores lower on provenance than a full read of it, honestly |
 
 What abstains, and why it must:
 
@@ -220,6 +230,13 @@ What abstains, and why it must:
 | `structural.degenerate-episode` (per-stream arms) | Every stream carries no frames *by request*, so `EMPTY_STREAM` would fire on all of them. `EMPTY_DATASET` and `EMPTY_EPISODE` still run. |
 | every temporal check | There are no timestamps to grade. |
 | every recomputed statistical check, `structural.stuck-stream`, `structural.duplicate-episode`, every video check | All read values, per-frame content hashes, or media headers. |
+
+Each format also refuses what it cannot honestly approximate rather than guessing: a bare `.db3`
+with no `metadata.yaml`, a rosbag2 or MCAP whose per-topic counts do not add up to its own declared
+total, a TFDS export with no shard lengths, an MCAP written without a summary section, and a
+Zarr store whose layout yields no episodes at all (neither `meta/episode_ends` nor a group of
+arrays). Each refusal names the file or field at fault and the way to
+get an answer anyway.
 
 And one refusal worth naming: when the episode set comes from `info.json`'s `total_episodes` alone
 (no `meta/episodes.jsonl`), the declared-episode-count check is **withheld** rather than run, because
