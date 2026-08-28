@@ -757,8 +757,63 @@ impl Adapter for McapAdapter {
             calibration,
         };
 
+        // The file's own summary index, checked against what the read actually yielded. An MCAP
+        // closes with a Statistics record declaring how many messages it holds; a file truncated
+        // after that record was written, or one whose chunks this reader could not walk to the end
+        // of, yields fewer — and reading it as a complete recording is exactly the "silence reads as
+        // a pass" failure this tool exists to prevent. Cheap: the summary sits at a known offset,
+        // and the whole file is already in memory here.
+        //
+        // A file with no summary section is not a fault — a streaming writer legitimately omits one
+        // — so it disables the reconciliation rather than failing the read, and says so.
+        let mut unread_sources = Vec::new();
+        let mut count_note = None;
+        match read_summary(path).ok().and_then(|s| s.statistics) {
+            Some(stats) => {
+                let ingested: u64 = dataset.episodes[0]
+                    .streams
+                    .iter()
+                    .map(|s| s.frames.len() as u64)
+                    .sum();
+                match stats.message_count.cmp(&ingested) {
+                    std::cmp::Ordering::Greater => unread_sources.push(UnmappedField {
+                        source_path: "summary Statistics.message_count".into(),
+                        note: format!(
+                            "the file's own summary declares {} message(s) but {ingested} were \
+                             read — {} are missing from its chunks",
+                            stats.message_count,
+                            stats.message_count - ingested
+                        ),
+                    }),
+                    // The other direction is not unread data: every message present was read. It is
+                    // the summary that is wrong, which is worth saying and is not a coverage hole.
+                    std::cmp::Ordering::Less => {
+                        count_note = Some(UnmappedField {
+                            source_path: "summary Statistics.message_count".into(),
+                            note: format!(
+                                "the file's own summary declares {} message(s) but {ingested} were \
+                                 read; the CDM records the recording, and the summary's disagreeing \
+                                 total is not represented in it",
+                                stats.message_count
+                            ),
+                        })
+                    }
+                    std::cmp::Ordering::Equal => {}
+                }
+            }
+            None => {
+                count_note = Some(UnmappedField {
+                    source_path: "summary Statistics record".into(),
+                    note: "this file declares no message total (it was written without a summary \
+                           section, or without statistics in one), so the read could not be \
+                           reconciled against a count the file itself states"
+                        .into(),
+                })
+            }
+        }
+
         let report = IngestReport {
-            unread_sources: Vec::new(),
+            unread_sources,
             format_id: "mcap",
             source_version: Some("0".into()),
             coverage: Coverage::Full,
@@ -802,16 +857,20 @@ impl Adapter for McapAdapter {
                 }
                 m
             },
-            unmapped_fields: vec![
-                UnmappedField {
-                    source_path: "message.publish_time".into(),
-                    note: "the CDM frame carries a single timestamp (log_time)".into(),
-                },
-                UnmappedField {
-                    source_path: "message.sequence".into(),
-                    note: "per-channel sequence numbers are not represented in the CDM".into(),
-                },
-            ],
+            unmapped_fields: {
+                let mut u = vec![
+                    UnmappedField {
+                        source_path: "message.publish_time".into(),
+                        note: "the CDM frame carries a single timestamp (log_time)".into(),
+                    },
+                    UnmappedField {
+                        source_path: "message.sequence".into(),
+                        note: "per-channel sequence numbers are not represented in the CDM".into(),
+                    },
+                ];
+                u.extend(count_note);
+                u
+            },
             omitted_fields: vec![
                 "episode-segmentation (MCAP has no episode concept; the whole file is one episode)"
                     .into(),

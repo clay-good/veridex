@@ -1841,22 +1841,7 @@ fn a_summary_whose_counts_do_not_add_up_is_refused_not_reported() {
     // The inventory has to be whole, and the file's own total is what proves it. Presenting one
     // channel out of two as the recording's contents is invisible to the caller.
     let mut bytes = build_mcap(&rig());
-    let summary_start = summary_start_of(&bytes) as usize;
-    let footer_at = bytes.len() - 8 - 29;
-    // Find the Statistics record (opcode 0x0B) in the summary section and inflate its total.
-    let mut at = summary_start;
-    let mut patched = false;
-    while at + 9 <= footer_at {
-        let opcode = bytes[at];
-        let len = u64::from_le_bytes(bytes[at + 1..at + 9].try_into().unwrap()) as usize;
-        if opcode == 0x0B {
-            bytes[at + 9..at + 17].copy_from_slice(&9_999u64.to_le_bytes());
-            patched = true;
-            break;
-        }
-        at += 9 + len;
-    }
-    assert!(patched, "the fixture has a Statistics record to patch");
+    patch_message_count(&mut bytes, 9_999);
     let path = write_temp_mcap(&bytes);
 
     match default_registry().ingest(&Source::Local(path.to_path_buf()), &metadata_only()) {
@@ -1869,4 +1854,87 @@ fn a_summary_whose_counts_do_not_add_up_is_refused_not_reported() {
         }
         other => panic!("expected a refusal, got ok={}", other.is_ok()),
     }
+}
+
+/// Rewrite the total in the summary's Statistics record, leaving everything else as written.
+fn patch_message_count(bytes: &mut [u8], total: u64) {
+    let summary_start = summary_start_of(bytes) as usize;
+    let footer_at = bytes.len() - 8 - 29;
+    let mut at = summary_start;
+    while at + 9 <= footer_at {
+        let opcode = bytes[at];
+        let len = u64::from_le_bytes(bytes[at + 1..at + 9].try_into().unwrap()) as usize;
+        if opcode == 0x0B {
+            bytes[at + 9..at + 17].copy_from_slice(&total.to_le_bytes());
+            return;
+        }
+        at += 9 + len;
+    }
+    panic!("the fixture has no Statistics record to patch");
+}
+
+#[test]
+fn a_full_read_is_reconciled_against_the_total_the_file_declares() {
+    // An MCAP closes with a count of what it holds. A file truncated after that record was written,
+    // or one whose chunks this reader could not walk to the end of, yields fewer messages — and
+    // reading it as a complete recording is the failure this tool exists to prevent.
+    let sound = write_temp_mcap(&build_mcap(&rig()));
+    let out = ingest_with(&sound, &IngestOptions::default());
+    assert!(
+        out.report.unread_sources.is_empty(),
+        "a sound file must produce no shortfall: {:?}",
+        out.report.unread_sources
+    );
+
+    let mut bytes = build_mcap(&rig());
+    patch_message_count(&mut bytes, 500);
+    let short = write_temp_mcap(&bytes);
+    let out = ingest_with(&short, &IngestOptions::default());
+    let note = out
+        .report
+        .unread_sources
+        .iter()
+        .find(|u| u.source_path.contains("message_count"))
+        .unwrap_or_else(|| panic!("expected a shortfall: {:?}", out.report.unread_sources));
+    assert!(note.note.contains("500"), "{}", note.note);
+    assert!(note.note.contains("495 are missing"), "{}", note.note);
+}
+
+#[test]
+fn a_summary_that_over_reads_is_a_wrong_total_not_a_coverage_hole() {
+    // The other direction: every message present was read, and it is the summary that is wrong.
+    // Said, but not as unread data — a coverage hole is about data nobody looked at.
+    let mut bytes = build_mcap(&rig());
+    patch_message_count(&mut bytes, 1);
+    let path = write_temp_mcap(&bytes);
+    let out = ingest_with(&path, &IngestOptions::default());
+    assert!(out.report.unread_sources.is_empty());
+    assert!(
+        out.report
+            .unmapped_fields
+            .iter()
+            .any(|u| u.note.contains("disagreeing")),
+        "{:?}",
+        out.report.unmapped_fields
+    );
+}
+
+#[test]
+fn a_file_with_no_summary_says_the_reconciliation_could_not_run() {
+    // A streaming writer legitimately omits the summary. That disables the check rather than
+    // failing the read — and the report says so, because a check that silently did not run reads
+    // exactly like one that passed.
+    let mut bytes = build_mcap(&rig());
+    let footer_at = bytes.len() - 8 - 29;
+    bytes[footer_at + 9..footer_at + 17].copy_from_slice(&0u64.to_le_bytes());
+    let path = write_temp_mcap(&bytes);
+    let out = ingest_with(&path, &IngestOptions::default());
+    assert!(
+        out.report
+            .unmapped_fields
+            .iter()
+            .any(|u| u.note.contains("could not be reconciled")),
+        "{:?}",
+        out.report.unmapped_fields
+    );
 }

@@ -400,6 +400,18 @@ reproduced before it was fixed.*
   `features.json` — is refused naming that file, rather than reported as "not a dataset this can
   read".
 
+- **A full MCAP read is now reconciled against the total the file declares about itself.** An MCAP
+  closes with a Statistics record counting the messages it holds. A file truncated after that record
+  was written, or one whose chunks this reader could not walk to the end of, yields fewer — and was
+  read as a complete recording, which is the "silence reads as a pass" failure the tool exists to
+  prevent. The shortfall is now disclosed as an **unread source**, the same way a rosbag2 short of
+  its `metadata.yaml` total is, and travels into the verdict with it.
+
+  The other direction is not a coverage hole — every message present was read, and it is the summary
+  that is wrong — so it is recorded as an unmapped field instead. And a file with no summary section
+  (a streaming writer legitimately omits one) disables the reconciliation rather than failing the
+  read, and says so: a check that silently did not run reads exactly like one that passed.
+
 - **`--metadata-only` for HDF5**, where the structure is in the container but not in the *data*: the
   group tree, each array's datatype and per-row shape, and every object attribute are headers, and
   reading them touches no chunk. On a robomimic-shaped file of hundreds of gigabytes that is the

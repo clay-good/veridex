@@ -312,7 +312,9 @@ episode and stream, and each shareable through `--redact`; **LeRobot v3, RLDS/TF
 ROS-message decode into an autonomy rig; rosbag2 reads the `sqlite3` storage plugin — plain or
 zstd-compressed — through Veridex's own bounds-checked SQLite reader, reconciles the bag against its
 `metadata.yaml` message total, and discloses a message on an undeclared topic as unread rather than
-dropping it), CAN+DBC, and ASAM
+dropping it; an MCAP is reconciled the same way against the message total in the summary section it
+writes about itself, so a recording short of its own count is disclosed as unread rather than read
+as complete), CAN+DBC, and ASAM
 MDF/MF4 adapters** with a passing cross-format
 neutrality gate (the same logical dataset yields equivalent CDMs as LeRobot v3 and as MCAP, and as rosbag2 and as MCAP); descriptive scenario-dimension coverage and **scenario/map/sim
 reference extraction** (OpenSCENARIO / OpenDRIVE / OSI / simulator, with the version read from the
