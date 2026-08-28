@@ -338,6 +338,15 @@ reproduced before it was fixed.*
 
 ### Changed
 
+- **A certificate is stamped with an RFC 3339 UTC instant, not seconds since the epoch.**
+  `issued at: 1787940281` told a reader of `veridex verify` nothing about whether a certificate was
+  from last week or last year; it now reads `issued at: 2026-08-28T18:07:38Z`. The field's own
+  documentation always said RFC 3339 — the CLI now agrees with it, and `attest` stamps the same way.
+  A certificate issued the old way still verifies: the timestamp is signed as text and nothing in
+  the trust chain parses it. The conversion is written out rather than pulled in — a date crate in
+  every downstream build for one line of output — and pinned against the epoch, both sides of a leap
+  day, 1900-style and 2000-style century rules, and the 32-bit second boundary.
+
 - **A stale claim in the README's status section.** It still said Veridex offers "no near-duplicate
   detection beyond exact content matches" — untrue since `STRUCTURAL.NEAR_DUPLICATE_EPISODE` shipped
   this release. The honest statement is narrower and now written: exact duplicates *and* partial

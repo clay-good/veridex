@@ -1549,7 +1549,7 @@ fn cmd_certify(rest: &[String]) -> ExitCode {
     }
 
     // Timestamp is caller-supplied (the core never reads a clock). Default to unix seconds.
-    let timestamp = args.timestamp.clone().unwrap_or_else(unix_timestamp);
+    let timestamp = args.timestamp.clone().unwrap_or_else(issued_timestamp);
     let mut cert = Certificate::build(
         out.ingested.dataset.id.clone(),
         &out.verdict,
@@ -2088,7 +2088,7 @@ fn cmd_attest(rest: &[String]) -> ExitCode {
         Err(code) => return code,
     };
     let hash = veridex_core::content_hash(&ingested.dataset).to_hex();
-    let timestamp = args.timestamp.clone().unwrap_or_else(unix_timestamp);
+    let timestamp = args.timestamp.clone().unwrap_or_else(issued_timestamp);
     let attestation = match veridex_core::Attestation::build(
         ingested.dataset.id.clone(),
         hash,
@@ -2602,13 +2602,50 @@ fn cmd_diff(rest: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Seconds since the Unix epoch as a string. The CLI is the "caller" that supplies the time; the
-/// core never reads a clock (design D6).
-fn unix_timestamp() -> String {
-    std::time::SystemTime::now()
+/// The current time as an RFC 3339 UTC instant (`2026-08-28T14:31:21Z`).
+///
+/// The CLI is the "caller" that supplies the time; the core never reads a clock (design D6), and the
+/// certificate carries whatever string it is handed. It used to hand it seconds since the epoch,
+/// which a reader of `veridex verify` output cannot date by eye — `issued at: 1787940281` says
+/// nothing about whether a certificate is from last week or last year. The field's own
+/// documentation always said RFC 3339; this makes the CLI agree with it.
+///
+/// A certificate stamped the old way still verifies: the timestamp is signed as text, and nothing
+/// in the trust chain parses it.
+fn issued_timestamp() -> String {
+    let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs().to_string())
-        .unwrap_or_else(|_| "0".to_string())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    rfc3339_utc(secs)
+}
+
+/// Format seconds since the Unix epoch as an RFC 3339 UTC instant.
+///
+/// Written out rather than pulled in: a date crate is a dependency in every downstream build for
+/// one line of output, and the civil-from-days conversion is a known, testable algorithm (Howard
+/// Hinnant's, shifting the era so leap days land at the end of a 400-year cycle). Leap seconds do
+/// not exist in Unix time, so there are none to handle.
+fn rfc3339_utc(secs: i64) -> String {
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    let (hour, minute, second) = (rem / 3_600, (rem % 3_600) / 60, rem % 60);
+
+    // Shift the epoch to 0000-03-01 so a 400-year era starts at a March, which puts February 29th
+    // at the end of every cycle and makes the day-of-year arithmetic uniform.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    // March is month 3 in this shifted calendar; January and February belong to the next year.
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { year + 1 } else { year };
+
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
 }
 
 fn print_help() {
@@ -2646,7 +2683,9 @@ fn print_help() {
     println!(
         "    --out <file>         write the output to a file instead of stdout (check, certify, label)"
     );
-    println!("    --timestamp <ts>     issuance timestamp (certify; defaults to now)");
+    println!(
+        "    --timestamp <ts>     issuance timestamp (certify, attest; defaults to now, as RFC 3339 UTC)"
+    );
     println!("    --emit <fmt>         provenance format: croissant (default) or prov");
     println!(
         "    --fail-on <sev>      check failure threshold: error (default) or warning
@@ -2882,6 +2921,26 @@ mod tests {
         assert!(s.contains("license: apache-2.0 [known]"));
         // The placeholder sensor is shown as missing, matching the coverage score.
         assert!(s.contains("sensor: missing"), "unexpected: {s}");
+    }
+
+    #[test]
+    fn an_instant_is_rendered_as_the_utc_date_it_is() {
+        use super::rfc3339_utc;
+        // Anchors chosen to catch the arithmetic that actually goes wrong: the epoch itself, a
+        // leap day, the day after one, the century that is not a leap year, the one that is, and
+        // both sides of the 32-bit second boundary.
+        assert_eq!(rfc3339_utc(0), "1970-01-01T00:00:00Z");
+        assert_eq!(rfc3339_utc(86_399), "1970-01-01T23:59:59Z");
+        assert_eq!(rfc3339_utc(86_400), "1970-01-02T00:00:00Z");
+        assert_eq!(rfc3339_utc(951_782_400), "2000-02-29T00:00:00Z");
+        assert_eq!(rfc3339_utc(951_868_800), "2000-03-01T00:00:00Z");
+        assert_eq!(rfc3339_utc(4_107_542_400), "2100-03-01T00:00:00Z");
+        assert_eq!(rfc3339_utc(2_147_483_647), "2038-01-19T03:14:07Z");
+        assert_eq!(rfc3339_utc(2_147_483_648), "2038-01-19T03:14:08Z");
+        assert_eq!(rfc3339_utc(1_787_940_281), "2026-08-28T18:04:41Z");
+        // Before the epoch is not a time a certificate is issued at, but the arithmetic must not
+        // wrap into a plausible-looking future date if a clock is set wrong.
+        assert_eq!(rfc3339_utc(-1), "1969-12-31T23:59:59Z");
     }
 
     #[test]
