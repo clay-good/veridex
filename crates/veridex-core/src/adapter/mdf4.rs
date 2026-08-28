@@ -351,6 +351,14 @@ impl Adapter for Mdf4Adapter {
         false
     }
 
+    /// An MF4 file states its structure in block headers — `##DG` → `##CG` → `##CN` give every
+    /// channel's name and how many cycles its raster declares — separately from the `##DT`/`##DZ`
+    /// blocks that hold the samples. Reading only the headers describes the measurement, and it is
+    /// the one way to describe a *compressed* measurement at all: a full read declines `##DZ`.
+    fn supports_metadata_only(&self) -> bool {
+        true
+    }
+
     fn ingest(&self, source: &Source, options: &IngestOptions) -> Result<Ingested, IngestError> {
         // An MF4 measurement becomes one episode, so there is nothing to sample along.
         let Source::Local(path) = source else {
@@ -433,7 +441,15 @@ impl Adapter for Mdf4Adapter {
                 });
                 break;
             }
-            let result = ingest_data_group(&bytes, at, &dg, group_index, &mut seen, &mut budget)?;
+            let result = ingest_data_group(
+                &bytes,
+                at,
+                &dg,
+                group_index,
+                options.metadata_only,
+                &mut seen,
+                &mut budget,
+            )?;
             for mut stream in result.streams {
                 // Channel names are only unique within a group, and not always even there;
                 // disambiguate until the name is genuinely free so no stream is dropped — or worse,
@@ -523,30 +539,60 @@ impl Adapter for Mdf4Adapter {
                 unread_sources: unread,
                 format_id: FORMAT_ID,
                 source_version: Some(version),
-                coverage: Coverage::Full,
-                mapped_fields: vec![
-                    "##CN channel -> stream (name from its ##TX)".into(),
-                    "time master channel -> frame.ts".into(),
-                    "##CC linear/identity conversion -> physical value".into(),
-                    "physical value -> frame.value_ref.content_hash (SHA-256)".into(),
-                    "identification block program -> provenance.recorder".into(),
-                ],
+                coverage: if options.metadata_only {
+                    Coverage::MetadataOnly {
+                        episodes_declared: 1,
+                    }
+                } else {
+                    Coverage::Full
+                },
+                mapped_fields: if options.metadata_only {
+                    vec![
+                        "##CN channel -> stream (name from its ##TX)".into(),
+                        "identification block program -> provenance.recorder".into(),
+                    ]
+                } else {
+                    vec![
+                        "##CN channel -> stream (name from its ##TX)".into(),
+                        "time master channel -> frame.ts".into(),
+                        "##CC linear/identity conversion -> physical value".into(),
+                        "physical value -> frame.value_ref.content_hash (SHA-256)".into(),
+                        "identification block program -> provenance.recorder".into(),
+                    ]
+                },
                 unmapped_fields: unmapped,
-                omitted_fields: vec![
-                    "episode-segmentation (MF4 records one continuous measurement)".into(),
-                    "declared-rate (MF4 channels declare no nominal sample rate)".into(),
-                ],
+                omitted_fields: {
+                    let mut o = vec![
+                        "episode-segmentation (MF4 records one continuous measurement)".into(),
+                        "declared-rate (MF4 channels declare no nominal sample rate)".into(),
+                    ];
+                    if options.metadata_only {
+                        o.push(
+                            "sample values, timestamps and content hashes (no ##DT or ##DZ data \
+                             block was opened; only the ##HD/##DG/##CG/##CN header tree was read)"
+                                .into(),
+                        );
+                        o.push(
+                            "the physical/raw distinction (a ##CC conversion is applied to values, \
+                             and no value was read)"
+                                .into(),
+                        );
+                    }
+                    o
+                },
             },
         })
     }
 }
 
 /// Ingest one `##DG`: resolve its channel groups, decode records, and emit a stream per channel.
+#[allow(clippy::too_many_arguments)]
 fn ingest_data_group(
     bytes: &[u8],
     dg_at: u64,
     dg: &BlockHeader,
     group_index: u64,
+    metadata_only: bool,
     seen: &mut BTreeSet<u64>,
     budget: &mut super::FrameBudget,
 ) -> Result<GroupResult, IngestError> {
@@ -560,7 +606,7 @@ fn ingest_data_group(
     let rec_id_size = data_section(bytes, dg_at, dg)
         .and_then(|d| d.first().copied())
         .unwrap_or(0);
-    if rec_id_size != 0 {
+    if rec_id_size != 0 && !metadata_only {
         // An unsorted group interleaves records from several channel groups behind record ids.
         out.unread.push(UnmappedField {
             source_path: locator("records"),
@@ -572,25 +618,31 @@ fn ingest_data_group(
     }
 
     // The group's data block. Only an uncompressed ##DT is read; compressed/listed data is reported.
+    // A metadata-only run reads no record at all, so it never resolves the block — which is what
+    // lets it describe a measurement whose data is compressed, the shape a real logger writes.
     let data_link = opt_link(bytes, dg_at, dg, 2);
-    let records: &[u8] = match data_link.and_then(|at| block_header(bytes, at).map(|h| (at, h))) {
-        Some((at, h)) if &h.id == b"##DT" => data_section(bytes, at, &h).unwrap_or(&[]),
-        Some((_, h)) => {
-            out.unread.push(UnmappedField {
+    let records: &[u8] = if metadata_only {
+        &[]
+    } else {
+        match data_link.and_then(|at| block_header(bytes, at).map(|h| (at, h))) {
+            Some((at, h)) if &h.id == b"##DT" => data_section(bytes, at, &h).unwrap_or(&[]),
+            Some((_, h)) => {
+                out.unread.push(UnmappedField {
                 source_path: locator("data"),
                 note: format!(
                     "`{}` data block is not decoded (only uncompressed ##DT is); its channels contribute no frames",
                     String::from_utf8_lossy(&h.id)
                 ),
             });
-            return Ok(out);
-        }
-        None => {
-            out.unmapped.push(UnmappedField {
-                source_path: locator("data"),
-                note: "data group carries no readable data block".into(),
-            });
-            return Ok(out);
+                return Ok(out);
+            }
+            None => {
+                out.unmapped.push(UnmappedField {
+                    source_path: locator("data"),
+                    note: "data group carries no readable data block".into(),
+                });
+                return Ok(out);
+            }
         }
     };
 
@@ -668,6 +720,12 @@ fn ingest_data_group(
         }
 
         let locate = |name: &str| format!("##DG[{group_index}].##CG[{cg_index}].{name}");
+        if metadata_only {
+            declare_channel_group(cycle_count, &channels, group_index, budget, &mut out)?;
+            cg_index += 1;
+            cg_at = opt_link(bytes, at, &cg, 0);
+            continue;
+        }
         // A group materializes channels × records frames; charge that before decoding.
         let decodable = channels.iter().filter(|c| c.is_decodable()).count() as u64;
         // A zero-length record divides into no frames at all (and must not divide by zero).
@@ -694,6 +752,55 @@ fn ingest_data_group(
         cg_at = opt_link(bytes, at, &cg, 0);
     }
     Ok(out)
+}
+
+/// Describe one channel group's channels as streams with no frames, from its block headers alone.
+///
+/// The `--metadata-only` counterpart to [`decode_channel_group`]: a `##CG` states how many cycles it
+/// holds and each `##CN` states its name, so the recording's shape — which signals, on which raster,
+/// how many samples each declares — is readable without touching a data block. That is what lets
+/// this mode describe a measurement whose data is compressed, which is how loggers write them and
+/// which a full read declines to decode.
+fn declare_channel_group(
+    cycle_count: u64,
+    channels: &[Channel],
+    group_index: u64,
+    budget: &mut super::FrameBudget,
+    out: &mut GroupResult,
+) -> Result<(), IngestError> {
+    // No frame is read, so the frame budget never fires on its own, and one `Stream` per channel is
+    // built from a count in a block header. Charge one unit each, before any is built.
+    budget.take(FORMAT_ID, channels.len() as u64)?;
+    for channel in channels {
+        if channel.is_time_master() {
+            continue;
+        }
+        out.streams.push(Stream {
+            name: channel.name.clone(),
+            modality: Modality::CanSignal,
+            declared_rate_hz: None,
+            clock_id: format!("{CLOCK_ID}#{group_index}"),
+            // The clock describes the measurement — every MF4 raster has a recorded time master —
+            // not this ingest. The temporal checks abstain here for want of frames, which the
+            // coverage note states, rather than for want of a clock.
+            clock_kind: ClockKind::Measured,
+            dtype: Some("float64".into()),
+            shape: None,
+            frames: Vec::new(),
+            stats: None,
+            dim_stats: None,
+            observed_stats: None,
+            observed_saturation: None,
+            observed_non_finite: None,
+            observed_dim_stats: None,
+            latched: None,
+            point_fields: None,
+            media: None,
+            frame_id: None,
+        });
+    }
+    let _ = cycle_count;
+    Ok(())
 }
 
 /// Decode one channel group's records into streams, appending to `out`. Returns whether any stream

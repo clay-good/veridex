@@ -542,6 +542,7 @@ fn every_format_that_supports_it_is_named_in_the_docs() {
             "rlds" => "RLDS",
             "hdf5" => "HDF5",
             "zarr" => "Zarr",
+            "mf4" => "MF4",
             other => panic!("no documented name known for the `{other}` adapter — add one here, and name the format in the three documents below"),
         }
     };
@@ -649,11 +650,19 @@ fn a_metadata_only_run_describes_the_same_dataset_minus_the_frames() {
     //
     // Driven by the registry rather than by a list, so a seventh adapter claiming the flag fails
     // here until it has a dataset to check the invariant against.
-    // RLDS is the one exemption, and it is about the *fixture*, not the invariant: a full read of a
-    // TFDS export needs a real TFRecord shard, and the writer for one lives in `rlds_adapter.rs`,
-    // deliberately as a second implementation of the wire format. The same invariant is checked
-    // there, against a shard, by `the_manifest_alone_yields_the_declared_episodes_and_features`.
-    const EXEMPT: &[&str] = &["rlds"];
+    // Two exemptions, for two different reasons.
+    //
+    // RLDS is about the *fixture*: a full read of a TFDS export needs a real TFRecord shard, and the
+    // writer for one lives in `rlds_adapter.rs`, deliberately as a second implementation of the wire
+    // format. The same invariant is checked there, against a shard.
+    //
+    // MF4 is about the invariant itself, and the difference is honest: a full read drops a channel
+    // whose data type this reader cannot decode, while the header tree still declares it. So a
+    // metadata-only run legitimately names *more* streams than a full read finds — the file says
+    // they are there, and only the decode step disagrees. `mdf4_adapter.rs` checks the shape a
+    // metadata-only run does have, including on a compressed measurement, which a full read cannot
+    // describe at all.
+    const EXEMPT: &[&str] = &["rlds", "mf4"];
 
     let samples = one_dataset_per_supporting_format();
     for format in veridex_core::default_registry().formats_supporting_metadata_only() {

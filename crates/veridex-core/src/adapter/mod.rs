@@ -513,7 +513,7 @@ pub trait Adapter: Send + Sync {
     /// any stream payload ([`IngestOptions::metadata_only`]).
     ///
     /// Defaults to `false`, and the registry refuses the request on that answer — so a format that
-    /// interleaves its structure with its data (CAN+DBC, MF4) is refused by name rather than
+    /// interleaves its structure with its data (CAN+DBC) is refused by name rather than
     /// reading everything anyway and labelling it metadata-only. A new adapter is therefore safe by
     /// default: it has to claim the capability to be handed the option.
     fn supports_metadata_only(&self) -> bool {

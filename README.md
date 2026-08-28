@@ -331,12 +331,14 @@ it could otherwise be mistaken for a full check; and **metadata-only ingestion**
 checks what a dataset says about itself — its structure and its provenance — without opening a data
 file, with the frame-dependent checks abstaining rather than misfiring.
 
-Six formats support it, each reading the thing that describes the dataset without being it:
+Seven formats support it, each reading the thing that describes the dataset without being it:
 LeRobot's `meta/`, a bag's `metadata.yaml`, a TFDS export's `dataset_info.json` + `features.json`,
 a Zarr store's `.zarray`/`.zattrs` and episode boundaries, the summary section an MCAP writes at the
-end of itself, and an HDF5 file's group tree and array headers. One test holds all of them to the
-invariant the mode rests on: the same episodes, streams, datatypes and shapes a full read finds,
-minus the frames. CAN+DBC and MF4 interleave structure with data and are refused by name.
+end of itself, an HDF5 file's group tree and array headers, and an MF4's block header tree — which is the
+only way to describe a *compressed* measurement, since a full read declines a `##DZ` block. One test
+holds them to the invariant the mode rests on: the same episodes, streams, datatypes and shapes a
+full read finds, minus the frames. CAN+DBC is a stream of frames with nothing in front of it, and is
+refused by name.
 
 The same check runs against the **Hugging Face Hub** without downloading anything
 (`veridex check hf://org/name --metadata-only`, LeRobot or RLDS/TFDS, with a TFDS version directory

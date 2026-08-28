@@ -511,6 +511,23 @@ reproduced before it was fixed.*
   (a streaming writer legitimately omits one) disables the reconciliation rather than failing the
   read, and says so: a check that silently did not run reads exactly like one that passed.
 
+- **`--metadata-only` for MF4**, read from the block header tree — `##HD` → `##DG` → `##CG` →
+  `##CN` — which states every channel's name and raster separately from the `##DT`/`##DZ` blocks
+  holding the samples. It is also the only way to describe a **compressed** measurement at all: a
+  full read declines a `##DZ` block, so such a file yields no frames and a coverage warning, while
+  its header tree still names every signal. That is how fleet loggers write them, and a test pins
+  exactly that: a compressed fixture that a full read reports as empty, and a header-only run that
+  names its `speed` channel.
+
+  One honest difference from the other formats, recorded rather than smoothed over: a metadata-only
+  MF4 run can name *more* streams than a full read finds, because a full read drops a channel whose
+  data type this reader cannot decode while the header tree still declares it. It is therefore
+  exempted from the cross-format "same dataset, minus the frames" invariant, by name and with the
+  reason, rather than by quietly not being in the list.
+
+  CAN+DBC is now the only format that refuses the flag — a stream of frames with nothing in front of
+  it.
+
 - **`--metadata-only` for HDF5**, where the structure is in the container but not in the *data*: the
   group tree, each array's datatype and per-row shape, and every object attribute are headers, and
   reading them touches no chunk. On a robomimic-shaped file of hundreds of gigabytes that is the

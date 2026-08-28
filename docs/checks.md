@@ -199,7 +199,7 @@ the catalog: a check that abstains must say so, or its silence reads as a pass.
 
 ## What a metadata-only run checks
 
-`veridex check --metadata-only <dataset>` (LeRobot, ROS 2 rosbag2, RLDS/TFDS, Zarr, MCAP, and HDF5) answers a narrower question — *does
+`veridex check --metadata-only <dataset>` (LeRobot, ROS 2 rosbag2, RLDS/TFDS, Zarr, MCAP, HDF5, and MF4) answers a narrower question — *does
 the manifest hold together?* — without opening a single Parquet, shard, or video file. It is the
 fast CI gate for a dataset too large to read on every commit, and the shape a remote Hub check takes.
 
@@ -213,6 +213,7 @@ What each format offers is different, because their manifests are:
 | Zarr | `.zarray` / `.zattrs` per array and the `meta/` group — the episode boundaries and their lengths, every array's dtype and per-row shape, and the store's own metadata |
 | MCAP | the summary section at the end of the file — the channel inventory with each topic's schema, the declared message totals and log-time span, the message encodings, the writing library, and (through the summary's own indexes) every Metadata record and attachment name, so the provenance matches a full read |
 | HDF5 | the group tree and array headers — every episode group, each array's datatype and per-row shape, each group's declared length attribute, and every object attribute |
+| MF4 | the `##HD`/`##DG`/`##CG`/`##CN` block tree — every channel's name and raster, and the cycle count each group declares; the only way to describe a compressed (`##DZ`) measurement at all |
 
 What still applies, because it is all manifest content:
 

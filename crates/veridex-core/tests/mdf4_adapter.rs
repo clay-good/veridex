@@ -731,3 +731,95 @@ fn an_absurd_block_length_is_refused_rather_than_overflowing() {
         ),
     }
 }
+
+// ---- Reading the header tree without opening a data block ----
+
+fn metadata_only(bytes: &[u8]) -> veridex_core::adapter::Ingested {
+    let path = write_temp(bytes, ".mf4");
+    Mdf4Adapter
+        .ingest(
+            &Source::Local(path.to_path_buf()),
+            &IngestOptions {
+                metadata_only: true,
+                ..IngestOptions::default()
+            },
+        )
+        .expect("ingest")
+}
+
+#[test]
+fn the_header_tree_alone_names_the_channels_the_measurement_declares() {
+    // `##DG` → `##CG` → `##CN` states every channel's name and raster, separately from the data
+    // block that holds the samples. Reading only that describes the measurement.
+    let bytes = well_formed_file(5);
+    let summary = metadata_only(&bytes);
+    let full = ingest(&bytes);
+
+    assert_eq!(
+        summary.report.coverage,
+        veridex_core::adapter::Coverage::MetadataOnly {
+            episodes_declared: 1
+        }
+    );
+    let names = |i: &veridex_core::adapter::Ingested| -> Vec<String> {
+        let mut n: Vec<String> = i.dataset.episodes[0]
+            .streams
+            .iter()
+            .map(|s| s.name.clone())
+            .collect();
+        n.sort();
+        n
+    };
+    assert_eq!(names(&summary), names(&full));
+    assert!(summary.dataset.episodes[0]
+        .streams
+        .iter()
+        .all(|s| s.frames.is_empty()));
+    assert!(
+        !summary
+            .report
+            .mapped_fields
+            .iter()
+            .any(|f| f.contains("content_hash")),
+        "a run that read no sample must not claim to have hashed one: {:?}",
+        summary.report.mapped_fields
+    );
+}
+
+#[test]
+fn a_compressed_measurement_is_describable_only_this_way() {
+    // The reason the mode earns its place here. A logger writes `##DZ`, a full read declines to
+    // decode it and the file yields nothing but a coverage warning. The header tree is not
+    // compressed, so it still says which signals the measurement holds.
+    let mut b = Mf4Builder::new(b"veridex ");
+    let dz = b.block(b"##DZ", &[], &[0u8; 32]);
+    let time = b.channel("t", 2, 1, FLOAT_LE, 0, 0, 64, None);
+    let speed = b.channel("speed", 0, 0, UINT_LE, 0, 64, 32, None);
+    b.patch_link(time, 0, speed);
+    let cg = b.channel_group(3, 12);
+    b.patch_link(cg, 1, time);
+    let dg = b.data_group(0);
+    b.patch_link(dg, 1, cg);
+    b.patch_link(dg, 2, dz);
+    let bytes = b.finish(dg, 0);
+
+    assert!(
+        ingest(&bytes).dataset.episodes[0].streams.is_empty(),
+        "a full read declines a compressed data block, which is the point"
+    );
+    let summary = metadata_only(&bytes);
+    assert_eq!(
+        summary.dataset.episodes[0]
+            .streams
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["speed"],
+        "the header tree names the signal even though its samples are compressed"
+    );
+    assert!(summary
+        .report
+        .omitted_fields
+        .iter()
+        .any(|o| o.contains("##DZ")));
+}
