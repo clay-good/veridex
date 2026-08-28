@@ -737,14 +737,18 @@ fn a_key_the_records_carry_but_the_manifest_never_declared_is_reported() {
     )
     .unwrap();
     let ingested = ingest(tmp.path()).unwrap();
+    // A `steps/*` key is a per-step value: it is in the records, no stream represents it, and its
+    // values went unread. That is a hole in the run's coverage, so it has to reach the verdict —
+    // which only `unread_sources` does. (An undeclared `episode_metadata/*` key is the other case:
+    // information the CDM has no shape for, costing no coverage, and ordinary in the OXE corpus.)
     assert!(
         ingested
             .report
-            .unmapped_fields
+            .unread_sources
             .iter()
             .any(|f| f.source_path.contains("steps/reward")),
-        "an undeclared key must be disclosed, not dropped: {:?}",
-        ingested.report.unmapped_fields
+        "an undeclared per-step key must be disclosed as unread: {:?}",
+        ingested.report.unread_sources
     );
     // And the declared features the record does not carry are reported the other way round.
     assert!(

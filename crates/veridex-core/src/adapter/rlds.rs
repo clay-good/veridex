@@ -1412,14 +1412,29 @@ impl Adapter for RldsAdapter {
         });
         // Reconcile declared features against the keys the records actually carried.
         let declared: BTreeSet<&str> = step_leaves.iter().map(|l| l.path.as_str()).collect();
-        // Every key the records carried, not just the `steps/` ones — an undeclared
-        // `episode_metadata/*` key is information the CDM does not hold either.
+        let mut unread_sources: Vec<UnmappedField> = Vec::new();
+        // Every key the records carried, not just the `steps/` ones — but the two mean different
+        // things. A `steps/*` key is a *per-step value*: it is in the records, no stream represents
+        // it, and its values went unread, which is a hole in the run's coverage and has to reach the
+        // verdict. An `episode_metadata/*` key is a fact about the episode that the CDM has no shape
+        // for, which costs the reader no coverage — and undeclared episode metadata is ordinary in
+        // the Open X-Embodiment corpus, so calling it unread would fire on sound datasets.
         for key in &seen_keys {
-            if !declared.contains(key.as_str()) && key.as_str() != EPISODE_SOURCE_FILE_KEY {
+            if declared.contains(key.as_str()) || key.as_str() == EPISODE_SOURCE_FILE_KEY {
+                continue;
+            }
+            if key.starts_with(STEPS_PREFIX) {
+                unread_sources.push(UnmappedField {
+                    source_path: format!("tf.train.Example key `{key}`"),
+                    note: "a per-step value present in the records but not declared in \
+                           features.json, so no stream is built from it and its values went unread"
+                        .into(),
+                });
+            } else {
                 unmapped_fields.push(UnmappedField {
                     source_path: format!("tf.train.Example key `{key}`"),
-                    note: "present in the records but not declared in features.json; not \
-                           represented as a stream"
+                    note: "episode-level information present in the records but not declared in \
+                           features.json; the CDM has no shape for it"
                         .into(),
                 });
             }
@@ -1442,7 +1457,7 @@ impl Adapter for RldsAdapter {
         }
 
         let report = IngestReport {
-            unread_sources: Vec::new(),
+            unread_sources,
             format_id: FORMAT_ID,
             source_version: Some(file_format.to_string()),
             coverage: match &selected {

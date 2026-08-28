@@ -10,7 +10,7 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
-- **Three adapters filed data they never read as a field they could not map.** The distinction is the
+- **Four adapters filed data they never read as a field they could not map.** The distinction is the
   one this tool exists for: "unmapped" means the CDM has no shape for a field, which costs the
   reader nothing; **unread** means the data is there and nobody looked at it, so every result is
   over less of the source than it appears to be — and only unread raises `COVERAGE.SOURCE_UNREAD`
@@ -24,6 +24,11 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
   In **Zarr**, it covered an array this reader cannot open: one unsupported codec among readable
   arrays dropped that stream and raised nothing, so a store missing its camera looked complete.
+
+  In **RLDS/TFDS**, it covered a `steps/*` key the records carry and `features.json` never declared
+  — a per-step value no stream represents. The episode-level half of the same case stays unmapped
+  deliberately: undeclared `episode_metadata/*` is ordinary in the Open X-Embodiment corpus and
+  costs the reader no coverage, so calling it unread would fire on sound datasets.
 
   In **LeRobot**, it covered a Parquet column the manifest never declared — whose values are in the
   data and which no stream represents. The rosbag2 adapter already treated the same situation (a
