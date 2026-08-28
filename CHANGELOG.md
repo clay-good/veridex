@@ -397,6 +397,10 @@ reproduced before it was fixed.*
   source:   hf://lerobot/pickplace@main (commit 0c1e9f…)
   ```
 
+  `veridex check` prints the same line as a footer under its report. It is deliberately not a
+  verdict field: a verdict identifies its dataset by content hash alone and says nothing about where
+  the bytes came from, and the commit is already inside the CDM that hash covers.
+
   Re-running against `hf://org/name@<commit>` pins the read to those bytes. Two reads of one
   repository at two commits are now two datasets to the hash, which is the point — a hash that could
   not tell them apart would let yesterday's result stand for today's data.

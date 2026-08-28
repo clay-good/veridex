@@ -274,6 +274,9 @@ Dataset: lerobot/pickplace
   source:   hf://lerobot/pickplace@main (commit 0c1e9f…)
 ```
 
+`veridex check` prints the same line as a footer under its report, so the commit sits with the
+verdict it produced.
+
 Re-run against that commit — `veridex check hf://org/name@0c1e9f… --metadata-only` — and the read is
 pinned to those exact bytes. Two reads of one repository at two commits are two datasets to the
 content hash, which is the point: a hash that could not tell them apart would let yesterday's result

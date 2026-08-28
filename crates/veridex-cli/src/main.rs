@@ -821,6 +821,12 @@ fn cmd_check(rest: &[String]) -> ExitCode {
             "{}",
             veridex_core::render_terminal_with(&rendered, Some(out.trust), 10, detail)
         );
+        // A footer naming what was actually read. Silent for a local dataset, which is identified
+        // by the path the reader typed and cannot change under them between two runs of the same
+        // command — unlike a Hub branch, which can.
+        if let Some(source) = remote_source(&out.ingested.dataset) {
+            println!("  Source:   {source}");
+        }
         // `--help` says a profile is what the run is "judged against", and until now `check` only
         // borrowed its tolerances — it printed no criterion verdicts at all, so the one thing the
         // flag names was the one thing it did not report. `certify` renders the same block from the
@@ -1219,15 +1225,8 @@ fn cmd_inspect(rest: &[String]) -> ExitCode {
     // A remote read is the one source that can change under the reader: `hf://org/name` is a
     // branch, and a branch moves. The commit the Hub served is what makes this run re-runnable, so
     // it is printed beside the hash it produced rather than left only in the CDM.
-    if let Some(repo) = meta(d, "hub_repo") {
-        let revision = meta(d, "hub_revision").unwrap_or("main");
-        match meta(d, "hub_commit") {
-            Some(commit) => println!("  source:   hf://{repo}@{revision} (commit {commit})"),
-            None => println!(
-                "  source:   hf://{repo}@{revision} (the Hub named no commit, so this run \
-                 identifies only the revision it asked for)"
-            ),
-        }
+    if let Some(source) = remote_source(d) {
+        println!("  source:   {source}");
     }
     // A sampled inspect describes a subset. Said up front, next to the hash it produced, so the
     // summary below is not read as the shape of the whole dataset.
@@ -1312,6 +1311,25 @@ fn cmd_inspect(rest: &[String]) -> ExitCode {
     print!("{}", veridex_core::simref::render_references(d));
     print!("{}", veridex_core::scenario::render_coverage(d));
     ExitCode::SUCCESS
+}
+
+/// The line naming a remote source and the commit it was read at, or nothing for a local one.
+///
+/// A remote read is the one source that can change under the reader: `hf://org/name` names a
+/// branch, and a branch moves. The commit the Hub served is what makes the run re-runnable, so it
+/// is printed beside the hash it produced rather than left only in the CDM. Rendered here rather
+/// than in the core report because it describes *where the bytes came from*, which a verdict
+/// deliberately does not speak about — a verdict identifies its dataset by content hash alone.
+fn remote_source(d: &veridex_core::cdm::Dataset) -> Option<String> {
+    let repo = meta(d, "hub_repo")?;
+    let revision = meta(d, "hub_revision").unwrap_or("main");
+    Some(match meta(d, "hub_commit") {
+        Some(commit) => format!("hf://{repo}@{revision} (commit {commit})"),
+        None => format!(
+            "hf://{repo}@{revision} (the Hub named no commit, so this run identifies only the \
+             revision it asked for)"
+        ),
+    })
 }
 
 /// One of the dataset's metadata values by key, if it recorded one.
@@ -2792,6 +2810,42 @@ mod tests {
         // A non-hex value is treated as a path; a missing path is a clear error, never a bogus key.
         let err = super::resolve_public_key("/no/such/issuer.pub").unwrap_err();
         assert!(err.contains("cannot read key"), "unexpected: {err}");
+    }
+
+    #[test]
+    fn a_remote_run_names_the_commit_it_read_and_a_local_one_names_nothing() {
+        use veridex_core::cdm::Dataset;
+        let with = |metadata: Vec<(String, String)>| Dataset {
+            id: "t".into(),
+            calibration: None,
+            metadata,
+            provenance: vec![],
+            episodes: vec![],
+        };
+        let kv = |k: &str, v: &str| (k.to_string(), v.to_string());
+
+        // A local dataset is identified by the path the reader typed; there is nothing to add.
+        assert_eq!(super::remote_source(&with(vec![])), None);
+
+        let pinned = super::remote_source(&with(vec![
+            kv("hub_repo", "lerobot/pickplace"),
+            kv("hub_revision", "main"),
+            kv("hub_commit", "0123456789abcdef0123456789abcdef01234567"),
+        ]))
+        .expect("a hub source");
+        assert!(pinned.contains("hf://lerobot/pickplace@main"), "{pinned}");
+        assert!(
+            pinned.contains("0123456789abcdef0123456789abcdef01234567"),
+            "{pinned}"
+        );
+
+        // Without a commit the line must not read as though the revision identified some bytes.
+        let unpinned = super::remote_source(&with(vec![
+            kv("hub_repo", "lerobot/pickplace"),
+            kv("hub_revision", "main"),
+        ]))
+        .expect("a hub source");
+        assert!(unpinned.contains("named no commit"), "{unpinned}");
     }
 
     #[test]
