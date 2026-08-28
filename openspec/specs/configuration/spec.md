@@ -22,9 +22,16 @@ SHALL be recorded in the verdict.
 - **AND** the verdict records the effective merged configuration, not just the file
 
 ### Requirement: Policy profiles
-Veridex SHALL provide named policy profiles (at minimum `strict`, `standard`, and `lenient`) that
-bundle check selection, severities, and thresholds, and SHALL allow user-defined profiles. A
-profile SHALL be selectable by name and fully expandable to its concrete settings.
+Veridex SHALL provide named policy profiles that bundle check selection, severities, and thresholds,
+and SHALL allow user-defined profiles. A profile SHALL be selectable by name and fully expandable to
+its concrete settings.
+
+A profile SHALL only ever *tighten* a threshold relative to the configuration it is applied to.
+There is therefore no `lenient` profile, and `--profile lenient` (or `relaxed`, or `permissive`) is
+refused by name with that reason rather than reported as an unknown profile: a profile that loosens
+a threshold raises the score without changing the data, which is the one thing a shareable verdict
+must not let a flag do. Implemented today: `standard`, `strict`, and `world-model-ready`. See
+[docs/profiles.md](../../../docs/profiles.md).
 
 #### Scenario: A strict CI profile fails on warnings
 - **WHEN** a pipeline selects the `strict` profile

@@ -151,6 +151,12 @@ Veridex SHALL provide checks that flag likely personally identifiable informatio
 publishing. These checks SHALL only flag, never redact or modify data, and SHALL be clearly
 probabilistic.
 
+**Decided against, not pending.** Detecting a face means decoding pixels and running a model over
+them, and Veridex's design commitment is the opposite: it reads structure and metadata and
+fingerprints bytes, never interprets them. Closing this requirement would mean giving that up, so it
+is recorded here as a limit rather than a backlog item, and stated in the README and
+[docs/checks.md](../../../docs/checks.md) so a Veridex pass is never read as a PII review.
+
 #### Scenario: Likely faces in camera frames are flagged for review
 - **WHEN** a video stream likely contains human faces
 - **THEN** a privacy check emits a finding indicating likely PII and where

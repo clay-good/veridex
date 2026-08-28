@@ -375,6 +375,13 @@ reproduced before it was fixed.*
 
 ### Changed
 
+- **Two north-star requirements now record that they were decided against, not deferred.** The
+  configuration spec asked for a `lenient` profile; Veridex refuses one by name, because a profile
+  that loosens a threshold raises the score without changing the data. The checks-catalog spec asked
+  for PII detection; that means decoding pixels, which is the commitment Veridex is built against.
+  Both decisions were already implemented, documented and tested — only the specs still pointed at
+  them as work to do, which is how a north star quietly becomes wrong.
+
 - **A certificate is stamped with an RFC 3339 UTC instant, not seconds since the epoch.**
   `issued at: 1787940281` told a reader of `veridex verify` nothing about whether a certificate was
   from last week or last year; it now reads `issued at: 2026-08-28T18:07:38Z`. The field's own
