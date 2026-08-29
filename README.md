@@ -297,46 +297,36 @@ cargo clippy --all-targets
 
 ## Status
 
-**Early implementation, runs end-to-end.** Against a full [OpenSpec](openspec/) design, these are
-in and tested: the Canonical Dataset Model with deterministic content hashing; the validation
-engine; the structural / temporal / statistical / semantic / **video** / provenance / **autonomy** check catalog
-(including the headline `TEMPORAL.CLOCK_SKEW`, cross-episode dtype/shape consistency, and the
-sensor-rig checks `AUTONOMY.RIG_SYNC` / `SEQUENCE_COMPLETE` / `EGO_POSE_CONTINUITY` /
-`CALIBRATION_INCOMPLETE` / `SENSOR_FRAME_UNKNOWN` / `SENSOR_FRAME_UNRELATED` — the last two catch the
-LiDAR-camera miscalibration a well-formed transform tree hides, where a sensor's own frame is absent
-from the tree or has no chain of transforms to the camera); **video/media checks** that read an
-`.mp4`'s container headers (never a pixel) and catch the missing, unparseable, desynced, or
-re-encoded video behind a camera stream; the v1 trust-score rubric, the `standard` / `strict` threshold profiles and the `world-model-ready`
-readiness profile;
-terminal, JSON, SARIF 2.1.0, and self-contained HTML reporting, each carrying rollups by category,
-episode and stream, and each shareable through `--redact`; **LeRobot v3, RLDS/TFDS, HDF5, Zarr, MCAP and ROS 2 rosbag2 (both with
-ROS-message decode into an autonomy rig; rosbag2 reads both storage plugins — the `sqlite3` one,
-plain or zstd-compressed, through Veridex's own bounds-checked SQLite reader, and the `mcap` one
-`ros2 bag record` writes by default from Jazzy on, so which plugin a team picked does not change the
-verdict — reconciles the bag against its
-`metadata.yaml` message total, and discloses a message on an undeclared topic as unread rather than
-dropping it; an MCAP is reconciled the same way against the message total in the summary section it
-writes about itself, so a recording short of its own count is disclosed as unread rather than read
-as complete; an HDF5 file's root is walked past `/data`, so `robomimic`'s `/mask` split group — or
-anything else holding rows beside the episodes — is disclosed as unread rather than passed over),
-CAN+DBC, and ASAM
-MDF/MF4 adapters** with a passing cross-format
-neutrality gate (the same logical dataset yields equivalent CDMs as LeRobot v3 and as MCAP, and as rosbag2 and as MCAP); descriptive scenario-dimension coverage and **scenario/map/sim
-reference extraction** (OpenSCENARIO / OpenDRIVE / OSI / simulator, with the version read from the
-referenced sidecar's own ASAM header); Croissant + W3C PROV provenance emit (carrying attested provenance when one is
-applied); Ed25519 **certificate signing with offline verification** (tamper + transplant rejection)
-and **producer attestation** — provenance a producer signs for, bound to the dataset's content hash
-and disclosed by the key that signed it; a working CLI (`check`, `inspect`, `checks`,
-`certify`, `verify`, `provenance`, `keygen`, `diff`, `watch`, `label`, `attest`,
-`check --print-config`, `check --redact`) — see the [Quickstart](#quickstart); and **Python
-bindings** (`import veridex`, exposing `check`/`check_sarif`/`check_html`/`inspect`/`content_hash`/`catalog`/`provenance`/`diff`/`keygen`/`certify`/`verify`/`effective_config`/`label`/`attest`/`version`) that call the same
-core pipeline, with a CLI⇄Python parity test run in CI; and **sampled ingestion** (`--sample-episodes`
-/ `--sample-fraction`), resolved before any data is read and reported as partial coverage everywhere
-it could otherwise be mistaken for a full check; and **metadata-only ingestion** (`--metadata-only`), which
-checks what a dataset says about itself — its structure and its provenance — without opening a data
-file, with the frame-dependent checks abstaining rather than misfiring.
+**Early implementation, runs end-to-end.** Against a full [OpenSpec](openspec/) design, this is what
+is in and tested:
 
-Seven formats support it, each reading the thing that describes the dataset without being it:
+| Piece | What is in |
+|---|---|
+| **Canonical Dataset Model** | One neutral shape for every format, with deterministic content hashing |
+| **Validation engine + check catalog** | Structural, temporal, statistical, semantic, **video**, provenance and **autonomy** families — including the headline `TEMPORAL.CLOCK_SKEW` and cross-episode dtype/shape consistency. Every check and finding: [docs/checks.md](docs/checks.md) |
+| **Sensor-rig checks** | `AUTONOMY.RIG_SYNC` / `SEQUENCE_COMPLETE` / `EGO_POSE_CONTINUITY` / `CALIBRATION_INCOMPLETE` / `SENSOR_FRAME_UNKNOWN` / `SENSOR_FRAME_UNRELATED`. The last two catch the LiDAR-camera miscalibration a well-formed transform tree hides: a sensor whose own frame is absent from the tree, or has no chain of transforms to the camera |
+| **Video/media checks** | Read an `.mp4`'s container headers — never a pixel — and catch the missing, unparseable, desynced, or re-encoded video behind a camera stream |
+| **Trust score** | The v1 rubric, the `standard` / `strict` threshold profiles, and the `world-model-ready` readiness profile |
+| **Reporting** | Terminal, JSON, SARIF 2.1.0 and self-contained HTML, each with rollups by category, episode and stream, and each shareable through `--redact` |
+| **Adapters** | LeRobot v3, RLDS/TFDS, HDF5, Zarr, MCAP, ROS 2 rosbag2, CAN+DBC, ASAM MDF/MF4 — with a passing cross-format neutrality gate (the same logical dataset yields equivalent CDMs as LeRobot v3 and as MCAP, and as rosbag2 and as MCAP) |
+| **Provenance** | Scenario-dimension coverage and scenario/map/sim reference extraction (OpenSCENARIO / OpenDRIVE / OSI / simulator, version read from the referenced sidecar's own ASAM header), emitted as Croissant + W3C PROV |
+| **Certificates** | Ed25519 signing with offline verification (tamper and transplant rejection), and **producer attestation** — provenance a producer signs for, bound to the dataset's content hash and disclosed by the key that signed it |
+| **CLI** | `check`, `inspect`, `checks`, `certify`, `verify`, `provenance`, `keygen`, `diff`, `watch`, `label`, `attest`, plus `check --print-config` and `check --redact` — see the [Quickstart](#quickstart) |
+| **Python bindings** | `import veridex`, exposing `check`/`check_sarif`/`check_html`/`inspect`/`content_hash`/`catalog`/`provenance`/`diff`/`keygen`/`certify`/`verify`/`effective_config`/`label`/`attest`/`version` over the same core pipeline, with a CLI⇄Python parity test run in CI |
+| **Partial runs** | `--sample-episodes` / `--sample-fraction`, resolved before any data is read, and `--metadata-only`, which checks what a dataset says about itself without opening a data file. Both are reported as partial coverage everywhere they could be mistaken for a full check, with the frame-dependent checks abstaining rather than misfiring |
+
+Two things the adapters do that are easy to miss, because both are about what a run did *not* read.
+**rosbag2 reads both storage plugins** — the `sqlite3` one, plain or zstd-compressed, through
+Veridex's own bounds-checked SQLite reader, and the `mcap` one `ros2 bag record` writes by default
+from Jazzy on — so which plugin a team picked does not change the verdict. And **data a run did not
+read is disclosed rather than passed over**: a rosbag2 recording short of its own `metadata.yaml`
+message total or carrying a message on an undeclared topic, an MCAP short of the total in the summary
+section it writes about itself, an HDF5 file's `/mask` split group or anything else holding rows
+beside the episodes, CAN traffic on an id the `.dbc` never defines. Each raises a warning in the
+verdict, because a clean result over the part that was read is not a clean result over the dataset.
+
+Seven formats support `--metadata-only`, each reading the thing that describes the dataset without
+being it:
 LeRobot's `meta/`, a bag's `metadata.yaml`, a TFDS export's `dataset_info.json` + `features.json`,
 a Zarr store's `.zarray`/`.zattrs` and episode boundaries, the summary section an MCAP writes at the
 end of itself, an HDF5 file's group tree and array headers, and an MF4's block header tree — which is the
