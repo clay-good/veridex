@@ -28,8 +28,10 @@ No code until this change is approved; this is the build plan.
       adapter and proven end-to-end (`ros_message_bodies_populate_the_autonomy_cdm_end_to_end`) plus
       per-decoder unit tests. Validity ranges on decoded transforms/intrinsics are left open (time-
       varying calibration from per-message stamps is a refinement).
-- [x] ROS 2 **rosbag2** adapter (`.db3`, the `sqlite3` storage plugin) → CDM. `adapter/rosbag2.rs`
-      ingests either a bag directory (`metadata.yaml` beside one or more `.db3`) or a bare `.db3`,
+- [x] ROS 2 **rosbag2** adapter (both storage plugins) → CDM. `adapter/rosbag2.rs`
+      ingests a bag directory — `metadata.yaml` beside one or more `.db3` (the `sqlite3` plugin) or
+      beside one or more `.mcap` (the plugin `ros2 bag record` writes by default from Jazzy on) — or
+      a bare `.db3`,
       mapping `topics` → streams, `messages` → frames on the bag's single log clock, and the ROS type
       → the rig modality. Message bodies go through the same `adapter/cdr.rs` decoders MCAP uses, so
       `PointCloud2`/`CameraInfo`/`TFMessage`/`Odometry` populate point fields, intrinsics, the
@@ -49,7 +51,12 @@ No code until this change is approved; this is the build plan.
       latched topic from the four checks that ask whether streams cover the same window —
       `CANONICAL_VERSION` bumped 7 → 8, since checks reach different verdicts on it.
       `--metadata-only` reads `topics_with_message_count` and refuses a bare `.db3` or an inventory
-      that does not add up to the manifest's own total. Follow-up: the rest of a QoS profile
+      that does not add up to the manifest's own total. An **MCAP-backed** bag takes the same path
+      with one shard reader swapped: a channel carries what the `topics` table carries, so modality,
+      latched, and every decoded AV header come out identical, and a test pins that the same
+      recording through either plugin yields the same CDM. A directory of `.mcap` files with no
+      manifest is not claimed (it could be unrelated recordings in one folder), and a manifest that
+      disagrees with the shards beside it is refused rather than resolved either way. Follow-up: the rest of a QoS profile
       (reliability, history depth, deadline, lifespan, liveliness), which the CDM has no shape for.
 - [~] ASAM MDF/MF4 adapter → CDM; record unmapped channels. `adapter/mdf4.rs` walks the MDF 4.x block
       graph (`##HD` → `##DG` → `##CG` → `##CN`), uses each channel group's time master as the
@@ -57,15 +64,22 @@ No code until this change is approved; this is the build plan.
       conversions; integer and float channels in both byte orders; values fingerprinted into the
       content hash; the identification block's program becomes `recorder` provenance. Every block read
       is bounds-checked and every chain walk loop-guarded (truncation/corruption fuzz tests). Recorded
-      as unmapped rather than decoded: compressed (`##DZ`) / listed (`##DL`) data, unsorted data
-      groups, bit-packed and non-numeric channels, other conversion types. Those — plus `##SR` sample
+      as **unread** rather than decoded — data that is there and nobody read it, so each raises
+      `COVERAGE.SOURCE_UNREAD`: compressed (`##DZ`) and listed (`##DL`) data, unsorted data groups, a
+      group with no usable time master, a channel declaring per-sample invalidation, and a group
+      declaring more cycles than its data block holds. A `--metadata-only` run describes a compressed
+      measurement from its header tree, which is the only way to describe one at all. Genuinely
+      unmapped, because the CDM has no shape for them: bit-packed and non-numeric channels, other
+      conversion types. Those — plus `##SR` sample
       reduction, attachments, and the `##FH`/`##MD` metadata comments — are the follow-ups.
 - [~] CAN + DBC decoding → named signal streams; surface DBC-coverage gaps and decode errors.
       `adapter/candbc.rs`: ingests a directory holding a `.dbc` + candump `.log`/`.asc`, parses the
       DBC (`BO_`/`SG_`), decodes each frame's signals in both byte orders — little-endian (Intel,
       `@1`) and big-endian (Motorola, `@0`, walked over the sawtooth bit numbering from the signal's
       MSB) — with factor/offset and sign extension, into one `CanSignal` stream per `Message.Signal`,
-      and reports DBC-coverage gaps (undefined CAN ids) as `unmapped` fields. A signal whose bits
+      and reports DBC-coverage gaps — frames on an id the DBC never defines, and log lines that are
+      not candump frames — as `unread_sources` → `COVERAGE.SOURCE_UNREAD`, since that traffic was on
+      the bus and went into no stream (the eight busiest ids are named, the rest counted). A signal whose bits
       fall outside the frame is declined, never truncated. Registered in `default_registry`
       (autodetected). Decoded values fingerprinted into the content hash. Unit + integration + CLI
       e2e tests, including a Motorola signal over a byte-swapped copy of its Intel twin that must

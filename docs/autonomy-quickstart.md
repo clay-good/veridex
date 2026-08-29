@@ -134,9 +134,12 @@ little to check.
 
 ## Limits worth knowing
 
-- **MF4 coverage is the uncompressed core.** Compressed (`##DZ`) or listed (`##DL`) data blocks,
-  unsorted data groups, bit-packed channels, and lookup-table conversions are reported as unmapped
-  rather than decoded — `veridex inspect` lists exactly what was skipped.
+- **MF4 coverage is the uncompressed core.** Compressed (`##DZ`) or listed (`##DL`) data blocks and
+  unsorted data groups are not decoded, and because those samples *are* in the file, they are
+  disclosed as **unread** — a `COVERAGE.SOURCE_UNREAD` warning in the verdict, not a note only
+  `inspect` prints. Bit-packed channels and lookup-table conversions are unmapped instead: the CDM
+  has no shape for them. A `--metadata-only` run describes a compressed measurement from its header
+  tree, which is the only way to describe one at all.
 - **Per-sensor trigger/latency offsets** aren't modeled yet, so a rig with known constant offsets
   will report that drift as sync spread.
 - **A latched topic is exempt only where the source says it is latched.** `AUTONOMY.RIG_SYNC`

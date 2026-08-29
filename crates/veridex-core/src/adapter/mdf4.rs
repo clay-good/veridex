@@ -9,10 +9,17 @@
 //! Scope, stated honestly rather than guessed at (design D2 — never silently drop what could affect a
 //! verdict). Decoded: byte-aligned integer and float channels (little- and big-endian) in an
 //! uncompressed `##DT` block of a sorted data group, with identity or linear (`##CC` type 1)
-//! conversion applied. Everything else — compressed (`##DZ`) or listed (`##DL`) data, unsorted groups
-//! carrying record ids, non-byte-aligned or non-numeric channels, other conversion types — is
-//! reported as an `unmapped` field and contributes no frames, so a reader always knows what the
-//! verdict did and did not cover.
+//! conversion applied. Everything else contributes no frames and is reported, so a reader always
+//! knows what the verdict did and did not cover — split two ways, because the two mean different
+//! things. **Unread** (a `COVERAGE.SOURCE_UNREAD` warning in the verdict): compressed (`##DZ`) or
+//! listed (`##DL`) data, an unsorted group carrying record ids, a group with no usable time master,
+//! a channel declaring per-sample invalidation, a group declaring more cycles than its block holds —
+//! samples that are in the file and nobody read them, so every result is over less of the
+//! measurement than it appears to be. **Unmapped** (a note about shape, costing the reader nothing):
+//! non-byte-aligned and non-numeric channels, other conversion types.
+//!
+//! A `--metadata-only` run describes a measurement from its `##HD`/`##DG`/`##CG`/`##CN` header tree
+//! without opening a data block, which is the only way to describe a *compressed* one at all.
 //!
 //! Values are fingerprinted into `frame.value_ref.content_hash` (never stored), so the CDM content
 //! hash is sensitive to actual measured content, exactly as in the other adapters.
