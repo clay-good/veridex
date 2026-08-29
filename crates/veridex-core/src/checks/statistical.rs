@@ -971,7 +971,7 @@ impl Check for ValueMeasurability {
                 .with_remedy(
                     "Treat the statistical result as unverified for these streams. If value \
                      integrity matters, check them in a format whose values Veridex reads \
-                     (LeRobot, HDF5, Zarr).",
+                     (LeRobot, HDF5, Zarr, CAN+DBC, MF4).",
                 ),
             );
         }
