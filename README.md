@@ -38,7 +38,9 @@ Veridex Trust Report
   into one Canonical Dataset Model, so you check them the same way — no per-format tooling.
 - **Catches the failures that quietly ruin training.** Clock skew across sensors, broken episode
   boundaries, timeline gaps, duplicate frames, a video whose frame count no longer matches the
-  actions it is paired with — each reported with the *training risk* it creates and a *remedy*.
+  actions it is paired with, the teleoperation session that dropped so the robot never moved, an
+  episode whose arrays disagree about their own length, a camera whose calibration is present and
+  arithmetically impossible — each reported with the *training risk* it creates and a *remedy*.
 - **Proves where data came from.** Which sensor, clock, calibration, annotator, license, and
   upstream dataset produced each segment — surfaced, scored, and emitted two ways: as a signed
   trust certificate, and as Croissant + W3C PROV documents (`veridex provenance --emit`) for tools
@@ -356,8 +358,10 @@ check's own abstention rules, are recorded in [docs/checks.md](docs/checks.md).
 And where a check *could not run at all*, the report says so rather than staying quiet. A source that
 records no wall clock, one whose values Veridex never interprets, one whose frames carry no content
 fingerprint, one whose video is not laid out per episode, one that offers no two streams on a shared
-clock for the alignment checks to compare — each produces an informational finding
-naming the checks that had nothing to measure,
+clock for the alignment checks to compare, and one that holds **too few episodes** for the seven
+checks that answer by comparing episodes against each other — which is every MCAP file and every
+bare rosbag2 recording, since those are one episode by construction — each produces an informational
+finding naming the checks that had nothing to measure,
 and it travels into the JSON, the SARIF, the HTML, and the certificate. The alternative is what this
 tool exists to prevent: a recording whose actuator is pinned at its rail scoring `data 100` with no
 statistical findings, over a certificate listing all five statistical checks as run with nothing
