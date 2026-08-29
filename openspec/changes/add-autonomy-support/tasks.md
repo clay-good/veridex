@@ -72,7 +72,7 @@ No code until this change is approved; this is the build plan.
       unmapped, because the CDM has no shape for them: bit-packed and non-numeric channels, other
       conversion types. Those — plus `##SR` sample
       reduction, attachments, and the `##FH`/`##MD` metadata comments — are the follow-ups.
-- [~] CAN + DBC decoding → named signal streams; surface DBC-coverage gaps and decode errors.
+- [x] CAN + DBC decoding → named signal streams; surface DBC-coverage gaps and decode errors.
       `adapter/candbc.rs`: ingests a directory holding a `.dbc` + candump `.log`/`.asc`, parses the
       DBC (`BO_`/`SG_`), decodes each frame's signals in both byte orders — little-endian (Intel,
       `@1`) and big-endian (Motorola, `@0`, walked over the sawtooth bit numbering from the signal's
@@ -83,8 +83,10 @@ No code until this change is approved; this is the build plan.
       fall outside the frame is declined, never truncated. Registered in `default_registry`
       (autodetected). Decoded values fingerprinted into the content hash. Unit + integration + CLI
       e2e tests, including a Motorola signal over a byte-swapped copy of its Intel twin that must
-      decode to identical samples. Recomputed signal stats (for statistical checks) remain a
-      follow-up.
+      decode to identical samples. Per-signal statistics are recomputed from the decoded values
+      through the same accumulator LeRobot and HDF5 use, so the statistical family grades a CAN log
+      rather than abstaining on it — a wheel speed pinned at its rail is `STATISTICAL.SATURATED`,
+      which is the example the abstention finding was written around.
 - [x] Read scenario/map/sim references (OpenSCENARIO/OpenDRIVE/OSI) and versions. `crate::simref`
       maps the well-known metadata spellings to four reference kinds (scenario / map / OSI /
       simulator); the MCAP adapter records them as `scenario_ref` / `map_ref` / `osi_version` /

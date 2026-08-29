@@ -47,6 +47,21 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   file, so a header-only run holds it too, and its refusal says so rather than promising an escape
   the format does not have. `--max-source-bytes 0` removes the ceiling.
 
+### Added
+
+- **The statistical checks now grade a CAN log.** A CAN signal is the one payload in this crate that
+  is *decoded* rather than fingerprinted — a wheel speed is a number, not an opaque blob — but the
+  adapter threw those numbers away after hashing them, so the whole statistical family abstained.
+  That gap was the example the abstention finding was written around: a log with a wheel speed pinned
+  at its rail for 70% of the recording scored `data 100` with no statistical findings, over a
+  certificate listing all five statistical checks as run with nothing skipped.
+
+  Per-signal statistics are recomputed from the decoded values now, through the same single-pass
+  accumulator LeRobot and HDF5 use — the same accumulator, so one signal in two formats cannot reach
+  two verdicts — and that log is `STATISTICAL.SATURATED` naming the signal and the fraction.
+  `STATISTICAL.UNMEASURED_VALUES` no longer fires for CAN+DBC; `NO_STORED_STATS` does, because a DBC
+  declares a signal's range but stores no summary statistics to compare against.
+
 ### Fixed
 
 - **A rig that carries its own calibration was scored as having none.** A ROS 2 recording with a

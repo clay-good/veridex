@@ -401,6 +401,14 @@ impl Adapter for CanDbcAdapter {
 
         // Per signal stream (keyed by "<Message>.<Signal>"), the decoded frames.
         let mut signal_frames: BTreeMap<String, Vec<Frame>> = BTreeMap::new();
+        // …and the running statistics over the same decoded values. A CAN signal is the one payload
+        // in this crate that is *decoded* rather than fingerprinted — a wheel speed is a number, not
+        // an opaque blob — so the statistical family can grade it, and until it did, a log with a
+        // wheel speed pinned at its rail for 70% of the recording scored `data 100` with no
+        // statistical findings while the certificate listed all five statistical checks as run.
+        // Accumulated in one pass, holding no values, exactly as the LeRobot and HDF5 adapters do —
+        // the same accumulator, so the same signal in two formats cannot reach two verdicts.
+        let mut signal_stats: BTreeMap<String, super::stats::FeatureAccum> = BTreeMap::new();
         let mut unknown_ids: BTreeMap<u32, u64> = BTreeMap::new();
         let mut min_ts: Option<i64> = None;
         let mut max_ts: Option<i64> = None;
@@ -437,6 +445,10 @@ impl Adapter for CanDbcAdapter {
                 // Fingerprint the decoded value so the CDM hash reflects signal content.
                 let content_hash =
                     Sha256::digest(crate::canonical::canon_f64_bits(value).to_le_bytes()).into();
+                signal_stats
+                    .entry(stream_name.clone())
+                    .or_default()
+                    .push_cell(&[Some(value)]);
                 signal_frames.entry(stream_name).or_default().push(Frame {
                     ts: frame.ts_ns,
                     value_ref: ValueRef {
@@ -451,27 +463,36 @@ impl Adapter for CanDbcAdapter {
 
         let streams: Vec<Stream> = signal_frames
             .into_iter()
-            .map(|(name, frames)| Stream {
-                name,
-                modality: Modality::CanSignal,
-                declared_rate_hz: None,
-                clock_id: CLOCK_ID.to_string(),
-                // Real recorded timestamps: every temporal check applies.
-                clock_kind: ClockKind::Measured,
-                dtype: Some("float64".into()),
-                shape: None,
-                frames,
-                stats: None,
-                dim_stats: None,
-                observed_stats: None,
-                observed_saturation: None,
-                observed_non_finite: None,
-                observed_dim_stats: None,
-                latched: None,
-                point_fields: None,
-                // A CAN log has no coordinate frame; signals are scalars, not spatial observations.
-                media: None,
-                frame_id: None,
+            .map(|(name, frames)| {
+                let accum = signal_stats.remove(&name).unwrap_or_default();
+                Stream {
+                    name,
+                    modality: Modality::CanSignal,
+                    declared_rate_hz: None,
+                    clock_id: CLOCK_ID.to_string(),
+                    // Real recorded timestamps: every temporal check applies.
+                    clock_kind: ClockKind::Measured,
+                    dtype: Some("float64".into()),
+                    shape: None,
+                    frames,
+                    // A DBC declares a signal's range but stores no summary statistics, so there is
+                    // nothing to compare against — only what was recomputed from the decoded values.
+                    stats: None,
+                    dim_stats: None,
+                    observed_stats: accum.stats(),
+                    observed_saturation: accum.saturation(),
+                    // The values were read, so `Some(0)` means every one was finite — which is what
+                    // tells a clean signal from one nobody measured. A conversion with a huge factor can
+                    // overflow to infinity, so this is not vacuous.
+                    observed_non_finite: Some(accum.non_finite()),
+                    // One signal is one scalar; there are no dimensions to break out.
+                    observed_dim_stats: None,
+                    latched: None,
+                    point_fields: None,
+                    // A CAN log has no coordinate frame; signals are scalars, not spatial observations.
+                    media: None,
+                    frame_id: None,
+                }
             })
             .collect();
 

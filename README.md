@@ -358,9 +358,11 @@ fingerprint, one whose video is not laid out per episode, one that offers no two
 clock for the alignment checks to compare — each produces an informational finding
 naming the checks that had nothing to measure,
 and it travels into the JSON, the SARIF, the HTML, and the certificate. The alternative is what this
-tool exists to prevent: a CAN log with a wheel speed pinned at its rail for 70% of the recording
-scoring `data 100` with no statistical findings, over a certificate listing all five statistical
-checks as run with nothing skipped.
+tool exists to prevent: a recording whose actuator is pinned at its rail scoring `data 100` with no
+statistical findings, over a certificate listing all five statistical checks as run with nothing
+skipped. (That example was a CAN log, and a CAN log no longer abstains — a DBC decodes each frame
+into named signal values, and Veridex now measures them. The abstention remains for every container
+whose payload it fingerprints without interpreting.)
 
 Start with [openspec/project.md](openspec/project.md) for the design, or track progress in
 [openspec/changes/bootstrap-veridex-mvp/tasks.md](openspec/changes/bootstrap-veridex-mvp/tasks.md).

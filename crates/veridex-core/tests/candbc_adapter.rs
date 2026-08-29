@@ -286,3 +286,100 @@ fn partially_unreadable_log_lines_are_reported_as_a_coverage_gap() {
         note.note
     );
 }
+
+/// A CAN signal is the one payload in this crate that is *decoded* rather than fingerprinted — a
+/// wheel speed is a number, not an opaque blob — so the statistical family can grade it. Until it
+/// did, the example the abstention finding was written around was a real gap: a log with a wheel
+/// speed pinned at its rail for most of the recording scored `data 100` with no statistical
+/// findings, over a certificate listing all five statistical checks as run.
+#[test]
+fn a_signal_pinned_at_its_rail_is_flagged_end_to_end() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("vehicle.dbc"), DBC).unwrap();
+    // `EngineSpeed` sits exactly at its 16-bit maximum for 7 of every 10 frames.
+    let mut log = String::new();
+    for i in 0..100u32 {
+        let raw: u32 = if i % 10 < 7 { 0xFFFF } else { i * 100 };
+        log.push_str(&format!(
+            "({:.6}) can0 100#{:02X}{:02X}000000000000\n",
+            1000.0 + f64::from(i) * 0.01,
+            raw & 0xFF,
+            (raw >> 8) & 0xFF,
+        ));
+    }
+    fs::write(dir.path().join("drive.log"), log).unwrap();
+
+    let outcome = veridex_core::pipeline::run_check(
+        &veridex_core::default_registry(),
+        &Source::Local(dir.path().to_path_buf()),
+        None,
+        &IngestOptions::default(),
+    )
+    .expect("the run completes");
+    let saturated = outcome
+        .verdict
+        .findings
+        .iter()
+        .find(|f| f.code == "STATISTICAL.SATURATED")
+        .expect("the pinned signal is flagged");
+    assert!(
+        saturated.message.contains("EngineData.EngineSpeed") && saturated.message.contains("70%"),
+        "{}",
+        saturated.message
+    );
+
+    // And the abstention that stood in for this is gone: the values were measured.
+    assert!(
+        !outcome
+            .verdict
+            .findings
+            .iter()
+            .any(|f| f.code == "STATISTICAL.UNMEASURED_VALUES"),
+        "a CAN log's values are read, so the family does not abstain on it"
+    );
+}
+
+/// The statistics are recomputed from the decoded values, not from the raw frame bytes — the
+/// difference is the DBC's factor and offset, which is the whole point of decoding.
+#[test]
+fn recomputed_statistics_are_of_the_decoded_signal_not_the_raw_bits() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("vehicle.dbc"), DBC).unwrap();
+    // Raw 0, 4, 8, 12 on a signal with factor 0.25 → 0.0, 1.0, 2.0, 3.0.
+    let mut log = String::new();
+    for (i, raw) in [0u32, 4, 8, 12].iter().enumerate() {
+        log.push_str(&format!(
+            "({:.6}) can0 100#{:02X}{:02X}000000000000\n",
+            1000.0 + i as f64 * 0.01,
+            raw & 0xFF,
+            (raw >> 8) & 0xFF,
+        ));
+    }
+    fs::write(dir.path().join("drive.log"), log).unwrap();
+
+    let ingested = CanDbcAdapter
+        .ingest(
+            &Source::Local(dir.path().to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest");
+    let speed = ingested.dataset.episodes[0]
+        .streams
+        .iter()
+        .find(|s| s.name == "EngineData.EngineSpeed")
+        .expect("the signal stream");
+    let stats = speed
+        .observed_stats
+        .expect("statistics are recomputed from the values");
+    assert_eq!((stats.min, stats.max, stats.mean), (0.0, 3.0, 1.5));
+    assert_eq!(
+        speed.observed_non_finite,
+        Some(0),
+        "the values were read and every one was finite — which is what tells a clean signal from \
+         one nobody measured"
+    );
+    assert!(
+        speed.stats.is_none(),
+        "a DBC stores no summary statistics, so there is nothing to compare against"
+    );
+}
