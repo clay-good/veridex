@@ -772,7 +772,7 @@ impl AdapterRegistry {
         }
         if options.sample.is_partial() {
             return Err(IngestError::InvalidSample {
-                reason: "a remote read is already manifest-only; sampling episodes would describe a                          second, different partial coverage"
+                reason: "a remote read is already manifest-only; sampling episodes would describe a second, different partial coverage"
                     .into(),
             });
         }
@@ -781,7 +781,7 @@ impl AdapterRegistry {
             let _ = spec;
             Err(IngestError::NotImplemented {
                 what: "remote ingestion",
-                hint: "this build of Veridex was compiled without the `remote` feature; rebuild                        with it, or fetch the dataset locally and check the path",
+                hint: "this build of Veridex was compiled without the `remote` feature; rebuild with it, or fetch the dataset locally and check the path",
             })
         }
         #[cfg(feature = "remote")]
@@ -839,7 +839,7 @@ impl AdapterRegistry {
                 .mapped_fields
                 .push("hub repository + revision -> dataset id and metadata".into());
             out.report.omitted_fields.push(
-                "every file but the manifest (a remote read fetches `meta/` and the dataset card,                  and nothing else)"
+                "every file but the manifest (a remote read fetches `meta/` and the dataset card, and nothing else)"
                     .into(),
             );
             Ok(out)
@@ -871,9 +871,9 @@ fn check_adapter_supports_options(
             // CAN log — which refuses sampling for the same "one recording, one episode" reason —
             // sends the reader to a second refusal.
             hint: if adapter.supports_sampling() {
-                "this format interleaves its structure with its data, so there is nothing that                  describes the dataset without being it — drop --metadata-only, or sample the                  dataset instead"
+                "this format interleaves its structure with its data, so there is nothing that describes the dataset without being it — drop --metadata-only, or sample the dataset instead"
             } else {
-                "this format interleaves its structure with its data, so there is nothing that                  describes the recording without being it, and it has no episode axis to sample                  along either — drop --metadata-only and check it in full"
+                "this format interleaves its structure with its data, so there is nothing that describes the recording without being it, and it has no episode axis to sample along either — drop --metadata-only and check it in full"
             },
         });
     }

@@ -452,15 +452,15 @@ impl Check for EgoPoseContinuity {
                         Location::Episode { episode: ep.index },
                         "AUTONOMY.EGO_POSE_NON_FINITE",
                         format!(
-                            "episode {}: {non_finite} ego-trajectory step(s) have a non-finite                              position, so the distance travelled over them cannot be computed —                              the trajectory's continuity is unverifiable across those steps, not                              verified",
+                            "episode {}: {non_finite} ego-trajectory step(s) have a non-finite position, so the distance travelled over them cannot be computed — the trajectory's continuity is unverifiable across those steps, not verified",
                             ep.index
                         ),
                     )
                     .with_risk(
-                        "A NaN or infinite pose breaks every geometric use of the trajectory, and                          it hides the discontinuities on either side of it: the comparison that                          would catch a teleport silently evaluates to false against a NaN.",
+                        "A NaN or infinite pose breaks every geometric use of the trajectory, and it hides the discontinuities on either side of it: the comparison that would catch a teleport silently evaluates to false against a NaN.",
                     )
                     .with_remedy(
-                        "Find where the localization output went non-finite and drop or repair                          those poses before training on the segment.",
+                        "Find where the localization output went non-finite and drop or repair those poses before training on the segment.",
                     ),
                 );
             }

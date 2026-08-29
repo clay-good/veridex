@@ -1410,10 +1410,13 @@ impl Check for ContentMeasurability {
         "structural.content-measurability"
     }
     fn finding_codes(&self) -> &'static [&'static str] {
-        &["STRUCTURAL.UNFINGERPRINTED_CONTENT"]
+        &[
+            "STRUCTURAL.UNFINGERPRINTED_CONTENT",
+            "STRUCTURAL.UNCOMPARED_EPISODES",
+        ]
     }
     fn title(&self) -> &'static str {
-        "Frame content was fingerprinted"
+        "Content and episodes were comparable"
     }
     fn category(&self) -> Category {
         Category::Structural
@@ -1428,6 +1431,77 @@ impl Check for ContentMeasurability {
         "1"
     }
     fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        let mut findings = uncompared_episodes_finding(dataset);
+        findings.extend(self.unfingerprinted(dataset));
+        findings
+    }
+}
+
+/// The checks that answer a question by comparing one episode against another, with the number of
+/// episodes each needs before it can ask it.
+///
+/// Sourced from each check's own constant where it has one, so the disclosure cannot drift from the
+/// behaviour it describes. The plain `2`s are the checks that compare a pair: with one episode there
+/// is no pair.
+fn cross_episode_checks() -> [(&'static str, usize); 7] {
+    [
+        ("structural.duplicate-episode", 2),
+        ("structural.near-duplicate-episode", 2),
+        ("structural.stream-presence", 2),
+        ("structural.shape-consistency", 2),
+        ("structural.episode-continuity", 2),
+        ("structural.frozen-episode", FrozenEpisode::MIN_EPISODES),
+        (
+            "temporal.episode-duration",
+            crate::checks::temporal::EpisodeDuration::MIN_EPISODES,
+        ),
+    ]
+}
+
+/// The disclosure that this dataset holds too few episodes for the checks that compare episodes.
+///
+/// Not a corner case: **an MCAP file and a bare rosbag2 recording are one episode by construction**,
+/// so every run over one of them silently skipped seven checks while the certificate listed them as
+/// executed with no categories skipped. A demo recording scored `data 100` and grade B with nothing
+/// saying that duplicate detection, cross-episode shape consistency and the rest had not been asked.
+///
+/// The same reasoning as [`ClockMeasurability`](crate::checks::temporal::ClockMeasurability) and
+/// `statistical.value-measurability`, for the third axis a check can fail to have evidence on:
+/// not "no clock", not "no values", but "nothing to compare against". Informational — a dataset is
+/// not worse for being one recording. What changes is what its passing verdict is evidence of.
+fn uncompared_episodes_finding(dataset: &Dataset) -> Vec<Finding> {
+    let episodes = dataset.episodes.len();
+    let unmet: Vec<&str> = cross_episode_checks()
+        .into_iter()
+        .filter(|(_, needs)| episodes < *needs)
+        .map(|(id, _)| id)
+        .collect();
+    if unmet.is_empty() {
+        return Vec::new();
+    }
+    vec![Finding::new(
+        "structural.content-measurability",
+        Category::Structural,
+        Severity::Info,
+        Location::Dataset,
+        "STRUCTURAL.UNCOMPARED_EPISODES",
+        format!(
+            "this dataset holds {episodes} episode(s), too few for {} check(s) that answer by comparing episodes against each other, which therefore had nothing to compare ({})",
+            unmet.len(),
+            unmet.join(", "),
+        ),
+    )
+    .with_risk(
+        "Those checks are how a run answers whether an episode was re-uploaded, whether a stream changes shape or disappears between episodes, and whether one recording stands out from the rest. Their silence here is the absence of a comparison, not evidence that the dataset is consistent — and it is the same silence a flawless dataset produces. An MCAP file and a bare rosbag2 recording are one episode by construction, so this is the ordinary case for them rather than a corner of it.",
+    )
+    .with_remedy(
+        "If cross-episode consistency matters, check the recordings together as one dataset rather than one file at a time.",
+    )]
+}
+
+impl ContentMeasurability {
+    /// Streams whose frames carry no content fingerprint.
+    fn unfingerprinted(&self, dataset: &Dataset) -> Vec<Finding> {
         // Reported once for the dataset: whether a stream's payload is hashable is a property of the
         // source layout, so one finding per episode would repeat the same fact for every episode.
         let mut unhashed: BTreeSet<&str> = BTreeSet::new();
@@ -1468,7 +1542,7 @@ impl Check for ContentMeasurability {
              this dataset at all"
         };
         vec![Finding::new(
-            self.id(),
+            "structural.content-measurability",
             Category::Structural,
             Severity::Info,
             Location::Dataset,
@@ -1635,7 +1709,7 @@ impl FrozenEpisode {
     /// stream at rest is not evidence of anything.
     const MIN_FRAMES: usize = 8;
     /// Fewer episodes than this and "a minority of them" means nothing.
-    const MIN_EPISODES: usize = 3;
+    pub const MIN_EPISODES: usize = 3;
 }
 
 impl Check for FrozenEpisode {

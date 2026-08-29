@@ -892,6 +892,10 @@ fn a_clean_rlds_dataset_passes_the_standard_checks_without_false_findings() {
         // evidence of; neither accuses the data of anything.
         .filter(|code| *code != "STATISTICAL.NO_STORED_STATS")
         .filter(|code| *code != "STATISTICAL.UNMEASURED_VALUES")
+        // And the third form: this fixture is a single episode, so the checks that answer by
+        // comparing episodes had nothing to compare. A statement about the run's evidence, not
+        // about the data.
+        .filter(|code| *code != "STRUCTURAL.UNCOMPARED_EPISODES")
         .collect();
     assert!(
         noise.is_empty(),

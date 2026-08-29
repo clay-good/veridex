@@ -716,3 +716,78 @@ fn a_hostile_name_cannot_script_the_shared_html_report() {
         "including in the rollups"
     );
 }
+
+/// No message a user reads carries a run of spaces where a sentence should be.
+///
+/// `rustfmt` joins a string literal that was wrapped with a `\` line continuation *without* removing
+/// the indentation that followed it, so a message written across four source lines is rendered with
+/// thirty spaces in the middle of a sentence. It had happened in five places — one of them the
+/// ego-pose non-finite finding, whose message reached the terminal report, the JSON, the SARIF and
+/// the signed certificate with the gaps in it. Nothing catches this: it compiles, the tests that
+/// assert on `contains("non-finite")` still pass, and the damage is only visible when a person reads
+/// the output.
+///
+/// So the source is the thing to check. A run of three or more spaces *between two words* is never
+/// deliberate; the column alignment in this crate's own renderers pads after punctuation, which this
+/// does not match.
+#[test]
+fn no_user_facing_message_was_mangled_by_the_formatter() {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir)
+            .expect("the crate's src is readable")
+            .flatten()
+        {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(
+        &std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut files,
+    );
+    assert!(!files.is_empty(), "the walk found no source to check");
+
+    let mut mangled = Vec::new();
+    for path in &files {
+        let text = std::fs::read_to_string(path).expect("source is UTF-8");
+        for (n, line) in text.lines().enumerate() {
+            let chars: Vec<char> = line.chars().collect();
+            let mut i = 0;
+            while i < chars.len() {
+                if chars[i] != ' ' {
+                    i += 1;
+                    continue;
+                }
+                // Measure the whole run, then step past it — stepping one character at a time would
+                // re-examine the run's interior, and stopping at the first run would never look past
+                // the line's own indentation.
+                let run = chars[i..].iter().take_while(|c| **c == ' ').count();
+                let before = if i == 0 { ' ' } else { chars[i - 1] };
+                let after = chars.get(i + run).copied().unwrap_or(' ');
+                // Between two words: never deliberate. The column alignment in this crate's own
+                // renderers pads after punctuation, which this does not match.
+                if run >= 3 && before.is_alphanumeric() && after.is_alphabetic() {
+                    mangled.push(format!(
+                        "{}:{}: {}",
+                        path.file_name().unwrap().to_string_lossy(),
+                        n + 1,
+                        line.trim().chars().take(90).collect::<String>()
+                    ));
+                    break;
+                }
+                i += run;
+            }
+        }
+    }
+    assert!(
+        mangled.is_empty(),
+        "a wrapped message was joined with its indentation left in it — rewrite the literal so it \
+         reads as one sentence:\n{}",
+        mangled.join("\n")
+    );
+}

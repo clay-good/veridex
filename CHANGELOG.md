@@ -10,6 +10,26 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A one-episode recording never said that seven checks had nothing to compare.** An MCAP file and
+  a bare rosbag2 recording are one episode *by construction*, and seven checks in the catalog answer
+  their question by comparing one episode against another — duplicate and near-duplicate detection,
+  cross-episode stream presence and shape consistency, episode-index continuity, the frozen-episode
+  check, and the episode-duration outlier. Over a single recording all seven produce nothing, and
+  nothing said so: the demo MCAP scored `data 100`, grade B, and the certificate listed every one of
+  them as executed with no categories skipped.
+
+  `STRUCTURAL.UNCOMPARED_EPISODES` (info) names them and the number of episodes each needs. It is the
+  third axis of the reasoning behind `TEMPORAL.UNMEASURED_CLOCK` and `STATISTICAL.UNMEASURED_VALUES`:
+  not "no clock", not "no values", but "nothing to compare against".
+
+- **Five findings reached users with runs of spaces inside their sentences.** `rustfmt` joins a
+  string literal wrapped with a `\` line continuation without removing the indentation that followed
+  it, so a message written across four source lines rendered with thirty spaces in the middle. One of
+  them was the ego-pose non-finite finding, which travels into the terminal report, the JSON, the
+  SARIF and the signed certificate. It compiles, and every test asserting `contains(...)` still
+  passes. A test now walks the crate's own source and fails on a run of three or more spaces between
+  two words — the column alignment in the renderers pads after punctuation and is untouched.
+
 - **A camera with no focal length certified as calibrated.** `autonomy.calibration-completeness`
   tested that intrinsics were *present*. An uncalibrated ROS camera driver publishes a `CameraInfo`
   of all zeros, which is present — so a rig carrying it scored a clean pass and the

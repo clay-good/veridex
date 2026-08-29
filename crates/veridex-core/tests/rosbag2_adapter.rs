@@ -419,11 +419,14 @@ fn a_latched_topic_is_read_from_its_qos_and_stops_deflating_the_score() {
         !codes.contains(&"TEMPORAL.END_OFFSET"),
         "a latched topic does not cover the recording's window: {codes:?}"
     );
-    // The only thing left to say about this bag is that it declares no license.
+    // The only things left to say about this bag are what it declares no license for, what values
+    // it does not let anyone read, and that one recording is one episode — so the checks that
+    // compare episodes had nothing to compare. All three are statements about the evidence.
     assert_eq!(
         codes
             .iter()
             .filter(|c| !c.starts_with("PROVENANCE.") && !c.starts_with("STATISTICAL."))
+            .filter(|c| **c != "STRUCTURAL.UNCOMPARED_EPISODES")
             .count(),
         0,
         "{codes:?}"

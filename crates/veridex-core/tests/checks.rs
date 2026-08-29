@@ -3837,22 +3837,30 @@ fn a_hashless_stream_disables_the_content_checks_and_the_report_says_which() {
     // The content checks are silent, as designed — and that silence is now stated.
     assert!(structural::DuplicateEpisode.run(&d).is_empty());
     assert!(structural::StuckStream.run(&d).is_empty());
-    let f = structural::ContentMeasurability.run(&d);
-    assert_eq!(f.len(), 1, "{f:?}");
-    assert_eq!(f[0].code, "STRUCTURAL.UNFINGERPRINTED_CONTENT");
-    assert_eq!(f[0].severity, Severity::Info);
+    // The one-episode dataset also draws the check's other disclosure, so select by code.
+    let all = structural::ContentMeasurability.run(&d);
+    let f = all
+        .iter()
+        .find(|f| f.code == "STRUCTURAL.UNFINGERPRINTED_CONTENT")
+        .unwrap_or_else(|| panic!("{all:?}"));
+    assert_eq!(f.severity, Severity::Info);
     assert!(
-        f[0].message.contains("no episode was fully fingerprinted"),
+        f.message.contains("no episode was fully fingerprinted"),
         "the dataset-wide consequence must be stated, not inferred: {}",
-        f[0].message
+        f.message
     );
 
-    // A fully fingerprinted dataset is not accused of anything.
-    let mut hashed = stream("a", "c", None, &[0, 1]);
-    for (i, f) in hashed.frames.iter_mut().enumerate() {
-        f.value_ref.content_hash = Some([i as u8; 32]);
-    }
-    let d = dataset(vec![episode(0, vec![hashed])]);
+    // A fully fingerprinted dataset is not accused of anything on this count. (It carries the
+    // check's other disclosure, because one episode is too few to compare episodes — a different
+    // fact about a different absence.)
+    let hashed = |name: &str| {
+        let mut s = stream(name, "c", None, &[0, 1]);
+        for (i, f) in s.frames.iter_mut().enumerate() {
+            f.value_ref.content_hash = Some([i as u8; 32]);
+        }
+        s
+    };
+    let d = dataset((0..4u64).map(|i| episode(i, vec![hashed("a")])).collect());
     assert!(structural::ContentMeasurability.run(&d).is_empty());
 }
 

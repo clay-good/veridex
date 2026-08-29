@@ -2191,7 +2191,7 @@ fn a_label_says_what_the_certificate_says_and_nothing_more() {
         "## Veridex trust label",
         "Grade C — 76/100",
         "| Dataset | `demo` |",
-        "| Findings | 1 error · 1 warning · 3 info |",
+        "| Findings | 1 error · 1 warning · 4 info |",
         "| Provenance |",
         "veridex verify",
     ] {

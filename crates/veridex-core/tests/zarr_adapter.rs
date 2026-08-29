@@ -408,6 +408,9 @@ fn a_zarr_store_flows_through_the_whole_pipeline() {
         // compare the source's summary against its data had nothing to compare. Disclosed, not
         // accused: the recomputed checks did run.
         .filter(|c| *c != "STATISTICAL.NO_STORED_STATS")
+        // And this fixture is a single episode, so the checks that answer by comparing episodes had
+        // nothing to compare — the same kind of statement, about a different absence.
+        .filter(|c| *c != "STRUCTURAL.UNCOMPARED_EPISODES")
         .collect();
     assert!(
         noise.is_empty(),
