@@ -18,11 +18,16 @@ the build plan.
 - [x] Define the adapter trait (populate CDM; declare supported versions; record unmapped fields).
 
 ## M2 — Ingestion adapters (the neutrality proof)
-- [x] LeRobot v3 adapter → CDM (features→streams, Parquet `timestamp`→frame ts, `episode_index`
+- [x] LeRobot adapter → CDM (features→streams, Parquet `timestamp`→frame ts, `episode_index`
       grouping, fps→rate, robot_type→provenance). Reads only timestamps/structure, not payloads.
-      Task strings are resolved (`task_index` + `meta/tasks.jsonl` → `episode.task`). Video *files*
-      are now resolved and their container headers read into `Stream.media`; per-frame pixel decoding
-      remains deliberately out of scope.
+      Task strings are resolved (`task_index` + `meta/tasks.jsonl` → `episode.task`, falling back to
+      the task each `meta/episodes.jsonl` line states). Video *files* are resolved and their
+      container headers read into `Stream.media`; per-frame pixel decoding remains deliberately out
+      of scope. **v2.0/2.1 as well as v3.0**: v2 writes one Parquet and one MP4 per episode where v3
+      packs many into each, but the episode a row belongs to is the `episode_index` column either
+      way and the metadata files are the same — the one real difference is v2.1's per-episode
+      statistics in `meta/episodes_stats.jsonl`, which are read in the full, metadata-only and
+      remote paths alike.
 - [x] MCAP adapter → CDM (channels→streams, message timestamps, schemas→modalities). Backed by the
       `mcap` crate; tests write real MCAP files and ingest them.
 - [x] RLDS/TFDS adapter → CDM (`features.json` step leaves→streams, one TFRecord per episode, step

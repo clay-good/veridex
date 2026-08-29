@@ -115,7 +115,7 @@ The decision and its consequences are recorded as design D6a.
 
 ## Roadmap (direction, not commitment)
 
-1. **v0.1 MVP** — `bootstrap-veridex-mvp`: LeRobot v3 + MCAP adapters, structural/temporal(cross-stream
+1. **v0.1 MVP** — `bootstrap-veridex-mvp`: LeRobot (v2.0/2.1/3.0) + MCAP adapters, structural/temporal(cross-stream
    skew)/statistical/provenance checks, Croissant emit, signed certificate, CLI + Python parity.
 2. **Autonomy / world-model sensor data (priority once core is built and tested)** —
    `add-autonomy-support`: multi-sensor rig CDM extensions, AV-native adapters (ASAM MDF/MF4, CAN+DBC,
