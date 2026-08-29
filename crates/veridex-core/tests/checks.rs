@@ -4316,3 +4316,73 @@ fn a_small_std_over_a_wide_range_is_ordinary_and_a_constant_stream_is_degenerate
         "a stuck sensor is degenerate, not impossible"
     );
 }
+
+/// When a stream is pinned equally at both rails, the finding names *one* of them, and which one is
+/// not arbitrary: the maximum is reported on a tie, so the same data always produces the same
+/// finding text — and the same content hash over the report that carries it.
+#[test]
+fn saturation_at_both_rails_equally_names_the_maximum() {
+    // 60 of 100 at each rail (a signal that only ever sits at one end or the other), so both
+    // fractions clear the threshold and the tie is what decides which is named.
+    let d = dataset(vec![episode(
+        0,
+        vec![stream_with_saturation("gripper", 100, 60, 60, 0.0, 1.0)],
+    )]);
+    let f = statistical::Saturation::default().run(&d);
+    assert_eq!(f.len(), 1);
+    assert!(
+        f[0].message.contains("maximum"),
+        "a tie is broken toward the maximum, deterministically: {}",
+        f[0].message
+    );
+}
+
+/// An episode that declares a single instant — `start_ts == end_ts`, which is what a one-frame or
+/// zero-length recording writes — still bounds its annotations. Read as "no span", an annotation
+/// anywhere at all becomes unjudgeable, and the check that exists to catch a label attached to a
+/// moment the episode never recorded goes quiet on the episode with the least room to be right.
+#[test]
+fn an_episode_declaring_one_instant_still_bounds_its_annotations() {
+    let mut ep = episode(0, vec![stream("s", "c", None, &[])]);
+    ep.start_ts = Some(1_000);
+    ep.end_ts = Some(1_000);
+    ep.labels = vec![Label {
+        key: "language".into(),
+        value: "pick up the block".into(),
+        ts: Some(5_000),
+    }];
+    let f = semantic::AnnotationIntegrity.run(&dataset(vec![ep]));
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].code, "SEMANTIC.ANNOTATION_UNALIGNED");
+
+    // And one on the instant itself is aligned.
+    let mut ok = episode(0, vec![stream("s", "c", None, &[])]);
+    ok.start_ts = Some(1_000);
+    ok.end_ts = Some(1_000);
+    ok.labels = vec![Label {
+        key: "language".into(),
+        value: "pick up the block".into(),
+        ts: Some(1_000),
+    }];
+    assert!(semantic::AnnotationIntegrity
+        .run(&dataset(vec![ok]))
+        .is_empty());
+}
+
+/// A declared rate sitting exactly on the gap factor still counts as agreeing with the observed
+/// cadence, so the declared period is what gaps are measured against. On the other side of that
+/// line the check falls back to the observed median, and the same recording reports gaps it does
+/// not have.
+#[test]
+fn a_declared_rate_exactly_at_the_gap_factor_is_still_trusted() {
+    // Observed median interval 100 ns; declared period 300 ns — exactly 3x, the default factor.
+    let mut ts: Vec<i64> = (0..12).map(|i| i * 100).collect();
+    // One interval of 500 ns: over 3x the observed median, under 3x the declared period.
+    ts.push(ts.last().unwrap() + 500);
+    let rate = 1_000_000_000.0 / 300.0;
+    let d = dataset(vec![episode(0, vec![stream("s", "c", Some(rate), &ts)])]);
+    assert!(
+        temporal::Gaps::default().run(&d).is_empty(),
+        "the declared cadence is trusted at exactly the factor, and 500 ns is inside 3x300"
+    );
+}
