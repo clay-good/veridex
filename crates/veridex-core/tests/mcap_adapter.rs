@@ -2213,3 +2213,81 @@ fn a_topic_whose_payload_stays_opaque_is_still_reported_unmeasured() {
         unmeasured.message
     );
 }
+
+/// One `sensor_msgs/msg/Imu` body: orientation is declared absent (`covariance[0] = -1`), as a bare
+/// gyro/accelerometer publishes it; angular velocity and linear acceleration are provided.
+fn imu_body(angular: [f64; 3], linear: [f64; 3]) -> Vec<u8> {
+    let mut c = Cdr::new();
+    c.header("imu_link");
+    for _ in 0..4 {
+        c.f64(0.0); // orientation, zero-filled
+    }
+    c.f64(-1.0); // orientation_covariance[0]: not provided
+    for _ in 0..8 {
+        c.f64(0.0);
+    }
+    for v in angular {
+        c.f64(v);
+    }
+    for _ in 0..9 {
+        c.f64(0.0);
+    }
+    for v in linear {
+        c.f64(v);
+    }
+    for _ in 0..9 {
+        c.f64(0.0);
+    }
+    c.buf
+}
+
+#[test]
+fn an_accelerometer_clipping_at_its_rail_is_caught_end_to_end() {
+    // A ±16 g accelerometer railed at 156.9 m/s² for 30 of 40 samples: the sensor is reporting its
+    // own limit, not the world, and every measurement above it is lost. Nothing about the
+    // recording's structure or timing says so — only the values.
+    let payloads: Vec<Vec<u8>> = (0..40)
+        .map(|i: i32| {
+            let z = if i < 30 { 156.9 } else { 9.81 + i as f64 * 0.1 };
+            imu_body([0.01 * i as f64, 0.0, 0.0], [0.0, 0.0, z])
+        })
+        .collect();
+    let bytes = build_mcap_series("sensor_msgs/msg/Imu", "/imu/data", &payloads);
+    let path = write_temp_mcap(&bytes);
+    let ingested = McapAdapter
+        .ingest(
+            &Source::Local(path.to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest");
+
+    let stream = &ingested.dataset.episodes[0].streams[0];
+    let sat = stream
+        .observed_saturation
+        .expect("imu values were measured");
+    assert_eq!(sat.dim, 9, "the z accelerometer axis is dimension 9");
+    assert_eq!(sat.at_max, 30);
+
+    // The orientation the driver declared absent was held out, so it contributes no dimension —
+    // ten slots, of which only the six provided ones carry statistics.
+    let dims = stream
+        .observed_dim_stats
+        .as_ref()
+        .expect("per-dimension statistics");
+    assert!(
+        dims.iter().all(|d| d.dim >= 4),
+        "a quaternion the IMU never published must not be summarized: {dims:?}"
+    );
+
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let hash = veridex_core::content_hash(&ingested.dataset);
+    let verdict = engine.run(&ingested.dataset, hash, &veridex_core::RunConfig::default());
+    assert!(
+        verdict
+            .findings
+            .iter()
+            .any(|f| f.code == "STATISTICAL.SATURATED"),
+        "a railed accelerometer must reach the verdict: {:?}",
+        verdict.findings.iter().map(|f| &f.code).collect::<Vec<_>>()
+    );
+}

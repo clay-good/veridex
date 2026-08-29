@@ -1020,7 +1020,7 @@ impl Check for ExtremeOutlier {
 /// family over. Every statistical check reads either the source's *stored* summary statistics or the
 /// ones the adapter recomputed while fingerprinting the data. Where neither exists — a container
 /// whose payload Veridex fingerprints without interpreting, which is every MCAP or rosbag2 topic
-/// except a `JointState` — `stats`, `observed_stats`, `observed_saturation`, and
+/// except a `JointState` or an `Imu` — `stats`, `observed_stats`, `observed_saturation`, and
 /// `observed_non_finite` are all `None`. Every check in the family then hits its
 /// `let Some(...) else { continue }` and produces nothing.
 ///
@@ -1110,8 +1110,8 @@ impl Check for ValueMeasurability {
                 .with_remedy(
                     "Treat the statistical result as unverified for these streams. If value \
                      integrity matters, check them in a format whose values Veridex reads \
-                     (LeRobot, RLDS/TFDS, HDF5, Zarr, CAN+DBC, MF4, and a bag's JointState \
-                     topics).",
+                     (LeRobot, RLDS/TFDS, HDF5, Zarr, CAN+DBC, MF4, and a bag's JointState and \
+                     Imu topics).",
                 ),
             );
         }

@@ -180,12 +180,19 @@ other storage plugin — so a `PointCloud2` supplies the per-point field layout,
 `TFMessage` the intrinsics and the transform tree, and `Odometry` the ego trajectory. The bulk
 payload is fingerprinted, never decoded.
 
-One exception, and it is the one that lets the statistical family grade a bag at all: a
-`sensor_msgs/msg/JointState` carries nothing *but* the measurement — a handful of joint angles — so
-its `position` array is read and summarized per joint, exactly as LeRobot's or HDF5's values are.
-Without it, an arm recording whose elbow sat pinned against its stop scored a clean `data 100` with
-every statistical check listed as run. Every other topic's payload stays opaque and says so, through
-`STATISTICAL.UNMEASURED_VALUES`. The same is true of a plain MCAP file.
+Two exceptions, and they are what let the statistical family grade a bag at all. A
+`sensor_msgs/msg/JointState` and a `sensor_msgs/msg/Imu` each carry nothing *but* the measurement —
+a handful of joint angles, or thirty-seven doubles with no bulk blob among them — so the joint
+`position` array and the IMU's orientation, angular velocity and linear acceleration are read and
+summarized per dimension, exactly as LeRobot's or HDF5's values are. Without them, an arm whose elbow
+sat pinned against its stop and an accelerometer railed at ±16 g both scored a clean `data 100` with
+every statistical check listed as run.
+
+An IMU field whose `covariance[0]` is `-1` is one the driver declares it does **not** provide, and
+ROS leaves it zero-filled; those slots are held out rather than summarized, because reporting them
+would accuse a bare gyro of having an orientation frozen at the origin. Every other topic's payload
+stays opaque and says so, through `STATISTICAL.UNMEASURED_VALUES`. The same is true of a plain MCAP
+file.
 
 Three things it will not do. **Columns are bound by name**, from each table's own `CREATE TABLE`
 statement, because rosbag2 has added columns across bag versions and reading position 3 because that

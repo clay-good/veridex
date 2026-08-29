@@ -362,10 +362,11 @@ tool exists to prevent: a recording whose actuator is pinned at its rail scoring
 statistical findings, over a certificate listing all five statistical checks as run with nothing
 skipped. (That example was a CAN log, and neither a CAN log nor an MF4
 measurement abstains any more — a DBC decodes each frame into named signal values, an MF4 applies its
-conversion to each sample, and Veridex measures both. Nor does a robot arm recorded to an MCAP or a
-ROS 2 bag: a `sensor_msgs/msg/JointState` carries nothing but the joint angles, so they are read and
-summarized per joint. The abstention remains for every other container payload — the imagery, the
-point clouds — which Veridex fingerprints without interpreting.)
+conversion to each sample, and Veridex measures both. Nor does a robot arm or an IMU recorded to an
+MCAP or a ROS 2 bag: a `sensor_msgs/msg/JointState` and a `sensor_msgs/msg/Imu` carry nothing but
+their measurements, so those are read and summarized per dimension. The abstention remains for every
+other container payload — the imagery, the point clouds — which Veridex fingerprints without
+interpreting.)
 
 Start with [openspec/project.md](openspec/project.md) for the design, or track progress in
 [openspec/changes/bootstrap-veridex-mvp/tasks.md](openspec/changes/bootstrap-veridex-mvp/tasks.md).

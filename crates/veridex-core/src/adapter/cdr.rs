@@ -262,6 +262,44 @@ pub fn decode_joint_state_positions(data: &[u8]) -> Option<Vec<f64>> {
     (!positions.is_empty()).then_some(positions)
 }
 
+/// Decode a `sensor_msgs/msg/Imu` body into its ten measured scalars, in the order
+/// `[qx, qy, qz, qw, wx, wy, wz, ax, ay, az]` — orientation, angular velocity, linear acceleration.
+///
+/// Layout: `Header`, `Quaternion orientation`, `float64[9] orientation_covariance`,
+/// `Vector3 angular_velocity`, `float64[9] angular_velocity_covariance`,
+/// `Vector3 linear_acceleration`, `float64[9] linear_acceleration_covariance`. Everything is a fixed
+/// number of doubles, so the whole message is 37 values — it has no bulk payload to decline.
+///
+/// A field whose covariance begins with `-1` is one the driver declares it does **not** provide, and
+/// ROS leaves its slot zero-filled. Those slots come back as `None` rather than as zeros: recording
+/// them as measurements would report a driver that publishes no orientation as an IMU whose
+/// orientation is frozen at the origin — a defect it does not have, hiding the ones it might.
+pub fn decode_imu_values(data: &[u8]) -> Option<Vec<Option<f64>>> {
+    let mut r = Reader::new(data)?;
+    r.header()?;
+    let read = |r: &mut Reader, n: usize| -> Option<Vec<f64>> { (0..n).map(|_| r.f64()).collect() };
+    let orientation = read(&mut r, 4)?;
+    let orientation_cov0 = r.f64()?;
+    read(&mut r, 8)?;
+    let angular = read(&mut r, 3)?;
+    let angular_cov0 = r.f64()?;
+    read(&mut r, 8)?;
+    let linear = read(&mut r, 3)?;
+    let linear_cov0 = r.f64()?;
+
+    // `covariance[0] == -1` is the ROS convention for "this field is not provided".
+    let provided = |cov0: f64, vs: Vec<f64>| -> Vec<Option<f64>> {
+        let keep = cov0 != -1.0;
+        vs.into_iter().map(|v| keep.then_some(v)).collect()
+    };
+    let values: Vec<Option<f64>> = provided(orientation_cov0, orientation)
+        .into_iter()
+        .chain(provided(angular_cov0, angular))
+        .chain(provided(linear_cov0, linear))
+        .collect();
+    values.iter().any(Option::is_some).then_some(values)
+}
+
 /// Decode a `tf2_msgs/msg/TFMessage` body: a sequence of `TransformStamped`
 /// `{ Header header (frame_id = parent), string child_frame_id, Transform { Vector3 translation,
 /// Quaternion rotation } }`. Returns each edge as a CDM [`Transform`] with open validity.
@@ -471,6 +509,96 @@ mod tests {
         w.u32(0); // name[]
         w.u32(4_000_000_000); // position[] count
         assert!(decode_joint_state_positions(&w.buf).is_none());
+    }
+
+    /// One `sensor_msgs/msg/Imu` body. Each `*_cov0` is that field's `covariance[0]`; `-1.0` is the
+    /// ROS convention for "this field is not provided".
+    fn imu(
+        orientation: [f64; 4],
+        orientation_cov0: f64,
+        angular: [f64; 3],
+        angular_cov0: f64,
+        linear: [f64; 3],
+        linear_cov0: f64,
+    ) -> Vec<u8> {
+        let mut w = W::new();
+        w.header("imu_link");
+        for v in orientation {
+            w.f64(v);
+        }
+        w.f64(orientation_cov0);
+        for _ in 0..8 {
+            w.f64(0.0);
+        }
+        for v in angular {
+            w.f64(v);
+        }
+        w.f64(angular_cov0);
+        for _ in 0..8 {
+            w.f64(0.0);
+        }
+        for v in linear {
+            w.f64(v);
+        }
+        w.f64(linear_cov0);
+        for _ in 0..8 {
+            w.f64(0.0);
+        }
+        w.buf
+    }
+
+    #[test]
+    fn decodes_the_imu_measurements_in_order() {
+        let body = imu(
+            [0.0, 0.0, 0.0, 1.0],
+            0.01,
+            [0.1, 0.2, 0.3],
+            0.02,
+            [0.0, 0.0, 9.81],
+            0.03,
+        );
+        assert_eq!(
+            decode_imu_values(&body).expect("decode"),
+            vec![
+                Some(0.0),
+                Some(0.0),
+                Some(0.0),
+                Some(1.0),
+                Some(0.1),
+                Some(0.2),
+                Some(0.3),
+                Some(0.0),
+                Some(0.0),
+                Some(9.81),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_field_the_driver_declares_absent_is_held_out_not_read_as_zero() {
+        // The common case: a gyro/accelerometer with no orientation estimate. ROS leaves the
+        // quaternion zero-filled and sets `orientation_covariance[0] = -1`. Summarizing those zeros
+        // would report a frozen orientation the IMU never claimed to have.
+        let body = imu(
+            [0.0, 0.0, 0.0, 0.0],
+            -1.0,
+            [0.1, 0.2, 0.3],
+            0.02,
+            [0.0, 0.0, 9.81],
+            0.03,
+        );
+        let values = decode_imu_values(&body).expect("decode");
+        assert_eq!(&values[..4], &[None, None, None, None]);
+        assert_eq!(values[4], Some(0.1));
+        assert_eq!(values[9], Some(9.81));
+    }
+
+    #[test]
+    fn an_imu_that_provides_nothing_is_not_a_measurement() {
+        let body = imu([0.0; 4], -1.0, [0.0; 3], -1.0, [0.0; 3], -1.0);
+        assert!(decode_imu_values(&body).is_none());
+        // And a body that stops short of the ten values is declined rather than half-read.
+        assert!(decode_imu_values(&body[..40]).is_none());
     }
 
     #[test]

@@ -739,6 +739,15 @@ fn read_shard(
                     .get_or_insert_with(Default::default)
                     .push_cell(&cell);
             }
+        } else if super::mcap::schema_is(ty, "Imu") {
+            // Thirty-seven doubles and no bulk payload: an IMU message is entirely its own
+            // measurement. Slots a `-1` covariance declares absent are held out, not read as zeros.
+            if let Some(values) = super::cdr::decode_imu_values(data) {
+                builder
+                    .values
+                    .get_or_insert_with(Default::default)
+                    .push_cell(&values);
+            }
         } else if super::mcap::schema_is(ty, "TFMessage") {
             if let Some(edges) = super::cdr::decode_tf_message(data) {
                 for t in edges {
@@ -866,6 +875,15 @@ fn read_mcap_shard(
                     .values
                     .get_or_insert_with(Default::default)
                     .push_cell(&cell);
+            }
+        } else if super::mcap::schema_is(&ros_type, "Imu") {
+            // Thirty-seven doubles and no bulk payload: an IMU message is entirely its own
+            // measurement. Slots a `-1` covariance declares absent are held out, not read as zeros.
+            if let Some(values) = super::cdr::decode_imu_values(data) {
+                builder
+                    .values
+                    .get_or_insert_with(Default::default)
+                    .push_cell(&values);
             }
         } else if super::mcap::schema_is(&ros_type, "TFMessage") {
             if let Some(edges) = super::cdr::decode_tf_message(data) {
@@ -1496,8 +1514,8 @@ impl Adapter for Rosbag2Adapter {
             .any(|s| s.observed_stats.is_some())
         {
             mapped_fields.push(
-                "JointState.position -> recomputed per-joint statistics, saturation, and \
-                 non-finite counts"
+                "JointState.position / Imu measurements -> recomputed per-dimension statistics, \
+                 saturation, and non-finite counts"
                     .into(),
             );
         }

@@ -593,6 +593,16 @@ impl Adapter for McapAdapter {
                         .get_or_insert_with(Default::default)
                         .push_cell(&cell);
                 }
+            } else if schema_is(schema_name, "Imu") {
+                // Thirty-seven doubles and no bulk payload: an IMU message is entirely its own
+                // measurement. A driver that publishes no orientation says so through a `-1`
+                // covariance, and those slots are held out rather than summarized as zeros.
+                if let Some(values) = super::cdr::decode_imu_values(&message.data) {
+                    builder
+                        .values
+                        .get_or_insert_with(Default::default)
+                        .push_cell(&values);
+                }
             } else if schema_is(schema_name, "TFMessage") {
                 if let Some(edges) = super::cdr::decode_tf_message(&message.data) {
                     for t in edges {
@@ -912,8 +922,8 @@ impl Adapter for McapAdapter {
                     .any(|s| s.observed_stats.is_some())
                 {
                     m.push(
-                        "JointState.position -> recomputed per-joint statistics, saturation, and \
-                         non-finite counts"
+                        "JointState.position / Imu measurements -> recomputed per-dimension \
+                         statistics, saturation, and non-finite counts"
                             .into(),
                     );
                 }

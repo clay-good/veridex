@@ -10,6 +10,18 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **An IMU recorded to a bag is graded on its values too.** The same gap as the arm below, on the
+  sensor that appears on nearly every rig: a `sensor_msgs/msg/Imu` is thirty-seven doubles with no
+  bulk blob among them, so it is entirely its own measurement — and an accelerometer railed at its
+  ±16 g limit for three quarters of a recording, reporting its own ceiling rather than the world,
+  produced no finding at all. Its orientation, angular velocity and linear acceleration are now
+  summarized per axis.
+
+  A field whose `covariance[0]` is `-1` is one the driver declares it does **not** provide, and ROS
+  leaves it zero-filled. Those slots are held out of the statistics rather than read as zeros:
+  summarizing them would report a bare gyro as an IMU whose orientation is frozen at the origin — a
+  defect it does not have, sitting on top of the ones it might.
+
 - **A robot arm recorded to an MCAP or a ROS 2 bag is now graded on its values.** A bag's message
   payloads are opaque bytes to Veridex — it fingerprints them and never decodes them — which is the
   honest position for imagery and point clouds. But it also meant a `sensor_msgs/msg/JointState`
