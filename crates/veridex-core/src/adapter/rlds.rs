@@ -366,6 +366,23 @@ impl FeatureValues<'_> {
         }
     }
 
+    /// One step's values as numbers, for the statistics accumulator — `None` for a `bytes_list`,
+    /// which is an image, a string, or some other payload this reader fingerprints without
+    /// interpreting.
+    ///
+    /// The values are already decoded here: parsing the `tf.train.Example` into typed lists is what
+    /// produces the per-step fingerprints. Throwing the numbers away after hashing them is what left
+    /// the statistical family abstaining on the largest public robot corpus there is.
+    fn scalars_in(&self, start: usize, end: usize) -> Option<Vec<Option<f64>>> {
+        match self {
+            FeatureValues::Bytes(_) => None,
+            FeatureValues::Floats(v) => {
+                Some(v[start..end].iter().map(|f| Some(f64::from(*f))).collect())
+            }
+            FeatureValues::Ints(v) => Some(v[start..end].iter().map(|i| Some(*i as f64)).collect()),
+        }
+    }
+
     /// SHA-256 over the elements in `range` — one step's values. Byte entries are length-prefixed so
     /// that two different splits of the same bytes cannot fingerprint alike.
     fn hash_range(&self, start: usize, end: usize) -> [u8; 32] {
@@ -1779,17 +1796,27 @@ fn build_episode(
         // One `uri` per stream, shared by its frames: it is identical for every step, and a separate
         // heap string per frame turned a 2 MB shard into hundreds of megabytes.
         let uri = format!("{shard_uri}#{ordinal}/{}", leaf.path);
+        let mut accum = super::stats::FeatureAccum::default();
         let frames = (0..steps as usize)
-            .map(|step| Frame {
-                ts: step as i64,
-                value_ref: ValueRef {
-                    uri: uri.clone(),
-                    byte_offset: None,
-                    byte_len: None,
-                    content_hash: Some(feature.hash_range(step * elem, (step + 1) * elem)),
-                },
+            .map(|step| {
+                if let Some(scalars) = feature.scalars_in(step * elem, (step + 1) * elem) {
+                    accum.push_cell(&scalars);
+                }
+                Frame {
+                    ts: step as i64,
+                    value_ref: ValueRef {
+                        uri: uri.clone(),
+                        byte_offset: None,
+                        byte_len: None,
+                        content_hash: Some(feature.hash_range(step * elem, (step + 1) * elem)),
+                    },
+                }
             })
             .collect();
+        // A `bytes_list` leaf (an image, a string) is fingerprinted and not interpreted, so it has
+        // no statistics at all — `None`, which is what tells the checks "never measured" apart from
+        // "measured and clean".
+        let numeric = !matches!(feature, FeatureValues::Bytes(_));
         // The natural-language instruction is both a stream (it has a per-step value) and the
         // episode's task. Only text that actually decodes becomes a task — Veridex never invents an
         // instruction out of bytes it cannot read, and records when it could not read them.
@@ -1836,14 +1863,14 @@ fn build_episode(
             dtype: leaf.dtype.clone(),
             shape: leaf.shape.clone(),
             frames,
-            // TFDS stores no summary statistics, and this adapter does not decode values, so there
-            // is nothing to recompute from.
+            // TFDS stores no summary statistics of its own, so there is nothing to compare
+            // against — only what was recomputed from the numbers in the record.
             stats: None,
             dim_stats: None,
-            observed_stats: None,
-            observed_saturation: None,
-            observed_non_finite: None,
-            observed_dim_stats: None,
+            observed_stats: numeric.then(|| accum.stats()).flatten(),
+            observed_saturation: numeric.then(|| accum.saturation()).flatten(),
+            observed_non_finite: numeric.then(|| accum.non_finite()),
+            observed_dim_stats: numeric.then(|| accum.dim_stats()).flatten(),
             latched: None,
             declared_range: None,
             point_fields: None,

@@ -885,8 +885,12 @@ fn a_clean_rlds_dataset_passes_the_standard_checks_without_false_findings() {
         .map(|f| f.code.as_str())
         .filter(|code| !code.starts_with("PROVENANCE."))
         .filter(|code| *code != "TEMPORAL.UNMEASURED_CLOCK")
-        // The other half of the same disclosure: RLDS fingerprints payload bytes without
-        // interpreting them, so the statistical family had nothing to measure and says so.
+        // The other half of the same disclosure, in both its forms: TFDS stores no summary
+        // statistics of its own (so the stored-vs-observed comparison has nothing to compare to),
+        // and a `bytes_list` leaf — an image, an instruction string — is fingerprinted rather than
+        // interpreted (so nothing measured it). Both say what a passing statistical result is
+        // evidence of; neither accuses the data of anything.
+        .filter(|code| *code != "STATISTICAL.NO_STORED_STATS")
         .filter(|code| *code != "STATISTICAL.UNMEASURED_VALUES")
         .collect();
     assert!(
@@ -1990,4 +1994,71 @@ fn a_manifest_declaring_an_absurd_episode_total_is_refused_before_it_is_allocate
         Err(IngestError::FrameBudgetExceeded { .. }) => {}
         other => panic!("expected the budget to refuse it, got {other:?}"),
     }
+}
+
+/// The values in a TFRecord are already decoded — parsing the `tf.train.Example` into typed lists is
+/// what produces the per-step fingerprints — so the statistical family can grade them. Throwing the
+/// numbers away after hashing them left it abstaining on the largest public robot corpus there is.
+#[test]
+fn numeric_step_values_are_measured_and_byte_payloads_are_not() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_dataset(tmp.path(), 1, 20);
+    let d = default_registry()
+        .ingest(
+            &Source::Local(tmp.path().to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest")
+        .dataset;
+    let stream = |name: &str| {
+        d.episodes[0]
+            .streams
+            .iter()
+            .find(|s| s.name == name)
+            .unwrap_or_else(|| panic!("stream {name}"))
+    };
+
+    let action = stream("action");
+    let stats = action
+        .observed_stats
+        .expect("a float_list leaf is measured");
+    assert!(stats.min.is_finite() && stats.max >= stats.min);
+    assert_eq!(
+        action.observed_non_finite,
+        Some(0),
+        "read and finite, which is a different answer from never read"
+    );
+    assert!(
+        action.observed_dim_stats.is_some(),
+        "a 7-DoF action is measured per dimension, so a spike in joint 6 is not hidden behind joint 0"
+    );
+
+    // A `bytes_list` leaf is an image or a string: fingerprinted, never interpreted, and it must say
+    // so rather than reporting statistics of bytes.
+    let image = stream("observation/image");
+    assert!(image.observed_stats.is_none() && image.observed_non_finite.is_none());
+}
+
+/// `is_first` and `is_last` are on every step of every RLDS episode — 1 once and 0 for the rest — so
+/// grading a two-state channel as a saturating actuator accused every well-formed dataset in the
+/// corpus of two defects it does not have.
+#[test]
+fn the_boolean_step_flags_are_not_reported_as_saturated() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_dataset(tmp.path(), 2, 20);
+    let out = veridex_core::pipeline::run_check(
+        &default_registry(),
+        &Source::Local(tmp.path().to_path_buf()),
+        None,
+        &IngestOptions::default(),
+    )
+    .expect("the run completes");
+    let saturated: Vec<&str> = out
+        .verdict
+        .findings
+        .iter()
+        .filter(|f| f.code == "STATISTICAL.SATURATED")
+        .map(|f| f.message.as_str())
+        .collect();
+    assert!(saturated.is_empty(), "{saturated:?}");
 }

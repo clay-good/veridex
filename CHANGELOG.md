@@ -64,6 +64,23 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   full read, in a `--metadata-only` one, and over the Hub, where `meta/episodes_stats.jsonl` joins
   the fixed manifest list a remote run is allowed to fetch.
 
+- **The statistical checks now grade an RLDS/TFDS dataset too.** The values in a TFRecord are already
+  decoded — parsing the `tf.train.Example` into typed lists is what produces the per-step
+  fingerprints — and the adapter threw the numbers away after hashing them, leaving the whole
+  statistical family abstaining on the largest public robot corpus there is. A `float_list` or
+  `int64_list` leaf is measured now, per dimension, so a spike in joint 6 of a 7-DoF action is caught
+  rather than hidden behind joint 0; a `bytes_list` leaf (an image, an instruction string) is still
+  fingerprinted rather than interpreted, and says so.
+
+### Fixed
+
+- **A boolean channel was reported as a saturated actuator.** `STATISTICAL.SATURATED` asks what
+  fraction of a stream's values sit exactly at one extreme, which for a two-state channel is all of
+  them: RLDS carries `is_first` and `is_last` on every step of every episode — 1 once, 0 for the rest
+  — and LeRobot writes `next.done` the same way. Measuring RLDS values surfaced it immediately, as
+  two warnings on every well-formed dataset in the corpus. Boolean-dtype streams are skipped; what
+  would be a defect on such a channel is being constant, and `STATISTICAL.DEGENERATE` reports that.
+
 - **A LeRobot manifest's per-episode task is read.** `meta/episodes.jsonl` states each episode's
   task — it is how a v2.1 dataset records what its demonstrations are of — and the adapter read only
   the `length` from those lines. Every episode of a task-labelled dataset therefore reached the CDM

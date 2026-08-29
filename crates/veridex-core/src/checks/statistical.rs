@@ -88,6 +88,16 @@ impl Check for Saturation {
                 if sat.min == sat.max {
                     continue;
                 }
+                // A **boolean** channel has two states and nothing between them, so "sits at its
+                // rail" describes every value it will ever hold. RLDS carries `is_first` / `is_last`
+                // on every step of every episode — 1 once and 0 for the rest — and LeRobot writes
+                // `next.done` the same way, so grading them here reported two saturation warnings
+                // on every well-formed dataset in the largest public robot corpus there is. What
+                // *would* be a defect on such a channel is being constant, and `DEGENERATE` reports
+                // that.
+                if is_boolean_dtype(stream.dtype.as_deref()) {
+                    continue;
+                }
                 // A non-finite rail is not a rail. `NaN == NaN` is false, so a NaN-railed stream
                 // slipped past the check above and was reported as "90% of values sit exactly at
                 // its minimum (NaN)" — a saturation claim about a value that is not a value. The
@@ -680,6 +690,16 @@ fn rounding_tolerance(stats: &StreamStats) -> f64 {
 /// with a 1e-8 std is called an impossible standard deviation instead.
 fn is_degenerate(stats: &StreamStats) -> bool {
     stats.min == stats.max && stats.std.abs() <= rounding_tolerance(stats)
+}
+
+/// Whether a stream's declared dtype is a boolean — a channel with two states and nothing between
+/// them. Matched against the spellings the adapters carry through from their sources (`bool` from
+/// TFDS `features.json` and LeRobot `info.json`, `boolean` from an Arrow-derived schema).
+fn is_boolean_dtype(dtype: Option<&str>) -> bool {
+    matches!(
+        dtype.map(|d| d.trim().to_ascii_lowercase()).as_deref(),
+        Some("bool") | Some("boolean") | Some("bool_") | Some("bool8")
+    )
 }
 
 /// The representable `[min, max]` of a declared integer dtype, as f64. Returns `None` for float,
