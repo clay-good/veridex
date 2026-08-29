@@ -611,6 +611,7 @@ impl Adapter for McapAdapter {
                 observed_dim_stats: None,
                 // Per-point field layout decoded from a PointCloud2 header, when this is a cloud stream.
                 latched: b.latched,
+                declared_range: None,
                 point_fields: b.point_fields,
                 // The coordinate frame the sensor declares, from its message headers.
                 media: None,
@@ -958,6 +959,7 @@ fn ingest_summary_only(path: &Path, summary: McapSummary) -> Result<Ingested, In
             // A channel's delivery policy is written in its own metadata map in some profiles and
             // in none in others, so nothing is claimed about it here.
             latched: None,
+            declared_range: None,
             dtype: None,
             shape: None,
             frames: Vec::new(),

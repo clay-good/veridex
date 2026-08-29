@@ -234,6 +234,117 @@ impl Check for NonFiniteObserved {
     }
 }
 
+/// Values measured against the range their **source declares** for them.
+///
+/// A DBC states each signal's physical span (`[0|16383.75]`), and that declaration is a fact about
+/// the data separate from any summary of it: it says what the bus designer specified, before a
+/// single frame was read. Comparing the two answers the question neither a summary nor a checksum
+/// can — whether this log was decoded against the database that describes it.
+///
+/// That is the failure this exists for. A CAN log decoded against the wrong DBC does not error: the
+/// bytes are the right length, every signal produces a number, and the timeline is intact. What
+/// gives it away is that the numbers do not fit the ranges the database declares — a wheel speed of
+/// 40,000 kph, a temperature of -3,000 °C. Wrong in every stream at once, and otherwise
+/// indistinguishable from a good read.
+///
+/// A **warning**, not an error: a sensor can legitimately read past its specified span, and the
+/// finding names how far past. Silent where nothing was declared (most formats declare no range) or
+/// where no values were read — `STATISTICAL.UNMEASURED_VALUES` owns that second silence, and says so.
+pub struct DeclaredRangeConformance;
+
+impl Check for DeclaredRangeConformance {
+    fn id(&self) -> &'static str {
+        "statistical.declared-range"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["STATISTICAL.OUT_OF_DECLARED_RANGE"]
+    }
+    fn title(&self) -> &'static str {
+        "Values against the source's declared range"
+    }
+    fn category(&self) -> Category {
+        Category::Statistical
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Warning
+    }
+    fn scope(&self) -> Scope {
+        Scope::Stream
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        // Keyed by the stream and what was measured, for the same reason every other check in this
+        // family is: a summary can be dataset-level (attached to every episode's copy of the stream)
+        // or genuinely per-episode, and one finding per episode over the former is noise.
+        let mut reported: std::collections::BTreeSet<(&str, String)> =
+            std::collections::BTreeSet::new();
+        for ep in &dataset.episodes {
+            for stream in &ep.streams {
+                let (Some(declared), Some(observed)) =
+                    (stream.declared_range, stream.observed_stats)
+                else {
+                    continue;
+                };
+                if !declared.min.is_finite() || !declared.max.is_finite() {
+                    continue;
+                }
+                // Only what falls outside, and only when it is outside by more than the slack the
+                // rest of this family allows for float round-trips.
+                let slack = rounding_tolerance(&observed);
+                let below = (observed.min < declared.min - slack).then_some(observed.min);
+                let above = (observed.max > declared.max + slack).then_some(observed.max);
+                if below.is_none() && above.is_none() {
+                    continue;
+                }
+                let key = format!("{declared:?}{:?}{:?}", observed.min, observed.max);
+                if !reported.insert((stream.name.as_str(), key)) {
+                    continue;
+                }
+                let breach = match (below, above) {
+                    (Some(lo), Some(hi)) => format!("reaches {lo} and {hi}"),
+                    (Some(lo), None) => format!("reaches {lo}"),
+                    (None, Some(hi)) => format!("reaches {hi}"),
+                    (None, None) => unreachable!("one bound is breached"),
+                };
+                findings.push(
+                    Finding::new(
+                        self.id(),
+                        Category::Statistical,
+                        Severity::Warning,
+                        Location::Stream {
+                            episode: ep.index,
+                            stream: stream.name.clone(),
+                        },
+                        "STATISTICAL.OUT_OF_DECLARED_RANGE",
+                        format!(
+                            "stream `{}` in episode {}: the source declares [{}, {}] but the data \
+                             {breach}",
+                            stream.name, ep.index, declared.min, declared.max
+                        ),
+                    )
+                    .with_risk(
+                        "Values outside the range their own source declares usually mean the data \
+                         was decoded against the wrong description of it — the wrong DBC for this \
+                         bus, or a signal whose scaling changed. Every value in every stream is \
+                         then plausible and wrong, which no checksum and no summary statistic can \
+                         reveal. The narrower reading is a sensor operating out of spec.",
+                    )
+                    .with_remedy(
+                        "Confirm the database matches the recording (bus, gateway and revision), \
+                         then check the signal's factor, offset and length against it. If the \
+                         decode is right, the sensor is out of spec and the excursion is the \
+                         finding.",
+                    ),
+                );
+            }
+        }
+        findings
+    }
+}
+
 /// Range, sanity, and degeneracy of stored per-stream statistics.
 pub struct RangeSanity;
 

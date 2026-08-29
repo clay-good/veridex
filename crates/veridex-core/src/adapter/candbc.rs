@@ -21,7 +21,7 @@ use std::path::Path;
 
 use sha2::{Digest, Sha256};
 
-use crate::cdm::{ClockKind, Dataset, Episode, Frame, Modality, Stream, ValueRef};
+use crate::cdm::{ClockKind, Dataset, DeclaredRange, Episode, Frame, Modality, Stream, ValueRef};
 
 /// How many undefined CAN ids are named individually in the coverage disclosure.
 ///
@@ -52,6 +52,8 @@ struct DbcSignal {
     offset: f64,
     /// The signal's role in a multiplexed message, from the `M` / `m<N>` indicator after its name.
     mux: Mux,
+    /// The `[min|max]` physical range the DBC declares for this signal, when it declares a real one.
+    range: Option<(f64, f64)>,
 }
 
 /// Whether a signal is present in a given frame of a multiplexed message.
@@ -152,6 +154,23 @@ fn parse_sg(rest: &str) -> Option<DbcSignal> {
     let factor: f64 = factor.trim().parse().ok()?;
     let offset: f64 = offset.trim().parse().ok()?;
 
+    // `[min|max]`: the physical range the bus designer specified for this signal. Read, not
+    // enforced — a value outside it is a finding for a check to make, over values the check can see,
+    // not a reason for this parser to drop the sample. A malformed or absent bracket leaves the
+    // range unknown rather than guessed: `[0|0]` is what a DBC writes for "no range stated", and
+    // treating that as a real bound would report every non-zero sample as out of range.
+    let range = parts
+        .next()
+        .and_then(|r| {
+            let inner = r.strip_prefix('[')?.strip_suffix(']')?;
+            let (lo, hi) = inner.split_once('|')?;
+            Some((
+                lo.trim().parse::<f64>().ok()?,
+                hi.trim().parse::<f64>().ok()?,
+            ))
+        })
+        .filter(|(lo, hi)| lo.is_finite() && hi.is_finite() && hi > lo);
+
     Some(DbcSignal {
         name,
         start_bit,
@@ -161,6 +180,7 @@ fn parse_sg(rest: &str) -> Option<DbcSignal> {
         factor,
         offset,
         mux,
+        range,
     })
 }
 
@@ -409,6 +429,11 @@ impl Adapter for CanDbcAdapter {
         // Accumulated in one pass, holding no values, exactly as the LeRobot and HDF5 adapters do —
         // the same accumulator, so the same signal in two formats cannot reach two verdicts.
         let mut signal_stats: BTreeMap<String, super::stats::FeatureAccum> = BTreeMap::new();
+        // The range each signal's DBC line declares, carried into the CDM so a check can ask whether
+        // the values agree with it. They do not when a log is decoded against the wrong database —
+        // which produces plausible numbers, wrong in every stream at once, and otherwise
+        // indistinguishable from a good read.
+        let mut signal_ranges: BTreeMap<String, (f64, f64)> = BTreeMap::new();
         let mut unknown_ids: BTreeMap<u32, u64> = BTreeMap::new();
         let mut min_ts: Option<i64> = None;
         let mut max_ts: Option<i64> = None;
@@ -449,6 +474,9 @@ impl Adapter for CanDbcAdapter {
                     .entry(stream_name.clone())
                     .or_default()
                     .push_cell(&[Some(value)]);
+                if let Some(range) = sig.range {
+                    signal_ranges.insert(stream_name.clone(), range);
+                }
                 signal_frames.entry(stream_name).or_default().push(Frame {
                     ts: frame.ts_ns,
                     value_ref: ValueRef {
@@ -465,10 +493,15 @@ impl Adapter for CanDbcAdapter {
             .into_iter()
             .map(|(name, frames)| {
                 let accum = signal_stats.remove(&name).unwrap_or_default();
+                let declared_range = signal_ranges.get(&name).map(|(min, max)| DeclaredRange {
+                    min: *min,
+                    max: *max,
+                });
                 Stream {
                     name,
                     modality: Modality::CanSignal,
                     declared_rate_hz: None,
+                    declared_range,
                     clock_id: CLOCK_ID.to_string(),
                     // Real recorded timestamps: every temporal check applies.
                     clock_kind: ClockKind::Measured,
@@ -680,6 +713,7 @@ BO_ 256 EngineData: 8 ECU
             factor: 1.0,
             offset: 0.0,
             mux: Mux::Plain,
+            range: None,
         };
         // 0xFF as signed 8-bit = -1.
         assert_eq!(decode_signal(&sig, &[0xFF]), Some(-1.0));
@@ -702,6 +736,7 @@ BO_ 256 EngineData: 8 ECU
             factor: 1.0,
             offset: 0.0,
             mux: Mux::Plain,
+            range: None,
         }
     }
 

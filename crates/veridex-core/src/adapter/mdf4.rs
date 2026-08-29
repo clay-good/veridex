@@ -810,6 +810,7 @@ fn declare_channel_group(
             observed_non_finite: None,
             observed_dim_stats: None,
             latched: None,
+            declared_range: None,
             point_fields: None,
             media: None,
             frame_id: None,
@@ -1000,6 +1001,7 @@ fn decode_channel_group(
             // One channel is one scalar; there are no dimensions to break out.
             observed_dim_stats: None,
             latched: None,
+            declared_range: None,
             point_fields: None,
             // MF4 channels declare no coordinate frame.
             media: None,

@@ -190,6 +190,18 @@ impl Episode {
     }
 }
 
+/// The value range a source declares for a stream, in the stream's physical units.
+///
+/// A declaration, not a measurement: nothing here says any value was read. `min` and `max` are the
+/// source's own bounds, recorded verbatim — Veridex neither widens them nor decides they are wrong.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct DeclaredRange {
+    /// The lowest value the source says the stream takes.
+    pub min: f64,
+    /// The highest value the source says the stream takes.
+    pub max: f64,
+}
+
 /// A modality of recorded data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -381,6 +393,16 @@ pub struct Stream {
     /// sweep would hash alike, and the clean one's certificate would verify the broken one.
     #[serde(default)]
     pub latched: Option<bool>,
+    /// The range the **source declares** this stream's values fall in — a DBC signal's `[min|max]`,
+    /// the physical span the bus designer specified.
+    ///
+    /// Distinct from [`Stream::stats`] and [`Stream::observed_stats`], which are summaries *of
+    /// values*: this is a claim the source makes *about* them, before any value is read. Recording
+    /// it is what lets a check ask the one question neither summary can — whether the values agree
+    /// with what the source said they would be. They disagree when a log is decoded against the
+    /// wrong database, which produces plausible numbers that are wrong in every stream at once.
+    #[serde(default)]
+    pub declared_range: Option<DeclaredRange>,
     /// Declared per-point field layout (e.g. `x`, `y`, `z`, `intensity`, `ring`) for a point-cloud
     /// stream (LiDAR/radar). `None` for every non-cloud stream. Order is significant (it is the
     /// point record's field order), so it is preserved, not sorted. Veridex records the declared

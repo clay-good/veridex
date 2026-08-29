@@ -5,6 +5,7 @@ use std::fs;
 use veridex_core::adapter::candbc::CanDbcAdapter;
 use veridex_core::adapter::{Adapter, Detection, IngestOptions, Source};
 use veridex_core::cdm::Modality;
+use veridex_core::check::Check;
 
 /// `WheelSpeedBE` (Motorola, bytes 4–5 MSB-first) and `WheelSpeedLE` (Intel, bytes 6–7) are laid out
 /// over byte-swapped copies of the same value, so a correct decoder gives them identical samples.
@@ -382,4 +383,104 @@ fn recomputed_statistics_are_of_the_decoded_signal_not_the_raw_bits() {
         speed.stats.is_none(),
         "a DBC stores no summary statistics, so there is nothing to compare against"
     );
+}
+
+/// The failure this check exists for. A CAN log decoded against the wrong DBC does not error: the
+/// bytes are the right length, every signal produces a number, and the timeline is intact. What
+/// gives it away is that the numbers stop fitting the ranges the database itself declares.
+#[test]
+fn a_log_decoded_against_the_wrong_ranges_is_flagged() {
+    let dir = tempfile::tempdir().unwrap();
+    // The same signal layout as `DBC`, but the database claims a span a tenth as wide — what a DBC
+    // from a different vehicle variant looks like against this log.
+    fs::write(
+        dir.path().join("vehicle.dbc"),
+        "BO_ 256 EngineData: 8 ECU\n \
+         SG_ EngineSpeed : 0|16@1+ (0.25,0) [0|1000] \"rpm\" Vector__XXX\n",
+    )
+    .unwrap();
+    let mut log = String::new();
+    for i in 0..20u32 {
+        // Raw 0xF000 → 15,360 rpm, far past the declared 1,000.
+        let raw = if i == 5 { 0xF000u32 } else { 100 };
+        log.push_str(&format!(
+            "({:.6}) can0 100#{:02X}{:02X}000000000000\n",
+            1000.0 + f64::from(i) * 0.01,
+            raw & 0xFF,
+            (raw >> 8) & 0xFF,
+        ));
+    }
+    fs::write(dir.path().join("drive.log"), log).unwrap();
+
+    let ingested = CanDbcAdapter
+        .ingest(
+            &Source::Local(dir.path().to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest");
+    let speed = &ingested.dataset.episodes[0].streams[0];
+    let declared = speed
+        .declared_range
+        .expect("the DBC's [min|max] is carried into the CDM");
+    assert_eq!((declared.min, declared.max), (0.0, 1000.0));
+
+    let f = veridex_core::checks::statistical::DeclaredRangeConformance.run(&ingested.dataset);
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].code, "STATISTICAL.OUT_OF_DECLARED_RANGE");
+    assert_eq!(f[0].severity, veridex_core::check::Severity::Warning);
+    assert!(
+        f[0].message.contains("[0, 1000]") && f[0].message.contains("15360"),
+        "{}",
+        f[0].message
+    );
+}
+
+/// A DBC that states no real range — `[0|0]`, which is what a writer emits for "unspecified" —
+/// declares nothing, and a check that read it as a bound would report every non-zero sample as out
+/// of range. The absence has to stay an absence.
+#[test]
+fn a_dbc_with_no_stated_range_declares_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(
+        dir.path().join("vehicle.dbc"),
+        "BO_ 256 EngineData: 8 ECU\n \
+         SG_ EngineSpeed : 0|16@1+ (0.25,0) [0|0] \"rpm\" Vector__XXX\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("drive.log"),
+        "(1000.000000) can0 100#40010000AABBCCDD\n(1000.100000) can0 100#80020000AABBCCDD\n",
+    )
+    .unwrap();
+
+    let ingested = CanDbcAdapter
+        .ingest(
+            &Source::Local(dir.path().to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest");
+    assert!(ingested.dataset.episodes[0].streams[0]
+        .declared_range
+        .is_none());
+    assert!(
+        veridex_core::checks::statistical::DeclaredRangeConformance
+            .run(&ingested.dataset)
+            .is_empty(),
+        "nothing declared, nothing to conform to"
+    );
+}
+
+/// And the ordinary case: values inside the range their database declares produce no finding.
+#[test]
+fn values_within_the_declared_range_are_clean() {
+    let dir = write_dataset();
+    let ingested = CanDbcAdapter
+        .ingest(
+            &Source::Local(dir.path().to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest");
+    assert!(veridex_core::checks::statistical::DeclaredRangeConformance
+        .run(&ingested.dataset)
+        .is_empty());
 }

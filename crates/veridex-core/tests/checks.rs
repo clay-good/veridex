@@ -41,6 +41,7 @@ fn stream(name: &str, clock: &str, rate: Option<f64>, ts: &[i64]) -> Stream {
         observed_non_finite: None,
         observed_dim_stats: None,
         latched: None,
+        declared_range: None,
         point_fields: None,
         media: None,
         frame_id: None,
@@ -309,6 +310,7 @@ fn stream_hashed(name: &str, clock: &str, ts: &[i64], contents: &[u8]) -> Stream
         observed_non_finite: None,
         observed_dim_stats: None,
         latched: None,
+        declared_range: None,
         point_fields: None,
         media: None,
         frame_id: None,
@@ -396,6 +398,7 @@ fn stream_with_content(name: &str, modality: Modality, contents: &[u8]) -> Strea
         observed_non_finite: None,
         observed_dim_stats: None,
         latched: None,
+        declared_range: None,
         point_fields: None,
         media: None,
         frame_id: None,
@@ -472,6 +475,7 @@ fn shaped(name: &str, dtype: Option<&str>, shape: Option<Vec<u64>>, ts: &[i64]) 
         observed_non_finite: None,
         observed_dim_stats: None,
         latched: None,
+        declared_range: None,
         point_fields: None,
         media: None,
         frame_id: None,
@@ -1401,7 +1405,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 39);
+    assert_eq!(verdict.executed_checks.len(), 40);
 }
 
 #[test]
@@ -2785,6 +2789,7 @@ fn a_bus_only_measurement_is_not_treated_as_a_sensor_rig() {
                 observed_non_finite: None,
                 observed_dim_stats: None,
                 latched: None,
+                declared_range: None,
                 point_fields: None,
                 media: None,
                 frame_id: None,
@@ -2864,6 +2869,7 @@ fn one_shared_timeline_reports_once_and_an_event_driven_signal_is_not_called_inc
         observed_non_finite: None,
         observed_dim_stats: None,
         latched: None,
+        declared_range: None,
         point_fields: None,
         media: None,
         frame_id: None,

@@ -23,6 +23,7 @@ fn stream(name: &str, ts: &[i64]) -> Stream {
         observed_non_finite: None,
         observed_dim_stats: None,
         latched: None,
+        declared_range: None,
         point_fields: None,
         media: None,
         frame_id: None,

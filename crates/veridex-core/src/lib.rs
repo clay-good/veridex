@@ -137,6 +137,7 @@ mod tests {
                         observed_non_finite: None,
                         observed_dim_stats: None,
                         latched: None,
+                        declared_range: None,
                         point_fields: None,
                         media: None,
                         frame_id: None,
@@ -176,6 +177,7 @@ mod tests {
                         observed_non_finite: None,
                         observed_dim_stats: None,
                         latched: None,
+                        declared_range: None,
                         point_fields: None,
                         media: None,
                         frame_id: None,
@@ -387,7 +389,7 @@ mod tests {
         };
         let base = content_hash(&sample_dataset());
         type Mutator = fn(&mut Stream);
-        let mutate: [(&str, Mutator); 28] = [
+        let mutate: [(&str, Mutator); 29] = [
             // The fields the encoder has carried from the beginning. Absent from this table until a
             // mutation audit deleted `clock_kind` from `encode` and watched 692 tests pass: a
             // stream's frames are a synchronized rig under one value and an unmeasurable timeline
@@ -530,6 +532,14 @@ mod tests {
             // under `Some(true)` and `None` — and a certificate over the clean reading must not
             // verify the other.
             ("latched", |s| s.latched = Some(true)),
+            // The range the source declares its values fall in. A check compares the values against
+            // it, so the same samples are in-spec under one declaration and out of it under another.
+            ("declared_range", |s| {
+                s.declared_range = Some(crate::cdm::DeclaredRange {
+                    min: 0.0,
+                    max: 100.0,
+                })
+            }),
         ];
 
         // A compile-time census. Adding a field to `Stream` breaks this destructuring, which is the
@@ -545,6 +555,7 @@ mod tests {
                 clock_id: _,
                 clock_kind: _,
                 latched: _,
+                declared_range: _,
                 dtype: _,
                 shape: _,
                 frames: _,
@@ -662,6 +673,7 @@ mod proptests {
                 observed_non_finite: None,
                 observed_dim_stats: None,
                 latched: None,
+                declared_range: None,
                 point_fields: None,
                 media: None,
                 frame_id: None,

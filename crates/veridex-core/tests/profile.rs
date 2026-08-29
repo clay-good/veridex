@@ -43,6 +43,7 @@ fn sensor_in_frame(name: &str, modality: Modality, ts: &[i64], frame_id: Option<
         observed_non_finite: None,
         observed_dim_stats: None,
         latched: None,
+        declared_range: None,
         point_fields: None,
         media: None,
         frame_id,

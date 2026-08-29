@@ -57,7 +57,12 @@ use crate::cdm::{
 /// checks abstain on a latched stream, so a rig whose transform tree is latched and one whose LiDAR
 /// died after a single sweep carry the same frames and reach opposite verdicts. Same rule as v4, v5
 /// and v7: the hash binds whatever changes what a check can conclude.
-pub const CANONICAL_VERSION: u32 = 8;
+///
+/// v9 binds each stream's `declared_range` — the range the source states its values fall in, a DBC
+/// signal's `[min|max]`. `STATISTICAL.DECLARED_RANGE` compares the values against it, so the same
+/// samples are in-spec under one declaration and out of it under another. Same rule as v4, v5, v7
+/// and v8: the hash binds whatever changes what a check can conclude.
+pub const CANONICAL_VERSION: u32 = 9;
 
 const DOMAIN: &[u8] = b"veridex.cdm.v1\0";
 
@@ -317,6 +322,14 @@ impl Stream {
         // the same one-frame stream is a working transform tree under `Some(true)` and a sensor that
         // died after one sample under `None`.
         e.opt(&self.latched, |e, l| e.u8(u8::from(*l)));
+        // The range the source declares for this stream. Bound because a check compares the values
+        // against it: the same samples are in-spec under one declaration and out of it under
+        // another, so a dataset whose database says `[0, 100]` and one whose database says
+        // `[0, 10]` must not hash alike.
+        e.opt(&self.declared_range, |e, r| {
+            e.f64(r.min);
+            e.f64(r.max);
+        });
         e.opt(&self.dtype, |e, d| e.str(d));
         e.opt(&self.shape, |e, sh| e.seq(sh, |e, d| e.u64(*d)));
         // Stored statistics (from the source manifest): the scalar summary and, for a multi-DoF

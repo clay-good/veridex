@@ -297,7 +297,11 @@
           ],
           "point_fields": null,
           "media": null,
-          "frame_id": "base_frame"
+          "frame_id": "base_frame",
+          "declared_range": {
+            "min": -3.14159,
+            "max": 3.14159
+          }
         }
       ],
       "task": "pick up the block",

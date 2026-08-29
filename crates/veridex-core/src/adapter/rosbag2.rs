@@ -930,6 +930,7 @@ fn ingest_metadata_only(
             // The manifest states no delivery policy per topic in a form this reader takes, so
             // nothing is claimed about it — the QoS column that carries it lives in the shard.
             latched: None,
+            declared_range: None,
             dtype: None,
             shape: None,
             frames: Vec::new(),
@@ -1306,6 +1307,7 @@ impl Adapter for Rosbag2Adapter {
                 observed_non_finite: None,
                 observed_dim_stats: None,
                 latched: b.latched,
+                declared_range: None,
                 point_fields: b.point_fields,
                 media: None,
                 frame_id: b.frame_id,

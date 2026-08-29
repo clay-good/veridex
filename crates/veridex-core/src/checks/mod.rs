@@ -85,6 +85,7 @@ pub fn standard_checks_with(t: &Tolerances) -> Vec<Box<dyn Check>> {
             z_threshold: t.outlier_z,
         }),
         Box::new(statistical::NonFiniteObserved),
+        Box::new(statistical::DeclaredRangeConformance),
         Box::new(semantic::TaskQuality),
         Box::new(semantic::StreamKeyClarity),
         Box::new(semantic::AnnotationIntegrity),

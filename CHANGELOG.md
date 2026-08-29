@@ -49,6 +49,25 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **`STATISTICAL.OUT_OF_DECLARED_RANGE`: the values, against the range their own source declares.**
+  A DBC states each signal's physical span (`[0|16383.75]`), which is a fact about the data separate
+  from any summary of it — what the bus designer specified, before a frame was read. Comparing the
+  two answers what neither a checksum nor a statistic can: whether this log was decoded against the
+  database that describes it.
+
+  That is the failure it exists for. A CAN log read with the wrong DBC does not error — the bytes are
+  the right length, every signal produces a number, the timeline is intact — and the only tell is
+  that the numbers stop fitting the declared spans: a wheel speed of 40,000 kph, a temperature of
+  −3,000 °C, wrong in every stream at once. A warning rather than an error, because the narrower
+  reading is real too: a sensor operating out of spec, and the finding names how far past it went.
+
+  The CDM carries `Stream.declared_range` for this (`CANONICAL_VERSION` 8 → 9, since the same
+  samples are in-spec under one declaration and out of it under another), the CAN+DBC adapter fills
+  it from each `SG_` line, and a `[0|0]` — what a DBC writes for "unspecified" — stays an absence
+  rather than becoming a bound that reports every non-zero sample. MF4's `##CN` value range is a
+  candidate for the same field once it is certain whether it bounds raw or physical values;
+  declaring the wrong one would invent findings.
+
 - **The statistical checks now grade a CAN log.** A CAN signal is the one payload in this crate that
   is *decoded* rather than fingerprinted — a wheel speed is a number, not an opaque blob — but the
   adapter threw those numbers away after hashing them, so the whole statistical family abstained.
