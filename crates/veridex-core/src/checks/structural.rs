@@ -1594,3 +1594,161 @@ impl Check for StepAlignment {
         findings
     }
 }
+
+/// An episode in which an actuator or proprioception stream never changed, in a dataset where that
+/// same stream changes in most others — a recording where the robot did not move.
+///
+/// The commonest failure in a teleoperated dataset, and one that falls exactly between two checks
+/// that each defer to the other. [`StuckStream`] looks only at `Video`, because a frozen *scalar*
+/// stream is the statistical family's business; and `STATISTICAL.DEGENERATE` reads summary
+/// statistics, which for a LeRobot dataset are **dataset-wide** — one dead episode among fifty does
+/// not move them. So fifty good episodes and one where nothing moved scored exactly the same as
+/// fifty-one good ones, and the policy learned that sometimes the right action is to do nothing.
+///
+/// The evidence is frame content, not values: every frame of the stream in that episode carries the
+/// same `content_hash`. That is byte-level, so it applies to every format that fingerprints frames
+/// rather than only the ones whose numbers Veridex reads.
+///
+/// Three guards keep it off honest data.
+///
+/// * **Only a vector.** A stream carrying more than one scalar per frame — an `action`, a joint
+///   state — is an actuator or a sensor, and one that never moves is broken. A single-scalar column
+///   is as likely to be a `reward` or a `done` flag, which is legitimately constant through a
+///   demonstration that did not succeed. Judged from the shape the source declares, or from the
+///   dimension names it gives, so it needs no guess at what a column means.
+/// * **Only a minority.** A stream frozen in most episodes is how the dataset is built, not an
+///   anomaly in it. The same reasoning as `TEMPORAL.EPISODE_DURATION_OUTLIER` comparing against the
+///   dataset's own median rather than an absolute.
+/// * **Only on evidence.** At least 8 frames, at least three episodes to compare, and every frame of
+///   the stream fingerprinted in every episode — a stream Veridex could not fingerprint is
+///   `STRUCTURAL.UNFINGERPRINTED_CONTENT`'s disclosure, not this check's finding.
+pub struct FrozenEpisode;
+
+impl FrozenEpisode {
+    /// Below this many frames "every frame is identical" is too easily true by chance — a two-frame
+    /// stream at rest is not evidence of anything.
+    const MIN_FRAMES: usize = 8;
+    /// Fewer episodes than this and "a minority of them" means nothing.
+    const MIN_EPISODES: usize = 3;
+}
+
+impl Check for FrozenEpisode {
+    fn id(&self) -> &'static str {
+        "structural.frozen-episode"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["STRUCTURAL.FROZEN_EPISODE"]
+    }
+    fn title(&self) -> &'static str {
+        "An episode where the robot never moved"
+    }
+    fn category(&self) -> Category {
+        Category::Structural
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Warning
+    }
+    fn scope(&self) -> Scope {
+        Scope::Episode
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        if dataset.episodes.len() < Self::MIN_EPISODES {
+            return Vec::new();
+        }
+        // Per stream name: (frozen episode indices, episodes examined). A stream is only examined
+        // where it carries a vector and enough fully-fingerprinted frames to judge.
+        let mut seen: BTreeMap<&str, (Vec<u64>, usize)> = BTreeMap::new();
+        for ep in &dataset.episodes {
+            for stream in &ep.streams {
+                if !carries_a_vector(stream) {
+                    continue;
+                }
+                if !matches!(stream.modality, Modality::Action | Modality::ScalarState) {
+                    continue;
+                }
+                if stream.frames.len() < Self::MIN_FRAMES {
+                    continue;
+                }
+                // One unfingerprinted frame and this episode proves nothing either way — it is not
+                // counted as frozen *or* as an episode where the stream moved, because either would
+                // be a claim about bytes nobody read.
+                let Some(frozen) = all_frames_identical(stream) else {
+                    continue;
+                };
+                let entry = seen.entry(stream.name.as_str()).or_default();
+                entry.1 += 1;
+                if frozen {
+                    entry.0.push(ep.index);
+                }
+            }
+        }
+
+        let mut findings = Vec::new();
+        for (name, (frozen, examined)) in seen {
+            // A minority, strictly: a stream frozen in half its episodes or more is the dataset's
+            // shape, not a fault in it.
+            if frozen.is_empty() || examined < Self::MIN_EPISODES || frozen.len() * 2 >= examined {
+                continue;
+            }
+            for episode in frozen.iter().copied() {
+                findings.push(
+                    Finding::new(
+                        self.id(),
+                        Category::Structural,
+                        Severity::Warning,
+                        Location::Stream {
+                            episode,
+                            stream: name.to_string(),
+                        },
+                        "STRUCTURAL.FROZEN_EPISODE",
+                        format!(
+                            "episode {episode}: every frame of `{name}` is byte-identical, while it \
+                             changes in {} of the {examined} episode(s) carrying it — nothing moved \
+                             in this recording",
+                            examined - frozen.len(),
+                        ),
+                    )
+                    .with_risk(
+                        "A recording where the actuator never moved teaches a policy that holding \
+                         still is sometimes correct, unconditioned on anything in the observation. \
+                         It is usually a teleoperation session that dropped, a controller that lost \
+                         its connection, or a file written before the robot was enabled.",
+                    )
+                    .with_remedy(
+                        "Look at this episode: if the robot genuinely did not move, drop it from \
+                         the training set rather than leaving it to be sampled like any other.",
+                    ),
+                );
+            }
+        }
+        findings
+    }
+}
+
+/// Whether a stream carries more than one scalar per frame — an actuator or proprioception vector
+/// rather than a single-column flag. Read from the shape the source declares, or from the dimension
+/// names it gives when it declares no shape (a ROS `JointState` names its joints and no shape).
+fn carries_a_vector(stream: &crate::cdm::Stream) -> bool {
+    let from_shape = stream
+        .shape
+        .as_ref()
+        .map(|s| s.iter().product::<u64>() > 1)
+        .unwrap_or(false);
+    let from_names = stream.dim_names.as_ref().is_some_and(|n| n.len() > 1);
+    from_shape || from_names
+}
+
+/// Whether every frame of `stream` carries the same content fingerprint — `None` where any frame
+/// carries none, since a stream Veridex did not fingerprint proves nothing about whether it moved.
+fn all_frames_identical(stream: &crate::cdm::Stream) -> Option<bool> {
+    let mut hashes = stream.frames.iter().map(|f| f.value_ref.content_hash);
+    let first = hashes.next()??;
+    let mut identical = true;
+    for hash in hashes {
+        identical &= hash? == first;
+    }
+    Some(identical)
+}

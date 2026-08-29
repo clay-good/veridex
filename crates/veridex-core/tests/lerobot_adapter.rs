@@ -585,7 +585,7 @@ fn lerobot_dataset_flows_through_the_full_check_pipeline() {
     let verdict = engine.run(&d, hash, &veridex_core::RunConfig::default());
 
     // Every standard check ran, none errored, and clean data yields no failing findings.
-    assert_eq!(verdict.executed_checks.len(), 41);
+    assert_eq!(verdict.executed_checks.len(), 42);
     assert!(
         verdict.errored_checks.is_empty(),
         "no check should error on a well-formed dataset"
@@ -1949,5 +1949,116 @@ fn axis_labels_on_an_image_feature_are_not_read_as_element_names() {
         image.dim_names, None,
         "axis labels are not element names: {:?}",
         image.dim_names
+    );
+}
+
+/// Write a LeRobot dataset whose one vector feature spans several episodes. `rows` are
+/// (episode_index, value_vector).
+fn write_lerobot_episodes(dir: &Path, feature: &str, width: i32, rows: &[(i64, Vec<f32>)]) {
+    fs::create_dir_all(dir.join("meta")).unwrap();
+    fs::create_dir_all(dir.join("data/chunk-000")).unwrap();
+    let info = serde_json::json!({
+        "codebase_version": "v3.0",
+        "fps": 10.0,
+        "robot_type": "so100",
+        "features": { feature: { "dtype": "float32", "shape": [width] } },
+    });
+    fs::write(
+        dir.join("meta/info.json"),
+        serde_json::to_string_pretty(&info).unwrap(),
+    )
+    .unwrap();
+
+    let item = Arc::new(Field::new("item", DataType::Float32, true));
+    let list_ty = DataType::FixedSizeList(item.clone(), width);
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("episode_index", DataType::Int64, false),
+        Field::new("frame_index", DataType::Int64, false),
+        Field::new("timestamp", DataType::Float64, false),
+        Field::new(feature, list_ty, false),
+    ]));
+    let eps: Vec<i64> = rows.iter().map(|(e, _)| *e).collect();
+    let frames: Vec<i64> = (0..rows.len() as i64).collect();
+    // Each episode restarts its own timeline, as LeRobot writes them.
+    let mut ts = Vec::with_capacity(rows.len());
+    let mut within = 0.0;
+    let mut previous = None;
+    for (ep, _) in rows {
+        if previous != Some(*ep) {
+            within = 0.0;
+            previous = Some(*ep);
+        }
+        ts.push(within);
+        within += 0.1;
+    }
+    let flat: Vec<f32> = rows.iter().flat_map(|(_, v)| v.clone()).collect();
+    let values: ArrayRef = Arc::new(Float32Array::from(flat));
+    let list = FixedSizeListArray::new(item, width, values, None);
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int64Array::from(eps)),
+            Arc::new(Int64Array::from(frames)),
+            Arc::new(Float64Array::from(ts)),
+            Arc::new(list),
+        ],
+    )
+    .unwrap();
+    let file = fs::File::create(dir.join("data/chunk-000/file-000.parquet")).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
+#[test]
+fn an_episode_where_the_robot_never_moved_is_flagged_end_to_end() {
+    // Five episodes of a 3-DoF arm; in episode 3 the teleoperation session dropped and every row is
+    // the same pose. LeRobot recomputes its statistics **dataset-wide**, so the four good episodes
+    // keep the summary healthy and `STATISTICAL.DEGENERATE` never fires; `structural.stuck-stream`
+    // looks only at video. The dead episode used to score exactly like the live ones.
+    let dir = tempfile::tempdir().unwrap();
+    let mut rows: Vec<(i64, Vec<f32>)> = Vec::new();
+    for ep in 0..5i64 {
+        for k in 0..20i64 {
+            let v = if ep == 3 {
+                vec![0.25, -0.5, 1.0]
+            } else {
+                let t = (ep * 20 + k) as f32 * 0.01;
+                vec![t, -t, 1.0 - t]
+            };
+            rows.push((ep, v));
+        }
+    }
+    write_lerobot_episodes(dir.path(), "action", 3, &rows);
+
+    let d = ingest_lerobot(dir.path());
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let hash = veridex_core::content_hash(&d);
+    let verdict = engine.run(&d, hash, &veridex_core::RunConfig::default());
+
+    let frozen: Vec<_> = verdict
+        .findings
+        .iter()
+        .filter(|f| f.code == "STRUCTURAL.FROZEN_EPISODE")
+        .collect();
+    assert_eq!(
+        frozen.len(),
+        1,
+        "exactly the dead episode: {:?}",
+        verdict.findings.iter().map(|f| &f.code).collect::<Vec<_>>()
+    );
+    assert!(
+        frozen[0].message.contains("episode 3"),
+        "{}",
+        frozen[0].message
+    );
+    // And the statistical family really is silent, which is the point: the dataset-wide summary of
+    // four good episodes is healthy, so nothing there could have caught this.
+    assert!(
+        !verdict
+            .findings
+            .iter()
+            .any(|f| f.code == "STATISTICAL.DEGENERATE"),
+        "the summary statistics are healthy — that is why this check exists"
     );
 }

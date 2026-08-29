@@ -10,6 +10,21 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **`structural.frozen-episode` — the recording where the robot never moved.** The commonest failure
+  in a teleoperated dataset, and it fell exactly between two checks that each defer to the other.
+  `structural.stuck-stream` looks only at `Video`, because a frozen *scalar* stream is the
+  statistical family's business; and `STATISTICAL.DEGENERATE` reads summary statistics, which for a
+  LeRobot dataset are computed **dataset-wide** — one dead episode among fifty does not move them.
+  Fifty good episodes plus one where nothing moved scored exactly the same as fifty-one good ones,
+  and the policy learned that holding still is sometimes correct.
+
+  The evidence is frame content, not values — every frame of the stream carrying the same
+  `content_hash` — so it reaches every format that fingerprints frames rather than only the ones
+  whose numbers Veridex reads. Three guards keep it off honest data: only streams carrying more than
+  one scalar per frame (a single column is as likely to be a `reward` or `done` that is legitimately
+  constant through a demonstration that failed), only when the frozen episodes are a strict minority
+  of the dataset, and only on evidence — eight frames, three episodes, and every frame fingerprinted.
+
 - **`structural.step-alignment` — an episode whose arrays disagree about its own length.** A step
   index *is* a row index: when a source stamps frames with one (HDF5 and Zarr), `action[i]` and
   `observation.state[i]` are the same moment by construction, and the only thing that can break the

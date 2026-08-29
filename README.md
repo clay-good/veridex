@@ -304,7 +304,7 @@ is in and tested:
 | Piece | What is in |
 |---|---|
 | **Canonical Dataset Model** | One neutral shape for every format, with deterministic content hashing |
-| **Validation engine + check catalog** | Structural, temporal, statistical, semantic, **video**, provenance and **autonomy** families — including the headline `TEMPORAL.CLOCK_SKEW`, cross-episode dtype/shape consistency, and — for the formats that index frames by step rather than by time — whether an episode's arrays even agree on its length. Every check and finding: [docs/checks.md](docs/checks.md) |
+| **Validation engine + check catalog** | Structural, temporal, statistical, semantic, **video**, provenance and **autonomy** families — including the headline `TEMPORAL.CLOCK_SKEW`, cross-episode dtype/shape consistency, the teleoperation session that dropped so the robot never moved, and — for the formats that index frames by step rather than by time — whether an episode's arrays even agree on its length. Every check and finding: [docs/checks.md](docs/checks.md) |
 | **Sensor-rig checks** | `AUTONOMY.RIG_SYNC` / `SEQUENCE_COMPLETE` / `EGO_POSE_CONTINUITY` / `CALIBRATION_INCOMPLETE` / `SENSOR_FRAME_UNKNOWN` / `SENSOR_FRAME_UNRELATED`. The last two catch the LiDAR-camera miscalibration a well-formed transform tree hides: a sensor whose own frame is absent from the tree, or has no chain of transforms to the camera |
 | **Video/media checks** | Read an `.mp4`'s container headers — never a pixel — and catch the missing, unparseable, desynced, or re-encoded video behind a camera stream |
 | **Trust score** | The v1 rubric, the `standard` / `strict` threshold profiles, and the `world-model-ready` readiness profile |

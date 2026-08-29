@@ -1409,7 +1409,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 41);
+    assert_eq!(verdict.executed_checks.len(), 42);
 }
 
 #[test]
@@ -4506,4 +4506,109 @@ fn measured_time_and_separate_step_counters_are_left_to_the_checks_that_grade_th
         ],
     )]);
     assert!(structural::StepAlignment.run(&with_empty).is_empty());
+}
+
+// ---- structural.frozen-episode ----
+
+/// An `action` vector stream whose frames carry the given fingerprints, one per frame.
+fn action_stream(name: &str, hashes: &[u8]) -> Stream {
+    let mut s = stream(
+        name,
+        "c",
+        Some(10.0),
+        &(0..hashes.len() as i64).collect::<Vec<i64>>(),
+    );
+    s.modality = Modality::Action;
+    s.shape = Some(vec![7]);
+    for (frame, h) in s.frames.iter_mut().zip(hashes) {
+        frame.value_ref.content_hash = Some([*h; 32]);
+    }
+    s
+}
+
+/// `n` episodes of `action`, with the ones named in `frozen` holding a single repeated frame.
+fn dataset_with_frozen(n: u64, frozen: &[u64]) -> veridex_core::cdm::Dataset {
+    dataset(
+        (0..n)
+            .map(|i| {
+                let hashes: Vec<u8> = if frozen.contains(&i) {
+                    vec![7; 20]
+                } else {
+                    (0..20)
+                        .map(|k| (i as u8).wrapping_mul(31).wrapping_add(k))
+                        .collect()
+                };
+                episode(i, vec![action_stream("action", &hashes)])
+            })
+            .collect(),
+    )
+}
+
+#[test]
+fn an_episode_where_nothing_moved_is_flagged() {
+    // The gap this closes: `stuck-stream` looks only at video, and `DEGENERATE` reads statistics
+    // that LeRobot computes dataset-wide — so one dead episode among five scored like five good
+    // ones, and the policy learned that holding still is sometimes correct.
+    let f = structural::FrozenEpisode.run(&dataset_with_frozen(5, &[3]));
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "STRUCTURAL.FROZEN_EPISODE");
+    assert_eq!(f[0].severity, Severity::Warning);
+    assert!(
+        matches!(&f[0].location, veridex_core::check::Location::Stream { episode: 3, stream } if stream == "action"),
+        "{:?}",
+        f[0].location
+    );
+    assert!(f[0].message.contains("4 of the 5"), "{}", f[0].message);
+}
+
+#[test]
+fn a_stream_frozen_in_most_episodes_is_how_the_dataset_is_built() {
+    // Frozen in three of five is not an anomaly in the dataset, it is the dataset. The same
+    // reasoning as comparing an episode's duration against the dataset's own median.
+    assert!(structural::FrozenEpisode
+        .run(&dataset_with_frozen(5, &[0, 1, 3]))
+        .is_empty());
+    // And with nothing to compare against, nothing is claimed.
+    assert!(structural::FrozenEpisode
+        .run(&dataset_with_frozen(2, &[1]))
+        .is_empty());
+}
+
+#[test]
+fn a_single_column_flag_is_not_an_actuator_that_stopped() {
+    // A `reward` or `done` column is legitimately constant through a demonstration that did not
+    // succeed. Only a stream carrying more than one scalar per frame is an actuator or a sensor,
+    // and the source's own declared shape is what says which this is — no guess at what the column
+    // means.
+    let d = dataset(
+        (0..5u64)
+            .map(|i| {
+                let hashes: Vec<u8> = if i == 3 {
+                    vec![7; 20]
+                } else {
+                    (0..20)
+                        .map(|k| (i as u8).wrapping_mul(31).wrapping_add(k))
+                        .collect()
+                };
+                let mut s = action_stream("next.reward", &hashes);
+                s.modality = Modality::ScalarState;
+                s.shape = Some(vec![1]);
+                episode(i, vec![s])
+            })
+            .collect(),
+    );
+    assert!(structural::FrozenEpisode.run(&d).is_empty());
+}
+
+#[test]
+fn an_unfingerprinted_episode_is_not_evidence_either_way() {
+    // A stream Veridex could not fingerprint proves nothing about whether it moved, and must not be
+    // counted as an episode where it did — that would inflate the denominator the minority rule
+    // divides by and let a real frozen episode through.
+    let mut d = dataset_with_frozen(5, &[3]);
+    for ep in d.episodes.iter_mut().filter(|e| e.index != 3) {
+        ep.streams[0].frames[0].value_ref.content_hash = None;
+    }
+    // Four episodes are now unreadable, leaving one examined episode: too few to judge.
+    assert!(structural::FrozenEpisode.run(&d).is_empty());
 }
