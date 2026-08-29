@@ -198,7 +198,8 @@ impl ProvenanceCompleteness {
             let present = known_value.get(exp.key).copied().unwrap_or(false);
             // An element only a stream payload could have supplied is not *missing* on a run that
             // opened no payload; it was not looked for. See `PAYLOAD_DERIVED` and `run_in`.
-            if !present && !(skip_payload_derived && PAYLOAD_DERIVED.contains(&exp.key)) {
+            let unjudgeable = skip_payload_derived && PAYLOAD_DERIVED.contains(&exp.key);
+            if !present && !unjudgeable {
                 findings.push(
                     Finding::new(
                         self.id(),
