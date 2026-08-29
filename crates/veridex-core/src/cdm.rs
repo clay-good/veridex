@@ -342,6 +342,16 @@ pub struct Stream {
     /// keeps a different `shape` in different episodes cannot be batched — the
     /// `structural.shape-consistency` check flags that. `None` when the source declares no shape.
     pub shape: Option<Vec<u64>>,
+    /// The source's own name for each scalar dimension of this stream, in dimension order — a
+    /// LeRobot feature's `names`, the `name[]` array a `JointState` publishes, an IMU's fixed axes.
+    ///
+    /// Every statistical finding on a multi-DoF stream names a dimension, and a dimension index is
+    /// only actionable if the reader can map it back to a joint. "`observation.state` dim 5 is
+    /// saturated" sends someone to count columns; "`observation.state` joint `gripper` is saturated"
+    /// does not. `None` where the source names nothing, or names something that is not one name per
+    /// scalar (an image feature's `["height", "width", "channel"]` describes axes of a tensor, not
+    /// elements of a vector) — the findings then fall back to the index, as they always did.
+    pub dim_names: Option<Vec<String>>,
     /// The frames, in recorded order. Frame order is data-defined and is preserved (not sorted).
     pub frames: Vec<Frame>,
     /// Stored per-stream summary statistics, if the source records them (e.g. LeRobot's

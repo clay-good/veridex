@@ -194,8 +194,9 @@ Every report — terminal, JSON, and HTML — now leads with rollups: findings *
 not forty). `--json` carries the same summaries under `rollups`, so a CI job no longer has to
 re-derive from the finding list what the human report was handed.
 
-`--redact` prepares a report to **leave the building**. The dataset identifier, stream names, task
-and label text, and provenance values are replaced with stable placeholders (`stream#1`, `text#2`),
+`--redact` prepares a report to **leave the building**. The dataset identifier, stream and dimension
+names, task and label text, and provenance values are replaced with stable placeholders (`stream#1`,
+`text#2`),
 consistent within one report and meaningless outside it, and the report says so — as a finding, so
 the disclosure travels into JSON, SARIF and HTML too. Every measurement stays: a 210 ms drift, a 12σ
 outlier, the score, the status, and the CDM content hash, which is what lets whoever holds the data

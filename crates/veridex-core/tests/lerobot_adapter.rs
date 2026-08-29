@@ -1860,3 +1860,94 @@ fn shards_are_read_in_numeric_order_not_lexicographic() {
         verdict.findings.iter().map(|f| &f.code).collect::<Vec<_>>()
     );
 }
+
+/// Rewrite a fixture's `meta/info.json` to give `feature` the `names` a real LeRobot manifest
+/// carries, leaving everything else it declares untouched.
+fn declare_names(dir: &Path, feature: &str, names: &[&str]) {
+    let path = dir.join("meta/info.json");
+    let mut info: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    info["features"][feature]["names"] = serde_json::json!(names);
+    fs::write(&path, serde_json::to_string_pretty(&info).unwrap()).unwrap();
+}
+
+#[test]
+fn a_saturating_joint_is_named_by_the_manifests_own_word_for_it() {
+    // The same pinned gripper as `a_saturating_gripper_at_the_last_dimension_is_flagged`, over a
+    // manifest that names its joints. "dimension 2" is a number to go count columns against;
+    // "`gripper`" is the thing to go look at. LeRobot ships these names and Veridex was dropping
+    // them on the floor.
+    let dir = tempfile::tempdir().unwrap();
+    let rows: Vec<Vec<f32>> = (0..30i64)
+        .map(|i| {
+            let gripper = if i < 24 {
+                1.0
+            } else {
+                1.0 - (i - 23) as f32 * 0.1
+            };
+            vec![i as f32 * 0.5, -(i as f32) * 0.3, gripper]
+        })
+        .collect();
+    write_lerobot_vector_feature(dir.path(), "action", 3, &rows);
+    declare_names(dir.path(), "action", &["shoulder", "elbow", "gripper"]);
+
+    let d = ingest_lerobot(dir.path());
+    assert_eq!(
+        d.episodes[0].streams[0].dim_names.as_deref(),
+        Some(
+            &[
+                "shoulder".to_string(),
+                "elbow".to_string(),
+                "gripper".to_string()
+            ][..]
+        ),
+    );
+
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let hash = veridex_core::content_hash(&d);
+    let verdict = engine.run(&d, hash, &veridex_core::RunConfig::default());
+    let sat = verdict
+        .findings
+        .iter()
+        .find(|f| f.code == "STATISTICAL.SATURATED")
+        .expect("the pinned gripper is still flagged");
+    assert!(
+        sat.message.contains("dimension 2 `gripper`"),
+        "the finding names the joint, not only its index: {}",
+        sat.message
+    );
+}
+
+#[test]
+fn axis_labels_on_an_image_feature_are_not_read_as_element_names() {
+    // LeRobot writes `names` two ways. For a 1-D feature it is one name per element; for an image
+    // it is `["height", "width", "channel"]` — the axes of a tensor, not names of its values.
+    // Reading the second as element names would report a saturated pixel channel as the joint
+    // `width`, which is worse than saying nothing.
+    let dir = tempfile::tempdir().unwrap();
+    let rows: Vec<Vec<f32>> = (0..4).map(|i| vec![i as f32, 0.0, 1.0]).collect();
+    write_lerobot_vector_feature(dir.path(), "action", 3, &rows);
+    // A three-element shape with three names: the same *count* as the elements of a 1-D feature,
+    // so only the shape's rank separates the two cases.
+    let path = dir.path().join("meta/info.json");
+    let mut info: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    info["features"]["observation.images.top"] = serde_json::json!({
+        "dtype": "image",
+        "shape": [480, 640, 3],
+        "names": ["height", "width", "channel"],
+    });
+    fs::write(&path, serde_json::to_string_pretty(&info).unwrap()).unwrap();
+
+    let d = ingest_lerobot(dir.path());
+    let image = d.episodes[0]
+        .streams
+        .iter()
+        .find(|s| s.name == "observation.images.top")
+        .expect("the image feature is a stream");
+    assert_eq!(
+        image.dim_names, None,
+        "axis labels are not element names: {:?}",
+        image.dim_names
+    );
+}

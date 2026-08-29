@@ -507,6 +507,7 @@ impl Adapter for CanDbcAdapter {
                     clock_kind: ClockKind::Measured,
                     dtype: Some("float64".into()),
                     shape: None,
+                    dim_names: None,
                     frames,
                     // A DBC declares a signal's range but stores no summary statistics, so there is
                     // nothing to compare against — only what was recomputed from the decoded values.

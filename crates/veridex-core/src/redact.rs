@@ -80,6 +80,11 @@ impl Redactor {
                 if let Some(frame) = &stream.frame_id {
                     values.insert(frame.as_str());
                 }
+                // The source's name for each dimension, which the statistical findings quote. It is
+                // often as generic as `elbow`, and just as often the operator's own hardware naming.
+                for name in stream.dim_names.iter().flatten() {
+                    values.insert(name.as_str());
+                }
             }
             if let Some(task) = &episode.task {
                 text.insert(task.as_str());
@@ -292,7 +297,8 @@ fn disclosure() -> Finding {
         Location::Dataset,
         REDACTION_CODE,
         "this report was redacted for sharing: the dataset identifier, stream names, task and \
-         label text, provenance values, coordinate-frame and metadata values, and file paths were \
+         label text, provenance values, coordinate-frame, dimension and metadata values, and file \
+         paths were \
          replaced with stable placeholders (`stream#1`, `text#2`, `value#3`, `path#4`), consistent \
          within this report and meaningless outside it",
     )

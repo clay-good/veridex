@@ -226,9 +226,10 @@ pub fn decode_odometry_pose(data: &[u8]) -> Option<Pose> {
     read_pose(&mut r)
 }
 
-/// Decode a `sensor_msgs/msg/JointState` body far enough to recover its `position` array: `Header`,
-/// `string[] name`, then `float64[] position` (the `velocity` and `effort` arrays that follow are
-/// not read).
+/// Decode a `sensor_msgs/msg/JointState` body far enough to recover its joint `name`s and its
+/// `position` array: `Header`, `string[] name`, then `float64[] position` (the `velocity` and
+/// `effort` arrays that follow are not read). The names are what let a finding say which joint
+/// saturated instead of which index.
 ///
 /// This is the one ROS message whose *whole* payload is the measurement — a handful of joint angles,
 /// not a bulk blob — so reading it is not a departure from the rule this module states above. It is
@@ -238,18 +239,19 @@ pub fn decode_odometry_pose(data: &[u8]) -> Option<Pose> {
 /// Returns `None` for a message that is truncated, big-endian, or publishes no positions at all (a
 /// `JointState` may carry effort alone); an empty result would otherwise read as "measured, and
 /// there was nothing there".
-pub fn decode_joint_state_positions(data: &[u8]) -> Option<Vec<f64>> {
+pub fn decode_joint_state(data: &[u8]) -> Option<(Vec<String>, Vec<f64>)> {
     let mut r = Reader::new(data)?;
     r.header()?;
-    let names = r.u32()? as usize;
+    let name_count = r.u32()? as usize;
     // A declared count is attacker-controlled. The smallest a CDR string can encode is its 4-byte
     // length prefix, and the smallest an f64 can is 8 bytes, so bound each sequence by what the body
     // could actually hold rather than trusting the count.
-    if names > data.len() / 4 {
+    if name_count > data.len() / 4 {
         return None;
     }
-    for _ in 0..names {
-        r.string()?;
+    let mut names = Vec::with_capacity(name_count);
+    for _ in 0..name_count {
+        names.push(r.string()?);
     }
     let count = r.u32()? as usize;
     if count > data.len() / 8 {
@@ -259,7 +261,7 @@ pub fn decode_joint_state_positions(data: &[u8]) -> Option<Vec<f64>> {
     for _ in 0..count {
         positions.push(r.f64()?);
     }
-    (!positions.is_empty()).then_some(positions)
+    (!positions.is_empty()).then_some((names, positions))
 }
 
 /// Decode a `sensor_msgs/msg/Imu` body into its ten measured scalars, in the order
@@ -274,6 +276,20 @@ pub fn decode_joint_state_positions(data: &[u8]) -> Option<Vec<f64>> {
 /// ROS leaves its slot zero-filled. Those slots come back as `None` rather than as zeros: recording
 /// them as measurements would report a driver that publishes no orientation as an IMU whose
 /// orientation is frozen at the origin — a defect it does not have, hiding the ones it might.
+/// The name of each scalar [`decode_imu_values`] returns, in the same order.
+pub const IMU_DIM_NAMES: [&str; 10] = [
+    "orientation.x",
+    "orientation.y",
+    "orientation.z",
+    "orientation.w",
+    "angular_velocity.x",
+    "angular_velocity.y",
+    "angular_velocity.z",
+    "linear_acceleration.x",
+    "linear_acceleration.y",
+    "linear_acceleration.z",
+];
+
 pub fn decode_imu_values(data: &[u8]) -> Option<Vec<Option<f64>>> {
     let mut r = Reader::new(data)?;
     r.header()?;
@@ -476,7 +492,7 @@ mod tests {
         w.u32(0); // velocity[]
         w.u32(0); // effort[]
         assert_eq!(
-            decode_joint_state_positions(&w.buf).expect("decode"),
+            decode_joint_state(&w.buf).expect("decode").1,
             vec![0.5, -1.25, 0.0]
         );
     }
@@ -493,7 +509,7 @@ mod tests {
         w.u32(0); // velocity[]
         w.u32(1); // effort[]
         w.f64(2.5);
-        assert!(decode_joint_state_positions(&w.buf).is_none());
+        assert!(decode_joint_state(&w.buf).is_none());
     }
 
     #[test]
@@ -502,13 +518,13 @@ mod tests {
         let mut w = W::new();
         w.header("");
         w.u32(4_000_000_000); // name[] count
-        assert!(decode_joint_state_positions(&w.buf).is_none());
+        assert!(decode_joint_state(&w.buf).is_none());
 
         let mut w = W::new();
         w.header("");
         w.u32(0); // name[]
         w.u32(4_000_000_000); // position[] count
-        assert!(decode_joint_state_positions(&w.buf).is_none());
+        assert!(decode_joint_state(&w.buf).is_none());
     }
 
     /// One `sensor_msgs/msg/Imu` body. Each `*_cov0` is that field's `covariance[0]`; `-1.0` is the
@@ -686,7 +702,7 @@ mod tests {
             let _ = decode_point_cloud2_fields(b);
             let _ = decode_camera_info(b, "/topic");
             let _ = decode_odometry_pose(b);
-            let _ = decode_joint_state_positions(b);
+            let _ = decode_joint_state(b);
             let _ = decode_imu_values(b);
             let _ = decode_tf_message(b);
         };

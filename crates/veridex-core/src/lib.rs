@@ -130,6 +130,7 @@ mod tests {
                         clock_kind: ClockKind::Measured,
                         dtype: Some("video".into()),
                         shape: Some(vec![3, 480, 640]),
+                        dim_names: None,
                         stats: None,
                         dim_stats: None,
                         observed_stats: None,
@@ -170,6 +171,7 @@ mod tests {
                         clock_kind: ClockKind::Measured,
                         dtype: Some("float32".into()),
                         shape: Some(vec![6]),
+                        dim_names: None,
                         stats: None,
                         dim_stats: None,
                         observed_stats: None,
@@ -389,7 +391,7 @@ mod tests {
         };
         let base = content_hash(&sample_dataset());
         type Mutator = fn(&mut Stream);
-        let mutate: [(&str, Mutator); 29] = [
+        let mutate: [(&str, Mutator); 30] = [
             // The fields the encoder has carried from the beginning. Absent from this table until a
             // mutation audit deleted `clock_kind` from `encode` and watched 692 tests pass: a
             // stream's frames are a synchronized rig under one value and an unmeasurable timeline
@@ -532,6 +534,12 @@ mod tests {
             // under `Some(true)` and `None` — and a certificate over the clean reading must not
             // verify the other.
             ("latched", |s| s.latched = Some(true)),
+            // The source's name for each dimension. Source content, sitting in the same manifest
+            // entry as `dtype` and `shape`, and what a statistical finding calls the joint it
+            // reports — two datasets whose reports name different joints must not hash alike.
+            ("dim_names", |s| {
+                s.dim_names = Some(vec!["shoulder".into(), "elbow".into()])
+            }),
             // The range the source declares its values fall in. A check compares the values against
             // it, so the same samples are in-spec under one declaration and out of it under another.
             ("declared_range", |s| {
@@ -558,6 +566,7 @@ mod tests {
                 declared_range: _,
                 dtype: _,
                 shape: _,
+                dim_names: _,
                 frames: _,
                 stats: _,
                 dim_stats: _,
@@ -665,6 +674,7 @@ mod proptests {
                 clock_kind: ClockKind::Measured,
                 dtype: None,
                 shape: None,
+                dim_names: None,
                 frames,
                 stats: None,
                 dim_stats: None,

@@ -122,13 +122,9 @@ impl Check for Saturation {
                 if !reported.insert((stream.name.as_str(), format!("{sat:?}"))) {
                     continue;
                 }
-                // Name the dimension for a multi-DoF feature (e.g. the gripper joint); a scalar
-                // stream saturates at dimension 0, where the qualifier would only add noise.
-                let where_ = if sat.dim > 0 {
-                    format!(" (dimension {})", sat.dim)
-                } else {
-                    String::new()
-                };
+                // Name the dimension for a multi-DoF feature — by the joint's own name where the
+                // source gives one, which is what makes the finding actionable.
+                let where_ = dim_suffix(stream, sat.dim);
                 findings.push(
                     Finding::new(
                         self.id(),
@@ -466,9 +462,10 @@ impl RangeSanity {
         // What the message calls the thing these numbers summarize. For a multi-DoF feature that is
         // one joint, not the whole feature, and saying so is the difference between a report a user
         // can act on and one that sends them auditing six healthy axes.
-        let name = match dim {
-            Some(d) => format!("{} dim {d}", stream.name),
-            None => stream.name.clone(),
+        let name = match (dim, dim.and_then(|d| dim_name(stream, d))) {
+            (Some(d), Some(joint)) => format!("{} dim {d} `{joint}`", stream.name),
+            (Some(d), None) => format!("{} dim {d}", stream.name),
+            (None, _) => stream.name.clone(),
         };
 
         // Non-finite statistics are always a data-integrity error.
@@ -815,11 +812,7 @@ impl Check for StoredVsObserved {
                     continue;
                 }
                 // Name the dimension for a multi-DoF feature; a scalar/element-0 mismatch needs none.
-                let where_ = if dim > 0 {
-                    format!(" (dimension {dim})")
-                } else {
-                    String::new()
-                };
+                let where_ = dim_suffix(stream, dim);
                 findings.push(
                     Finding::new(
                         self.id(),
@@ -966,11 +959,7 @@ impl Check for ExtremeOutlier {
                     continue;
                 }
                 // Name the dimension for a multi-DoF feature; a scalar/element-0 extreme needs none.
-                let where_ = if dim > 0 {
-                    format!(" (dimension {dim})")
-                } else {
-                    String::new()
-                };
+                let where_ = dim_suffix(stream, dim);
                 let tail_pct = 100.0 / (z * z);
                 // Rendered in scientific notation past four digits. A stream whose std is
                 // `f64::MIN_POSITIVE` — which clears the `std <= 0.0` guard — gives a z around
@@ -1010,6 +999,30 @@ impl Check for ExtremeOutlier {
             }
         }
         findings
+    }
+}
+
+/// The source's own name for one dimension of a stream, where it names every element and there is
+/// more than one to tell apart.
+///
+/// A bare index sends a reader to count columns in a manifest; the joint's own name does not. Guarded
+/// on `len() > 1` because a one-element name list adds a word and no information.
+fn dim_name(stream: &Stream, dim: u64) -> Option<&str> {
+    stream
+        .dim_names
+        .as_ref()
+        .filter(|names| names.len() > 1)
+        .and_then(|names| names.get(dim as usize))
+        .map(String::as_str)
+}
+
+/// How a finding qualifies one dimension of a multi-DoF stream — empty where there is nothing worth
+/// saying, since a scalar stream's only dimension is 0 and naming it is noise.
+fn dim_suffix(stream: &Stream, dim: u64) -> String {
+    match (dim, dim_name(stream, dim)) {
+        (d, Some(name)) => format!(" (dimension {d} `{name}`)"),
+        (0, None) => String::new(),
+        (d, None) => format!(" (dimension {d})"),
     }
 }
 

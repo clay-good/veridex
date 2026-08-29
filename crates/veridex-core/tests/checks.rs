@@ -34,6 +34,7 @@ fn stream(name: &str, clock: &str, rate: Option<f64>, ts: &[i64]) -> Stream {
         clock_kind: ClockKind::Measured,
         dtype: None,
         shape: None,
+        dim_names: None,
         stats: None,
         dim_stats: None,
         observed_stats: None,
@@ -303,6 +304,7 @@ fn stream_hashed(name: &str, clock: &str, ts: &[i64], contents: &[u8]) -> Stream
         clock_kind: ClockKind::Measured,
         dtype: None,
         shape: None,
+        dim_names: None,
         stats: None,
         dim_stats: None,
         observed_stats: None,
@@ -391,6 +393,7 @@ fn stream_with_content(name: &str, modality: Modality, contents: &[u8]) -> Strea
         clock_kind: ClockKind::Measured,
         dtype: None,
         shape: None,
+        dim_names: None,
         stats: None,
         dim_stats: None,
         observed_stats: None,
@@ -479,6 +482,7 @@ fn shaped(name: &str, dtype: Option<&str>, shape: Option<Vec<u64>>, ts: &[i64]) 
         point_fields: None,
         media: None,
         frame_id: None,
+        dim_names: None,
         frames: frames_at(ts),
     }
 }
@@ -2781,6 +2785,7 @@ fn a_bus_only_measurement_is_not_treated_as_a_sensor_rig() {
                 clock_kind: ClockKind::Measured,
                 dtype: None,
                 shape: None,
+                dim_names: None,
                 frames: vec![],
                 stats: None,
                 dim_stats: None,
@@ -2850,6 +2855,7 @@ fn one_shared_timeline_reports_once_and_an_event_driven_signal_is_not_called_inc
         clock_kind: ClockKind::Measured,
         dtype: None,
         shape: None,
+        dim_names: None,
         frames: ts
             .iter()
             .map(|&ts| Frame {

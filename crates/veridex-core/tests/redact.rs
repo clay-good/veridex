@@ -16,6 +16,7 @@ fn stream(name: &str, ts: &[i64]) -> Stream {
         clock_kind: ClockKind::Measured,
         dtype: None,
         shape: None,
+        dim_names: None,
         stats: None,
         dim_stats: None,
         observed_stats: None,
@@ -338,5 +339,45 @@ fn a_value_a_producer_attested_is_redacted_like_any_other() {
     assert!(
         text.contains("contradict what the dataset records"),
         "the finding must survive: {text}"
+    );
+}
+
+#[test]
+fn a_joint_name_a_finding_quotes_is_redacted_like_any_other_identifier() {
+    // Every statistical finding on a multi-DoF stream now quotes the source's own name for the
+    // dimension. A report meant to leave the building must not carry `acme_wrist_gripper_v2` out
+    // with it just because the finding says which joint saturated.
+    use veridex_core::check::{Category, Finding, Location, Severity};
+    let mut dataset = sensitive_dataset();
+    dataset.episodes[0].streams[0].dim_names = Some(vec![
+        "acme_shoulder_pan".into(),
+        "acme_wrist_gripper_v2".into(),
+    ]);
+    let verdict = verdict_with(Finding::new(
+        "statistical.saturation",
+        Category::Statistical,
+        Severity::Warning,
+        Location::Dataset,
+        "STATISTICAL.SATURATED",
+        "stream `observation.state` (dimension 1 `acme_wrist_gripper_v2`): 75% of values sit \
+         exactly at its maximum (2)",
+    ));
+
+    let mut redactor = Redactor::for_dataset(&dataset);
+    let redacted = redactor.redact_verdict(&verdict);
+    let message = &redacted
+        .findings
+        .iter()
+        .find(|f| f.code == "STATISTICAL.SATURATED")
+        .expect("the finding is still there")
+        .message;
+    assert!(
+        !message.contains("acme_wrist_gripper_v2") && !message.contains("acme_shoulder_pan"),
+        "the joint name left the building: {message}"
+    );
+    // The measurement itself is exactly what a redacted report is for, and it survives.
+    assert!(
+        message.contains("75%") && message.contains("dimension 1"),
+        "{message}"
     );
 }

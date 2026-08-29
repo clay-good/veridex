@@ -67,9 +67,32 @@ fn seconds_to_ns(seconds: f64) -> i64 {
         .clamp(i64::MIN as f64, i64::MAX as f64) as i64
 }
 
-/// A data feature resolved from `meta/info.json`: its name, inferred modality, and declared
-/// dtype/shape (both preserved so the structural checks can verify cross-episode consistency).
-type FeatureSpec = (String, Modality, Option<String>, Option<Vec<u64>>);
+/// A data feature resolved from `meta/info.json`: its name, inferred modality, declared dtype/shape
+/// (both preserved so the structural checks can verify cross-episode consistency), and the name the
+/// manifest gives each of its dimensions, where it gives one per element.
+type FeatureSpec = (
+    String,
+    Modality,
+    Option<String>,
+    Option<Vec<u64>>,
+    Option<Vec<String>>,
+);
+
+/// The manifest's `names` for a feature, kept only when it is one name per scalar element.
+///
+/// LeRobot writes `names` two ways. For a 1-D feature — a 7-DoF `action`, a joint-state vector — it
+/// is one name per element, which is exactly what a statistical finding needs to name a joint. For
+/// an image feature it is `["height", "width", "channel"]`: names of a tensor's *axes*, not of its
+/// values, and reading them as element names would report a saturated pixel channel as the joint
+/// `width`. Requiring the shape to be a single dimension of matching length separates the two, and
+/// declines anything else rather than guessing.
+fn element_names(shape: Option<&[u64]>, names: Option<&[String]>) -> Option<Vec<String>> {
+    let names = names?;
+    match shape? {
+        [n] if *n as usize == names.len() && !names.is_empty() => Some(names.to_vec()),
+        _ => None,
+    }
+}
 
 /// Bookkeeping columns that are not data features and never become streams.
 const BOOKKEEPING: &[&str] = &[
@@ -1133,7 +1156,7 @@ fn ingest_metadata_only(
             end_ts: None,
             streams: features
                 .iter()
-                .map(|(name, modality, dtype, shape)| Stream {
+                .map(|(name, modality, dtype, shape, dim_names)| Stream {
                     name: name.clone(),
                     modality: *modality,
                     declared_rate_hz: if fps > 0.0 { Some(fps) } else { None },
@@ -1145,6 +1168,7 @@ fn ingest_metadata_only(
                     clock_kind: ClockKind::Measured,
                     dtype: dtype.clone(),
                     shape: shape.clone(),
+                    dim_names: dim_names.clone(),
                     frames: Vec::new(),
                     // Stored statistics are manifest content, so they are covered: the stats
                     // sanity checks (inverted range, non-finite, mean outside range) run here.
@@ -1446,6 +1470,7 @@ impl Adapter for LeRobotAdapter {
                     infer_modality(name, f.dtype.as_deref()),
                     f.dtype.clone(),
                     f.shape.clone(),
+                    element_names(f.shape.as_deref(), f.names.as_deref()),
                 )
             })
             .collect();
@@ -1700,7 +1725,7 @@ impl Adapter for LeRobotAdapter {
                 let per_episode_stats = episode_stats.get(&index);
                 let streams = features
                     .iter()
-                    .map(|(name, modality, dtype, shape)| Stream {
+                    .map(|(name, modality, dtype, shape, dim_names)| Stream {
                         name: name.clone(),
                         modality: *modality,
                         declared_rate_hz: if fps > 0.0 { Some(fps) } else { None },
@@ -1709,6 +1734,7 @@ impl Adapter for LeRobotAdapter {
                         clock_kind: ClockKind::Measured,
                         dtype: dtype.clone(),
                         shape: shape.clone(),
+                        dim_names: dim_names.clone(),
                         frames: rows
                             .iter()
                             .map(|(ts, hashes)| Frame {

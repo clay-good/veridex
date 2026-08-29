@@ -16,6 +16,7 @@ fn stream(name: &str, clock: &str, ts: &[i64]) -> Stream {
         clock_kind: ClockKind::Measured,
         dtype: None,
         shape: None,
+        dim_names: None,
         stats: None,
         dim_stats: None,
         observed_stats: None,

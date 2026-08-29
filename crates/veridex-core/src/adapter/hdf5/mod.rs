@@ -1215,6 +1215,7 @@ fn build_stream(
             },
             dtype: Some(info.datatype.name()),
             shape: (info.dims.len() > 1).then(|| info.dims[1..].to_vec()),
+            dim_names: None,
             frames: Vec::new(),
             // Every statistic HDF5 offers is recomputed from values, and no value was read. `None`
             // rather than `Some(0)`: the difference is what tells a clean stream from an unread one.
@@ -1324,6 +1325,7 @@ fn build_stream(
         clock_kind,
         dtype: Some(info.datatype.name()),
         shape: (info.dims.len() > 1).then(|| info.dims[1..].to_vec()),
+        dim_names: None,
         frames,
         // HDF5 stores no summary statistics of its own, so there is nothing to compare against —
         // only what Veridex recomputed from the values it read.

@@ -1282,7 +1282,15 @@ fn arm_payloads() -> Vec<Vec<u8>> {
 
 /// What a run learned about the arm: the saturation summary of its one stream, and whether the
 /// statistical family reported the pinned joint.
-fn arm_verdict(dataset: &veridex_core::cdm::Dataset) -> (veridex_core::cdm::Saturation, bool) {
+#[allow(clippy::type_complexity)]
+fn arm_verdict(
+    dataset: &veridex_core::cdm::Dataset,
+) -> (
+    veridex_core::cdm::Saturation,
+    bool,
+    Option<Vec<String>>,
+    String,
+) {
     let stream = dataset.episodes[0]
         .streams
         .iter()
@@ -1297,6 +1305,13 @@ fn arm_verdict(dataset: &veridex_core::cdm::Dataset) -> (veridex_core::cdm::Satu
             .findings
             .iter()
             .any(|f| f.code == "STATISTICAL.SATURATED"),
+        stream.dim_names.clone(),
+        verdict
+            .findings
+            .iter()
+            .find(|f| f.code == "STATISTICAL.SATURATED")
+            .map(|f| f.message.clone())
+            .unwrap_or_default(),
     )
 }
 
@@ -1310,11 +1325,17 @@ fn a_pinned_joint_is_caught_in_a_bag_whichever_plugin_stored_it() {
     // Asserted over *both* storage plugins in one test, because which one a team picked must not
     // change the verdict — and the two reach the decode by different routes (a SQLite `messages`
     // blob, an MCAP message record).
-    let (sqlite_sat, sqlite_flagged) = arm_verdict(&ingest("pinned_arm").dataset);
+    let (sqlite_sat, sqlite_flagged, sqlite_names, sqlite_message) =
+        arm_verdict(&ingest("pinned_arm").dataset);
     assert_eq!(sqlite_sat.dim, 1, "the elbow, not the shoulder");
     assert_eq!(sqlite_sat.at_max, 30);
     assert_eq!(sqlite_sat.sample_count, 40);
     assert!(sqlite_flagged, "a pinned joint must reach the verdict");
+    assert_eq!(
+        sqlite_names.as_deref(),
+        Some(&["shoulder".to_string(), "elbow".to_string()][..]),
+        "the bag names its joints, so a finding can too"
+    );
 
     // The same recording through the MCAP storage plugin.
     let dir = tempfile::tempdir().unwrap();
@@ -1361,11 +1382,18 @@ fn a_pinned_joint_is_caught_in_a_bag_whichever_plugin_stored_it() {
         )
         .expect("the mcap-stored bag ingests")
         .dataset;
-    let (mcap_sat, mcap_flagged) = arm_verdict(&via_mcap);
+    let (mcap_sat, mcap_flagged, mcap_names, mcap_message) = arm_verdict(&via_mcap);
     assert_eq!(
         (mcap_sat.dim, mcap_sat.at_max, mcap_sat.sample_count),
         (sqlite_sat.dim, sqlite_sat.at_max, sqlite_sat.sample_count),
         "the storage plugin must not change what the values say"
     );
     assert!(mcap_flagged);
+    assert_eq!(mcap_names, sqlite_names);
+    // The finding names the joint, not just its index: `dimension 1` sends a reader to count
+    // columns in a manifest, `elbow` does not.
+    assert!(
+        sqlite_message.contains("`elbow`") && mcap_message == sqlite_message,
+        "sqlite: {sqlite_message}\nmcap:   {mcap_message}"
+    );
 }

@@ -1060,6 +1060,7 @@ fn declared_stream(
         clock_kind,
         dtype: Some(array.dtype.name.clone()),
         shape: (array.shape.len() > 1).then(|| array.shape[1..].to_vec()),
+        dim_names: None,
         frames: Vec::new(),
         // Zarr stores no summary statistics, and every recomputed one comes from values this run
         // did not read.
@@ -1200,6 +1201,7 @@ fn build_stream(
         clock_kind,
         dtype: Some(array.dtype.name.clone()),
         shape: (array.shape.len() > 1).then(|| array.shape[1..].to_vec()),
+        dim_names: None,
         frames,
         // Zarr stores no summary statistics of its own.
         stats: None,

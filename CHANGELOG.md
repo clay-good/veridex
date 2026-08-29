@@ -10,6 +10,23 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A finding about one joint now calls it by name.** Every statistical finding on a multi-DoF
+  stream names the dimension it is about, and it named it by index: `observation.state
+  (dimension 5)` is a number to go count columns against. The sources were already saying which
+  joint that is — a LeRobot feature's `names`, the `name[]` array a `JointState` publishes, an IMU's
+  fixed axes — and Veridex was dropping it on the floor. Findings now read `dimension 5 \`gripper\``,
+  and fall back to the index where the source names nothing.
+
+  `--redact` scrubs the names with everything else it scrubs: a joint called
+  `acme_wrist_gripper_v2` must not leave the building just because a finding says which one
+  saturated, and the disclosure the redacted report carries now says so.
+
+  `Stream.dim_names` carries it, bound into the content hash like every other content field
+  (`CANONICAL_VERSION` 9 → 10, golden vector re-pinned): two datasets whose reports name different
+  joints must not hash alike. A `names` list that is not one name per scalar is declined rather than
+  guessed at — an image feature's `["height", "width", "channel"]` labels the axes of a tensor, and
+  reading those as element names would report a saturated pixel channel as the joint `width`.
+
 - **An IMU recorded to a bag is graded on its values too.** The same gap as the arm below, on the
   sensor that appears on nearly every rig: a `sensor_msgs/msg/Imu` is thirty-seven doubles with no
   bulk blob among them, so it is entirely its own measurement — and an accelerometer railed at its

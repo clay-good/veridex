@@ -115,9 +115,12 @@ struct StreamBuilder {
     /// with a `std_msgs/Header`. First one wins: a topic that changes frame mid-recording is a rig
     /// fault, but recording the last one seen would hide it behind whichever message came last.
     frame_id: Option<String>,
-    /// Recomputed statistics over the joint positions decoded from this topic's `JointState`
+    /// Recomputed statistics over the values decoded from this topic's `JointState` or `Imu`
     /// messages, when it carries them. `None` for every other topic, whose payload stays opaque.
     values: Option<super::stats::FeatureAccum>,
+    /// What the source calls each of those dimensions: a `JointState`'s own `name[]`, or the IMU's
+    /// fixed axes.
+    dim_names: Option<Vec<String>>,
 }
 
 /// Match a ROS message schema name (e.g. `sensor_msgs/msg/PointCloud2`) by its final type segment,
@@ -543,6 +546,7 @@ impl Adapter for McapAdapter {
                     point_fields: None,
                     frame_id: None,
                     values: None,
+                    dim_names: None,
                 });
             budget.take("mcap", 1)?;
             arrived.take("mcap", message.data.len() as u64)?;
@@ -586,8 +590,15 @@ impl Adapter for McapAdapter {
                 // The one message whose entire payload is the measurement: a handful of joint
                 // angles. Measuring them is what lets the statistical family grade an arm recorded
                 // to a bag, instead of abstaining on the stream that would show a pinned joint.
-                if let Some(positions) = super::cdr::decode_joint_state_positions(&message.data) {
+                if let Some((names, positions)) = super::cdr::decode_joint_state(&message.data) {
                     let cell: Vec<Option<f64>> = positions.into_iter().map(Some).collect();
+                    // The joint names, from the first message that publishes one per position, so a
+                    // finding can name the joint. A later message that disagrees does not overwrite
+                    // them: a topic whose joint order changes mid-recording is a fault, and taking
+                    // the last spelling would hide it behind whichever message came last.
+                    if builder.dim_names.is_none() && names.len() == cell.len() {
+                        builder.dim_names = Some(names);
+                    }
                     builder
                         .values
                         .get_or_insert_with(Default::default)
@@ -598,6 +609,12 @@ impl Adapter for McapAdapter {
                 // measurement. A driver that publishes no orientation says so through a `-1`
                 // covariance, and those slots are held out rather than summarized as zeros.
                 if let Some(values) = super::cdr::decode_imu_values(&message.data) {
+                    builder.dim_names.get_or_insert_with(|| {
+                        super::cdr::IMU_DIM_NAMES
+                            .iter()
+                            .map(|n| n.to_string())
+                            .collect()
+                    });
                     builder
                         .values
                         .get_or_insert_with(Default::default)
@@ -625,6 +642,7 @@ impl Adapter for McapAdapter {
                 clock_kind: ClockKind::Measured,
                 dtype: None,
                 shape: None,
+                dim_names: b.dim_names,
                 frames: b.frames,
                 stats: None,
                 dim_stats: None,
@@ -1001,6 +1019,7 @@ fn ingest_summary_only(path: &Path, summary: McapSummary) -> Result<Ingested, In
             declared_range: None,
             dtype: None,
             shape: None,
+            dim_names: None,
             frames: Vec::new(),
             stats: None,
             dim_stats: None,

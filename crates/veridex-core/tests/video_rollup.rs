@@ -36,6 +36,7 @@ fn video_stream(rows: usize, media: Media) -> Stream {
         clock_kind: ClockKind::Measured,
         dtype: Some("video".into()),
         shape: None,
+        dim_names: None,
         stats: None,
         dim_stats: None,
         observed_stats: None,

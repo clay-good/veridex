@@ -1698,6 +1698,7 @@ fn empty_stream(leaf: &Leaf) -> Stream {
         clock_kind: ClockKind::StepIndex,
         dtype: leaf.dtype.clone(),
         shape: leaf.shape.clone(),
+        dim_names: None,
         frames: Vec::new(),
         // TFDS stores no summary statistics, and this adapter does not decode values, so there is
         // nothing to recompute from.
@@ -1862,6 +1863,7 @@ fn build_episode(
             clock_kind: ClockKind::StepIndex,
             dtype: leaf.dtype.clone(),
             shape: leaf.shape.clone(),
+            dim_names: None,
             frames,
             // TFDS stores no summary statistics of its own, so there is nothing to compare
             // against — only what was recomputed from the numbers in the record.

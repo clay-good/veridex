@@ -29,12 +29,12 @@ fn the_canonical_encoding_has_not_changed_without_a_version_bump() {
     let d: Dataset = serde_json::from_str(GOLDEN).expect("the golden fixture parses");
 
     assert_eq!(
-        CANONICAL_VERSION, 9,
+        CANONICAL_VERSION, 10,
         "the encoding version changed; re-pin the hash below in the same commit"
     );
     assert_eq!(
         content_hash(&d).to_hex(),
-        "e173b49cb0a90c2dc8215ca690cbaddc93c9db972c055e2a6843d6c1308e1b04",
+        "b9efbd382416ed47093aa280e51819f416540e847c133972888e1a390a6e6c21",
         "the canonical encoding changed. If that was deliberate, bump CANONICAL_VERSION and \
          re-pin this vector in the same commit — a hash change without a version bump means two \
          builds disagree about byte-identical data while both claiming the same encoding, and \

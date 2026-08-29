@@ -62,7 +62,7 @@ use crate::cdm::{
 /// signal's `[min|max]`. `STATISTICAL.DECLARED_RANGE` compares the values against it, so the same
 /// samples are in-spec under one declaration and out of it under another. Same rule as v4, v5, v7
 /// and v8: the hash binds whatever changes what a check can conclude.
-pub const CANONICAL_VERSION: u32 = 9;
+pub const CANONICAL_VERSION: u32 = 10;
 
 const DOMAIN: &[u8] = b"veridex.cdm.v1\0";
 
@@ -332,6 +332,11 @@ impl Stream {
         });
         e.opt(&self.dtype, |e, d| e.str(d));
         e.opt(&self.shape, |e, sh| e.seq(sh, |e, d| e.u64(*d)));
+        // The source's name for each dimension. Source content, like `dtype` and `shape` it sits
+        // beside in the same manifest entry, so it binds: this encoder hashes every content field
+        // rather than only the ones a check fails on, which is what keeps it in lockstep with the
+        // struct. Order is significant (it is the dimension order) and so is preserved, not sorted.
+        e.opt(&self.dim_names, |e, ns| e.seq(ns, |e, n: &String| e.str(n)));
         // Stored statistics (from the source manifest): the scalar summary and, for a multi-DoF
         // feature, the per-dimension breakdown. Both are source content, so both bind into the hash —
         // omitting `dim_stats` let two datasets with a different corrupted per-joint stat collide.

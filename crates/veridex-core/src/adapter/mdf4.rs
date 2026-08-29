@@ -802,6 +802,7 @@ fn declare_channel_group(
             clock_kind: ClockKind::Measured,
             dtype: Some("float64".into()),
             shape: None,
+            dim_names: None,
             frames: Vec::new(),
             stats: None,
             dim_stats: None,
@@ -987,6 +988,7 @@ fn decode_channel_group(
             clock_kind: ClockKind::Measured,
             dtype: Some("float64".into()),
             shape: None,
+            dim_names: None,
             frames,
             // MF4 stores no summary statistics of its own — a `##CC` conversion is a rule for
             // turning raw bits into physical values, not a summary of them — so there is nothing to

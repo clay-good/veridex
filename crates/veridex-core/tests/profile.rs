@@ -35,6 +35,7 @@ fn sensor_in_frame(name: &str, modality: Modality, ts: &[i64], frame_id: Option<
         clock_kind: ClockKind::Measured,
         dtype: None,
         shape: None,
+        dim_names: None,
         frames: frames(ts),
         stats: None,
         dim_stats: None,

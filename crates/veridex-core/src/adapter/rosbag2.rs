@@ -373,9 +373,12 @@ struct StreamBuilder {
     latched: Option<bool>,
     point_fields: Option<Vec<PointField>>,
     frame_id: Option<String>,
-    /// Recomputed statistics over the joint positions decoded from this topic's `JointState`
+    /// Recomputed statistics over the values decoded from this topic's `JointState` or `Imu`
     /// messages, when it carries them. `None` for every other topic, whose payload stays opaque.
     values: Option<super::stats::FeatureAccum>,
+    /// What the source calls each of those dimensions: a `JointState`'s own `name[]`, or the IMU's
+    /// fixed axes.
+    dim_names: Option<Vec<String>>,
 }
 
 /// Everything one ingest accumulates while walking a bag's `.db3` files.
@@ -697,6 +700,7 @@ fn read_shard(
                 point_fields: None,
                 frame_id: None,
                 values: None,
+                dim_names: None,
             });
         builder.frames.push(Frame {
             ts,
@@ -732,8 +736,13 @@ fn read_shard(
         } else if super::mcap::schema_is(ty, "JointState") {
             // The one message whose entire payload is the measurement: a handful of joint angles.
             // Measuring them is what lets the statistical family grade an arm recorded to a bag.
-            if let Some(positions) = super::cdr::decode_joint_state_positions(data) {
+            if let Some((names, positions)) = super::cdr::decode_joint_state(data) {
                 let cell: Vec<Option<f64>> = positions.into_iter().map(Some).collect();
+                // The joint names, from the first message publishing one per position, so a finding
+                // can name the joint rather than its index. First one wins, as `frame_id` does.
+                if builder.dim_names.is_none() && names.len() == cell.len() {
+                    builder.dim_names = Some(names);
+                }
                 builder
                     .values
                     .get_or_insert_with(Default::default)
@@ -743,6 +752,12 @@ fn read_shard(
             // Thirty-seven doubles and no bulk payload: an IMU message is entirely its own
             // measurement. Slots a `-1` covariance declares absent are held out, not read as zeros.
             if let Some(values) = super::cdr::decode_imu_values(data) {
+                builder.dim_names.get_or_insert_with(|| {
+                    super::cdr::IMU_DIM_NAMES
+                        .iter()
+                        .map(|n| n.to_string())
+                        .collect()
+                });
                 builder
                     .values
                     .get_or_insert_with(Default::default)
@@ -838,6 +853,7 @@ fn read_mcap_shard(
                 point_fields: None,
                 frame_id: None,
                 values: None,
+                dim_names: None,
             });
         builder.frames.push(Frame {
             ts,
@@ -869,8 +885,13 @@ fn read_mcap_shard(
         } else if super::mcap::schema_is(&ros_type, "JointState") {
             // The one message whose entire payload is the measurement: a handful of joint angles.
             // Measuring them is what lets the statistical family grade an arm recorded to a bag.
-            if let Some(positions) = super::cdr::decode_joint_state_positions(data) {
+            if let Some((names, positions)) = super::cdr::decode_joint_state(data) {
                 let cell: Vec<Option<f64>> = positions.into_iter().map(Some).collect();
+                // The joint names, from the first message publishing one per position, so a finding
+                // can name the joint rather than its index. First one wins, as `frame_id` does.
+                if builder.dim_names.is_none() && names.len() == cell.len() {
+                    builder.dim_names = Some(names);
+                }
                 builder
                     .values
                     .get_or_insert_with(Default::default)
@@ -880,6 +901,12 @@ fn read_mcap_shard(
             // Thirty-seven doubles and no bulk payload: an IMU message is entirely its own
             // measurement. Slots a `-1` covariance declares absent are held out, not read as zeros.
             if let Some(values) = super::cdr::decode_imu_values(data) {
+                builder.dim_names.get_or_insert_with(|| {
+                    super::cdr::IMU_DIM_NAMES
+                        .iter()
+                        .map(|n| n.to_string())
+                        .collect()
+                });
                 builder
                     .values
                     .get_or_insert_with(Default::default)
@@ -976,6 +1003,7 @@ fn ingest_metadata_only(
             declared_range: None,
             dtype: None,
             shape: None,
+            dim_names: None,
             frames: Vec::new(),
             stats: None,
             dim_stats: None,
@@ -1341,6 +1369,7 @@ impl Adapter for Rosbag2Adapter {
                 clock_kind: ClockKind::Measured,
                 dtype: None,
                 shape: None,
+                dim_names: b.dim_names,
                 frames: b.frames,
                 stats: None,
                 dim_stats: None,
