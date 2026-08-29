@@ -48,7 +48,9 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   strong distortion coefficient and an unnormalized-but-real quaternion are all legitimate, and
   telling sensible from silly would need image dimensions the CDM does not carry. Because the code
   belongs to a check the readiness profile already judges, the defect reaches `ready` with no new
-  criterion to forget.
+  criterion to forget. The criterion's own printed guarantee — the sentence a signed certificate
+  carries — is updated with it: "connected transform (TF) tree and camera intrinsics present, **and
+  arithmetically usable**".
 
 - **`structural.frozen-episode` — the recording where the robot never moved.** The commonest failure
   in a teleoperated dataset, and it fell exactly between two checks that each defer to the other.

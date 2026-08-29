@@ -140,7 +140,7 @@ const WORLD_MODEL_READY_CRITERIA: &[(&str, &str)] = &[
     ),
     (
         "autonomy.calibration-completeness",
-        "connected transform (TF) tree and camera intrinsics present",
+        "connected transform (TF) tree and camera intrinsics present, and arithmetically usable",
     ),
     (
         "autonomy.sensor-frame-resolution",
