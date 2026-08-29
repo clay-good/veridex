@@ -649,3 +649,41 @@ fn the_coverage_banner_carries_no_floating_point_noise() {
         assert!(d.starts_with(want), "fraction {fraction} rendered as {d}");
     }
 }
+
+#[test]
+fn the_uncompared_episodes_disclosure_describes_the_run_not_the_dataset() {
+    // `--sample-episodes 1` over a three-episode file leaves one episode in the CDM, so the checks
+    // that compare episodes have nothing to compare and say so. The sentence must be true of the
+    // *run*: "this dataset holds 1 episode" is a false statement about a dataset that holds three,
+    // and it is the same mistake `STATISTICAL.UNMEASURED_VALUES` made under `--metadata-only`.
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/hdf5/unsorted_names.h5");
+    let options = veridex_core::adapter::IngestOptions {
+        sample: veridex_core::adapter::Sample::FirstEpisodes(1),
+        ..Default::default()
+    };
+    let out = veridex_core::pipeline::run_check(
+        &veridex_core::adapter::default_registry(),
+        &veridex_core::adapter::Source::Local(path),
+        None,
+        &options,
+    )
+    .expect("the fixture ingests");
+
+    let f = out
+        .verdict
+        .findings
+        .iter()
+        .find(|f| f.code == "STRUCTURAL.UNCOMPARED_EPISODES")
+        .expect("one sampled episode cannot be compared against another");
+    assert!(
+        f.message.starts_with("this run covers 1 episode(s)"),
+        "the sentence must be about the run: {}",
+        f.message
+    );
+    assert!(
+        !f.message.contains("this dataset holds"),
+        "the dataset holds three: {}",
+        f.message
+    );
+}

@@ -20,7 +20,11 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
   `STRUCTURAL.UNCOMPARED_EPISODES` (info) names them and the number of episodes each needs. It is the
   third axis of the reasoning behind `TEMPORAL.UNMEASURED_CLOCK` and `STATISTICAL.UNMEASURED_VALUES`:
-  not "no clock", not "no values", but "nothing to compare against".
+  not "no clock", not "no values", but "nothing to compare against". It speaks of the **run**, not
+  the dataset — `--sample-episodes 1` over a five-hundred-episode dataset leaves one episode in the
+  CDM, and "this dataset holds 1 episode" would be false about the dataset while true about the run.
+  That is the same mistake `STATISTICAL.UNMEASURED_VALUES` made under `--metadata-only`, caught this
+  time before it shipped.
 
 - **Five findings reached users with runs of spaces inside their sentences.** `rustfmt` joins a
   string literal wrapped with a `\` line continuation without removing the indentation that followed
