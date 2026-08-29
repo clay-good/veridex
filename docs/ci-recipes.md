@@ -66,10 +66,16 @@ Store a baseline report and compare:
 ```
 
 `diff` fails the job when the new report introduces a finding, drops the trust score, crashes a check
-that used to run, or — the three that matter most — when the two reports are about **different
-datasets**, **cover different amounts** of the dataset, or **one of them is redacted**. Each of those
-makes the comparison meaningless in the flattering direction, so it is treated as a regression rather
-than an improvement. The dataset check is on the dataset's *id*, not its content: a dataset that
+that used to run, or — the four that matter most — when the two reports are about **different
+datasets**, **cover different amounts** of the dataset, **one of them is redacted**, or they were
+produced by **different Veridex versions**. Each of those makes the comparison meaningless, so it is
+treated as a regression rather than an improvement.
+
+The version one is the one to expect: a release that adds a check produces findings under
+`introduced` on a dataset that did not change by a byte, so the first gate run after an upgrade
+fails. It fails *by name* — `these reports were produced by different Veridex versions (0.1.0 ->
+0.2.0)` — rather than quoting a finding count that would send you to audit sound data. Re-baseline by
+storing a fresh `veridex check --json` from the new version, then read what changed once, on purpose. The dataset check is on the dataset's *id*, not its content: a dataset that
 gained an episode since the baseline hashes differently, and comparing those two reports is the whole
 point — a baseline artifact from another project is the mistake being caught.
 

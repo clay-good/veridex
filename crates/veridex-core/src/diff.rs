@@ -35,6 +35,10 @@ pub struct ReportDiff {
     pub old_cdm_hash: Option<String>,
     /// See [`ReportDiff::old_cdm_hash`].
     pub new_cdm_hash: Option<String>,
+    /// The Veridex version each report was produced by, when it records one.
+    pub old_version: Option<String>,
+    /// See [`ReportDiff::old_version`].
+    pub new_version: Option<String>,
     /// Ids of checks that crashed instead of producing findings, in the old report.
     pub old_errored: Vec<String>,
     /// See [`ReportDiff::old_errored`].
@@ -106,6 +110,28 @@ impl ReportDiff {
     /// noise. Like a coverage change, this is a statement about the two documents, not the data.
     pub fn redaction_differs(&self) -> bool {
         self.old_redacted != self.new_redacted
+    }
+
+    /// Whether the two reports were produced by **different Veridex versions**.
+    ///
+    /// A diff attributes what moved to the data. Across versions it cannot: a release that adds a
+    /// check, adds a finding code to one, or reworded a message produces findings under
+    /// `introduced` on a dataset that did not change by a byte. `structural.step-alignment` and
+    /// `structural.frozen-episode` each did exactly that, and so did one disclosure that fires on
+    /// every single-episode recording — so the first `--fail-on-regression` run after an upgrade
+    /// reported "3 finding(s) introduced" and sent someone to audit data that was fine.
+    ///
+    /// Reported like a coverage or redaction mismatch, and for the same reason: it is a statement
+    /// about the two documents rather than about the dataset. The gate still fails — silently
+    /// passing a comparison that cannot be made is the worse error, and re-baselining after an
+    /// upgrade is a deliberate act — but it fails **by name**, so the reader is told the cause is
+    /// the tool rather than left to infer it from a finding list.
+    pub fn version_differs(&self) -> bool {
+        match (&self.old_version, &self.new_version) {
+            (Some(o), Some(n)) => o != n,
+            // One report predating the field is not evidence of a change.
+            _ => false,
+        }
     }
 
     /// Checks that crashed in the new report and did not in the old one.
@@ -242,9 +268,20 @@ pub fn diff_reports(old: &Value, new: &Value) -> ReportDiff {
         new_dataset: dataset_id(new),
         old_cdm_hash: cdm_hash(old),
         new_cdm_hash: cdm_hash(new),
+        old_version: veridex_version(old),
+        new_version: veridex_version(new),
         old_errored: errored_checks(old),
         new_errored: errored_checks(new),
     }
+}
+
+/// The Veridex version a report's verdict records, if it records one.
+fn veridex_version(report: &Value) -> Option<String> {
+    report
+        .get("verdict")
+        .and_then(|v| v.get("veridex_version"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 /// Render a diff as a human-readable summary.
@@ -299,6 +336,16 @@ pub fn render_diff(diff: &ReportDiff) -> String {
              every comparison below is between unlike reports.",
             diff.old_coverage.as_deref().unwrap_or("unknown"),
             diff.new_coverage.as_deref().unwrap_or("unknown"),
+        );
+    }
+    if diff.version_differs() {
+        let _ = writeln!(
+            out,
+            "  Veridex: CHANGED — {} -> {}. A release that adds a check or a finding code produces \
+             findings under `introduced` on a dataset that did not change, so what moved below \
+             cannot be attributed to the data. Re-baseline against a report from this version.",
+            diff.old_version.as_deref().unwrap_or("unknown"),
+            diff.new_version.as_deref().unwrap_or("unknown"),
         );
     }
     if let (Some(o), Some(n)) = (diff.old_score, diff.new_score) {
@@ -376,6 +423,13 @@ pub fn render_diff_json(old: &Value, new: &Value) -> String {
             "old": diff.old_redacted,
             "new": diff.new_redacted,
             "changed": diff.redaction_differs(),
+        },
+        // And the same reason again, for the cause a reader is least likely to guess: a release
+        // that adds a check produces `introduced` findings on a dataset that did not change.
+        "veridex_version": {
+            "old": diff.old_version,
+            "new": diff.new_version,
+            "changed": diff.version_differs(),
         },
         "introduced": diff.introduced,
         "resolved": diff.resolved,

@@ -2849,3 +2849,37 @@ fn a_redacted_report_does_not_publish_what_a_producer_attested() {
     ]);
     assert!(plain.contains("acme-internal-secret-terms"), "{plain}");
 }
+
+#[test]
+fn a_gate_across_two_veridex_versions_blames_the_tool_not_the_data() {
+    // The first `--fail-on-regression` run after upgrading Veridex fires, because a release that
+    // adds a check produces `introduced` findings on a dataset that did not change by a byte. It
+    // should fire — silently passing a comparison that cannot be made is worse, and re-baselining
+    // is a deliberate act — but "3 finding(s) introduced" sends someone to audit sound data. The
+    // message has to name the cause.
+    let old = temp_report(
+        "ver_old",
+        r#"{"verdict":{"veridex_version":"0.1.0","findings":[],"coverage":{"kind":"full"}},
+            "dataset":{"id":"d"},"trust_score":{"score":90}}"#,
+    );
+    let new = temp_report(
+        "ver_new",
+        r#"{"verdict":{"veridex_version":"0.2.0","findings":[{"code":"STRUCTURAL.UNCOMPARED_EPISODES","severity":"info","message":"this run covers 1 episode(s)"}],"coverage":{"kind":"full"}},
+            "dataset":{"id":"d"},"trust_score":{"score":90}}"#,
+    );
+    let (o, n) = (old.to_str().unwrap(), new.to_str().unwrap());
+
+    let (code, _, stderr) = run(&["diff", "--fail-on-regression", o, n]);
+    assert_eq!(code, 20, "the gate still fails: {stderr}");
+    assert!(
+        stderr.contains("different Veridex versions") && stderr.contains("0.1.0 -> 0.2.0"),
+        "the cause must be named ahead of the counts: {stderr}"
+    );
+    assert!(
+        !stderr.contains("finding(s) introduced"),
+        "the finding count is the symptom, not the cause: {stderr}"
+    );
+
+    let _ = std::fs::remove_file(&old);
+    let _ = std::fs::remove_file(&new);
+}

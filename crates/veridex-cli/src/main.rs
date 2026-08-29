@@ -2265,9 +2265,15 @@ fn is_regression(diff: &veridex_core::ReportDiff) -> bool {
     // And two reports about different datasets are not a weaker comparison, they are not a
     // comparison: a gate whose baseline artifact path is wrong otherwise passes on a confident
     // score movement between unrelated runs.
+    // And a diff across two Veridex versions is a comparison of catalogs, not of data: a release
+    // that adds a check produces `introduced` findings on a dataset that did not change by a byte.
+    // The gate still fails — silently passing a comparison that cannot be made is the worse error,
+    // and re-baselining after an upgrade is a deliberate act — but the message names the tool as
+    // the cause rather than leaving a reader to audit sound data.
     diff.dataset_differs()
         || diff.coverage_differs()
         || diff.redaction_differs()
+        || diff.version_differs()
         || !diff.introduced.is_empty()
         || !diff.newly_errored().is_empty()
         || diff.score_delta().is_some_and(|d| d < 0)
@@ -2593,6 +2599,19 @@ fn cmd_diff(rest: &[String]) -> ExitCode {
             );
             return ExitCode::from(EXIT_FAIL);
         }
+        // Named before the counts, because an upgrade is why they look the way they do: a release
+        // that adds a check produces `introduced` findings on a dataset that did not change, and
+        // "3 finding(s) introduced" on its own sends someone to audit data that is fine.
+        if diff.version_differs() {
+            eprintln!(
+                "veridex: regression — these reports were produced by different Veridex versions \
+                 ({} -> {}), so what moved cannot be attributed to the data; re-baseline against a \
+                 report from this version",
+                diff.old_version.as_deref().unwrap_or("unknown"),
+                diff.new_version.as_deref().unwrap_or("unknown"),
+            );
+            return ExitCode::from(EXIT_FAIL);
+        }
         // Named before the counts, because a crashed check is why they look the way they do: it
         // suppresses findings and *raises* the score, so "0 introduced, score delta +3" on its own
         // reads like an improvement.
@@ -2814,6 +2833,8 @@ mod tests {
             new_dataset: Some("rig".into()),
             old_cdm_hash: Some("aaaa".into()),
             new_cdm_hash: Some("bbbb".into()),
+            old_version: Some("0.1.0".into()),
+            new_version: Some("0.1.0".into()),
         };
         // No change → not a regression.
         assert!(!super::is_regression(&base));
@@ -2826,6 +2847,13 @@ mod tests {
             ..base.clone()
         };
         assert!(super::is_regression(&crashed));
+        // Two reports from different Veridex versions are a comparison of catalogs: a release that
+        // adds a check puts findings under `introduced` on a dataset that did not change.
+        let upgraded = veridex_core::ReportDiff {
+            new_version: Some("0.2.0".into()),
+            ..base.clone()
+        };
+        assert!(super::is_regression(&upgraded));
         // Two reports about different datasets are not a weaker comparison, they are not a
         // comparison — even when every count looks like an improvement.
         let unrelated = veridex_core::ReportDiff {

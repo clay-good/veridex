@@ -196,6 +196,13 @@ Every report — terminal, JSON, and HTML — now leads with rollups: findings *
 not forty). `--json` carries the same summaries under `rollups`, so a CI job no longer has to
 re-derive from the finding list what the human report was handed.
 
+A regression gate (`veridex diff --fail-on-regression`) refuses a comparison that cannot be made
+rather than reading it as an improvement: two reports about different datasets, covering different
+amounts of one, one redacted and one not, or produced by **different Veridex versions** — the last
+being the one to expect, since a release that adds a check puts findings under "introduced" on a
+dataset that did not change. Each fails the gate by name, so the cause is stated rather than inferred
+from a finding count.
+
 `--redact` prepares a report to **leave the building**. The dataset identifier, stream and dimension
 names, task and label text, and provenance values are replaced with stable placeholders (`stream#1`,
 `text#2`),

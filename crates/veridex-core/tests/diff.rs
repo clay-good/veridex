@@ -254,3 +254,60 @@ fn a_report_without_a_dataset_id_is_not_a_mismatch() {
     assert!(!diff_reports(&old, &new).dataset_differs());
     assert!(!diff_reports(&new, &old).dataset_differs());
 }
+
+#[test]
+fn two_veridex_versions_are_a_comparison_of_catalogs_not_of_data() {
+    // A diff attributes what moved to the data. Across versions it cannot: a release that adds a
+    // check, adds a finding code, or rewords a message puts findings under `introduced` on a dataset
+    // that did not change by a byte — which is exactly what shipping `structural.step-alignment`,
+    // `structural.frozen-episode` and `STRUCTURAL.UNCOMPARED_EPISODES` did. The first
+    // `--fail-on-regression` run after an upgrade reported "3 finding(s) introduced" and sent
+    // someone to audit data that was fine.
+    let old = json!({
+        "verdict": {
+            "veridex_version": "0.1.0",
+            "status": "pass",
+            "findings": [],
+            "coverage": {"kind": "full"},
+        },
+        "dataset": {"id": "d", "content_hash": "abc"},
+        "trust_score": {"score": 90},
+    });
+    let mut new = old.clone();
+    new["verdict"]["veridex_version"] = json!("0.2.0");
+    new["verdict"]["findings"] = json!([{
+        "code": "STRUCTURAL.UNCOMPARED_EPISODES",
+        "severity": "info",
+        "message": "this run covers 1 episode(s)",
+    }]);
+
+    let diff = diff_reports(&old, &new);
+    assert!(diff.version_differs());
+    assert_eq!(diff.old_version.as_deref(), Some("0.1.0"));
+    assert_eq!(diff.new_version.as_deref(), Some("0.2.0"));
+
+    // The human render names the tool as the cause, ahead of the finding counts.
+    let text = veridex_core::render_diff(&diff);
+    assert!(
+        text.contains("Veridex: CHANGED — 0.1.0 -> 0.2.0"),
+        "the cause must be named, not inferred from the finding list:\n{text}"
+    );
+    // And the machine document carries it, since that is the only consumer a CI gate has.
+    let doc: serde_json::Value =
+        serde_json::from_str(&veridex_core::render_diff_json(&old, &new)).expect("valid json");
+    assert_eq!(doc["veridex_version"]["changed"], json!(true));
+    assert_eq!(doc["veridex_version"]["old"], json!("0.1.0"));
+
+    // Same version on both sides is the ordinary case and says nothing.
+    let same = diff_reports(&old, &old);
+    assert!(!same.version_differs());
+    assert!(!veridex_core::render_diff(&same).contains("Veridex: CHANGED"));
+
+    // A report predating the field is not evidence of a change.
+    let mut legacy = old.clone();
+    legacy["verdict"]
+        .as_object_mut()
+        .unwrap()
+        .remove("veridex_version");
+    assert!(!diff_reports(&legacy, &new).version_differs());
+}

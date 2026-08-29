@@ -10,6 +10,19 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **Upgrading Veridex made every `--fail-on-regression` gate blame the data.** A release that adds a
+  check, adds a finding code, or rewords a message puts findings under `introduced` on a dataset that
+  did not change by a byte — which is exactly what the three checks above do. The first gate run
+  after an upgrade reported "3 finding(s) introduced" and sent someone to audit data that was fine.
+
+  A diff across two Veridex versions is a comparison of catalogs, not of data. It still fails the
+  gate — silently passing a comparison that cannot be made is the worse error, and re-baselining
+  after an upgrade is a deliberate act — but it now fails **by name**: `Veridex: CHANGED — 0.1.0 ->
+  0.2.0` leads the terminal diff, the JSON document carries a `veridex_version` block beside the
+  `dataset`, `coverage` and `redaction` ones, and the gate's message says to re-baseline rather than
+  quoting a finding count. The same reasoning as the dataset, coverage and redaction mismatches
+  already there: a statement about the two documents, not about the data.
+
 - **A one-episode recording never said that seven checks had nothing to compare.** An MCAP file and
   a bare rosbag2 recording are one episode *by construction*, and seven checks in the catalog answer
   their question by comparing one episode against another — duplicate and near-duplicate detection,
