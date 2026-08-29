@@ -64,6 +64,15 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   full read, in a `--metadata-only` one, and over the Hub, where `meta/episodes_stats.jsonl` joins
   the fixed manifest list a remote run is allowed to fetch.
 
+- **A LeRobot manifest's per-episode task is read.** `meta/episodes.jsonl` states each episode's
+  task — it is how a v2.1 dataset records what its demonstrations are of — and the adapter read only
+  the `length` from those lines. Every episode of a task-labelled dataset therefore reached the CDM
+  unannotated: the semantic annotation checks had nothing to grade, and the report of a labelled
+  dataset said it carried no tasks. What the *data* says still outranks it (a per-row `task_index`
+  through `meta/tasks.jsonl` is the finer-grained record, and is where a mid-episode task change
+  lives); the manifest line is the fallback, and a `--metadata-only` run — which opens no Parquet at
+  all — now has a task where before it always had none.
+
 - **`STATISTICAL.OUT_OF_DECLARED_RANGE`: the values, against the range their own source declares.**
   A DBC states each signal's physical span (`[0|16383.75]`), which is a fact about the data separate
   from any summary of it — what the bus designer specified, before a frame was read. Comparing the

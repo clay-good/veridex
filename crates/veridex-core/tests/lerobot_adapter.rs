@@ -1504,6 +1504,69 @@ fn the_remote_manifest_list_names_every_metadata_file_the_adapter_reads() {
     }
 }
 
+/// A v2.1 manifest states each episode's task on its own line, and ignoring it left every episode of
+/// a task-labelled dataset unannotated in the CDM — so the annotation checks had nothing to grade
+/// and the report of a labelled dataset said it carried no tasks.
+#[test]
+fn the_manifest_supplies_a_task_when_the_data_does_not() {
+    let dir = tempfile::tempdir().unwrap();
+    write_lerobot_v21(dir.path());
+    // Drop `meta/tasks.jsonl`, so a `task_index` resolves to nothing and only the manifest line is
+    // left — what an export missing that file looks like.
+    fs::remove_file(dir.path().join("meta/tasks.jsonl")).unwrap();
+
+    for options in [
+        IngestOptions::default(),
+        IngestOptions {
+            metadata_only: true,
+            ..IngestOptions::default()
+        },
+    ] {
+        let ingested = LeRobotAdapter
+            .ingest(&Source::Local(dir.path().to_path_buf()), &options)
+            .expect("ingest");
+        assert_eq!(
+            ingested.dataset.episodes[0].task.as_deref(),
+            Some("pick up the block"),
+            "the manifest states the task; metadata_only={}",
+            options.metadata_only
+        );
+        assert!(
+            ingested
+                .report
+                .mapped_fields
+                .iter()
+                .any(|f| f.contains("meta/episodes.jsonl tasks -> episode.task")),
+            "the report names where the task came from: {:?}",
+            ingested.report.mapped_fields
+        );
+        assert!(
+            !ingested
+                .report
+                .omitted_fields
+                .iter()
+                .any(|f| f.starts_with("task strings")),
+            "a dataset whose tasks were read must not be reported as having none"
+        );
+    }
+}
+
+/// And what the *data* says outranks it: a `task_index` resolving through `meta/tasks.jsonl` is the
+/// finer-grained record, and it is what a mid-episode task change is expressed in.
+#[test]
+fn a_resolved_task_index_outranks_the_manifest_line() {
+    let dir = tempfile::tempdir().unwrap();
+    write_lerobot_v21(dir.path());
+    fs::write(
+        dir.path().join("meta/tasks.jsonl"),
+        "{\"task_index\": 0, \"task\": \"stack the cups\"}\n",
+    )
+    .unwrap();
+
+    let d = ingest_lerobot(dir.path());
+    assert_eq!(d.episodes[0].task.as_deref(), Some("stack the cups"));
+}
+
 /// The gate still refuses a version this adapter does not read — a v1.x export, or anything whose
 /// major is outside the supported set — rather than misparsing it.
 #[test]

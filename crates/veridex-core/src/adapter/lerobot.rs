@@ -976,17 +976,34 @@ fn load_tasks(dir: &Path) -> BTreeMap<i64, String> {
     out
 }
 
+/// What `meta/episodes.jsonl` declares about one episode.
+struct DeclaredEpisode {
+    /// The frame count the manifest states, which a structural check compares against the frames
+    /// actually ingested.
+    length: u64,
+    /// The task the manifest states this episode demonstrates, when it states one. Read because it
+    /// is there: a v2.1 manifest names each episode's task, and ignoring it left every episode of
+    /// such a dataset unannotated in the CDM — so the annotation checks had nothing to grade and a
+    /// report of a task-labelled dataset said it carried no tasks.
+    task: Option<String>,
+}
+
 /// Load `meta/episodes.jsonl`, mapping each `episode_index` to the frame count (`length`) the
 /// manifest declares for it. This is the metadata whose corruption is the lerobot#4143 class: when a
 /// per-episode length is wrong, LeRobot's cumulative boundaries misplace frames into the wrong
 /// episode. The structural check compares this declared length against the frames actually ingested.
 /// Absent or unreadable file yields an empty map (the check simply has nothing to compare); malformed
 /// lines are skipped.
-fn load_episode_lengths(dir: &Path) -> Result<BTreeMap<u64, u64>, IngestError> {
+fn load_episode_lengths(dir: &Path) -> Result<BTreeMap<u64, DeclaredEpisode>, IngestError> {
     #[derive(Deserialize)]
     struct EpisodeRow {
         episode_index: u64,
         length: u64,
+        /// The task(s) this episode demonstrates. v2.1 states them here; v3 keeps them in
+        /// `meta/episodes/*.parquet`, which this reader does not open. Absent in either case is an
+        /// absence, never a guess.
+        #[serde(default)]
+        tasks: Vec<String>,
     }
     let mut out = BTreeMap::new();
     let Ok(contents) = std::fs::read_to_string(dir.join("meta").join("episodes.jsonl")) else {
@@ -1016,14 +1033,22 @@ fn load_episode_lengths(dir: &Path) -> Result<BTreeMap<u64, u64>, IngestError> {
             // cumulative boundaries LeRobot derives from those lines are, by construction, wrong for
             // every episode after the duplicate. That is the lerobot#4143 class stated outright in
             // the manifest, and it is the one form of it a run that never reads a frame can prove.
-            if let Some(previous) = out.insert(row.episode_index, row.length) {
+            let declared = DeclaredEpisode {
+                length: row.length,
+                task: row
+                    .tasks
+                    .into_iter()
+                    .find(|t| !t.trim().is_empty())
+                    .map(|t| t.trim().to_string()),
+            };
+            if let Some(previous) = out.insert(row.episode_index, declared) {
                 return Err(IngestError::Parse {
                     format_id: "lerobot",
                     message: format!(
                         "meta/episodes.jsonl declares episode_index {} more than once (lengths {} \
                          and {}); the cumulative episode boundaries derived from it cannot be \
                          correct — re-export the manifest from the source shards",
-                        row.episode_index, previous, row.length
+                        row.episode_index, previous.length, row.length
                     ),
                 });
             }
@@ -1046,7 +1071,7 @@ fn ingest_metadata_only(
     info: &InfoJson,
     features: &[FeatureSpec],
     fps: f64,
-    declared_lengths: &BTreeMap<u64, u64>,
+    declared_lengths: &BTreeMap<u64, DeclaredEpisode>,
     options: &IngestOptions,
 ) -> Result<Ingested, IngestError> {
     // The episode set has to come from the manifest, since reading the data is exactly what this
@@ -1145,12 +1170,13 @@ fn ingest_metadata_only(
                     frame_id: None,
                 })
                 .collect(),
-            // Task strings are resolved from a per-row `task_index` in the Parquet, which this mode
-            // does not read. Left absent rather than guessed; the task checks abstain on `None`.
-            task: None,
+            // A per-row `task_index` lives in the Parquet, which this mode does not read — but a
+            // v2.1 manifest states each episode's task outright, and that is manifest content like
+            // any other. Read where it is stated, absent where it is not; never guessed.
+            task: declared_lengths.get(&index).and_then(|d| d.task.clone()),
             labels: Vec::new(),
             ego_poses: None,
-            declared_frame_count: declared_lengths.get(&index).copied(),
+            declared_frame_count: declared_lengths.get(&index).map(|d| d.length),
         })
         .collect();
 
@@ -1240,12 +1266,26 @@ fn ingest_metadata_only(
         mapped_fields.push("README.md license -> provenance.license".into());
     }
 
+    let manifest_tasks = declared_lengths
+        .values()
+        .filter(|d| d.task.is_some())
+        .count();
     let mut omitted_fields = vec![
         "frame timestamps, feature values, and content hashes (no Parquet was read)".into(),
         "video container headers (no media file was opened)".into(),
-        "task strings (task_index lives in the Parquet data)".into(),
         "total_frames (a claim about frames, and no frame was read)".into(),
     ];
+    if manifest_tasks == 0 {
+        omitted_fields.push(
+            "task strings (this manifest states none; a per-row task_index lives in the Parquet \
+             data, which this mode does not read)"
+                .into(),
+        );
+    } else {
+        mapped_fields.push(format!(
+            "meta/episodes.jsonl tasks -> episode.task ({manifest_tasks} episode(s))"
+        ));
+    }
     omitted_fields.extend(stats_omitted);
     if !declared_total_is_independent && info.total_episodes.is_some() {
         omitted_fields.push(
@@ -1695,11 +1735,16 @@ impl Adapter for LeRobotAdapter {
                         frame_id: None,
                     })
                     .collect();
-                // Resolve this episode's task string, if its task_index maps to one.
+                // Resolve this episode's task string: what the data says first — a per-row
+                // `task_index` through `meta/tasks.jsonl` — then what the manifest says, which is
+                // where a v2.1 export states it. The data outranks the manifest because it is the
+                // finer-grained record; falling back to the manifest is what keeps an episode of a
+                // task-labelled dataset from reaching the CDM unannotated.
                 let task = episode_task_index
                     .get(&index)
                     .and_then(|ti| tasks.get(ti))
-                    .cloned();
+                    .cloned()
+                    .or_else(|| declared_lengths.get(&index).and_then(|d| d.task.clone()));
                 // Surface each mid-episode task change as a timestamped `language` annotation. Only
                 // resolvable task indices become labels (Veridex never invents an instruction from a
                 // bare index); the semantic checks then verify their integrity.
@@ -1724,7 +1769,7 @@ impl Adapter for LeRobotAdapter {
                     labels,
                     // LeRobot carries no ego-vehicle trajectory.
                     ego_poses: None,
-                    declared_frame_count: declared_lengths.get(&index).copied(),
+                    declared_frame_count: declared_lengths.get(&index).map(|d| d.length),
                 }
             })
             .collect();
@@ -1836,11 +1881,23 @@ impl Adapter for LeRobotAdapter {
         {
             mapped_fields.push("feature.info video.* -> stream.media.declared".into());
         }
-        // Task-string resolution is reported honestly by whether meta/tasks.jsonl was present.
-        if tasks.is_empty() {
+        // Task-string resolution is reported by where each task actually came from: a per-row
+        // `task_index` through `meta/tasks.jsonl`, or the manifest line that states it.
+        let from_manifest = declared_lengths
+            .values()
+            .filter(|d| d.task.is_some())
+            .count();
+        if tasks.is_empty() && from_manifest == 0 {
             omitted_fields.push("task strings (no meta/tasks.jsonl to resolve task_index)".into());
-        } else {
+        }
+        if !tasks.is_empty() {
             mapped_fields.push("task_index + meta/tasks.jsonl -> episode.task".into());
+        }
+        if from_manifest > 0 {
+            mapped_fields.push(format!(
+                "meta/episodes.jsonl tasks -> episode.task where no task_index resolved \
+                 ({from_manifest} episode(s) state one)"
+            ));
         }
         if card_license.is_some() {
             mapped_fields.push("README.md license -> provenance.license".into());
