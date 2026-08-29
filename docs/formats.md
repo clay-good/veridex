@@ -190,7 +190,10 @@ every statistical check listed as run.
 
 An IMU field whose `covariance[0]` is `-1` is one the driver declares it does **not** provide, and
 ROS leaves it zero-filled; those slots are held out rather than summarized, because reporting them
-would accuse a bare gyro of having an orientation frozen at the origin. Every other topic's payload
+would accuse a bare gyro of having an orientation frozen at the origin. A `JointState` topic that
+publishes more than one joint *set* is refused outright and disclosed as unread coverage: the message
+pairs `position[i]` with `name[i]` only within one message, so accumulating across a reordering would
+report a statistic for a joint that does not exist. Every other topic's payload
 stays opaque and says so, through `STATISTICAL.UNMEASURED_VALUES`. The same is true of a plain MCAP
 file.
 

@@ -10,6 +10,17 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A `JointState` topic that reorders its joints is refused, not mismeasured.** The message
+  guarantees only that `position[i]` belongs to `name[i]` *within that message* — nothing says two
+  messages order their joints alike, and a publisher aggregating several sources is exactly where
+  they might not. Accumulating positionally across a reordering folds two joints into one dimension:
+  a statistic for a joint that does not exist, reported under whichever joint's name came first.
+  That is a confident wrong answer, which is worse than no answer. The joint set is now fixed by the
+  first message that names one joint per position, and a message contradicting it drops the whole
+  stream's values and discloses the topic as unread coverage, where a reader meets it as
+  `COVERAGE.SOURCE_UNREAD`. Refusing is also what keeps the bound: the alternative — an index of
+  every joint name ever published on the topic — is an allocation the file gets to size.
+
 - **A finding about one joint now calls it by name.** Every statistical finding on a multi-DoF
   stream names the dimension it is about, and it named it by index: `observation.state
   (dimension 5)` is a number to go count columns against. The sources were already saying which

@@ -115,12 +115,9 @@ struct StreamBuilder {
     /// with a `std_msgs/Header`. First one wins: a topic that changes frame mid-recording is a rig
     /// fault, but recording the last one seen would hide it behind whichever message came last.
     frame_id: Option<String>,
-    /// Recomputed statistics over the values decoded from this topic's `JointState` or `Imu`
-    /// messages, when it carries them. `None` for every other topic, whose payload stays opaque.
-    values: Option<super::stats::FeatureAccum>,
-    /// What the source calls each of those dimensions: a `JointState`'s own `name[]`, or the IMU's
-    /// fixed axes.
-    dim_names: Option<Vec<String>>,
+    /// Values decoded from this topic's `JointState` or `Imu` messages, with the joint set they
+    /// belong to. Empty for every other topic, whose payload stays opaque.
+    values: super::stats::StreamValues,
 }
 
 /// Match a ROS message schema name (e.g. `sensor_msgs/msg/PointCloud2`) by its final type segment,
@@ -545,8 +542,7 @@ impl Adapter for McapAdapter {
                         .and_then(|qos| super::rosbag2::declares_latched(qos)),
                     point_fields: None,
                     frame_id: None,
-                    values: None,
-                    dim_names: None,
+                    values: super::stats::StreamValues::default(),
                 });
             budget.take("mcap", 1)?;
             arrived.take("mcap", message.data.len() as u64)?;
@@ -591,34 +587,16 @@ impl Adapter for McapAdapter {
                 // angles. Measuring them is what lets the statistical family grade an arm recorded
                 // to a bag, instead of abstaining on the stream that would show a pinned joint.
                 if let Some((names, positions)) = super::cdr::decode_joint_state(&message.data) {
-                    let cell: Vec<Option<f64>> = positions.into_iter().map(Some).collect();
-                    // The joint names, from the first message that publishes one per position, so a
-                    // finding can name the joint. A later message that disagrees does not overwrite
-                    // them: a topic whose joint order changes mid-recording is a fault, and taking
-                    // the last spelling would hide it behind whichever message came last.
-                    if builder.dim_names.is_none() && names.len() == cell.len() {
-                        builder.dim_names = Some(names);
-                    }
-                    builder
-                        .values
-                        .get_or_insert_with(Default::default)
-                        .push_cell(&cell);
+                    builder.values.push_joint_state(names, positions);
                 }
             } else if schema_is(schema_name, "Imu") {
                 // Thirty-seven doubles and no bulk payload: an IMU message is entirely its own
                 // measurement. A driver that publishes no orientation says so through a `-1`
                 // covariance, and those slots are held out rather than summarized as zeros.
                 if let Some(values) = super::cdr::decode_imu_values(&message.data) {
-                    builder.dim_names.get_or_insert_with(|| {
-                        super::cdr::IMU_DIM_NAMES
-                            .iter()
-                            .map(|n| n.to_string())
-                            .collect()
-                    });
                     builder
                         .values
-                        .get_or_insert_with(Default::default)
-                        .push_cell(&values);
+                        .push_fixed(&values, &super::cdr::IMU_DIM_NAMES);
                 }
             } else if schema_is(schema_name, "TFMessage") {
                 if let Some(edges) = super::cdr::decode_tf_message(&message.data) {
@@ -631,36 +609,49 @@ impl Adapter for McapAdapter {
             }
         }
 
+        // Topics whose values this read declined to summarize, disclosed below rather than reported
+        // as topics that had nothing to say. See `StreamValues::refusal`.
+        let mut refused_values: Vec<UnmappedField> = Vec::new();
         let cdm_streams: Vec<Stream> = streams
             .into_iter()
-            .map(|(name, b)| Stream {
-                name,
-                modality: b.modality,
-                declared_rate_hz: None,
-                clock_id: CLOCK_ID.to_string(),
-                // Real recorded timestamps: every temporal check applies.
-                clock_kind: ClockKind::Measured,
-                dtype: None,
-                shape: None,
-                dim_names: b.dim_names,
-                frames: b.frames,
-                stats: None,
-                dim_stats: None,
-                // MCAP message payloads are opaque bytes; Veridex fingerprints them but never decodes
-                // numeric values — except a `JointState`, whose whole payload is the measurement.
-                // Every other topic still carries no recomputed statistics, and says so through
-                // `STATISTICAL.UNMEASURED_VALUES`.
-                observed_stats: b.values.as_ref().and_then(|v| v.stats()),
-                observed_saturation: b.values.as_ref().and_then(|v| v.saturation()),
-                observed_non_finite: b.values.as_ref().map(|v| v.non_finite()),
-                observed_dim_stats: b.values.as_ref().and_then(|v| v.dim_stats()),
-                // Per-point field layout decoded from a PointCloud2 header, when this is a cloud stream.
-                latched: b.latched,
-                declared_range: None,
-                point_fields: b.point_fields,
-                // The coordinate frame the sensor declares, from its message headers.
-                media: None,
-                frame_id: b.frame_id,
+            .map(|(name, b)| {
+                if let Some(why) = b.values.refusal() {
+                    refused_values.push(UnmappedField {
+                        source_path: name.clone(),
+                        note: why.into(),
+                    });
+                }
+                let measured = b.values.finish();
+                let accum = measured.as_ref().map(|(a, _)| a);
+                Stream {
+                    name,
+                    modality: b.modality,
+                    declared_rate_hz: None,
+                    clock_id: CLOCK_ID.to_string(),
+                    // Real recorded timestamps: every temporal check applies.
+                    clock_kind: ClockKind::Measured,
+                    dtype: None,
+                    shape: None,
+                    dim_names: measured.as_ref().and_then(|(_, n)| n.clone()),
+                    frames: b.frames,
+                    stats: None,
+                    dim_stats: None,
+                    // MCAP message payloads are opaque bytes; Veridex fingerprints them but never
+                    // decodes numeric values — except a `JointState` or an `Imu`, whose whole
+                    // payload is the measurement. Every other topic still carries no recomputed
+                    // statistics, and says so through `STATISTICAL.UNMEASURED_VALUES`.
+                    observed_stats: accum.and_then(|a| a.stats()),
+                    observed_saturation: accum.and_then(|a| a.saturation()),
+                    observed_non_finite: accum.map(|a| a.non_finite()),
+                    observed_dim_stats: accum.and_then(|a| a.dim_stats()),
+                    // Per-point field layout decoded from a PointCloud2 header, for a cloud stream.
+                    latched: b.latched,
+                    declared_range: None,
+                    point_fields: b.point_fields,
+                    // The coordinate frame the sensor declares, from its message headers.
+                    media: None,
+                    frame_id: b.frame_id,
+                }
             })
             .collect();
 
@@ -844,7 +835,7 @@ impl Adapter for McapAdapter {
         //
         // A file with no summary section is not a fault — a streaming writer legitimately omits one
         // — so it disables the reconciliation rather than failing the read, and says so.
-        let mut unread_sources = Vec::new();
+        let mut unread_sources = refused_values;
         let mut count_note = None;
         match read_summary(path).ok().and_then(|s| s.statistics) {
             Some(stats) => {

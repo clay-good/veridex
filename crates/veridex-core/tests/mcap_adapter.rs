@@ -2291,3 +2291,64 @@ fn an_accelerometer_clipping_at_its_rail_is_caught_end_to_end() {
         verdict.findings.iter().map(|f| &f.code).collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn a_topic_that_reorders_its_joints_is_refused_rather_than_mismeasured() {
+    // `JointState` guarantees only that `position[i]` belongs to `name[i]` *in that message*.
+    // Nothing says two messages order their joints alike, and a publisher aggregating several
+    // sources is exactly where they might not. Accumulating positionally across a reordering folds
+    // two joints into one dimension — a statistic for a joint that does not exist, named after
+    // whichever came first. Veridex declines the stream and says so instead.
+    let payloads: Vec<Vec<u8>> = (0..40)
+        .map(|i: i32| {
+            let (a, b) = (i as f64 * 0.01, 2.0);
+            // Halfway through, the publisher swaps the two joints round.
+            if i < 20 {
+                joint_state_body(&["shoulder", "elbow"], &[a, b])
+            } else {
+                joint_state_body(&["elbow", "shoulder"], &[b, a])
+            }
+        })
+        .collect();
+    let bytes = build_mcap_series("sensor_msgs/msg/JointState", "/joint_states", &payloads);
+    let path = write_temp_mcap(&bytes);
+    let ingested = McapAdapter
+        .ingest(
+            &Source::Local(path.to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest");
+
+    let stream = &ingested.dataset.episodes[0].streams[0];
+    assert_eq!(stream.observed_stats, None, "nothing was summarized");
+    assert_eq!(stream.observed_saturation, None);
+    assert_eq!(stream.dim_names, None);
+    assert!(
+        ingested
+            .report
+            .unread_sources
+            .iter()
+            .any(|u| u.source_path == "/joint_states" && u.note.contains("joint set")),
+        "the refusal must be disclosed: {:?}",
+        ingested.report.unread_sources
+    );
+
+    // And it reaches the verdict, where a reader will actually meet it.
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let hash = veridex_core::content_hash(&ingested.dataset);
+    let verdict = engine.run_over_with_unread(
+        &ingested.dataset,
+        hash,
+        &veridex_core::RunConfig::default(),
+        veridex_core::CoverageNote::Full,
+        &ingested.report.unread_sources,
+    );
+    assert!(
+        verdict
+            .findings
+            .iter()
+            .any(|f| f.code == "COVERAGE.SOURCE_UNREAD"),
+        "{:?}",
+        verdict.findings.iter().map(|f| &f.code).collect::<Vec<_>>()
+    );
+}

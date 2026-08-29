@@ -190,3 +190,82 @@ impl FeatureAccum {
         (!out.is_empty()).then_some(out)
     }
 }
+
+/// One ROS topic's decoded values, and the joint set they belong to.
+///
+/// Wraps [`FeatureAccum`] with the one thing a `JointState` topic needs that an array feature does
+/// not: the message guarantees only that `position[i]` belongs to `name[i]` **in that message**.
+/// Nothing in the message definition says two messages order their joints alike, and a publisher
+/// aggregating several sources is exactly where they might not. Accumulating positionally across a
+/// reordering folds two joints into one dimension — which yields a statistic for a joint that does
+/// not exist, and then names it after whichever joint was seen first. That is worse than not
+/// measuring: it is a confident wrong answer.
+///
+/// So the joint set is fixed by the first message that names one joint per position, and a message
+/// that contradicts it *refuses the whole stream* rather than being folded in or quietly dropped.
+/// Refusing is bounded too — the alternative, growing an index of every joint name ever published,
+/// is an allocation a file gets to choose the size of.
+///
+/// Shared by the MCAP and rosbag2 adapters so the two storage plugins cannot disagree about the same
+/// recording, the same reason [`FeatureAccum`] itself lives here.
+#[derive(Default, Clone)]
+pub(crate) struct StreamValues {
+    accum: FeatureAccum,
+    names: Option<Vec<String>>,
+    cells: u64,
+    refused: bool,
+}
+
+impl StreamValues {
+    /// Fold in one `JointState` message: its joint names and the positions they belong to.
+    pub(crate) fn push_joint_state(&mut self, names: Vec<String>, positions: Vec<f64>) {
+        if self.refused {
+            return;
+        }
+        // A message that names one joint per position establishes — or must match — the joint set.
+        // One that does not (an empty `name[]`, or a count that disagrees) names nothing this can
+        // be checked against, so it is accumulated positionally, as it was before names were read.
+        if names.len() == positions.len() && !names.is_empty() {
+            match &self.names {
+                Some(established) if *established != names => {
+                    self.refused = true;
+                    return;
+                }
+                Some(_) => {}
+                None => self.names = Some(names),
+            }
+        }
+        let cell: Vec<Option<f64>> = positions.into_iter().map(Some).collect();
+        self.accum.push_cell(&cell);
+        self.cells += 1;
+    }
+
+    /// Fold in one message whose dimensions are fixed by the message definition itself (an `Imu`),
+    /// where there is no publisher-chosen ordering to contradict.
+    pub(crate) fn push_fixed(&mut self, values: &[Option<f64>], names: &[&str]) {
+        if self.refused {
+            return;
+        }
+        if self.names.is_none() {
+            self.names = Some(names.iter().map(|n| n.to_string()).collect());
+        }
+        self.accum.push_cell(values);
+        self.cells += 1;
+    }
+
+    /// Why this topic's values were not measured, if they were not — the sentence the caller
+    /// discloses as a coverage hole, because a stream that silently reports nothing reads as a
+    /// stream that had nothing to report.
+    pub(crate) fn refusal(&self) -> Option<&'static str> {
+        self.refused.then_some(
+            "this topic publishes `JointState` messages under more than one joint set, and \
+             `position[i]` belongs to `name[i]` only within a single message — so no dimension of \
+             this stream is one joint, and its values were not summarized",
+        )
+    }
+
+    /// The measured statistics, or `None` where nothing was measured or the stream was refused.
+    pub(crate) fn finish(self) -> Option<(FeatureAccum, Option<Vec<String>>)> {
+        (!self.refused && self.cells > 0).then_some((self.accum, self.names))
+    }
+}

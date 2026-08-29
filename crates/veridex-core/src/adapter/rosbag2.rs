@@ -373,12 +373,9 @@ struct StreamBuilder {
     latched: Option<bool>,
     point_fields: Option<Vec<PointField>>,
     frame_id: Option<String>,
-    /// Recomputed statistics over the values decoded from this topic's `JointState` or `Imu`
-    /// messages, when it carries them. `None` for every other topic, whose payload stays opaque.
-    values: Option<super::stats::FeatureAccum>,
-    /// What the source calls each of those dimensions: a `JointState`'s own `name[]`, or the IMU's
-    /// fixed axes.
-    dim_names: Option<Vec<String>>,
+    /// Values decoded from this topic's `JointState` or `Imu` messages, with the joint set they
+    /// belong to. Empty for every other topic, whose payload stays opaque.
+    values: super::stats::StreamValues,
 }
 
 /// Everything one ingest accumulates while walking a bag's `.db3` files.
@@ -699,8 +696,7 @@ fn read_shard(
                 latched: topic.latched,
                 point_fields: None,
                 frame_id: None,
-                values: None,
-                dim_names: None,
+                values: super::stats::StreamValues::default(),
             });
         builder.frames.push(Frame {
             ts,
@@ -737,31 +733,15 @@ fn read_shard(
             // The one message whose entire payload is the measurement: a handful of joint angles.
             // Measuring them is what lets the statistical family grade an arm recorded to a bag.
             if let Some((names, positions)) = super::cdr::decode_joint_state(data) {
-                let cell: Vec<Option<f64>> = positions.into_iter().map(Some).collect();
-                // The joint names, from the first message publishing one per position, so a finding
-                // can name the joint rather than its index. First one wins, as `frame_id` does.
-                if builder.dim_names.is_none() && names.len() == cell.len() {
-                    builder.dim_names = Some(names);
-                }
-                builder
-                    .values
-                    .get_or_insert_with(Default::default)
-                    .push_cell(&cell);
+                builder.values.push_joint_state(names, positions);
             }
         } else if super::mcap::schema_is(ty, "Imu") {
             // Thirty-seven doubles and no bulk payload: an IMU message is entirely its own
             // measurement. Slots a `-1` covariance declares absent are held out, not read as zeros.
             if let Some(values) = super::cdr::decode_imu_values(data) {
-                builder.dim_names.get_or_insert_with(|| {
-                    super::cdr::IMU_DIM_NAMES
-                        .iter()
-                        .map(|n| n.to_string())
-                        .collect()
-                });
                 builder
                     .values
-                    .get_or_insert_with(Default::default)
-                    .push_cell(&values);
+                    .push_fixed(&values, &super::cdr::IMU_DIM_NAMES);
             }
         } else if super::mcap::schema_is(ty, "TFMessage") {
             if let Some(edges) = super::cdr::decode_tf_message(data) {
@@ -852,8 +832,7 @@ fn read_mcap_shard(
                     .and_then(|qos| declares_latched(qos)),
                 point_fields: None,
                 frame_id: None,
-                values: None,
-                dim_names: None,
+                values: super::stats::StreamValues::default(),
             });
         builder.frames.push(Frame {
             ts,
@@ -886,31 +865,15 @@ fn read_mcap_shard(
             // The one message whose entire payload is the measurement: a handful of joint angles.
             // Measuring them is what lets the statistical family grade an arm recorded to a bag.
             if let Some((names, positions)) = super::cdr::decode_joint_state(data) {
-                let cell: Vec<Option<f64>> = positions.into_iter().map(Some).collect();
-                // The joint names, from the first message publishing one per position, so a finding
-                // can name the joint rather than its index. First one wins, as `frame_id` does.
-                if builder.dim_names.is_none() && names.len() == cell.len() {
-                    builder.dim_names = Some(names);
-                }
-                builder
-                    .values
-                    .get_or_insert_with(Default::default)
-                    .push_cell(&cell);
+                builder.values.push_joint_state(names, positions);
             }
         } else if super::mcap::schema_is(&ros_type, "Imu") {
             // Thirty-seven doubles and no bulk payload: an IMU message is entirely its own
             // measurement. Slots a `-1` covariance declares absent are held out, not read as zeros.
             if let Some(values) = super::cdr::decode_imu_values(data) {
-                builder.dim_names.get_or_insert_with(|| {
-                    super::cdr::IMU_DIM_NAMES
-                        .iter()
-                        .map(|n| n.to_string())
-                        .collect()
-                });
                 builder
                     .values
-                    .get_or_insert_with(Default::default)
-                    .push_cell(&values);
+                    .push_fixed(&values, &super::cdr::IMU_DIM_NAMES);
             }
         } else if super::mcap::schema_is(&ros_type, "TFMessage") {
             if let Some(edges) = super::cdr::decode_tf_message(data) {
@@ -1360,31 +1323,43 @@ impl Adapter for Rosbag2Adapter {
         let cdm_streams: Vec<Stream> = contents
             .streams
             .into_iter()
-            .map(|(name, b)| Stream {
-                name,
-                modality: b.modality,
-                // rosbag2 records a QoS profile per topic, not a nominal sample rate.
-                declared_rate_hz: None,
-                clock_id: CLOCK_ID.to_string(),
-                clock_kind: ClockKind::Measured,
-                dtype: None,
-                shape: None,
-                dim_names: b.dim_names,
-                frames: b.frames,
-                stats: None,
-                dim_stats: None,
-                // Message payloads are opaque bytes: fingerprinted, never decoded into values —
-                // except a `JointState`, whose whole payload is the measurement. Every other topic
-                // still says so through `STATISTICAL.UNMEASURED_VALUES`.
-                observed_stats: b.values.as_ref().and_then(|v| v.stats()),
-                observed_saturation: b.values.as_ref().and_then(|v| v.saturation()),
-                observed_non_finite: b.values.as_ref().map(|v| v.non_finite()),
-                observed_dim_stats: b.values.as_ref().and_then(|v| v.dim_stats()),
-                latched: b.latched,
-                declared_range: None,
-                point_fields: b.point_fields,
-                media: None,
-                frame_id: b.frame_id,
+            .map(|(name, b)| {
+                // A topic whose values this read declined to summarize is disclosed, not left
+                // looking like a topic that had nothing to say. See `StreamValues::refusal`.
+                if let Some(why) = b.values.refusal() {
+                    unread_sources.push(UnmappedField {
+                        source_path: name.clone(),
+                        note: why.into(),
+                    });
+                }
+                let measured = b.values.finish();
+                let accum = measured.as_ref().map(|(a, _)| a);
+                Stream {
+                    name,
+                    modality: b.modality,
+                    // rosbag2 records a QoS profile per topic, not a nominal sample rate.
+                    declared_rate_hz: None,
+                    clock_id: CLOCK_ID.to_string(),
+                    clock_kind: ClockKind::Measured,
+                    dtype: None,
+                    shape: None,
+                    dim_names: measured.as_ref().and_then(|(_, n)| n.clone()),
+                    frames: b.frames,
+                    stats: None,
+                    dim_stats: None,
+                    // Message payloads are opaque bytes: fingerprinted, never decoded into values —
+                    // except a `JointState` or an `Imu`, whose whole payload is the measurement. Every
+                    // other topic still says so through `STATISTICAL.UNMEASURED_VALUES`.
+                    observed_stats: accum.and_then(|a| a.stats()),
+                    observed_saturation: accum.and_then(|a| a.saturation()),
+                    observed_non_finite: accum.map(|a| a.non_finite()),
+                    observed_dim_stats: accum.and_then(|a| a.dim_stats()),
+                    latched: b.latched,
+                    declared_range: None,
+                    point_fields: b.point_fields,
+                    media: None,
+                    frame_id: b.frame_id,
+                }
             })
             .collect();
 
