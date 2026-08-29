@@ -4115,3 +4115,171 @@ fn distinct_per_episode_statistics_each_report_while_identical_ones_collapse() {
         "one dataset-level measurement is one finding, not one per episode: {f:?}"
     );
 }
+
+// ---- boundaries a mutation sweep found unpinned ----
+//
+// Each test below kills a relational mutant: flipping one `>=` to `>` (or `<=` to `<`) in a check
+// left the whole suite green, which means the boundary itself — the run of exactly the threshold
+// length, the z-score exactly at it, the interval of exactly zero — was never exercised. A threshold
+// no test stands on is a threshold that can move by one without anyone noticing.
+
+/// A run of exactly `STUCK_RUN` frames is a freeze. The constant is the *minimum* run that counts,
+/// and one frame under it (tested above) is a hiccup; both sides of that line matter.
+#[test]
+fn a_stuck_run_of_exactly_the_threshold_is_flagged() {
+    let exactly = structural::StuckStream::STUCK_RUN;
+    let mut contents: Vec<u8> = vec![9; exactly];
+    contents.extend([1, 2, 3]); // distinct frames after, so the run is exactly the threshold
+    let cam = stream_with_content("camera", Modality::Video, &contents);
+    let f = structural::StuckStream.run(&dataset(vec![episode(0, vec![cam])]));
+    assert_eq!(f.len(), 1, "a run of exactly {exactly} is a freeze");
+    assert!(f[0].message.contains(&exactly.to_string()));
+}
+
+/// A stream present in *every* episode is consistent, and must produce nothing. The check counts
+/// episodes it appears in against the total, and "appears in all of them" is exactly the boundary.
+#[test]
+fn a_stream_in_every_episode_is_not_reported_as_missing() {
+    let d = dataset(vec![
+        episode(0, vec![stream("s", "c", None, &[0, 1])]),
+        episode(1, vec![stream("s", "c", None, &[0, 1])]),
+        episode(2, vec![stream("s", "c", None, &[0, 1])]),
+    ]);
+    assert!(
+        structural::StreamPresence.run(&d).is_empty(),
+        "a stream in all three episodes is missing from none of them"
+    );
+}
+
+/// The z-score threshold is inclusive: a value sitting exactly on it is an outlier. Documented as
+/// "z >= threshold", and a run of the catalog with the comparison loosened by one boundary reported
+/// nothing different.
+#[test]
+fn a_z_score_exactly_at_the_threshold_is_an_outlier() {
+    let check = statistical::ExtremeOutlier::default();
+    let z = check.z_threshold;
+    // mean 0, std 1 → the maximum's z is its own value.
+    let d = dataset(vec![episode(
+        0,
+        vec![stream_with_stats("state", stats(-1.0, z, 0.0, 1.0))],
+    )]);
+    let f = check.run(&d);
+    assert_eq!(f.len(), 1, "z exactly at the threshold is an outlier");
+    assert_eq!(f[0].code, "STATISTICAL.OUTLIER");
+    // And one hair under it is not.
+    let under = dataset(vec![episode(
+        0,
+        vec![stream_with_stats("state", stats(-1.0, z - 0.001, 0.0, 1.0))],
+    )]);
+    assert!(check.run(&under).is_empty());
+}
+
+/// A repeated timestamp is an interval of exactly zero, which makes a coefficient of variation
+/// meaningless — the stream is non-monotonic, which is `TEMPORAL.NON_MONOTONIC`'s finding, not
+/// jitter's. Without the boundary the same frames report irregular *timing* on top of it, which
+/// sends a reader after a clock problem that is really a duplicated frame.
+#[test]
+fn a_repeated_timestamp_makes_jitter_abstain_rather_than_report_irregular_timing() {
+    // Six 100 ns intervals and two of zero: enough spread that jitter would fire if zeros counted.
+    let ts = [0, 100, 200, 300, 400, 500, 600, 600, 600];
+    let d = dataset(vec![episode(0, vec![stream("s", "c", None, &ts)])]);
+    assert!(
+        temporal::Jitter::default().run(&d).is_empty(),
+        "a zero interval is a monotonicity defect, not a jitter measurement"
+    );
+    // The defect itself is still reported, by the check that owns it.
+    assert!(!temporal::Monotonicity.run(&d).is_empty());
+}
+
+/// A declared rate of exactly zero is a corrupt declaration (`TEMPORAL.INVALID_RATE`'s finding), not
+/// a baseline for other episodes to be compared against. Treated as one, every honest episode after
+/// it is reported as disagreeing with a rate nobody declared.
+#[test]
+fn a_declared_rate_of_zero_is_not_a_baseline_for_the_other_episodes() {
+    let d = dataset(vec![
+        episode(0, vec![stream("s", "c", Some(0.0), &[0, 1])]),
+        episode(1, vec![stream("s", "c", Some(10.0), &[0, 1])]),
+        episode(2, vec![stream("s", "c", Some(10.0), &[0, 1])]),
+    ]);
+    assert!(
+        temporal::RateConsistency.run(&d).is_empty(),
+        "the two episodes that agree with each other must not be flagged against a zero"
+    );
+}
+
+/// An episode with no measurable span contributes no duration at all, so it neither forms the
+/// baseline nor is compared against it. Three empty episodes beside two real ones leave too few
+/// durations for a baseline, and the real ones are not reported as the anomaly.
+#[test]
+fn an_episode_with_no_span_contributes_no_duration() {
+    let zero = |index: u64| {
+        let mut ep = episode(index, vec![stream("s", "c", None, &[0, 0])]);
+        ep.start_ts = Some(0);
+        ep.end_ts = Some(0);
+        ep
+    };
+    let real = |index: u64| {
+        let mut ep = episode(index, vec![stream("s", "c", None, &[0, 1])]);
+        ep.start_ts = Some(0);
+        ep.end_ts = Some(1_000_000_000);
+        ep
+    };
+    let d = dataset(vec![zero(0), zero(1), zero(2), real(3), real(4)]);
+    assert!(
+        d.episodes[0].duration_ns().is_none(),
+        "a zero span is not a duration of zero; it is no measurement"
+    );
+    assert!(
+        temporal::EpisodeDuration::default().run(&d).is_empty(),
+        "two durations are not a baseline, and the empty episodes are not one either"
+    );
+}
+
+/// Two ego poses on the same timestamp are a monotonicity fault, not a teleport: the distance
+/// between them divided by a zero interval is infinite speed, and an infinite speed clears any
+/// tolerance. Without the guard a duplicated pose message — which a recorder replaying a queue
+/// writes — reports the vehicle jumping at the speed of light.
+#[test]
+fn two_ego_poses_on_one_timestamp_are_not_an_infinite_speed() {
+    let poses = vec![
+        ego(0, 0.0, 0.0),
+        ego(100_000_000, 0.1, 0.0),
+        // The same instant, two metres apart: dt is exactly zero.
+        ego(100_000_000, 2.1, 0.0),
+        ego(200_000_000, 2.2, 0.0),
+    ];
+    let f = autonomy::EgoPoseContinuity::default().run(&dataset(vec![rig_episode_with_ego(poses)]));
+    assert!(
+        f.is_empty(),
+        "a zero interval is not a measurement of speed: {f:#?}"
+    );
+}
+
+/// A constant stream has a standard deviation of zero, and every z-score over it is infinite. That
+/// is `STATISTICAL.DEGENERATE_STREAM`'s finding — a stuck sensor — and reporting it as an *outlier*
+/// as well points the reader at the wrong defect, on a stream where nothing is an outlier at all.
+#[test]
+fn a_stream_with_no_spread_has_no_outliers() {
+    let d = dataset(vec![episode(
+        0,
+        vec![stream_with_stats("state", stats(3.0, 3.0, 3.0, 0.0))],
+    )]);
+    assert!(
+        statistical::ExtremeOutlier::default().run(&d).is_empty(),
+        "with a zero standard deviation there is no z-scale to be extreme on"
+    );
+
+    // And the corrupt version of the same shape — a source that stored a spread of zero beside a
+    // min and max that disagree with it — divides by that zero into an infinite z, which would make
+    // every value an extreme outlier over statistics that contradict themselves.
+    let inconsistent = dataset(vec![episode(
+        0,
+        vec![stream_with_stats("state", stats(0.0, 10.0, 5.0, 0.0))],
+    )]);
+    assert!(
+        statistical::ExtremeOutlier::default()
+            .run(&inconsistent)
+            .is_empty(),
+        "a zero spread under a non-zero range is corrupt, not an outlier"
+    );
+}
