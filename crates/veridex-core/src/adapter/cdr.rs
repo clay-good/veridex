@@ -601,6 +601,119 @@ mod tests {
         assert!(decode_imu_values(&body[..40]).is_none());
     }
 
+    /// Every decoder in this module, over every truncation and a spread of byte flips of a valid
+    /// body of each message type.
+    ///
+    /// These are the only parsers in Veridex pointed at bytes a *publisher* chose: a message body
+    /// arrives from whatever node was on the bus, and the counts and lengths inside it steer this
+    /// reader's arithmetic and its allocations. The sweep over damaged *files* reaches them only
+    /// through a container that usually fails first, so it never gets this far. The assertion is the
+    /// one that matters for a tool whose job is to survive bad data: return `None`, never unwind.
+    #[test]
+    fn no_damaged_message_body_takes_the_process_down() {
+        let mut jointstate = W::new();
+        jointstate.header("");
+        jointstate.u32(2);
+        for n in ["shoulder", "elbow"] {
+            jointstate.string(n);
+        }
+        jointstate.u32(2);
+        jointstate.f64(0.5);
+        jointstate.f64(-1.25);
+        jointstate.u32(0);
+        jointstate.u32(0);
+
+        let mut pc = W::new();
+        pc.header("lidar");
+        pc.u32(1);
+        pc.u32(1000);
+        pc.u32(2);
+        for name in ["x", "y"] {
+            pc.string(name);
+            pc.u32(0);
+            pc.u8(7);
+            pc.u32(1);
+        }
+
+        let mut ci = W::new();
+        ci.header("cam");
+        ci.u32(480);
+        ci.u32(640);
+        ci.string("plumb_bob");
+        ci.u32(2);
+        ci.f64(0.1);
+        ci.f64(-0.2);
+        for v in [600.0, 0.0, 320.0, 0.0, 600.0, 240.0, 0.0, 0.0, 1.0] {
+            ci.f64(v);
+        }
+
+        let mut odom = W::new();
+        odom.header("odom");
+        odom.string("base_link");
+        for v in [1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0] {
+            odom.f64(v);
+        }
+
+        let mut tf = W::new();
+        tf.u32(1);
+        tf.header("base_link");
+        tf.string("lidar_top");
+        for v in [0.1, 0.2, 0.3, 0.0, 0.0, 0.0, 1.0] {
+            tf.f64(v);
+        }
+
+        let bodies = [
+            jointstate.buf,
+            pc.buf,
+            ci.buf,
+            odom.buf,
+            imu(
+                [0.0, 0.0, 0.0, 1.0],
+                0.01,
+                [0.1, 0.2, 0.3],
+                0.02,
+                [0.0, 0.0, 9.81],
+                0.03,
+            ),
+            tf.buf,
+        ];
+
+        // Every decoder is run over every body, not only its own: a topic's declared schema is also
+        // content, so a `CameraInfo` decoder can be handed a `PointCloud2` body by a mislabelled
+        // channel, and must decline it rather than misread it into a panic.
+        let decode_all = |b: &[u8]| {
+            let _ = decode_header_frame_id(b);
+            let _ = decode_point_cloud2_fields(b);
+            let _ = decode_camera_info(b, "/topic");
+            let _ = decode_odometry_pose(b);
+            let _ = decode_joint_state_positions(b);
+            let _ = decode_imu_values(b);
+            let _ = decode_tf_message(b);
+        };
+
+        for body in &bodies {
+            // Every prefix, including the empty one: a truncated message is what a half-written
+            // shard and a dropped connection both leave behind.
+            for cut in 0..=body.len() {
+                decode_all(&body[..cut]);
+            }
+            // Byte flips, from a fixed linear congruential generator so a failure is reproducible
+            // from the index alone. These land in the length and count fields as readily as in the
+            // payload, which is the point.
+            let mut state = 0x5eed_u64;
+            for _ in 0..512 {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1);
+                let at = (state >> 33) as usize % body.len();
+                let xor = ((state >> 20) & 0xFF) as u8;
+                let mut damaged = body.clone();
+                damaged[at] ^= xor;
+                decode_all(&damaged);
+            }
+        }
+    }
+
     #[test]
     fn malformed_or_big_endian_bodies_are_declined_not_panicked() {
         // Big-endian encapsulation.

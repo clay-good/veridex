@@ -104,6 +104,14 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **The ROS message-body decoders are swept for panics like every other reader.** They parse the one
+  class of bytes a *publisher* chooses — the counts and lengths inside a message steer this reader's
+  arithmetic and its allocations — and the sweep over damaged *files* reaches them only through a
+  container that usually fails first, so it never got that far. Every decoder now runs over every
+  truncation and 512 byte flips of a valid body of each message type, each decoder over every body
+  (a channel's declared schema is content too, so a `CameraInfo` decoder can be handed a
+  `PointCloud2`). No panic was found; the guard is that the next edit cannot introduce one quietly.
+
 - **A `--metadata-only` run accused every stream of carrying no values.**
   `STATISTICAL.UNMEASURED_VALUES` reads the *format*: a stream with no statistics is one whose values
   the adapter does not interpret. Under `--metadata-only` that is true of every stream in every
