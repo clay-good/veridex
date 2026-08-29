@@ -1,0 +1,20 @@
+rosbag2_bagfile_information:
+  version: 5
+  storage_identifier: sqlite3
+  relative_file_paths:
+    - pinned_arm_0.db3
+  duration:
+    nanoseconds: 390000000
+  starting_time:
+    nanoseconds_since_epoch: 1700000000000000000
+  message_count: 40
+  topics_with_message_count:
+    - topic_metadata:
+        name: /lidar/points
+        type: sensor_msgs/msg/PointCloud2
+        serialization_format: cdr
+        offered_qos_profiles: ""
+      message_count: 40
+  compression_format: ""
+  compression_mode: ""
+  ros_distro: humble

@@ -1237,3 +1237,135 @@ fn a_bag_whose_shard_holds_no_messages_fails_rather_than_passing_empty() {
             .collect::<Vec<_>>()
     );
 }
+
+// ---------------------------------------------------------------------------
+// JointState values: the one ROS payload that *is* the measurement.
+// ---------------------------------------------------------------------------
+
+/// The `pinned_arm` fixture's messages, replayed as CDR bodies for the MCAP storage plugin — the
+/// same 40 samples the `.db3` holds, so the two plugins are asked the identical question.
+fn arm_payloads() -> Vec<Vec<u8>> {
+    (0..40)
+        .map(|i: i32| {
+            let shoulder = i as f64 * 0.01;
+            let elbow = if i < 30 { 2.0 } else { 2.0 - (i as f64) * 0.01 };
+            let mut b: Vec<u8> = vec![0x00, 0x01, 0x00, 0x00];
+            let push_u32 = |b: &mut Vec<u8>, v: u32| b.extend_from_slice(&v.to_le_bytes());
+            push_u32(&mut b, 0); // stamp.sec
+            push_u32(&mut b, 0); // stamp.nanosec
+            push_u32(&mut b, 1); // frame_id: "" (one byte, the NUL)
+            b.push(0);
+            while (b.len() - 4) % 4 != 0 {
+                b.push(0);
+            }
+            push_u32(&mut b, 2); // name[]
+            for n in ["shoulder", "elbow"] {
+                push_u32(&mut b, (n.len() + 1) as u32);
+                b.extend_from_slice(n.as_bytes());
+                b.push(0);
+                while (b.len() - 4) % 4 != 0 {
+                    b.push(0);
+                }
+            }
+            push_u32(&mut b, 2); // position[]
+            while (b.len() - 4) % 8 != 0 {
+                b.push(0);
+            }
+            b.extend_from_slice(&shoulder.to_le_bytes());
+            b.extend_from_slice(&elbow.to_le_bytes());
+            push_u32(&mut b, 0); // velocity[]
+            push_u32(&mut b, 0); // effort[]
+            b
+        })
+        .collect()
+}
+
+/// What a run learned about the arm: the saturation summary of its one stream, and whether the
+/// statistical family reported the pinned joint.
+fn arm_verdict(dataset: &veridex_core::cdm::Dataset) -> (veridex_core::cdm::Saturation, bool) {
+    let stream = dataset.episodes[0]
+        .streams
+        .iter()
+        .find(|s| s.name == "/joint_states")
+        .expect("the arm topic");
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let hash = veridex_core::content_hash(dataset);
+    let verdict = engine.run(dataset, hash, &veridex_core::RunConfig::default());
+    (
+        stream.observed_saturation.expect("positions were measured"),
+        verdict
+            .findings
+            .iter()
+            .any(|f| f.code == "STATISTICAL.SATURATED"),
+    )
+}
+
+#[test]
+fn a_pinned_joint_is_caught_in_a_bag_whichever_plugin_stored_it() {
+    // A bag's message payloads are opaque bytes — except a JointState, which carries nothing but the
+    // joint angles. Without reading them, this recording (an elbow hard against its stop for 30 of
+    // 40 samples) passed with a clean `data 100` and no statistical finding at all: the certificate
+    // listed every statistical check as run, over a stream none of them could see.
+    //
+    // Asserted over *both* storage plugins in one test, because which one a team picked must not
+    // change the verdict — and the two reach the decode by different routes (a SQLite `messages`
+    // blob, an MCAP message record).
+    let (sqlite_sat, sqlite_flagged) = arm_verdict(&ingest("pinned_arm").dataset);
+    assert_eq!(sqlite_sat.dim, 1, "the elbow, not the shoulder");
+    assert_eq!(sqlite_sat.at_max, 30);
+    assert_eq!(sqlite_sat.sample_count, 40);
+    assert!(sqlite_flagged, "a pinned joint must reach the verdict");
+
+    // The same recording through the MCAP storage plugin.
+    let dir = tempfile::tempdir().unwrap();
+    let payloads = arm_payloads();
+    let mut out = Vec::new();
+    {
+        let mut w = mcap::Writer::new(Cursor::new(&mut out)).expect("an mcap writer");
+        let sid = w
+            .add_schema("sensor_msgs/msg/JointState", "ros2msg", b"")
+            .unwrap();
+        let cid = w
+            .add_channel(sid, "/joint_states", "cdr", &BTreeMap::new())
+            .unwrap();
+        for (i, payload) in payloads.iter().enumerate() {
+            let t = (i as u64) * 10_000_000;
+            w.write_to_known_channel(
+                &mcap::records::MessageHeader {
+                    channel_id: cid,
+                    sequence: i as u32,
+                    log_time: t,
+                    publish_time: t,
+                },
+                payload,
+            )
+            .unwrap();
+        }
+        w.finish().unwrap();
+    }
+    std::fs::write(dir.path().join("arm_0.mcap"), &out).unwrap();
+    std::fs::write(
+        dir.path().join("metadata.yaml"),
+        "rosbag2_bagfile_information:\n  version: 9\n  storage_identifier: mcap\n  \
+         relative_file_paths:\n    - arm_0.mcap\n  message_count: 40\n  \
+         topics_with_message_count:\n    - topic_metadata:\n        name: /joint_states\n        \
+         type: sensor_msgs/msg/JointState\n        serialization_format: cdr\n        \
+         offered_qos_profiles: \"\"\n      message_count: 40\n  compression_format: \"\"\n  \
+         compression_mode: \"\"\n  ros_distro: jazzy\n",
+    )
+    .unwrap();
+    let via_mcap = veridex_core::adapter::rosbag2::Rosbag2Adapter
+        .ingest(
+            &Source::Local(dir.path().to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("the mcap-stored bag ingests")
+        .dataset;
+    let (mcap_sat, mcap_flagged) = arm_verdict(&via_mcap);
+    assert_eq!(
+        (mcap_sat.dim, mcap_sat.at_max, mcap_sat.sample_count),
+        (sqlite_sat.dim, sqlite_sat.at_max, sqlite_sat.sample_count),
+        "the storage plugin must not change what the values say"
+    );
+    assert!(mcap_flagged);
+}

@@ -2053,3 +2053,163 @@ fn a_metadata_index_pointing_outside_the_file_is_skipped_not_followed() {
         .iter()
         .any(|p| p.elements.iter().any(|e| e.key == "license")));
 }
+
+// ---- JointState values ----
+
+/// Build an MCAP where one channel carries a message per entry of `payloads`, one every 10 ms.
+fn build_mcap_series(schema: &str, topic: &str, payloads: &[Vec<u8>]) -> Vec<u8> {
+    let mut out = Vec::new();
+    {
+        let mut w = mcap::Writer::new(Cursor::new(&mut out)).expect("writer");
+        let sid = w.add_schema(schema, "ros2msg", b"").unwrap();
+        let cid = w.add_channel(sid, topic, "cdr", &BTreeMap::new()).unwrap();
+        for (i, payload) in payloads.iter().enumerate() {
+            let t = (i as u64) * 10_000_000;
+            w.write_to_known_channel(
+                &mcap::records::MessageHeader {
+                    channel_id: cid,
+                    sequence: i as u32,
+                    log_time: t,
+                    publish_time: t,
+                },
+                payload,
+            )
+            .unwrap();
+        }
+        w.finish().unwrap();
+    }
+    out
+}
+
+/// One `sensor_msgs/msg/JointState` body: named joints and their positions (velocity/effort empty).
+fn joint_state_body(names: &[&str], positions: &[f64]) -> Vec<u8> {
+    let mut c = Cdr::new();
+    c.header("");
+    c.u32(names.len() as u32);
+    for n in names {
+        c.string(n);
+    }
+    c.u32(positions.len() as u32);
+    for &p in positions {
+        c.f64(p);
+    }
+    c.u32(0); // velocity[]
+    c.u32(0); // effort[]
+    c.buf
+}
+
+#[test]
+fn a_joint_pinned_at_its_limit_in_a_bag_is_caught_end_to_end() {
+    // A 40-sample arm recording where the elbow sits hard against its stop for 30 of 40 samples —
+    // a saturated actuator, the exact defect that trains a policy to command a limit it can never
+    // leave. Before JointState positions were read, the MCAP payload was opaque: every statistical
+    // check abstained and this recording scored a clean 100.
+    let payloads: Vec<Vec<u8>> = (0..40)
+        .map(|i: i32| {
+            let shoulder = i as f64 * 0.01;
+            let elbow = if i < 30 { 2.0 } else { 2.0 - (i as f64) * 0.01 };
+            joint_state_body(&["shoulder", "elbow"], &[shoulder, elbow])
+        })
+        .collect();
+    let bytes = build_mcap_series("sensor_msgs/msg/JointState", "/joint_states", &payloads);
+    let path = write_temp_mcap(&bytes);
+    let ingested = McapAdapter
+        .ingest(
+            &Source::Local(path.to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest");
+
+    let stream = &ingested.dataset.episodes[0].streams[0];
+    let stats = stream
+        .observed_stats
+        .expect("joint positions were measured");
+    assert_eq!(stats.min, 0.0, "shoulder starts at 0");
+    let sat = stream.observed_saturation.expect("saturation was measured");
+    assert_eq!(
+        sat.dim, 1,
+        "the elbow, not the shoulder, is the pinned axis"
+    );
+    assert_eq!(sat.at_max, 30);
+    assert_eq!(stream.observed_non_finite, Some(0));
+
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let hash = veridex_core::content_hash(&ingested.dataset);
+    let verdict = engine.run(&ingested.dataset, hash, &veridex_core::RunConfig::default());
+    assert!(
+        verdict
+            .findings
+            .iter()
+            .any(|f| f.code == "STATISTICAL.SATURATED"),
+        "a pinned joint must be reported, not abstained on: {:?}",
+        verdict.findings.iter().map(|f| &f.code).collect::<Vec<_>>()
+    );
+    // And the stream is no longer counted among the ones whose values went unread.
+    assert!(
+        !verdict
+            .findings
+            .iter()
+            .any(|f| f.code == "STATISTICAL.UNMEASURED_VALUES"),
+        "the only stream in this bag was measured"
+    );
+}
+
+#[test]
+fn a_topic_whose_payload_stays_opaque_is_still_reported_unmeasured() {
+    // Reading JointState must not turn into a claim about every other topic. A bag carrying an
+    // arm beside a camera measures the arm and says so about the camera.
+    let arm: Vec<Vec<u8>> = (0..40)
+        .map(|i: i32| joint_state_body(&["elbow"], &[i as f64 * 0.01]))
+        .collect();
+    let mut bytes = Vec::new();
+    {
+        let mut w = mcap::Writer::new(Cursor::new(&mut bytes)).expect("writer");
+        let js = w
+            .add_schema("sensor_msgs/msg/JointState", "ros2msg", b"")
+            .unwrap();
+        let jc = w
+            .add_channel(js, "/joint_states", "cdr", &BTreeMap::new())
+            .unwrap();
+        let im = w
+            .add_schema("sensor_msgs/msg/Image", "ros2msg", b"")
+            .unwrap();
+        let ic = w.add_channel(im, "/cam", "cdr", &BTreeMap::new()).unwrap();
+        for (i, payload) in arm.iter().enumerate() {
+            let t = (i as u64) * 10_000_000;
+            for (cid, data) in [(jc, payload.as_slice()), (ic, b"opaque-image".as_slice())] {
+                w.write_to_known_channel(
+                    &mcap::records::MessageHeader {
+                        channel_id: cid,
+                        sequence: i as u32,
+                        log_time: t,
+                        publish_time: t,
+                    },
+                    data,
+                )
+                .unwrap();
+            }
+        }
+        w.finish().unwrap();
+    }
+    let path = write_temp_mcap(&bytes);
+    let ingested = McapAdapter
+        .ingest(
+            &Source::Local(path.to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest");
+
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let hash = veridex_core::content_hash(&ingested.dataset);
+    let verdict = engine.run(&ingested.dataset, hash, &veridex_core::RunConfig::default());
+    let unmeasured = verdict
+        .findings
+        .iter()
+        .find(|f| f.code == "STATISTICAL.UNMEASURED_VALUES")
+        .expect("the camera's payload is still opaque");
+    assert!(
+        unmeasured.message.contains("/cam") && !unmeasured.message.contains("/joint_states"),
+        "only the opaque topic should be named: {}",
+        unmeasured.message
+    );
+}

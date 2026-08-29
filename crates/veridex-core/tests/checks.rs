@@ -3778,9 +3778,8 @@ fn ego_pose(ts: i64, translation: [f64; 3]) -> veridex_core::cdm::EgoPose {
 
 #[test]
 fn a_family_that_could_not_measure_anything_says_so() {
-    // The failure this guards: MCAP, CAN+DBC, MF4 and RLDS fingerprint payload bytes without
-    // interpreting them, so every statistical check hit its `let Some(..) else { continue }` and
-    // produced nothing — and a CAN log with a wheel speed pinned at its rail for 70% of the
+    // The failure this guards: a container whose payload is fingerprinted without being interpreted
+    // leaves every statistical check at its `let Some(..) else { continue }`, producing nothing — and a CAN log with a wheel speed pinned at its rail for 70% of the
     // recording reported `data 100`, with the certificate listing all five statistical checks under
     // `checks_run` and no categories skipped.
     let d = dataset(vec![episode(0, vec![stream("speed", "c", None, &[0, 1])])]);

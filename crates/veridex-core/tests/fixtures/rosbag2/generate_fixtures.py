@@ -143,6 +143,21 @@ def tf_message(ts_ns, edges):
     return c.bytes()
 
 
+def joint_state(ts_ns, names, positions):
+    """A `sensor_msgs/msg/JointState`: header, name[], position[], velocity[], effort[]."""
+    c = Cdr()
+    c.header("", ts_ns)
+    c.u32(len(names))
+    for n in names:
+        c.string(n)
+    c.u32(len(positions))
+    for v in positions:
+        c.f64(v)
+    c.u32(0)  # velocity[]
+    c.u32(0)  # effort[]
+    return c.bytes()
+
+
 def header_only(frame_id, ts_ns, filler=64):
     """Any header-first message whose body Veridex does not decode (Image, Imu, …)."""
     c = Cdr()
@@ -236,6 +251,12 @@ HOUSEKEEPING_TOPICS = [
     (9, "/diagnostics", "diagnostic_msgs/msg/DiagnosticArray", "cdr", QOS_VOLATILE),
 ]
 
+# An arm recording: one JointState topic, nothing else. The only ROS message whose whole payload is
+# the measurement, and the one that makes the statistical family reachable over a bag.
+ARM_TOPICS = [
+    (1, "/joint_states", "sensor_msgs/msg/JointState", "cdr", QOS_VOLATILE),
+]
+
 TF_EDGES = [
     ("base_link", "lidar_link", (0.0, 0.0, 1.8)),
     ("base_link", "camera_front", (1.2, 0.0, 1.5)),
@@ -326,9 +347,28 @@ def bag_dir(name, msgs, declared_count=None, topics=None, compress=None):
         )
 
 
+def arm_messages(n=40, pinned=30):
+    """A 40-sample, 2-DoF arm recording whose elbow sits hard against its stop for `pinned` of them.
+
+    A saturated actuator: the joint cannot move, so a policy trained on it learns to command a limit
+    it can never leave. Nothing about the bag's *structure* is wrong, which is the point — only the
+    values say so.
+    """
+    msgs = []
+    for i in range(n):
+        ts = START + i * 10_000_000
+        shoulder = i * 0.01
+        elbow = 2.0 if i < pinned else 2.0 - i * 0.01
+        msgs.append((1, ts, joint_state(ts, ["shoulder", "elbow"], [shoulder, elbow])))
+    return msgs
+
+
 def main():
     # A clean five-sensor rig recording, as a full bag directory.
     bag_dir("clean_rig", rig_messages())
+
+    # An arm whose elbow is pinned at its limit — a defect only the values can show.
+    bag_dir("pinned_arm", arm_messages(), topics=ARM_TOPICS)
 
     # The same rig, but the camera runs 1.4x slow on the shared clock: its stream ends well before
     # the others, which is the cross-stream drift TEMPORAL.CLOCK_SKEW exists to find.

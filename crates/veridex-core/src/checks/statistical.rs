@@ -1018,10 +1018,11 @@ impl Check for ExtremeOutlier {
 ///
 /// The same reasoning as [`ClockMeasurability`](crate::checks::temporal::ClockMeasurability), one
 /// family over. Every statistical check reads either the source's *stored* summary statistics or the
-/// ones the adapter recomputed while fingerprinting the data. Four adapters populate neither: MCAP,
-/// rosbag2, CAN+DBC, ASAM MF4, and RLDS/TFDS fingerprint payload bytes without interpreting them, so
-/// `stats`, `observed_stats`, `observed_saturation`, and `observed_non_finite` are all `None`. Every
-/// check in the family then hits its `let Some(...) else { continue }` and produces nothing.
+/// ones the adapter recomputed while fingerprinting the data. Where neither exists — a container
+/// whose payload Veridex fingerprints without interpreting, which is every MCAP or rosbag2 topic
+/// except a `JointState` — `stats`, `observed_stats`, `observed_saturation`, and
+/// `observed_non_finite` are all `None`. Every check in the family then hits its
+/// `let Some(...) else { continue }` and produces nothing.
 ///
 /// What that looked like: a CAN log with a wheel-speed signal pinned exactly at 655.35 km/h for 70%
 /// of its frames, and a constant throttle beside it, reported `pass-with-warnings`, `data 100`, and
@@ -1109,7 +1110,8 @@ impl Check for ValueMeasurability {
                 .with_remedy(
                     "Treat the statistical result as unverified for these streams. If value \
                      integrity matters, check them in a format whose values Veridex reads \
-                     (LeRobot, HDF5, Zarr, CAN+DBC, MF4).",
+                     (LeRobot, RLDS/TFDS, HDF5, Zarr, CAN+DBC, MF4, and a bag's JointState \
+                     topics).",
                 ),
             );
         }

@@ -115,6 +115,9 @@ struct StreamBuilder {
     /// with a `std_msgs/Header`. First one wins: a topic that changes frame mid-recording is a rig
     /// fault, but recording the last one seen would hide it behind whichever message came last.
     frame_id: Option<String>,
+    /// Recomputed statistics over the joint positions decoded from this topic's `JointState`
+    /// messages, when it carries them. `None` for every other topic, whose payload stays opaque.
+    values: Option<super::stats::FeatureAccum>,
 }
 
 /// Match a ROS message schema name (e.g. `sensor_msgs/msg/PointCloud2`) by its final type segment,
@@ -539,6 +542,7 @@ impl Adapter for McapAdapter {
                         .and_then(|qos| super::rosbag2::declares_latched(qos)),
                     point_fields: None,
                     frame_id: None,
+                    values: None,
                 });
             budget.take("mcap", 1)?;
             arrived.take("mcap", message.data.len() as u64)?;
@@ -578,6 +582,17 @@ impl Adapter for McapAdapter {
                 if let Some(pose) = super::cdr::decode_odometry_pose(&message.data) {
                     ego_poses.push(EgoPose { ts, pose });
                 }
+            } else if schema_is(schema_name, "JointState") {
+                // The one message whose entire payload is the measurement: a handful of joint
+                // angles. Measuring them is what lets the statistical family grade an arm recorded
+                // to a bag, instead of abstaining on the stream that would show a pinned joint.
+                if let Some(positions) = super::cdr::decode_joint_state_positions(&message.data) {
+                    let cell: Vec<Option<f64>> = positions.into_iter().map(Some).collect();
+                    builder
+                        .values
+                        .get_or_insert_with(Default::default)
+                        .push_cell(&cell);
+                }
             } else if schema_is(schema_name, "TFMessage") {
                 if let Some(edges) = super::cdr::decode_tf_message(&message.data) {
                     for t in edges {
@@ -604,11 +619,13 @@ impl Adapter for McapAdapter {
                 stats: None,
                 dim_stats: None,
                 // MCAP message payloads are opaque bytes; Veridex fingerprints them but never decodes
-                // numeric values, so there are no recomputed statistics.
-                observed_stats: None,
-                observed_saturation: None,
-                observed_non_finite: None,
-                observed_dim_stats: None,
+                // numeric values — except a `JointState`, whose whole payload is the measurement.
+                // Every other topic still carries no recomputed statistics, and says so through
+                // `STATISTICAL.UNMEASURED_VALUES`.
+                observed_stats: b.values.as_ref().and_then(|v| v.stats()),
+                observed_saturation: b.values.as_ref().and_then(|v| v.saturation()),
+                observed_non_finite: b.values.as_ref().map(|v| v.non_finite()),
+                observed_dim_stats: b.values.as_ref().and_then(|v| v.dim_stats()),
                 // Per-point field layout decoded from a PointCloud2 header, when this is a cloud stream.
                 latched: b.latched,
                 declared_range: None,
@@ -887,6 +904,18 @@ impl Adapter for McapAdapter {
                 }
                 if dataset.episodes.iter().any(|e| e.ego_poses.is_some()) {
                     m.push("Odometry.pose -> episode.ego_poses".into());
+                }
+                if dataset
+                    .episodes
+                    .iter()
+                    .flat_map(|e| &e.streams)
+                    .any(|s| s.observed_stats.is_some())
+                {
+                    m.push(
+                        "JointState.position -> recomputed per-joint statistics, saturation, and \
+                         non-finite counts"
+                            .into(),
+                    );
                 }
                 m
             },

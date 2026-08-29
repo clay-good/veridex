@@ -373,6 +373,9 @@ struct StreamBuilder {
     latched: Option<bool>,
     point_fields: Option<Vec<PointField>>,
     frame_id: Option<String>,
+    /// Recomputed statistics over the joint positions decoded from this topic's `JointState`
+    /// messages, when it carries them. `None` for every other topic, whose payload stays opaque.
+    values: Option<super::stats::FeatureAccum>,
 }
 
 /// Everything one ingest accumulates while walking a bag's `.db3` files.
@@ -693,6 +696,7 @@ fn read_shard(
                 latched: topic.latched,
                 point_fields: None,
                 frame_id: None,
+                values: None,
             });
         builder.frames.push(Frame {
             ts,
@@ -724,6 +728,16 @@ fn read_shard(
         } else if super::mcap::schema_is(ty, "Odometry") {
             if let Some(pose) = super::cdr::decode_odometry_pose(data) {
                 contents.ego_poses.push(EgoPose { ts, pose });
+            }
+        } else if super::mcap::schema_is(ty, "JointState") {
+            // The one message whose entire payload is the measurement: a handful of joint angles.
+            // Measuring them is what lets the statistical family grade an arm recorded to a bag.
+            if let Some(positions) = super::cdr::decode_joint_state_positions(data) {
+                let cell: Vec<Option<f64>> = positions.into_iter().map(Some).collect();
+                builder
+                    .values
+                    .get_or_insert_with(Default::default)
+                    .push_cell(&cell);
             }
         } else if super::mcap::schema_is(ty, "TFMessage") {
             if let Some(edges) = super::cdr::decode_tf_message(data) {
@@ -814,6 +828,7 @@ fn read_mcap_shard(
                     .and_then(|qos| declares_latched(qos)),
                 point_fields: None,
                 frame_id: None,
+                values: None,
             });
         builder.frames.push(Frame {
             ts,
@@ -841,6 +856,16 @@ fn read_mcap_shard(
         } else if super::mcap::schema_is(&ros_type, "Odometry") {
             if let Some(pose) = super::cdr::decode_odometry_pose(data) {
                 contents.ego_poses.push(EgoPose { ts, pose });
+            }
+        } else if super::mcap::schema_is(&ros_type, "JointState") {
+            // The one message whose entire payload is the measurement: a handful of joint angles.
+            // Measuring them is what lets the statistical family grade an arm recorded to a bag.
+            if let Some(positions) = super::cdr::decode_joint_state_positions(data) {
+                let cell: Vec<Option<f64>> = positions.into_iter().map(Some).collect();
+                builder
+                    .values
+                    .get_or_insert_with(Default::default)
+                    .push_cell(&cell);
             }
         } else if super::mcap::schema_is(&ros_type, "TFMessage") {
             if let Some(edges) = super::cdr::decode_tf_message(data) {
@@ -1301,11 +1326,13 @@ impl Adapter for Rosbag2Adapter {
                 frames: b.frames,
                 stats: None,
                 dim_stats: None,
-                // Message payloads are opaque bytes: fingerprinted, never decoded into values.
-                observed_stats: None,
-                observed_saturation: None,
-                observed_non_finite: None,
-                observed_dim_stats: None,
+                // Message payloads are opaque bytes: fingerprinted, never decoded into values —
+                // except a `JointState`, whose whole payload is the measurement. Every other topic
+                // still says so through `STATISTICAL.UNMEASURED_VALUES`.
+                observed_stats: b.values.as_ref().and_then(|v| v.stats()),
+                observed_saturation: b.values.as_ref().and_then(|v| v.saturation()),
+                observed_non_finite: b.values.as_ref().map(|v| v.non_finite()),
+                observed_dim_stats: b.values.as_ref().and_then(|v| v.dim_stats()),
                 latched: b.latched,
                 declared_range: None,
                 point_fields: b.point_fields,
@@ -1461,6 +1488,18 @@ impl Adapter for Rosbag2Adapter {
         }
         if dataset.episodes.iter().any(|e| e.ego_poses.is_some()) {
             mapped_fields.push("Odometry.pose -> episode.ego_poses".into());
+        }
+        if dataset
+            .episodes
+            .iter()
+            .flat_map(|e| &e.streams)
+            .any(|s| s.observed_stats.is_some())
+        {
+            mapped_fields.push(
+                "JointState.position -> recomputed per-joint statistics, saturation, and \
+                 non-finite counts"
+                    .into(),
+            );
         }
         if manifest.ros_distro.is_some() {
             mapped_fields.push("metadata.yaml ros_distro -> provenance.recorder".into());

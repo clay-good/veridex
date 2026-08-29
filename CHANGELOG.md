@@ -10,6 +10,24 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A robot arm recorded to an MCAP or a ROS 2 bag is now graded on its values.** A bag's message
+  payloads are opaque bytes to Veridex — it fingerprints them and never decodes them — which is the
+  honest position for imagery and point clouds. But it also meant a `sensor_msgs/msg/JointState`
+  went unread, and that message carries nothing *but* the measurement: a handful of joint angles.
+  The consequence was the exact failure this tool exists to prevent. An arm recording whose elbow sat
+  hard against its stop for three quarters of the run — a saturated actuator, which teaches a policy
+  to command a limit it can never leave — came back `data 100` with no statistical finding at all,
+  over a certificate listing all five statistical checks as run with nothing skipped.
+
+  `JointState.position` is now decoded and summarized per joint, exactly as LeRobot's and HDF5's
+  values are and through the same accumulators, so `STATISTICAL.SATURATED`, `NON_FINITE_OBSERVED`,
+  `OUTLIER` and `DEGENERATE` all reach a bag. Both storage plugins do it, and a test asserts the two
+  agree: which one a team picked must not change the verdict. Every other topic stays opaque and
+  still says so through `STATISTICAL.UNMEASURED_VALUES`, which now names only the streams that were
+  genuinely not measured rather than the whole recording. A `JointState` publishing effort without
+  positions is declined rather than recorded as a measurement of nothing, and both of its sequence
+  counts are bounded by what the message body could actually hold.
+
 - **rosbag2's MCAP storage plugin — the ROS 2 default since Jazzy — is read as a bag.** `ros2 bag
   record` wrote `sqlite3` shards through Iron and writes `.mcap` ones now, and Veridex claimed only
   the first: pointing it at a Jazzy bag directory answered "unsupported format: no adapter recognized

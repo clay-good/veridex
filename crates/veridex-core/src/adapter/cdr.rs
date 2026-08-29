@@ -226,6 +226,42 @@ pub fn decode_odometry_pose(data: &[u8]) -> Option<Pose> {
     read_pose(&mut r)
 }
 
+/// Decode a `sensor_msgs/msg/JointState` body far enough to recover its `position` array: `Header`,
+/// `string[] name`, then `float64[] position` (the `velocity` and `effort` arrays that follow are
+/// not read).
+///
+/// This is the one ROS message whose *whole* payload is the measurement — a handful of joint angles,
+/// not a bulk blob — so reading it is not a departure from the rule this module states above. It is
+/// also the actuator signal on a robot arm recorded to a bag, and without it every statistical check
+/// abstains on the stream that would show a joint pinned at its limit.
+///
+/// Returns `None` for a message that is truncated, big-endian, or publishes no positions at all (a
+/// `JointState` may carry effort alone); an empty result would otherwise read as "measured, and
+/// there was nothing there".
+pub fn decode_joint_state_positions(data: &[u8]) -> Option<Vec<f64>> {
+    let mut r = Reader::new(data)?;
+    r.header()?;
+    let names = r.u32()? as usize;
+    // A declared count is attacker-controlled. The smallest a CDR string can encode is its 4-byte
+    // length prefix, and the smallest an f64 can is 8 bytes, so bound each sequence by what the body
+    // could actually hold rather than trusting the count.
+    if names > data.len() / 4 {
+        return None;
+    }
+    for _ in 0..names {
+        r.string()?;
+    }
+    let count = r.u32()? as usize;
+    if count > data.len() / 8 {
+        return None;
+    }
+    let mut positions = Vec::with_capacity(count);
+    for _ in 0..count {
+        positions.push(r.f64()?);
+    }
+    (!positions.is_empty()).then_some(positions)
+}
+
 /// Decode a `tf2_msgs/msg/TFMessage` body: a sequence of `TransformStamped`
 /// `{ Header header (frame_id = parent), string child_frame_id, Transform { Vector3 translation,
 /// Quaternion rotation } }`. Returns each edge as a CDM [`Transform`] with open validity.
@@ -385,6 +421,56 @@ mod tests {
         assert_eq!(ts[0].parent_frame, "base_link");
         assert_eq!(ts[0].child_frame, "lidar_top");
         assert_eq!(ts[0].pose.translation, [0.1, 0.2, 0.3]);
+    }
+
+    #[test]
+    fn decodes_joint_state_positions() {
+        let mut w = W::new();
+        w.header("");
+        w.u32(3); // name[]
+        for n in ["shoulder", "elbow", "gripper"] {
+            w.string(n);
+        }
+        w.u32(3); // position[]
+        for v in [0.5, -1.25, 0.0] {
+            w.f64(v);
+        }
+        w.u32(0); // velocity[]
+        w.u32(0); // effort[]
+        assert_eq!(
+            decode_joint_state_positions(&w.buf).expect("decode"),
+            vec![0.5, -1.25, 0.0]
+        );
+    }
+
+    #[test]
+    fn a_joint_state_without_positions_is_not_a_measurement() {
+        // A publisher that reports effort only: `position` is empty. Returning `Some(vec![])` would
+        // record the stream as measured when nothing was measured.
+        let mut w = W::new();
+        w.header("");
+        w.u32(1);
+        w.string("elbow");
+        w.u32(0); // position[] empty
+        w.u32(0); // velocity[]
+        w.u32(1); // effort[]
+        w.f64(2.5);
+        assert!(decode_joint_state_positions(&w.buf).is_none());
+    }
+
+    #[test]
+    fn a_joint_state_with_an_absurd_count_is_declined() {
+        // Both sequence counts are attacker-controlled and must be bounded by what the body holds.
+        let mut w = W::new();
+        w.header("");
+        w.u32(4_000_000_000); // name[] count
+        assert!(decode_joint_state_positions(&w.buf).is_none());
+
+        let mut w = W::new();
+        w.header("");
+        w.u32(0); // name[]
+        w.u32(4_000_000_000); // position[] count
+        assert!(decode_joint_state_positions(&w.buf).is_none());
     }
 
     #[test]

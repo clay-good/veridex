@@ -180,6 +180,13 @@ other storage plugin — so a `PointCloud2` supplies the per-point field layout,
 `TFMessage` the intrinsics and the transform tree, and `Odometry` the ego trajectory. The bulk
 payload is fingerprinted, never decoded.
 
+One exception, and it is the one that lets the statistical family grade a bag at all: a
+`sensor_msgs/msg/JointState` carries nothing *but* the measurement — a handful of joint angles — so
+its `position` array is read and summarized per joint, exactly as LeRobot's or HDF5's values are.
+Without it, an arm recording whose elbow sat pinned against its stop scored a clean `data 100` with
+every statistical check listed as run. Every other topic's payload stays opaque and says so, through
+`STATISTICAL.UNMEASURED_VALUES`. The same is true of a plain MCAP file.
+
 Three things it will not do. **Columns are bound by name**, from each table's own `CREATE TABLE`
 statement, because rosbag2 has added columns across bag versions and reading position 3 because that
 is where `serialization_format` used to sit would report a type-description hash as a serialization
