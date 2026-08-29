@@ -760,6 +760,46 @@ fn ros_message_bodies_populate_the_autonomy_cdm_end_to_end() {
     let ego = d.episodes[0].ego_poses.as_ref().expect("ego_poses decoded");
     assert_eq!(ego.len(), 1);
     assert_eq!(ego[0].pose.translation, [1.0, 2.0, 3.0]);
+
+    // A recording that carries its own extrinsics and intrinsics identifies the calibration that
+    // produced it — better than a reference to one, because these values are in the CDM and in its
+    // content hash. Reported as *missing* provenance, a rig with a complete transform tree scored
+    // zero on the element whose stated risk that tree is what removes.
+    let calibration = d.provenance[0]
+        .elements
+        .iter()
+        .find(|e| e.key == "calibration")
+        .expect("in-band calibration is recorded as provenance");
+    assert_eq!(calibration.class, veridex_core::cdm::ProvenanceClass::Known);
+    let value = calibration.value.as_deref().unwrap_or_default();
+    assert!(
+        value.contains("in-band") && value.contains("1 transform") && value.contains("1 camera"),
+        "the value names what the recording holds: {value}"
+    );
+}
+
+/// The element is recorded from *decoded content*, so a recording with no calibration in it gets
+/// none. Provenance Veridex made up is worse than provenance it does not have.
+#[test]
+fn a_recording_without_calibration_is_not_given_a_calibration_element() {
+    let bytes = build_mcap(&[Chan {
+        schema: "sensor_msgs/msg/Imu",
+        topic: "/imu/data",
+        times: vec![0, 100_000_000],
+    }]);
+    let path = write_temp_mcap(&bytes);
+    let d = McapAdapter
+        .ingest(
+            &Source::Local(path.to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest")
+        .dataset;
+    assert!(d.calibration.is_none());
+    assert!(!d.provenance[0]
+        .elements
+        .iter()
+        .any(|e| e.key == "calibration"));
 }
 
 #[test]

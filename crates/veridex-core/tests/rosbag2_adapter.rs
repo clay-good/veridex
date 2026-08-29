@@ -143,6 +143,28 @@ fn the_av_message_headers_populate_the_rig_cdm() {
     assert_eq!(calib.intrinsics[0].fx, 1080.5);
     assert_eq!(calib.intrinsics[0].cx, 960.0);
 
+    // A bag that carries its own transform tree and intrinsics identifies the calibration that
+    // produced it, and that is provenance — the values are in the CDM and in its content hash.
+    let calibration = out.dataset.provenance[0]
+        .elements
+        .iter()
+        .find(|e| e.key == "calibration")
+        .expect("in-band calibration is recorded as provenance");
+    assert_eq!(
+        calibration.class,
+        veridex_core::cdm::ProvenanceClass::Known,
+        "extracted content, not a name-shaped guess"
+    );
+    assert!(
+        calibration
+            .value
+            .as_deref()
+            .unwrap_or_default()
+            .contains("in-band"),
+        "{:?}",
+        calibration.value
+    );
+
     // Odometry -> the ego trajectory, in timestamp order.
     let poses = out.dataset.episodes[0]
         .ego_poses

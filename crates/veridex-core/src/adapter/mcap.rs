@@ -730,6 +730,24 @@ impl Adapter for McapAdapter {
             }
         }
 
+        // A recording that carries its own extrinsics and intrinsics answers "which calibration
+        // produced this data" better than any reference to one could: the calibration is *in* the
+        // dataset, bound into the CDM content hash, and checkable — which is exactly what
+        // `AUTONOMY.CALIBRATION_INCOMPLETE` and the frame-resolution checks do with it. Reported as
+        // missing anyway, a rig bag with a complete transform tree and camera intrinsics scored zero
+        // on the provenance element whose stated risk — "blocks spatial and multi-camera reasoning"
+        // — that tree is precisely what removes. `Known`, because it is extracted content, not a
+        // name-shaped guess; an explicit metadata key still outranks it.
+        if let Some(calib) = &calibration {
+            if mapped.insert("calibration") {
+                elements.push(ProvenanceElement {
+                    key: "calibration".into(),
+                    value: Some(super::in_band_calibration(calib)),
+                    class: ProvenanceClass::Known,
+                });
+            }
+        }
+
         // Labels are canonicalized by (key, value, ts), so a stable order in is not required.
         // Attachments: record their presence, and let a calibration-looking attachment supply the
         // `calibration` element when no metadata key already did. This is inferred from the file

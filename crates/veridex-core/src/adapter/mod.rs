@@ -266,6 +266,19 @@ pub(crate) fn check_source_size(
     }
 }
 
+/// How a dataset that carries its own calibration describes it, as a provenance value.
+///
+/// Names what is in the recording — how many transforms, how many camera intrinsics — rather than
+/// quoting a file the reader cannot check. A reader wanting the values themselves has them: they are
+/// in the CDM, and in its content hash.
+pub(crate) fn in_band_calibration(calibration: &crate::cdm::Calibration) -> String {
+    format!(
+        "recorded in-band: {} transform(s), {} camera intrinsic(s)",
+        calibration.transforms.len(),
+        calibration.intrinsics.len()
+    )
+}
+
 /// Tracks how many frames an ingest has committed to, refusing past the budget.
 ///
 /// Adapters charge the budget *before* allocating, so a hostile file is rejected on the strength of

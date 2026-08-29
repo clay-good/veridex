@@ -1391,6 +1391,18 @@ impl Adapter for Rosbag2Adapter {
                 class: ProvenanceClass::Known,
             });
         }
+        // A bag that carries its own transform tree and camera intrinsics identifies the calibration
+        // that produced it — the calibration is in the recording, bound into the CDM content hash,
+        // and graded by the autonomy checks. See `mcap`'s note: the element's stated risk is exactly
+        // what an in-band tree removes.
+        if let Some(calib) = &calibration {
+            elements.push(ProvenanceElement {
+                key: "calibration".into(),
+                value: Some(super::in_band_calibration(calib)),
+                class: ProvenanceClass::Known,
+            });
+        }
+
         for fmt in &contents.serialization_formats {
             metadata.push(("serialization_format".into(), fmt.clone()));
         }

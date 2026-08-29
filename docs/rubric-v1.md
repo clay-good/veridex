@@ -26,7 +26,8 @@ Floor the result at 0. Provenance-category findings are excluded here — they a
 ### 2. Provenance coverage (30% weight)
 
 Veridex expects six provenance elements: `license`, `sensor`, `clock`, `calibration`, `annotator`,
-`upstream`. Coverage is the percentage of those that are present as **known** or **asserted**
+`upstream`. Most are read from what a source records *about* the data; `calibration` is also
+satisfied by the data itself, when a recording carries its own transform tree and camera intrinsics. Coverage is the percentage of those that are present as **known** or **asserted**
 (absent or `unknown` elements do not count):
 
 ```

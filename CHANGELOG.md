@@ -49,6 +49,17 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **A rig that carries its own calibration was scored as having none.** A ROS 2 recording with a
+  complete static transform tree and `CameraInfo` intrinsics — decoded into the CDM, bound into its
+  content hash, and graded by `AUTONOMY.CALIBRATION_INCOMPLETE` and the frame-resolution checks —
+  still reported `PROVENANCE.MISSING_CALIBRATION`, whose stated risk is that missing calibration
+  "blocks spatial and multi-camera reasoning". That tree is precisely what removes the risk. The MCAP
+  and rosbag2 adapters now record the element (`Known`, "recorded in-band: N transform(s), M camera
+  intrinsic(s)") when the recording carries one, so a rig bag's provenance coverage reflects what it
+  actually holds. An explicit metadata key still outranks it, a calibration-*named* attachment stays
+  `Asserted`, and a recording with no calibration in it gets no element: provenance Veridex made up
+  would be worse than provenance it does not have.
+
 - **A stored standard deviation of zero over a non-zero range was reported by nobody.** It describes
   no possible set of values — values that are not all identical have some spread — and it is what a
   source writes when its statistics were carried over from another stream or never computed at all.

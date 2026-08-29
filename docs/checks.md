@@ -123,7 +123,7 @@ layout, in any of `.mp4` / `.m4v` / `.mov`.
 | `provenance.completeness` | `PROVENANCE.MISSING_LICENSE` | warning | No license is known. |
 | `provenance.completeness` | `PROVENANCE.MISSING_SENSOR` | info | No sensor/device is known. |
 | `provenance.completeness` | `PROVENANCE.MISSING_CLOCK` | info | No clock source is known. |
-| `provenance.completeness` | `PROVENANCE.MISSING_CALIBRATION` | info | No calibration is known. |
+| `provenance.completeness` | `PROVENANCE.MISSING_CALIBRATION` | info | No calibration is known. A recording that carries its own extrinsics and camera intrinsics — a ROS transform tree and `CameraInfo`, from MCAP or a rosbag2 bag — supplies this element itself (`Known`, "recorded in-band"), because the calibration is *in* the dataset and in its content hash, which answers the question better than a reference to a file the reader cannot check. |
 | `provenance.completeness` | `PROVENANCE.MISSING_ANNOTATOR` | info | No annotator/operator is known. |
 | `provenance.completeness` | `PROVENANCE.MISSING_UPSTREAM` | info | No upstream lineage is known. |
 
