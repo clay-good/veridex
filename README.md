@@ -360,8 +360,9 @@ naming the checks that had nothing to measure,
 and it travels into the JSON, the SARIF, the HTML, and the certificate. The alternative is what this
 tool exists to prevent: a recording whose actuator is pinned at its rail scoring `data 100` with no
 statistical findings, over a certificate listing all five statistical checks as run with nothing
-skipped. (That example was a CAN log, and a CAN log no longer abstains — a DBC decodes each frame
-into named signal values, and Veridex now measures them. The abstention remains for every container
+skipped. (That example was a CAN log, and neither a CAN log nor an MF4
+measurement abstains any more — a DBC decodes each frame into named signal values, an MF4 applies its
+conversion to each sample, and Veridex measures both. The abstention remains for every container
 whose payload it fingerprints without interpreting.)
 
 Start with [openspec/project.md](openspec/project.md) for the design, or track progress in

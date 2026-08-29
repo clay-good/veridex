@@ -63,7 +63,7 @@ signed certificate on the strength of a timeline nobody measured, so those strea
 
 | Check id | Finding code | Severity | Fires when |
 |---|---|---|---|
-| `statistical.value-measurability` | `STATISTICAL.UNMEASURED_VALUES` | info | A stream carries neither stored nor recomputed statistics, so every check in this family had nothing to measure on it. Reported for the same reason `TEMPORAL.UNMEASURED_CLOCK` is: MCAP, rosbag2, MF4 and RLDS fingerprint payload bytes without interpreting them, so a recording whose actuator is pinned at its rail reported `data 100` with no statistical findings — while the certificate listed all five statistical checks as run with no categories skipped. (CAN+DBC was the original example and no longer abstains: a DBC decodes each frame into named signal *values*, so those are measured like any other.) A saturated actuator, a buried NaN, and a stale stored statistic all signed as checked-and-clean. Informational: a dataset is not worse for the container it was published in; what changes is what a passing verdict is evidence of. |
+| `statistical.value-measurability` | `STATISTICAL.UNMEASURED_VALUES` | info | A stream carries neither stored nor recomputed statistics, so every check in this family had nothing to measure on it. Reported for the same reason `TEMPORAL.UNMEASURED_CLOCK` is: MCAP, rosbag2 and RLDS fingerprint payload bytes without interpreting them, so a recording whose actuator is pinned at its rail reported `data 100` with no statistical findings — while the certificate listed all five statistical checks as run with no categories skipped. (CAN+DBC was the original example, and neither it nor MF4 abstains any more: a DBC decodes each frame into named signal *values*, an MF4 applies its `##CC` conversion to each sample, and both results are measured like any other values.) A saturated actuator, a buried NaN, and a stale stored statistic all signed as checked-and-clean. Informational: a dataset is not worse for the container it was published in; what changes is what a passing verdict is evidence of. |
 | `statistical.value-measurability` | `STATISTICAL.NO_STORED_STATS` | info | A stream's values *were* read and summarized, but the source published no summary statistics of its own — so `statistical.stored-vs-observed` and the stored-range rules of `statistical.range-sanity` had nothing to compare against. This is HDF5 and Zarr, which recompute but carry no stored stats. The recomputed checks still apply; the source-agreement ones did not run. |
 | `statistical.range-sanity` | `STATISTICAL.NON_FINITE` | error | A stored min/max/mean/std is NaN or infinite. |
 | `statistical.range-sanity` | `STATISTICAL.RANGE_INVERTED` | error | Stored `min > max`. |
@@ -259,7 +259,7 @@ the terminal report, the JSON, the SARIF, the HTML, and the certificate's own su
 | Check | Says |
 |---|---|
 | `temporal.clock-measurability` | the source records no wall clock, so the timing checks graded a step index or nothing at all — and, separately, that no two streams shared a clock with a measurable span, so the three cross-stream checks had nothing to compare |
-| `statistical.value-measurability` | the adapter never read values (MCAP, rosbag2, MF4, RLDS), or read them but had no stored statistics to compare against (HDF5, Zarr, CAN+DBC) |
+| `statistical.value-measurability` | the adapter never read values (MCAP, rosbag2, RLDS), or read them but had no stored statistics to compare against (HDF5, Zarr, CAN+DBC, MF4) |
 | `structural.content-measurability` | frames carry no content fingerprint, so the duplicate-episode and stuck-stream checks had no bytes to compare |
 
 A fourth disclosure comes from the engine rather than the catalog. When a check *crashes* instead of
@@ -283,7 +283,7 @@ published in. What they change is what a passing verdict is evidence *of*. Witho
 whose actuator is pinned at its rail reported `data 100` with no statistical findings — and the
 certificate listed all five statistical checks under `checks_run` with `categories_skipped: []`. The
 original example was a CAN log, which no longer abstains: its signals are decoded into values, so
-they are measured. The point stands for every container whose payload Veridex fingerprints without
+they are measured — and neither does an MF4 measurement, for the same reason. The point stands for every container whose payload Veridex fingerprints without
 interpreting.
 
 ## Coverage disclosure

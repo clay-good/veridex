@@ -823,3 +823,85 @@ fn a_compressed_measurement_is_describable_only_this_way() {
         .iter()
         .any(|o| o.contains("##DZ")));
 }
+
+/// An MF4 channel is decoded — the `##CC` conversion is applied and the result is a number — so the
+/// statistical family can grade it, exactly as it grades a CAN signal off a DBC. Until it did, a
+/// fleet measurement whose steering angle sits at its end-stop for the whole drive scored `data 100`
+/// with no statistical findings.
+#[test]
+fn channel_values_are_measured_not_only_fingerprinted() {
+    let d = ingest(&well_formed_file(5)).dataset;
+    let speed = d.episodes[0]
+        .streams
+        .iter()
+        .find(|s| s.name == "speed")
+        .expect("the speed channel");
+    // raw 0, 2, 4, 6, 8 under `10 + 0.5 x raw` → 10, 11, 12, 13, 14.
+    let stats = speed
+        .observed_stats
+        .expect("statistics are recomputed from the values");
+    assert_eq!((stats.min, stats.max, stats.mean), (10.0, 14.0, 12.0));
+    assert_eq!(
+        speed.observed_non_finite,
+        Some(0),
+        "the values were read and every one was finite"
+    );
+    assert!(
+        speed.stats.is_none(),
+        "MF4 stores no summary statistics, so there is nothing to compare against"
+    );
+}
+
+/// The measurement that motivates it: a channel pinned at one value for most of the recording is a
+/// saturated signal, and it is now reported rather than passing as clean data.
+#[test]
+fn a_channel_pinned_at_its_rail_is_flagged() {
+    let mut b = Mf4Builder::new(b"veridex ");
+    let mut data = Vec::new();
+    for i in 0..40u16 {
+        let t = f64::from(i) * 0.1;
+        data.extend_from_slice(&t.to_le_bytes());
+        // 30 of 40 samples at the same maximum, the rest walking below it.
+        let raw: u16 = if i < 30 { 4095 } else { i * 10 };
+        data.extend_from_slice(&raw.to_le_bytes());
+        data.extend_from_slice(&[0u8; 6]);
+    }
+    let dt = b.block(b"##DT", &[], &data);
+    let angle = b.channel("steering_angle", 0, 0, UINT_LE, 0, 8, 16, None);
+    let time = b.channel("t", 2, 1, FLOAT_LE, 0, 0, 64, None);
+    b.patch_link(time, 0, angle);
+    let cg = b.channel_group(40, 16);
+    b.patch_link(cg, 1, time);
+    let dg = b.data_group(0);
+    b.patch_link(dg, 1, cg);
+    b.patch_link(dg, 2, dt);
+    let bytes = b.finish(dg, 1_700_000_000_000_000_000);
+
+    let path = write_temp(&bytes, ".mf4");
+    let outcome = veridex_core::pipeline::run_check(
+        &veridex_core::default_registry(),
+        &Source::Local(path.to_path_buf()),
+        None,
+        &IngestOptions::default(),
+    )
+    .expect("the run completes");
+    let saturated = outcome
+        .verdict
+        .findings
+        .iter()
+        .find(|f| f.code == "STATISTICAL.SATURATED")
+        .expect("the pinned channel is flagged");
+    assert!(
+        saturated.message.contains("steering_angle") && saturated.message.contains("75%"),
+        "{}",
+        saturated.message
+    );
+    assert!(
+        !outcome
+            .verdict
+            .findings
+            .iter()
+            .any(|f| f.code == "STATISTICAL.UNMEASURED_VALUES"),
+        "an MF4's channel values are read, so the family does not abstain on it"
+    );
+}

@@ -940,6 +940,12 @@ fn decode_channel_group(
             }
         }
         let mut frames: Vec<Frame> = Vec::with_capacity(count);
+        // The same physical values, accumulated as they are read. An MF4 channel is decoded — the
+        // `##CC` conversion is applied and the result is a number — so the statistical family can
+        // grade it, exactly as it grades a CAN signal off a DBC. Without this a fleet measurement
+        // whose steering angle sits at its end-stop for the whole drive scored `data 100` with no
+        // statistical findings. Single-pass and holding no values: an MF4 is far larger than memory.
+        let mut accum = super::stats::FeatureAccum::default();
         for (i, ts) in timestamps.iter().enumerate() {
             let (Some(ts), Some(value)) = (
                 *ts,
@@ -947,6 +953,7 @@ fn decode_channel_group(
             ) else {
                 continue;
             };
+            accum.push_cell(&[Some(value)]);
             frames.push(Frame {
                 ts,
                 value_ref: ValueRef {
@@ -980,11 +987,17 @@ fn decode_channel_group(
             dtype: Some("float64".into()),
             shape: None,
             frames,
+            // MF4 stores no summary statistics of its own — a `##CC` conversion is a rule for
+            // turning raw bits into physical values, not a summary of them — so there is nothing to
+            // compare against, only what was recomputed from the values read.
             stats: None,
             dim_stats: None,
-            observed_stats: None,
-            observed_saturation: None,
-            observed_non_finite: None,
+            observed_stats: accum.stats(),
+            observed_saturation: accum.saturation(),
+            // The values were read, so `Some(0)` says every one was finite. Not vacuous: a linear
+            // conversion with a large factor can overflow a raw extreme to infinity.
+            observed_non_finite: Some(accum.non_finite()),
+            // One channel is one scalar; there are no dimensions to break out.
             observed_dim_stats: None,
             latched: None,
             point_fields: None,

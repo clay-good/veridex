@@ -62,6 +62,10 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   `STATISTICAL.UNMEASURED_VALUES` no longer fires for CAN+DBC; `NO_STORED_STATS` does, because a DBC
   declares a signal's range but stores no summary statistics to compare against.
 
+  **MF4 is the same gap and gets the same fix.** An MF4 channel is decoded too — the `##CC`
+  conversion is applied and the result is a number — so a fleet measurement whose steering angle sits
+  at its end-stop for the whole drive is `STATISTICAL.SATURATED` now instead of scoring `data 100`.
+
 ### Fixed
 
 - **A rig that carries its own calibration was scored as having none.** A ROS 2 recording with a

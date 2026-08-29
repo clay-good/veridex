@@ -72,6 +72,8 @@ No code until this change is approved; this is the build plan.
       unmapped, because the CDM has no shape for them: bit-packed and non-numeric channels, other
       conversion types. Those — plus `##SR` sample
       reduction, attachments, and the `##FH`/`##MD` metadata comments — are the follow-ups.
+      Per-channel statistics are recomputed from the converted physical values through the shared
+      accumulator, so the statistical family grades a measurement rather than abstaining on it.
 - [x] CAN + DBC decoding → named signal streams; surface DBC-coverage gaps and decode errors.
       `adapter/candbc.rs`: ingests a directory holding a `.dbc` + candump `.log`/`.asc`, parses the
       DBC (`BO_`/`SG_`), decodes each frame's signals in both byte orders — little-endian (Intel,
