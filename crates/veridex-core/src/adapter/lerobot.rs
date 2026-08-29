@@ -195,6 +195,20 @@ fn load_stats(dir: &Path) -> StoredStats {
         out.source = StatsSource::Unparseable;
         return out;
     };
+    collect_feature_stats(&map, &mut out);
+    // A file that parsed but named no feature Veridex could summarize is, for every purpose
+    // downstream, the same as one that would not parse: nothing to compare against.
+    out.source = if out.scalar.is_empty() {
+        StatsSource::Unparseable
+    } else {
+        StatsSource::Read
+    };
+    out
+}
+
+/// Fill `out` from a `{feature: {min, max, mean, std}}` map — the shape both `meta/stats.json` (v2.0
+/// and v3) and each line of `meta/episodes_stats.jsonl` (v2.1) hold their statistics in.
+fn collect_feature_stats(map: &serde_json::Map<String, serde_json::Value>, out: &mut StoredStats) {
     for (feature, stats) in map {
         let (Some(min), Some(max), Some(mean), Some(std)) = (
             stats.get("min").and_then(number_list),
@@ -233,16 +247,44 @@ fn load_stats(dir: &Path) -> StoredStats {
                     },
                 })
                 .collect();
-            out.per_dim.insert(feature, dims);
+            out.per_dim.insert(feature.clone(), dims);
         }
     }
-    // A file that parsed but named no feature Veridex could summarize is, for every purpose
-    // downstream, the same as one that would not parse: nothing to compare against.
-    out.source = if out.scalar.is_empty() {
-        StatsSource::Unparseable
-    } else {
-        StatsSource::Read
+}
+
+/// Load `meta/episodes_stats.jsonl` — where **v2.1** keeps its statistics, one line per episode,
+/// each `{"episode_index": N, "stats": {feature: {min, max, mean, std}}}`.
+///
+/// v2.0 and v3 write one dataset-wide `meta/stats.json`; v2.1 writes them per episode, and a run
+/// that only looked for the former reported "no stored statistics" over a dataset that ships them —
+/// which silently disables every stored-vs-observed comparison on the majority of LeRobot datasets
+/// published to date. These are genuinely per-episode, so they attach to each episode's own copy of
+/// the stream; the statistical checks already dedupe by the stored values rather than by name.
+fn load_episode_stats(dir: &Path) -> BTreeMap<u64, StoredStats> {
+    let mut out: BTreeMap<u64, StoredStats> = BTreeMap::new();
+    let Ok(contents) = std::fs::read_to_string(dir.join("meta").join("episodes_stats.jsonl"))
+    else {
+        return out;
     };
+    for line in contents.lines().filter(|l| !l.trim().is_empty()) {
+        let Ok(serde_json::Value::Object(row)) = serde_json::from_str::<serde_json::Value>(line)
+        else {
+            continue;
+        };
+        let (Some(index), Some(serde_json::Value::Object(stats))) = (
+            row.get("episode_index").and_then(serde_json::Value::as_u64),
+            row.get("stats"),
+        ) else {
+            continue;
+        };
+        let mut per_episode = StoredStats::default();
+        collect_feature_stats(stats, &mut per_episode);
+        if per_episode.scalar.is_empty() {
+            continue;
+        }
+        per_episode.source = StatsSource::Read;
+        out.insert(index, per_episode);
+    }
     out
 }
 
@@ -1271,7 +1313,7 @@ impl Adapter for LeRobotAdapter {
     }
 
     fn supported_versions(&self) -> &'static [&'static str] {
-        &["3.0"]
+        &["2.0", "2.1", "3.0"]
     }
 
     fn detect(&self, source: &Source) -> Detection {
@@ -1518,6 +1560,9 @@ impl Adapter for LeRobotAdapter {
             .collect();
 
         let stats = load_stats(dir);
+        // v2.1 keeps its statistics per episode instead of in one dataset-wide file. Empty for
+        // every other layout, and the dataset-wide file still wins where both exist.
+        let episode_stats = load_episode_stats(dir);
         // Resolve `task_index` -> task string via meta/tasks.jsonl (empty map if the file is absent).
         let tasks = load_tasks(dir);
 
@@ -1585,6 +1630,7 @@ impl Adapter for LeRobotAdapter {
             .map(|(index, rows)| {
                 let start_ts = rows.iter().map(|(ts, _)| *ts).min();
                 let end_ts = rows.iter().map(|(ts, _)| *ts).max();
+                let per_episode_stats = episode_stats.get(&index);
                 let streams = features
                     .iter()
                     .map(|(name, modality, dtype, shape)| Stream {
@@ -1608,8 +1654,12 @@ impl Adapter for LeRobotAdapter {
                                 },
                             })
                             .collect(),
-                        stats: stats.scalar.get(name).copied(),
-                        dim_stats: stats.per_dim.get(name).cloned(),
+                        stats: stats.scalar.get(name).copied().or_else(|| {
+                            per_episode_stats.and_then(|s| s.scalar.get(name).copied())
+                        }),
+                        dim_stats: stats.per_dim.get(name).cloned().or_else(|| {
+                            per_episode_stats.and_then(|s| s.per_dim.get(name).cloned())
+                        }),
                         observed_stats: observed_stats.get(name).copied(),
                         observed_saturation: observed_saturation.get(name).copied(),
                         observed_non_finite: observed_non_finite.get(name).copied(),
@@ -1739,9 +1789,18 @@ impl Adapter for LeRobotAdapter {
         ];
         let mut omitted_fields =
             vec!["video frame decoding (frames are timestamps, not pixels)".into()];
-        let (stats_mapped, stats_omitted) = stats_fidelity(&stats);
-        mapped_fields.extend(stats_mapped);
-        omitted_fields.extend(stats_omitted);
+        if episode_stats.is_empty() {
+            let (stats_mapped, stats_omitted) = stats_fidelity(&stats);
+            mapped_fields.extend(stats_mapped);
+            omitted_fields.extend(stats_omitted);
+        } else {
+            // v2.1's statistics are per episode, so "no meta/stats.json" would be true and
+            // misleading at once: the dataset ships statistics, and they were read.
+            mapped_fields.push(format!(
+                "meta/episodes_stats.jsonl -> stream.stats ({} episode(s))",
+                episode_stats.len()
+            ));
+        }
         if !media.is_empty() {
             mapped_fields.push(
                 "videos/**.mp4 container headers -> stream.media (frame count, resolution, codec, \

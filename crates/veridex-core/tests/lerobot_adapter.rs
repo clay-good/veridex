@@ -1377,10 +1377,77 @@ fn a_null_leaf_does_not_shift_later_dimensions_stats() {
     );
 }
 
+/// A **v2.1** dataset — one Parquet and one MP4 per episode, statistics per episode — is the shape
+/// most published LeRobot datasets have, and it was refused as an unsupported version. What differs
+/// from v3 is where the bytes sit, not what they mean: the episode a row belongs to is the
+/// `episode_index` column either way, and `meta/info.json`, `episodes.jsonl` and `tasks.jsonl` are
+/// the same files.
+#[test]
+fn a_v21_dataset_reads_as_the_dataset_it_is() {
+    let dir = tempfile::tempdir().unwrap();
+    write_lerobot_v21(dir.path());
+
+    let ingested = LeRobotAdapter
+        .ingest(
+            &Source::Local(dir.path().to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("a v2.1 dataset ingests");
+    let d = &ingested.dataset;
+    assert_eq!(d.episodes.len(), 2, "one Parquet per episode, two episodes");
+    assert_eq!(d.episodes[0].streams[0].frames.len(), 3);
+    assert_eq!(
+        d.episodes[1].declared_frame_count,
+        Some(3),
+        "meta/episodes.jsonl still supplies the declared length"
+    );
+    assert_eq!(
+        d.episodes[0].task.as_deref(),
+        Some("pick up the block"),
+        "task_index resolves through meta/tasks.jsonl exactly as in v3"
+    );
+    assert_eq!(
+        d.metadata
+            .iter()
+            .find(|(k, _)| k == "codebase_version")
+            .map(|(_, v)| v.as_str()),
+        Some("v2.1")
+    );
+
+    // v2.1 keeps its statistics per episode. Read as "no meta/stats.json" they are simply absent,
+    // which silently disables every stored-vs-observed comparison on the majority of published
+    // LeRobot datasets.
+    let stats = d.episodes[0].streams[0]
+        .stats
+        .expect("per-episode stored statistics are read");
+    assert_eq!((stats.min, stats.max), (0.0, 2.0));
+    let second = d.episodes[1].streams[0]
+        .stats
+        .expect("and each episode carries its own");
+    assert_eq!((second.min, second.max), (10.0, 12.0));
+    assert!(
+        ingested
+            .report
+            .mapped_fields
+            .iter()
+            .any(|f| f.starts_with("meta/episodes_stats.jsonl -> stream.stats")),
+        "the report names where the statistics came from: {:?}",
+        ingested.report.mapped_fields
+    );
+    assert!(
+        !ingested
+            .report
+            .omitted_fields
+            .iter()
+            .any(|f| f.contains("no meta/stats.json")),
+        "a dataset that ships statistics must not be reported as shipping none"
+    );
+}
+
+/// The gate still refuses a version this adapter does not read — a v1.x export, or anything whose
+/// major is outside the supported set — rather than misparsing it.
 #[test]
 fn an_unsupported_lerobot_version_is_rejected() {
-    // A v2.x export still has meta/info.json, so detect() matches it; ingest must reject it cleanly
-    // as an unsupported version rather than misparsing it as v3.
     let dir = tempfile::tempdir().unwrap();
     write_lerobot(
         dir.path(),
@@ -1388,9 +1455,8 @@ fn an_unsupported_lerobot_version_is_rejected() {
         10.0,
         &[(0, 0.0)],
     );
-    // Overwrite the version to an unsupported major.
     let info = serde_json::json!({
-        "codebase_version": "v2.0",
+        "codebase_version": "v1.6",
         "fps": 10.0,
         "features": { "observation.state": { "dtype": "float32", "shape": [1] } },
     });
@@ -1399,8 +1465,7 @@ fn an_unsupported_lerobot_version_is_rejected() {
         serde_json::to_string_pretty(&info).unwrap(),
     )
     .unwrap();
-    let adapter = LeRobotAdapter;
-    let err = adapter
+    let err = LeRobotAdapter
         .ingest(
             &Source::Local(dir.path().to_path_buf()),
             &IngestOptions::default(),
@@ -1413,6 +1478,75 @@ fn an_unsupported_lerobot_version_is_rejected() {
         ),
         "expected UnsupportedVersion, got {err:?}"
     );
+}
+
+/// Write a v2.1-shaped dataset: per-episode Parquet under `data/chunk-000/`, `meta/episodes.jsonl`,
+/// `meta/tasks.jsonl`, and per-episode statistics in `meta/episodes_stats.jsonl`.
+fn write_lerobot_v21(d: &Path) {
+    fs::create_dir_all(d.join("meta")).unwrap();
+    fs::create_dir_all(d.join("data/chunk-000")).unwrap();
+    let info = serde_json::json!({
+        "codebase_version": "v2.1",
+        "robot_type": "so100",
+        "total_episodes": 2,
+        "total_frames": 6,
+        "chunks_size": 1000,
+        "fps": 10.0,
+        "data_path": "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
+        "video_path": "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4",
+        "features": { "observation.state": { "dtype": "float32", "shape": [1] } },
+    });
+    fs::write(
+        d.join("meta/info.json"),
+        serde_json::to_string_pretty(&info).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        d.join("meta/episodes.jsonl"),
+        "{\"episode_index\": 0, \"tasks\": [\"pick up the block\"], \"length\": 3}\n\
+         {\"episode_index\": 1, \"tasks\": [\"pick up the block\"], \"length\": 3}\n",
+    )
+    .unwrap();
+    fs::write(
+        d.join("meta/tasks.jsonl"),
+        "{\"task_index\": 0, \"task\": \"pick up the block\"}\n",
+    )
+    .unwrap();
+    fs::write(
+        d.join("meta/episodes_stats.jsonl"),
+        "{\"episode_index\": 0, \"stats\": {\"observation.state\":          {\"min\": [0.0], \"max\": [2.0], \"mean\": [1.0], \"std\": [0.8], \"count\": [3]}}}\n\
+         {\"episode_index\": 1, \"stats\": {\"observation.state\":          {\"min\": [10.0], \"max\": [12.0], \"mean\": [11.0], \"std\": [0.8], \"count\": [3]}}}\n",
+    )
+    .unwrap();
+    write_v21_episode(&d.join("data/chunk-000/episode_000000.parquet"), 0, 0.0);
+    write_v21_episode(&d.join("data/chunk-000/episode_000001.parquet"), 1, 10.0);
+}
+
+/// One episode's Parquet: three rows carrying `episode_index`, `frame_index`, `timestamp`,
+/// `task_index` and one `observation.state` value.
+fn write_v21_episode(path: &Path, episode: i64, base: f32) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("episode_index", DataType::Int64, false),
+        Field::new("frame_index", DataType::Int64, false),
+        Field::new("timestamp", DataType::Float64, false),
+        Field::new("task_index", DataType::Int64, false),
+        Field::new("observation.state", DataType::Float32, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int64Array::from(vec![episode; 3])),
+            Arc::new(Int64Array::from(vec![0i64, 1, 2])),
+            Arc::new(Float64Array::from(vec![0.0, 0.1, 0.2])),
+            Arc::new(Int64Array::from(vec![0i64; 3])),
+            Arc::new(Float32Array::from(vec![base, base + 1.0, base + 2.0])),
+        ],
+    )
+    .unwrap();
+    let file = fs::File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
 }
 
 #[test]

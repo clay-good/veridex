@@ -49,6 +49,19 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **LeRobot v2.0 and v2.1 datasets are read.** They were refused as an unsupported version, which
+  ruled out most of the LeRobot datasets published to date — v3.0 is recent, and the Hub is full of
+  v2.1. The refusal turned out to be nearly the whole of the gap: v2 writes one Parquet and one MP4
+  per episode where v3 packs many into each, but the episode a row belongs to is the `episode_index`
+  column either way, `meta/info.json` / `episodes.jsonl` / `tasks.jsonl` are the same files, and the
+  adapter already discovered data by walking `data/` and resolved per-episode videos by name.
+
+  One real difference needed closing: v2.1 keeps its statistics **per episode** in
+  `meta/episodes_stats.jsonl` instead of one dataset-wide `meta/stats.json`. Read as "no stats file",
+  a dataset that ships statistics is reported as shipping none — and every stored-vs-observed
+  comparison silently skipped, on the majority of published LeRobot data. Those are read now and
+  attached to each episode's own streams, and the ingest report names where they came from.
+
 - **`STATISTICAL.OUT_OF_DECLARED_RANGE`: the values, against the range their own source declares.**
   A DBC states each signal's physical span (`[0|16383.75]`), which is a fact about the data separate
   from any summary of it — what the bus designer specified, before a frame was read. Comparing the

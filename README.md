@@ -31,7 +31,7 @@ Veridex Trust Report
 
 ## Why it's useful
 
-- **One command, any format.** LeRobot v3, RLDS/TFDS (what Open X-Embodiment ships in), HDF5 (what
+- **One command, any format.** LeRobot (v2.0/2.1/3.0), RLDS/TFDS (what Open X-Embodiment ships in), HDF5 (what
   robomimic and most lab collectors write), Zarr (what Diffusion Policy and UMI ship in), MCAP,
   ROS 2 rosbag2 (both storage plugins — `.db3` / `.db3.zstd` and the `.mcap` shards Jazzy records by
   default), CAN+DBC, and ASAM MDF/MF4 all map
@@ -308,7 +308,7 @@ is in and tested:
 | **Video/media checks** | Read an `.mp4`'s container headers — never a pixel — and catch the missing, unparseable, desynced, or re-encoded video behind a camera stream |
 | **Trust score** | The v1 rubric, the `standard` / `strict` threshold profiles, and the `world-model-ready` readiness profile |
 | **Reporting** | Terminal, JSON, SARIF 2.1.0 and self-contained HTML, each with rollups by category, episode and stream, and each shareable through `--redact` |
-| **Adapters** | LeRobot v3, RLDS/TFDS, HDF5, Zarr, MCAP, ROS 2 rosbag2, CAN+DBC, ASAM MDF/MF4 — with a passing cross-format neutrality gate (the same logical dataset yields equivalent CDMs as LeRobot v3 and as MCAP, and as rosbag2 and as MCAP) |
+| **Adapters** | LeRobot v2.0/2.1/3.0, RLDS/TFDS, HDF5, Zarr, MCAP, ROS 2 rosbag2, CAN+DBC, ASAM MDF/MF4 — with a passing cross-format neutrality gate (the same logical dataset yields equivalent CDMs as LeRobot v3 and as MCAP, and as rosbag2 and as MCAP) |
 | **Provenance** | Scenario-dimension coverage and scenario/map/sim reference extraction (OpenSCENARIO / OpenDRIVE / OSI / simulator, version read from the referenced sidecar's own ASAM header), emitted as Croissant + W3C PROV |
 | **Certificates** | Ed25519 signing with offline verification (tamper and transplant rejection), and **producer attestation** — provenance a producer signs for, bound to the dataset's content hash and disclosed by the key that signed it |
 | **CLI** | `check`, `inspect`, `checks`, `certify`, `verify`, `provenance`, `keygen`, `diff`, `watch`, `label`, `attest`, plus `check --print-config` and `check --redact` — see the [Quickstart](#quickstart) |

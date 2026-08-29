@@ -11,7 +11,14 @@ without a dataset of your own. The general shape is always the same:
 veridex check <dataset>
 ```
 
-The same command works on a LeRobot v3 dataset — proof of the cross-format claim. Generate a demo
+The same command works on a LeRobot dataset — proof of the cross-format claim. Both layouts are
+read: **v3.0**, which packs many episodes into each Parquet and MP4, and **v2.0/2.1**, which writes
+one of each per episode and is what most datasets published to date are. The difference is where the
+bytes sit, not what they mean — the episode a row belongs to is the `episode_index` column either
+way — so the same checks run over both. v2.1 keeps its statistics per episode in
+`meta/episodes_stats.jsonl` rather than one dataset-wide `meta/stats.json`, and Veridex reads them
+there; a run that looked only for the dataset-wide file would report a dataset that ships statistics
+as shipping none, and silently skip every stored-vs-observed comparison. Generate a demo
 one (its second episode carries an out-of-order timestamp) and check it the same way:
 
 ```sh
