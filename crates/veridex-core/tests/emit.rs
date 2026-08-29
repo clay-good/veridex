@@ -440,3 +440,32 @@ fn every_recorded_upstream_reaches_the_lineage_graph() {
         "veridex:dataset/acme%2Fraw"
     );
 }
+
+#[test]
+fn the_croissant_omits_exactly_the_three_fields_it_has_no_honest_value_for() {
+    // The README makes a specific promise about this document: it omits `datePublished`, `url` and
+    // `version`, a Croissant validator warns about exactly those three, and it will not warn about
+    // anything Veridex made up. That promise is the tool's whole position — it would rather be
+    // incomplete than invent — and nothing pinned it. A future edit adding a plausible-looking
+    // `"version": "1.0"` would satisfy a validator, break the promise, and leave the README wrong.
+    //
+    // Veridex cannot know any of the three. A dataset's publication date is not in its bytes; its
+    // URL is where someone put it, not what it is; and a version is a claim about a lineage of
+    // releases that no format records. The CDM content hash in `distribution` is the honest
+    // identifier for "which bytes", and it is there.
+    let d = dataset_with(vec![
+        el("license", Some("CC-BY-4.0"), ProvenanceClass::Known),
+        el("annotator", Some("operator"), ProvenanceClass::Known),
+        el("upstream", Some("open-x"), ProvenanceClass::Known),
+    ]);
+    let doc = to_croissant(&d, "deadbeef");
+    for absent in ["datePublished", "url", "version"] {
+        assert!(
+            doc.get(absent).is_none(),
+            "`{absent}` cannot be known from a dataset's bytes; emitting one would be the \
+             fabrication this document exists to avoid:\n{doc:#}"
+        );
+    }
+    // And what it *does* say about identity is the thing it can prove.
+    assert_eq!(doc["distribution"][0]["sha256"], "deadbeef");
+}
