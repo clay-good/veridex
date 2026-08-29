@@ -575,7 +575,23 @@ fn root_siblings(
             continue;
         }
         let path = format!("/{name}");
-        let header = file.object_header(*addr)?;
+        // A sibling whose header will not read is not a reason to fail a file whose episodes are
+        // perfectly sound — the same judgement this adapter makes about an unreadable attribute.
+        // It is still something the file holds and this run could not look at, so it is disclosed
+        // as unread rather than passed over.
+        let header = match file.object_header(*addr) {
+            Ok(header) => header,
+            Err(e) => {
+                unread.push(UnmappedField {
+                    source_path: path,
+                    note: format!(
+                        "this object sits beside `/{EPISODE_ROOT}` and its header could not be \
+                         read, so whatever it holds went unread: {e}"
+                    ),
+                });
+                continue;
+            }
+        };
         if header.is_group() {
             let mut visited = BTreeSet::new();
             if holds_array_rows(file, *addr, 0, &mut visited, notes)? {
@@ -606,7 +622,19 @@ fn root_siblings(
             });
             continue;
         }
-        let info = file.dataset_info(&header)?;
+        let info = match file.dataset_info(&header) {
+            Ok(info) => info,
+            Err(e) => {
+                unread.push(UnmappedField {
+                    source_path: path,
+                    note: format!(
+                        "this array sits beside `/{EPISODE_ROOT}` and its header could not be \
+                         read, so its rows went unread: {e}"
+                    ),
+                });
+                continue;
+            }
+        };
         match info.dims.first() {
             Some(rows) if *rows > 0 => unread.push(UnmappedField {
                 source_path: path,
@@ -652,14 +680,23 @@ fn holds_array_rows(
     if !visited.insert(addr) {
         return Ok(false);
     }
-    let header = file.object_header(addr)?;
+    // Every failure below answers `true` for the same reason the depth bound does: "I could not
+    // look" is not "there is nothing here", and a corrupt sibling must not fail a file whose
+    // episodes are sound.
+    let Ok(header) = file.object_header(addr) else {
+        return Ok(true);
+    };
     let before = notes.skipped_links.len();
-    let links = file.group_links(&header, &mut notes.skipped_links)?;
+    let Ok(links) = file.group_links(&header, &mut notes.skipped_links) else {
+        return Ok(true);
+    };
     if notes.skipped_links.len() != before {
         return Ok(true);
     }
     for (_, child_addr) in links {
-        let child = file.object_header(child_addr)?;
+        let Ok(child) = file.object_header(child_addr) else {
+            return Ok(true);
+        };
         if child.is_group() {
             if holds_array_rows(file, child_addr, depth + 1, visited, notes)? {
                 return Ok(true);
@@ -669,13 +706,13 @@ fn holds_array_rows(
         if !child.is_dataset() {
             continue;
         }
-        if file
-            .dataset_info(&child)?
-            .dims
-            .first()
-            .is_some_and(|rows| *rows > 0)
-        {
-            return Ok(true);
+        match file.dataset_info(&child) {
+            Ok(info) => {
+                if info.dims.first().is_some_and(|rows| *rows > 0) {
+                    return Ok(true);
+                }
+            }
+            Err(_) => return Ok(true),
         }
     }
     Ok(false)

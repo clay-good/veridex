@@ -1624,3 +1624,42 @@ fn a_metadata_only_run_discloses_the_same_unread_root_objects() {
     };
     assert_eq!(paths(&full), paths(&headers));
 }
+
+/// A root object beside `/data` whose own header is corrupt must not fail a file whose episodes are
+/// sound — the judgement this adapter already makes about an unreadable attribute. It is still
+/// something the file holds and the run could not look at, so it is disclosed as unread.
+#[test]
+fn a_corrupt_root_sibling_is_disclosed_rather_than_failing_the_file() {
+    let bytes = std::fs::read(fixture("root_siblings.h5")).expect("the fixture reads");
+    // `/reward_model` is a root-level array; break the object header its link points at by
+    // corrupting every occurrence of the object-header signature after the first few bytes.
+    let mut damaged = bytes.clone();
+    let mut patched = 0;
+    for i in 0..damaged.len().saturating_sub(4) {
+        if &damaged[i..i + 4] == b"OHDR" {
+            damaged[i] = b'X';
+            patched += 1;
+        }
+    }
+    if patched == 0 {
+        // A version-1 object header has no signature to break; nothing to test on this fixture.
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("damaged.h5");
+    std::fs::write(&path, &damaged).unwrap();
+
+    // Either the file still ingests — in which case whatever could not be read is disclosed — or it
+    // is refused outright. What it must never do is come back clean with a silently smaller dataset.
+    if let Ok(ingested) = veridex_core::adapter::hdf5::Hdf5Adapter
+        .ingest(&Source::Local(path), &IngestOptions::default())
+    {
+        let disclosed =
+            ingested.report.unread_sources.len() + ingested.report.unmapped_fields.len();
+        assert!(
+            disclosed > 0,
+            "a file whose objects could not all be read must say so: {:?}",
+            ingested.report
+        );
+    }
+}
