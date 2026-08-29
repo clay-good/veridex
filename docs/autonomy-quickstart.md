@@ -124,6 +124,10 @@ See [profiles.md](profiles.md) for the profile's criteria and the full verificat
 | Producer metadata | rig lineage (firmware, platform, drive, region, map, redaction/consent) as provenance |
 | Scenario/map references (`.xosc`, `.xodr`, OSI, simulator) | provenance, with the version read from the sidecar's own ASAM header |
 
+CAN traffic the `.dbc` does not define is not silently dropped: frames on an undefined id, and log
+lines that are not candump frames, are disclosed as unread and raise `COVERAGE.SOURCE_UNREAD` — a
+partial DBC otherwise reads as a clean pass over whichever fraction of the bus it happened to cover.
+
 Veridex never decodes the bulk point or pixel payload — it fingerprints it. That is why calibration
 is checked for *presence and coherence* rather than by reprojecting points, and why a huge log costs
 little to check.

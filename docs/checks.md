@@ -294,8 +294,10 @@ not read. Today that is a data shard resolving outside the dataset directory, a 
 bag's `metadata.yaml` lists but does not ship, a rosbag2 recording that falls short of the message
 total its own manifest declares, a rosbag2 message on a topic the bag's `topics` table never
 declares (there is no topic name to file it under, and inventing one would name a topic the bag does
-not), and an HDF5 object holding rows that sits outside the episodes — `robomimic`'s `/mask` split
-group, a reward table parked at the root, an array beside the `demo_N` groups. The
+not), an HDF5 object holding rows that sits outside the episodes — `robomimic`'s `/mask` split
+group, a reward table parked at the root, an array beside the `demo_N` groups — and CAN traffic that
+went into no signal stream: frames on an id the `.dbc` never defines, and log lines that are not
+candump frames (CAN-FD `##`, RTR). The
 verdict's `coverage` field cannot express this, because a `Coverage::Full` ingest is one that read
 everything it was *willing* to read, which is not the same as everything the dataset declared. Until
 this existed, a LeRobot dataset with one of its two Parquet shards symlinked out of the directory

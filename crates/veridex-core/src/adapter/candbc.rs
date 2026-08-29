@@ -4,8 +4,12 @@
 //! meaning. This adapter ingests a **directory** holding exactly one `.dbc` and one or more candump
 //! ASCII logs (`.log` / `.asc`), decodes each frame's signals per the DBC, and emits one CDM
 //! [`Stream`] per signal (`Modality::CanSignal`). The fidelity signal the ingestion spec asks for is
-//! surfaced: **DBC-coverage gaps** — CAN ids seen in the log with no DBC definition — reported as
-//! `unmapped` fields.
+//! surfaced: **DBC-coverage gaps** — CAN ids seen in the log with no DBC definition, and log lines
+//! that are not candump frames — reported in [`IngestReport::unread_sources`], because both are
+//! traffic that was on the bus and went into no stream. That is a hole in the run's *coverage*, not
+//! a field the CDM has no shape for, so it raises `COVERAGE.SOURCE_UNREAD` in the verdict rather
+//! than a note only `inspect` prints: a log whose ids are mostly absent from the DBC otherwise reads
+//! as a clean, certifiable pass over the fraction that was decoded.
 //!
 //! Scope: both DBC byte orders are decoded — little-endian (Intel, `@1`) and big-endian (Motorola,
 //! `@0`) — with factor/offset applied and signed signals sign-extended. Decoded values are
@@ -18,6 +22,13 @@ use std::path::Path;
 use sha2::{Digest, Sha256};
 
 use crate::cdm::{ClockKind, Dataset, Episode, Frame, Modality, Stream, ValueRef};
+
+/// How many undefined CAN ids are named individually in the coverage disclosure.
+///
+/// Every unread source is named in the `COVERAGE.SOURCE_UNREAD` message, and a bus can carry
+/// hundreds of ids a partial DBC does not define. Past this many, the remainder is counted instead
+/// of listed — the frames are still disclosed, in a sentence a person can read.
+const MAX_NAMED_UNKNOWN_IDS: usize = 8;
 
 use super::{
     Adapter, Coverage, Detection, IngestError, IngestOptions, IngestReport, Ingested, Source,
@@ -481,19 +492,39 @@ impl Adapter for CanDbcAdapter {
             calibration: None,
         };
 
-        // Fidelity: DBC-coverage gaps (CAN ids in the log with no DBC message definition).
-        let mut unmapped_fields: Vec<UnmappedField> = unknown_ids
+        // Fidelity: DBC-coverage gaps (CAN ids in the log with no DBC message definition). Those
+        // frames carried payload down the bus and went into no stream, so they are unread data —
+        // the busiest ids named first, because which traffic is missing is the useful half.
+        let mut by_traffic: Vec<(u32, u64)> = unknown_ids.iter().map(|(id, n)| (*id, *n)).collect();
+        by_traffic.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        let mut unread_sources: Vec<UnmappedField> = by_traffic
             .iter()
+            .take(MAX_NAMED_UNKNOWN_IDS)
             .map(|(id, count)| UnmappedField {
                 source_path: format!("can id 0x{id:x}"),
                 note: format!("{count} frame(s) with no DBC message definition (coverage gap)"),
             })
             .collect();
+        // A bus can carry more distinct undefined ids than anyone can read in one finding, and the
+        // finding names every source it is given. The rest are counted rather than listed, so the
+        // disclosure stays complete without becoming unreadable.
+        if by_traffic.len() > MAX_NAMED_UNKNOWN_IDS {
+            let rest = &by_traffic[MAX_NAMED_UNKNOWN_IDS..];
+            let frames: u64 = rest.iter().map(|(_, n)| *n).sum();
+            unread_sources.push(UnmappedField {
+                source_path: format!("{} further can id(s)", rest.len()),
+                note: format!(
+                    "{frames} more frame(s) on ids with no DBC message definition; `veridex \
+                     inspect` is not a bus dump, so only the {MAX_NAMED_UNKNOWN_IDS} busiest are \
+                     named"
+                ),
+            });
+        }
         // Some lines parsed and some did not. That is not enough to refuse the log, but it is a
         // coverage gap of exactly the kind this report exists to name: those frames were on the bus
         // and are not in the verdict.
         if unreadable_lines > 0 {
-            unmapped_fields.push(UnmappedField {
+            unread_sources.push(UnmappedField {
                 source_path: "candump log lines".into(),
                 note: format!(
                     "{unreadable_lines} of {content_lines} content line(s) did not parse as a \
@@ -506,7 +537,7 @@ impl Adapter for CanDbcAdapter {
         Ok(Ingested {
             dataset,
             report: IngestReport {
-                unread_sources: Vec::new(),
+                unread_sources,
                 format_id: "candbc",
                 source_version: Some("dbc".into()),
                 coverage: Coverage::Full,
@@ -516,7 +547,7 @@ impl Adapter for CanDbcAdapter {
                     "candump frame timestamp -> frame.ts".into(),
                     "decoded signal value -> frame.value_ref.content_hash (SHA-256)".into(),
                 ],
-                unmapped_fields,
+                unmapped_fields: Vec::new(),
                 omitted_fields: vec![
                     "CAN frames are one continuous timeline; no episode segmentation".into(),
                 ],

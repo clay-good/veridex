@@ -119,8 +119,11 @@ fn a_motorola_signal_decodes_to_the_same_samples_as_its_intel_twin() {
     );
 }
 
+/// Frames on an id the DBC does not define carried payload down the bus and went into no stream.
+/// That is unread data, not a field the CDM has no shape for — so it has to reach the *verdict*,
+/// where a reader of the score can see it, and not only `inspect`.
 #[test]
-fn an_undefined_can_id_is_reported_as_a_coverage_gap() {
+fn an_undefined_can_id_is_reported_as_an_unread_source() {
     let dir = write_dataset();
     let ingested = CanDbcAdapter
         .ingest(
@@ -131,10 +134,78 @@ fn an_undefined_can_id_is_reported_as_a_coverage_gap() {
     assert!(
         ingested
             .report
-            .unmapped_fields
+            .unread_sources
             .iter()
             .any(|u| u.source_path.contains("0x200") && u.note.contains("coverage gap")),
-        "the undefined CAN id 0x200 must be reported as a DBC-coverage gap"
+        "the undefined CAN id 0x200 must be disclosed as unread: {:?}",
+        ingested.report.unread_sources
+    );
+
+    let outcome = veridex_core::pipeline::run_check(
+        &veridex_core::default_registry(),
+        &Source::Local(dir.path().to_path_buf()),
+        None,
+        &IngestOptions::default(),
+    )
+    .expect("the run completes");
+    let finding = outcome
+        .verdict
+        .findings
+        .iter()
+        .find(|f| f.code == "COVERAGE.SOURCE_UNREAD")
+        .expect("undecoded bus traffic surfaces as a coverage finding");
+    assert_eq!(finding.severity, veridex_core::check::Severity::Warning);
+    assert!(finding.message.contains("0x200"), "{}", finding.message);
+}
+
+/// A partial DBC over a busy bus can leave hundreds of ids undefined. Every unread source is named
+/// in the finding, so the list is bounded — and the frames behind the unnamed ids are still counted,
+/// because a bounded disclosure must not become a shortened one.
+#[test]
+fn many_undefined_ids_are_counted_rather_than_all_listed() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("vehicle.dbc"), DBC).unwrap();
+    let mut log = String::from(
+        "(1000.000000) can0 100#4001000012343412
+",
+    );
+    // 20 undefined ids; the busiest carries the most frames, so it must be among those named.
+    for i in 0..20u32 {
+        for n in 0..=i {
+            log.push_str(&format!(
+                "(1000.{:06}) can0 {:03X}#DEADBEEF
+",
+                i * 100 + n,
+                0x200 + i
+            ));
+        }
+    }
+    fs::write(dir.path().join("drive.log"), log).unwrap();
+
+    let unread = CanDbcAdapter
+        .ingest(
+            &Source::Local(dir.path().to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest")
+        .report
+        .unread_sources;
+    let named: Vec<&str> = unread.iter().map(|u| u.source_path.as_str()).collect();
+    assert_eq!(named.len(), 9, "eight ids plus one remainder: {named:?}");
+    assert!(
+        named.contains(&"can id 0x213"),
+        "the busiest id is named: {named:?}"
+    );
+    let rest = unread
+        .iter()
+        .find(|u| u.source_path == "12 further can id(s)")
+        .expect("the ids past the cap are counted");
+    // The eight busiest ids (0x20c..0x213) carry 13..20 frames; the twelve named only in the
+    // remainder carry 1..12, which is 78 frames that no stream holds.
+    assert!(
+        rest.note.starts_with("78 more frame(s)"),
+        "the frames behind the unnamed ids are still counted: {}",
+        rest.note
     );
 }
 
@@ -205,10 +276,10 @@ fn partially_unreadable_log_lines_are_reported_as_a_coverage_gap() {
         .report;
 
     let note = report
-        .unmapped_fields
+        .unread_sources
         .iter()
         .find(|u| u.source_path == "candump log lines")
-        .expect("the skipped line must be disclosed");
+        .expect("the skipped line must be disclosed as unread, which is what reaches the verdict");
     assert!(
         note.note.contains("1 of 2 content line(s)"),
         "blank lines and comments are not content: {}",

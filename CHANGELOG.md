@@ -10,6 +10,18 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **CAN traffic the DBC does not define was a note, not a coverage hole.** The CAN+DBC adapter
+  already found both gaps — frames on an id the `.dbc` never defines, and log lines that are not
+  candump frames (CAN-FD `##`, RTR) — and filed both as `unmapped`, which reaches `veridex inspect`
+  and nothing else. Those frames were on the bus and went into no stream, so a partial DBC over a
+  busy vehicle log produced `coverage: Full`, no warning, and a certifiable verdict speaking for the
+  whole recording while measuring whichever fraction of it the DBC happened to cover. Both are now
+  `unread_sources` and raise `COVERAGE.SOURCE_UNREAD` (warning) in the verdict.
+
+  The finding names every unread source, and a bus can carry hundreds of undefined ids, so the eight
+  busiest are named individually and the rest are counted — with their frame total, because a
+  bounded disclosure must not become a shortened one.
+
 - **An HDF5 file is more than its episodes, and the report said nothing about the rest.** The
   adapter reads episodes from `/data` and never looks anywhere else in the object tree. Everything
   the root holds beside it went unread *and* undisclosed: `robomimic` ships a `/mask` group naming
