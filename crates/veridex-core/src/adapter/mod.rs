@@ -249,6 +249,11 @@ pub(crate) fn read_source_whole(
 /// Separate from [`read_source_whole`] for the reader that does its own reading — a rosbag2 shard is
 /// decompressed under the decompression budget as it arrives — but must still be refused on size
 /// first.
+///
+/// `size` is what the caller measures, which for a compressed shard is its size **on disk**: a
+/// `.db3.zstd` holds more than that once unpacked. That expansion is the decompression budget's to
+/// bound (it is charged during the read, against a multiple of this same size), and this ceiling's
+/// job is the allocation the caller is about to make from the file it can see.
 pub(crate) fn check_source_size(
     size: u64,
     format_id: &'static str,

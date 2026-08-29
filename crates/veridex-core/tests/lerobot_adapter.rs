@@ -1567,6 +1567,54 @@ fn a_resolved_task_index_outranks_the_manifest_line() {
     assert_eq!(d.episodes[0].task.as_deref(), Some("stack the cups"));
 }
 
+/// An exporter can write both files — v2.1's per-episode statistics and a dataset-wide summary — and
+/// where both exist the dataset-wide one supplies the values. The report has to name the source the
+/// CDM's numbers actually came from, or it credits a file that was read for values that came from
+/// somewhere else.
+#[test]
+fn both_statistics_files_are_named_when_both_were_read() {
+    let dir = tempfile::tempdir().unwrap();
+    write_lerobot_v21(dir.path());
+    fs::write(
+        dir.path().join("meta/stats.json"),
+        serde_json::json!({
+            "observation.state": {
+                "min": [-1.0], "max": [1.0], "mean": [0.0], "std": [0.5]
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let ingested = LeRobotAdapter
+        .ingest(
+            &Source::Local(dir.path().to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest");
+    let stats = ingested.dataset.episodes[0].streams[0]
+        .stats
+        .expect("stored statistics");
+    assert_eq!(
+        (stats.min, stats.max),
+        (-1.0, 1.0),
+        "the dataset-wide summary is what the CDM carries"
+    );
+    let mapped = &ingested.report.mapped_fields;
+    assert!(
+        mapped
+            .iter()
+            .any(|f| f == "meta/stats.json -> stream.stats"),
+        "the file the values came from is named: {mapped:?}"
+    );
+    assert!(
+        mapped
+            .iter()
+            .any(|f| f.starts_with("meta/episodes_stats.jsonl -> stream.stats")),
+        "and so is the one that was read beside it: {mapped:?}"
+    );
+}
+
 /// The gate still refuses a version this adapter does not read — a v1.x export, or anything whose
 /// major is outside the supported set — rather than misparsing it.
 #[test]

@@ -1243,13 +1243,18 @@ fn ingest_metadata_only(
     ];
     // v2.1 keeps its statistics per episode; saying "no meta/stats.json" over a dataset that ships
     // them is true of the filename and false of the dataset.
+    // Both files can exist — an exporter that wrote v2.1's per-episode statistics and kept a
+    // dataset-wide summary — and the dataset-wide one wins where it does. The report names each
+    // source that was actually read, and omits the dataset-wide line only when there is nothing
+    // there to have read.
+    let (stats_mapped, stats_omitted) = stats_fidelity(&stats);
+    mapped_fields.extend(stats_mapped);
     let stats_omitted = if episode_stats.is_empty() {
-        let (stats_mapped, stats_omitted) = stats_fidelity(&stats);
-        mapped_fields.extend(stats_mapped);
         stats_omitted
     } else {
         mapped_fields.push(format!(
-            "meta/episodes_stats.jsonl -> stream.stats ({} episode(s))",
+            "meta/episodes_stats.jsonl -> stream.stats ({} episode(s) not covered by a \
+             dataset-wide summary)",
             episode_stats.len()
         ));
         None
@@ -1856,15 +1861,18 @@ impl Adapter for LeRobotAdapter {
         ];
         let mut omitted_fields =
             vec!["video frame decoding (frames are timestamps, not pixels)".into()];
+        // Each source that was actually read is named. Both files can exist, and where they do the
+        // dataset-wide one wins — so claiming only the per-episode file would name the wrong source
+        // for the values in the CDM. Where only the per-episode file exists, "no meta/stats.json"
+        // would be true of the filename and false of the dataset, so it is not said.
+        let (stats_mapped, stats_omitted) = stats_fidelity(&stats);
+        mapped_fields.extend(stats_mapped);
         if episode_stats.is_empty() {
-            let (stats_mapped, stats_omitted) = stats_fidelity(&stats);
-            mapped_fields.extend(stats_mapped);
             omitted_fields.extend(stats_omitted);
         } else {
-            // v2.1's statistics are per episode, so "no meta/stats.json" would be true and
-            // misleading at once: the dataset ships statistics, and they were read.
             mapped_fields.push(format!(
-                "meta/episodes_stats.jsonl -> stream.stats ({} episode(s))",
+                "meta/episodes_stats.jsonl -> stream.stats ({} episode(s) not covered by a \
+                 dataset-wide summary)",
                 episode_stats.len()
             ));
         }
