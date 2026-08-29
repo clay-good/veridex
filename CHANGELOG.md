@@ -60,7 +60,9 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   `meta/episodes_stats.jsonl` instead of one dataset-wide `meta/stats.json`. Read as "no stats file",
   a dataset that ships statistics is reported as shipping none — and every stored-vs-observed
   comparison silently skipped, on the majority of published LeRobot data. Those are read now and
-  attached to each episode's own streams, and the ingest report names where they came from.
+  attached to each episode's own streams, and the ingest report names where they came from — in a
+  full read, in a `--metadata-only` one, and over the Hub, where `meta/episodes_stats.jsonl` joins
+  the fixed manifest list a remote run is allowed to fetch.
 
 - **`STATISTICAL.OUT_OF_DECLARED_RANGE`: the values, against the range their own source declares.**
   A DBC states each signal's physical span (`[0|16383.75]`), which is a fact about the data separate

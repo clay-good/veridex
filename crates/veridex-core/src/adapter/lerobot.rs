@@ -1093,6 +1093,9 @@ fn ingest_metadata_only(
     budget.take("lerobot", declared_streams)?;
 
     let stats = load_stats(dir);
+    // v2.1's statistics are per episode; without this a header-only run over one reports a dataset
+    // that ships statistics as shipping none — the same misreport the full read used to make.
+    let episode_stats = load_episode_stats(dir);
     let card_license = load_card_license(dir);
 
     let episodes: Vec<Episode> = episode_indices
@@ -1120,8 +1123,16 @@ fn ingest_metadata_only(
                     frames: Vec::new(),
                     // Stored statistics are manifest content, so they are covered: the stats
                     // sanity checks (inverted range, non-finite, mean outside range) run here.
-                    stats: stats.scalar.get(name).copied(),
-                    dim_stats: stats.per_dim.get(name).cloned(),
+                    stats: stats.scalar.get(name).copied().or_else(|| {
+                        episode_stats
+                            .get(&index)
+                            .and_then(|s| s.scalar.get(name).copied())
+                    }),
+                    dim_stats: stats.per_dim.get(name).cloned().or_else(|| {
+                        episode_stats
+                            .get(&index)
+                            .and_then(|s| s.per_dim.get(name).cloned())
+                    }),
                     // Everything below is recomputed from values, and no value was read.
                     observed_stats: None,
                     observed_saturation: None,
@@ -1204,8 +1215,19 @@ fn ingest_metadata_only(
         "feature.shape -> stream.shape".into(),
         "robot_type -> provenance.sensor".into(),
     ];
-    let (stats_mapped, stats_omitted) = stats_fidelity(&stats);
-    mapped_fields.extend(stats_mapped);
+    // v2.1 keeps its statistics per episode; saying "no meta/stats.json" over a dataset that ships
+    // them is true of the filename and false of the dataset.
+    let stats_omitted = if episode_stats.is_empty() {
+        let (stats_mapped, stats_omitted) = stats_fidelity(&stats);
+        mapped_fields.extend(stats_mapped);
+        stats_omitted
+    } else {
+        mapped_fields.push(format!(
+            "meta/episodes_stats.jsonl -> stream.stats ({} episode(s))",
+            episode_stats.len()
+        ));
+        None
+    };
     if !declared_lengths.is_empty() {
         mapped_fields.push("meta/episodes.jsonl -> episodes + declared_frame_count".into());
     } else {

@@ -67,6 +67,10 @@ pub const LEROBOT_MANIFEST: &[(&str, bool)] = &[
     ("meta/info.json", true),
     ("meta/episodes.jsonl", false),
     ("meta/stats.json", false),
+    // Where a v2.1 dataset keeps the statistics v2.0 and v3 put in `stats.json`. Without it a
+    // remote check of a v2.1 repository — most of what is published — reports a dataset that ships
+    // statistics as shipping none, and every stored-statistics check silently has nothing to grade.
+    ("meta/episodes_stats.jsonl", false),
     ("meta/tasks.jsonl", false),
     ("README.md", false),
 ];
