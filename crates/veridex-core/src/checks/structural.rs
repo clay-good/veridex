@@ -1490,9 +1490,13 @@ impl Check for ContentMeasurability {
 /// the episode has.
 ///
 /// A step index is a row index. When a source stamps its frames with one — an HDF5 `demo_0` group's
-/// arrays, a Zarr store's, an RLDS episode's step features — `action[i]` and `observation.state[i]`
-/// are the *same* moment by construction, and the only thing that can make them not be is the two
-/// arrays holding different numbers of rows.
+/// arrays, a Zarr store's — `action[i]` and `observation.state[i]` are the *same* moment by
+/// construction, and the only thing that can make them not be is the two arrays holding different
+/// numbers of rows.
+///
+/// Reaches HDF5 and Zarr, both proven end-to-end. RLDS also stamps step indices but cannot reach
+/// here: a TFRecord holds one `steps` sequence, so its adapter *refuses* a record whose features
+/// disagree about that sequence's length, before there is a CDM to check.
 ///
 /// Nothing else in the catalog looks. The whole temporal family abstains on a step index, deliberately
 /// and correctly — an index is flawlessly monotonic and perfectly regular, so grading it would be

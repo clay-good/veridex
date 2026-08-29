@@ -11,7 +11,7 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 ### Added
 
 - **`structural.step-alignment` — an episode whose arrays disagree about its own length.** A step
-  index *is* a row index: when a source stamps frames with one (HDF5, Zarr, RLDS), `action[i]` and
+  index *is* a row index: when a source stamps frames with one (HDF5 and Zarr), `action[i]` and
   `observation.state[i]` are the same moment by construction, and the only thing that can break the
   pairing is the arrays holding different numbers of rows. Nothing in the catalog looked. The whole
   temporal family abstains on a step index — deliberately and correctly, since an index is flawlessly

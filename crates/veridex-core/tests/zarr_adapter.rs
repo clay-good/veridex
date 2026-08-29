@@ -1131,3 +1131,42 @@ fn an_array_this_reader_cannot_open_reaches_the_verdict_as_data_that_went_unread
             .collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn arrays_disagreeing_on_an_episodes_length_are_flagged_end_to_end() {
+    // A Zarr replay buffer slices every array by the same `meta/episode_ends`, so its arrays are
+    // paired by row — and nothing makes them the same length. Shorten `action` and episode 1 holds
+    // six states beside four actions: every pair past the fourth is built from the wrong state.
+    // Before `structural.step-alignment` this came back with no finding at all, because the temporal
+    // family abstains on a step index and nothing else compared the arrays.
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("mismatch.zarr");
+    copy_tree(&fixture("dp_replay.zarr"), &store);
+    let zarray = store.join("data/action/.zarray");
+    let mut meta: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&zarray).unwrap()).unwrap();
+    meta["shape"] = serde_json::json!([8, 2]);
+    std::fs::write(&zarray, serde_json::to_string(&meta).unwrap()).unwrap();
+
+    let ingested = default_registry()
+        .ingest(&Source::Local(store), &IngestOptions::default())
+        .expect("the store still ingests");
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let hash = veridex_core::content_hash(&ingested.dataset);
+    let verdict = engine.run(&ingested.dataset, hash, &veridex_core::RunConfig::default());
+    let f = verdict
+        .findings
+        .iter()
+        .find(|f| f.code == "STRUCTURAL.STEP_COUNT_MISMATCH")
+        .unwrap_or_else(|| {
+            panic!(
+                "{:?}",
+                verdict.findings.iter().map(|f| &f.code).collect::<Vec<_>>()
+            )
+        });
+    assert!(
+        f.message.contains("`state` holds 6") && f.message.contains("`action` holds 4"),
+        "{}",
+        f.message
+    );
+}
