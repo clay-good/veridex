@@ -49,6 +49,19 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **A stored standard deviation of zero over a non-zero range was reported by nobody.** It describes
+  no possible set of values — values that are not all identical have some spread — and it is what a
+  source writes when its statistics were carried over from another stream or never computed at all.
+  `statistical.extreme-outlier` divides by that std, making every z-score infinite, and steps aside
+  for "corrupt stats, `range-sanity`'s finding". `range-sanity` checked the *upper* bound of the same
+  inequality and not the lower one, so neither reported it and a dataset carrying statistics that
+  contradict themselves passed clean.
+
+  `STATISTICAL.STD_IMPLAUSIBLE` now covers both directions of the contradiction. Only exactly zero is
+  impossible — a distribution sitting almost entirely at its mean has a small std over a wide range,
+  which is ordinary data — and a genuinely constant stream keeps `STATISTICAL.DEGENERATE`, since a
+  stuck sensor is a different defect from an impossible statistic.
+
 - **A diff never checked that its two reports were about the same dataset.** `veridex diff` compares
   two saved reports and, with `--fail-on-regression`, gates CI on the result. It assumed the two were
   about the same dataset and enforced nothing: a job whose baseline artifact path is wrong, or one

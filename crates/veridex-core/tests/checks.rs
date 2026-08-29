@@ -4282,4 +4282,37 @@ fn a_stream_with_no_spread_has_no_outliers() {
             .is_empty(),
         "a zero spread under a non-zero range is corrupt, not an outlier"
     );
+    // And the check that owns corrupt stored statistics says so, rather than everyone stepping
+    // aside for someone else.
+    let f = statistical::RangeSanity.run(&inconsistent);
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].code, "STATISTICAL.STD_IMPLAUSIBLE");
+    assert_eq!(f[0].severity, Severity::Error);
+    assert!(f[0].message.contains("zero over range"), "{}", f[0].message);
+}
+
+/// The rule is the *lower* bound of the same inequality, and only its exact point is impossible: a
+/// distribution can sit almost entirely at its mean, so a small std over a wide range is ordinary
+/// data, not corruption. And a genuinely constant stream keeps its own finding.
+#[test]
+fn a_small_std_over_a_wide_range_is_ordinary_and_a_constant_stream_is_degenerate() {
+    let tiny_spread = dataset(vec![episode(
+        0,
+        vec![stream_with_stats("state", stats(0.0, 10.0, 5.0, 0.02))],
+    )]);
+    assert!(
+        statistical::RangeSanity.run(&tiny_spread).is_empty(),
+        "a narrow distribution between two rare extremes is data, not a contradiction"
+    );
+
+    let constant = dataset(vec![episode(
+        0,
+        vec![stream_with_stats("state", stats(3.0, 3.0, 3.0, 0.0))],
+    )]);
+    let f = statistical::RangeSanity.run(&constant);
+    assert_eq!(f.len(), 1);
+    assert_eq!(
+        f[0].code, "STATISTICAL.DEGENERATE",
+        "a stuck sensor is degenerate, not impossible"
+    );
 }

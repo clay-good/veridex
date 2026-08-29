@@ -453,6 +453,37 @@ impl RangeSanity {
             );
         }
 
+        // The same contradiction from the other side, at its one exact point: values that are not
+        // all identical have *some* spread, so a standard deviation of zero beside a min and max
+        // that differ describes no possible set of values. Only exactly zero is impossible — a
+        // million values at the mean and one at each extreme drives the std arbitrarily close to it
+        // — which is why this is the lower bound and Popoviciu is the upper one, with the whole
+        // range between them admissible.
+        //
+        // Worth naming rather than leaving to another check: `statistical.extreme-outlier` divides
+        // by this std, so a stored zero made every value's z-score infinite. It steps aside for
+        // "corrupt stats, someone else's finding" — and nobody else had one, so a source that
+        // stored a spread of zero over a range of ten passed in silence.
+        let slack = rounding_tolerance(stats);
+        if stats.max > stats.min + slack && stats.std.abs() <= slack {
+            return Some(
+                Finding::new(
+                    self.id(),
+                    Category::Statistical,
+                    Severity::Error,
+                    at(),
+                    "STATISTICAL.STD_IMPLAUSIBLE",
+                    format!(
+                        "stream `{}` in episode {}: std {} is zero over range [{}, {}], which no \
+                         set of values has",
+                        name, episode, stats.std, stats.min, stats.max
+                    ),
+                )
+                .with_risk("A std of zero beside a non-zero range means the stored statistics don't match the data (often carried over from a different stream, or never computed at all); normalization built on them divides by zero, and every z-score derived from them is infinite.")
+                .with_remedy("Re-derive the statistics from the data."),
+            );
+        }
+
         // Stored stats must fit the stream's declared integer dtype: a `uint8` stream can't hold a
         // value of 300, so min/max outside the dtype's representable range means the stats don't
         // match the data (wrong dtype, or stats computed on rescaled values).
