@@ -1485,3 +1485,108 @@ impl Check for ContentMeasurability {
         )]
     }
 }
+
+/// Streams in one episode indexed by the same **step counter** that disagree about how many steps
+/// the episode has.
+///
+/// A step index is a row index. When a source stamps its frames with one — an HDF5 `demo_0` group's
+/// arrays, a Zarr store's, an RLDS episode's step features — `action[i]` and `observation.state[i]`
+/// are the *same* moment by construction, and the only thing that can make them not be is the two
+/// arrays holding different numbers of rows.
+///
+/// Nothing else in the catalog looks. The whole temporal family abstains on a step index, deliberately
+/// and correctly — an index is flawlessly monotonic and perfectly regular, so grading it would be
+/// grading nothing (see [`ClockMeasurability`](crate::checks::temporal::ClockMeasurability)) — and
+/// `structural.declared-frame-count` needs a count the source declares, which these formats rarely do.
+/// An episode whose `action` array held 100 rows beside an `observation.state` of 50 therefore came
+/// back clean, with every pair past row 50 built from the wrong observation. On measured time the
+/// same defect surfaces as `TEMPORAL.CLOCK_SKEW`; on a step index it surfaced as nothing.
+///
+/// **A difference of one is tolerated**, and only one. Several collectors store the terminal
+/// observation a trajectory ends in, giving `observation` one row more than `action` — a real and
+/// deliberate convention, not a defect, and flagging it would fire on sound robomimic data. Two rows
+/// is no convention.
+pub struct StepAlignment;
+
+impl Check for StepAlignment {
+    fn id(&self) -> &'static str {
+        "structural.step-alignment"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["STRUCTURAL.STEP_COUNT_MISMATCH"]
+    }
+    fn title(&self) -> &'static str {
+        "Step-indexed streams agree on the episode's length"
+    }
+    fn category(&self) -> Category {
+        Category::Structural
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Error
+    }
+    fn scope(&self) -> Scope {
+        Scope::Episode
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        for ep in &dataset.episodes {
+            // Grouped by clock: two step counters are two independent indexings, and comparing a
+            // stream on one against a stream on the other compares nothing.
+            let mut by_clock: BTreeMap<&str, Vec<(&str, usize)>> = BTreeMap::new();
+            for stream in &ep.streams {
+                // An empty stream is `DegenerateEpisode`'s finding, and counting it here would
+                // report the same defect twice under a name that misdescribes it.
+                if stream.clock_kind != crate::cdm::ClockKind::StepIndex || stream.frames.is_empty()
+                {
+                    continue;
+                }
+                by_clock
+                    .entry(stream.clock_id.as_str())
+                    .or_default()
+                    .push((stream.name.as_str(), stream.frames.len()));
+            }
+            for (clock, streams) in by_clock {
+                let Some(shortest) = streams.iter().min_by_key(|(name, n)| (*n, *name)) else {
+                    continue;
+                };
+                let Some(longest) = streams.iter().max_by_key(|(name, n)| (*n, *name)) else {
+                    continue;
+                };
+                // One row apart is the terminal-observation convention; see the type docs.
+                if longest.1.saturating_sub(shortest.1) < 2 {
+                    continue;
+                }
+                findings.push(
+                    Finding::new(
+                        self.id(),
+                        Category::Structural,
+                        Severity::Error,
+                        Location::Episode { episode: ep.index },
+                        "STRUCTURAL.STEP_COUNT_MISMATCH",
+                        format!(
+                            "episode {}: on step index `{clock}`, stream `{}` holds {} step(s) but \
+                             `{}` holds {} — they cannot both be this episode's length",
+                            ep.index, longest.0, longest.1, shortest.0, shortest.1,
+                        ),
+                    )
+                    .with_risk(
+                        "A step index is a row index, so these streams are paired by position. \
+                         With different lengths the pairing is wrong from the first missing row on: \
+                         every action is trained against an observation from a different moment, \
+                         which is the failure that produces a policy that looks trained and acts \
+                         out of phase.",
+                    )
+                    .with_remedy(
+                        "Find which array is short — a truncated write, a filtered subset saved \
+                         beside an unfiltered one — and re-export the episode so every step-indexed \
+                         stream covers the same steps.",
+                    ),
+                );
+            }
+        }
+        findings
+    }
+}

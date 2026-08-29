@@ -1409,7 +1409,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 40);
+    assert_eq!(verdict.executed_checks.len(), 41);
 }
 
 #[test]
@@ -4421,4 +4421,89 @@ fn an_inverted_declared_range_is_not_a_breach_of_itself() {
     let f = statistical::DeclaredRangeConformance.run(&dataset(vec![episode(0, vec![sound])]));
     assert_eq!(f.len(), 1);
     assert_eq!(f[0].code, "STATISTICAL.OUT_OF_DECLARED_RANGE");
+}
+
+// ---- structural.step-alignment ----
+
+/// A step-indexed stream of `n` steps: what an HDF5 `demo_0` array or a Zarr array becomes.
+fn step_stream(name: &str, clock: &str, n: i64) -> Stream {
+    let mut s = stream(name, clock, None, &(0..n).collect::<Vec<i64>>());
+    s.clock_kind = ClockKind::StepIndex;
+    s
+}
+
+#[test]
+fn step_indexed_streams_that_disagree_on_the_episodes_length_are_flagged() {
+    // The gap this closes: the temporal family abstains on a step index (correctly — an index is
+    // flawlessly monotonic), and nothing else compared the arrays. An episode holding 100 actions
+    // beside 50 observations came back clean, with every pair past row 50 built from the wrong
+    // observation.
+    let d = dataset(vec![episode(
+        0,
+        vec![
+            step_stream("action", "hdf5-step-index", 100),
+            step_stream("observation.state", "hdf5-step-index", 50),
+        ],
+    )]);
+    let f = structural::StepAlignment.run(&d);
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "STRUCTURAL.STEP_COUNT_MISMATCH");
+    assert_eq!(f[0].severity, Severity::Error);
+    assert!(
+        f[0].message.contains("`action` holds 100")
+            && f[0].message.contains("`observation.state` holds 50"),
+        "{}",
+        f[0].message
+    );
+}
+
+#[test]
+fn a_terminal_observation_one_row_longer_than_the_actions_is_not_a_defect() {
+    // Several collectors store the observation a trajectory *ends* in, giving `observation` one row
+    // more than `action`. That is a deliberate convention, and a check that fired on it would fail
+    // sound robomimic data — the fastest way for a real user to conclude the tool is wrong.
+    let d = dataset(vec![episode(
+        0,
+        vec![
+            step_stream("action", "hdf5-step-index", 100),
+            step_stream("observation.state", "hdf5-step-index", 101),
+        ],
+    )]);
+    assert!(structural::StepAlignment.run(&d).is_empty());
+}
+
+#[test]
+fn measured_time_and_separate_step_counters_are_left_to_the_checks_that_grade_them() {
+    // Streams on *measured* time are the temporal family's business — a length difference there is
+    // CLOCK_SKEW, and reporting it twice under two names helps nobody.
+    let measured = dataset(vec![episode(
+        0,
+        vec![
+            stream("action", "c", None, &[0, 1, 2, 3]),
+            stream("observation.state", "c", None, &[0]),
+        ],
+    )]);
+    assert!(structural::StepAlignment.run(&measured).is_empty());
+
+    // Two *different* step counters are two independent indexings; comparing across them compares
+    // nothing, so an RLDS episode beside an HDF5 one in the same CDM is not accused.
+    let two_clocks = dataset(vec![episode(
+        0,
+        vec![
+            step_stream("action", "hdf5-step-index", 100),
+            step_stream("frames", "rlds-step-index", 10),
+        ],
+    )]);
+    assert!(structural::StepAlignment.run(&two_clocks).is_empty());
+
+    // An empty stream is `STRUCTURAL.EMPTY_STREAM`'s finding; counting it here would report the
+    // same defect twice under a name that misdescribes it.
+    let with_empty = dataset(vec![episode(
+        0,
+        vec![
+            step_stream("action", "hdf5-step-index", 100),
+            step_stream("observation.state", "hdf5-step-index", 0),
+        ],
+    )]);
+    assert!(structural::StepAlignment.run(&with_empty).is_empty());
 }

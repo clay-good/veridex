@@ -37,6 +37,7 @@ pub fn standard_checks_with(t: &Tolerances) -> Vec<Box<dyn Check>> {
             min_overlap: t.near_duplicate_fraction,
         }),
         Box::new(structural::StuckStream),
+        Box::new(structural::StepAlignment),
         Box::new(temporal::ClockMeasurability),
         Box::new(temporal::Monotonicity),
         Box::new(temporal::RateValidity),

@@ -1663,3 +1663,43 @@ fn a_corrupt_root_sibling_is_disclosed_rather_than_failing_the_file() {
         );
     }
 }
+
+#[test]
+fn arrays_disagreeing_on_the_episodes_length_are_flagged_end_to_end() {
+    // A step index is a row index, so `actions[i]` and `obs/robot0_eef_pos[i]` are the same moment
+    // by construction — and the file holds 100 of one and 50 of the other. Before this check the
+    // whole run came back clean: the temporal family abstains on a step index (correctly), and
+    // nothing else compared the arrays, so every pair past row 50 was built from the wrong
+    // observation with nothing said.
+    let ingested = ingest("step_mismatch.h5", IngestOptions::default());
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let hash = veridex_core::content_hash(&ingested.dataset);
+    let verdict = engine.run(&ingested.dataset, hash, &veridex_core::RunConfig::default());
+
+    let f = verdict
+        .findings
+        .iter()
+        .find(|f| f.code == "STRUCTURAL.STEP_COUNT_MISMATCH")
+        .unwrap_or_else(|| {
+            panic!(
+                "{:?}",
+                verdict.findings.iter().map(|f| &f.code).collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(f.severity, veridex_core::check::Severity::Error);
+    assert!(
+        f.message.contains("holds 50"),
+        "the short array is named: {}",
+        f.message
+    );
+    // One finding, not one per pair of arrays: the episode has one length, and it is one defect.
+    assert_eq!(
+        verdict
+            .findings
+            .iter()
+            .filter(|f| f.code == "STRUCTURAL.STEP_COUNT_MISMATCH")
+            .count(),
+        1
+    );
+    assert_eq!(verdict.status, veridex_core::Status::Fail);
+}

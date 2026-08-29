@@ -158,5 +158,16 @@ with h5py.File("root_siblings.h5", "w") as f:
         "events", data=np.zeros((2,), dtype=np.int32)
     )  # arrays two levels down: the walk has to recurse to find them
 
+# Two arrays of one episode disagreeing about how many steps it has. No timestamp array, so the
+# episode is on a step index — which is a row index, so `actions[i]` and `obs/robot0_eef_pos[i]` are
+# the same moment by construction and can only be mispaired by the arrays being different lengths.
+# `terminal_obs` is one row longer than `actions`, the convention several collectors write.
+rng = np.random.default_rng(71)
+with h5py.File("step_mismatch.h5", "w") as f:
+    g = f.create_group("data").create_group("demo_0")
+    g.create_dataset("actions", data=rng.random((100, 7)).astype(np.float32))
+    g.create_dataset("obs/robot0_eef_pos", data=rng.random((50, 3)).astype(np.float32))
+    g.create_dataset("terminal_obs", data=rng.random((101, 3)).astype(np.float32))
+
 for name in sorted(n for n in os.listdir(".") if n.endswith(".h5")):
     print(name, os.path.getsize(name))

@@ -10,6 +10,21 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **`structural.step-alignment` — an episode whose arrays disagree about its own length.** A step
+  index *is* a row index: when a source stamps frames with one (HDF5, Zarr, RLDS), `action[i]` and
+  `observation.state[i]` are the same moment by construction, and the only thing that can break the
+  pairing is the arrays holding different numbers of rows. Nothing in the catalog looked. The whole
+  temporal family abstains on a step index — deliberately and correctly, since an index is flawlessly
+  monotonic and perfectly regular — and `structural.declared-frame-count` needs a count these formats
+  rarely declare. An episode holding 100 actions beside 50 observations therefore came back clean,
+  with every pair past row 50 trained from the wrong observation. On measured time the same defect
+  has always surfaced as `TEMPORAL.CLOCK_SKEW`; on a step index it surfaced as nothing.
+
+  A difference of **one** row is tolerated, and only one: several collectors store the terminal
+  observation a trajectory ends in, which is a deliberate convention and not a defect — a check that
+  failed sound robomimic data would be the fastest way to conclude the tool is wrong. Two rows is no
+  convention. Proven end-to-end against an `h5py`-written fixture carrying both cases at once.
+
 - **A `JointState` topic that reorders its joints is refused, not mismeasured.** The message
   guarantees only that `position[i]` belongs to `name[i]` *within that message* — nothing says two
   messages order their joints alike, and a publisher aggregating several sources is exactly where

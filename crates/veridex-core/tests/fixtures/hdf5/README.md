@@ -32,6 +32,7 @@ Regenerating changes the row hashes pinned in the tests (the arrays are drawn fr
 | `nan_timestamp.h5` | A non-finite value in a timeline that declares units |
 | `mismatched_timeline.h5` | A timeline covering only some of the episode's arrays, and a declared count with no single actual count to match |
 | `disclosure.h5` | Everything that must be *named* rather than dropped: a soft link, a hard link back to an ancestor, a variable-length array, a scalar array, a zero-row array, an array attribute, an oversized attribute, a negative `int32` attribute, an array beside the episode groups, a committed datatype |
+| `step_mismatch.h5` | Two arrays of one episode disagreeing about how many steps it has (100 actions, 50 observations), plus a `terminal_obs` one row longer — the convention that must *not* be flagged |
 | `root_siblings.h5` | What a file holds *beside* `/data`: a `/mask` group of filter keys, an array at the root, arrays two levels down another root group — each a coverage hole — plus an empty group, a zero-row array and a root scalar, which are not |
 | `unsorted_names.h5` | Link order ≠ name order (`demo_10`, `demo_2`, `demo_1`; arrays written in reverse) |
 | `colliding_names.h5` | Group names whose trailing numbers collide (`run_1`, `other_1`), forcing positional indices |
