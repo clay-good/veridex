@@ -1444,6 +1444,66 @@ fn a_v21_dataset_reads_as_the_dataset_it_is() {
     );
 }
 
+/// A header-only run answers questions about *stored* statistics — an inverted range, a mean outside
+/// its own bounds — so it has to find them where the version at hand keeps them. Looking only for
+/// `meta/stats.json` over a v2.1 dataset reports one that ships statistics as shipping none, and
+/// every stored-statistics check then grades nothing while the report says it ran.
+#[test]
+fn a_metadata_only_run_over_v21_finds_the_per_episode_statistics() {
+    let dir = tempfile::tempdir().unwrap();
+    write_lerobot_v21(dir.path());
+
+    let ingested = LeRobotAdapter
+        .ingest(
+            &Source::Local(dir.path().to_path_buf()),
+            &IngestOptions {
+                metadata_only: true,
+                ..IngestOptions::default()
+            },
+        )
+        .expect("a metadata-only v2.1 run reads the manifest");
+    let stats = ingested.dataset.episodes[1].streams[0]
+        .stats
+        .expect("the episode's own stored statistics");
+    assert_eq!((stats.min, stats.max), (10.0, 12.0));
+    assert!(
+        ingested
+            .report
+            .mapped_fields
+            .iter()
+            .any(|f| f.starts_with("meta/episodes_stats.jsonl -> stream.stats")),
+        "{:?}",
+        ingested.report.mapped_fields
+    );
+    assert!(
+        !ingested
+            .report
+            .omitted_fields
+            .iter()
+            .any(|f| f.contains("no meta/stats.json")),
+        "a dataset that ships statistics must not be reported as shipping none"
+    );
+}
+
+/// The remote path can only ever fetch what the fixed manifest list names, so a file the adapter
+/// reads and the list omits is a file no remote run will ever see.
+#[test]
+fn the_remote_manifest_list_names_every_metadata_file_the_adapter_reads() {
+    let listed: Vec<&str> = veridex_core::remote::LEROBOT_MANIFEST
+        .iter()
+        .map(|(p, _)| *p)
+        .collect();
+    for needed in [
+        "meta/info.json",
+        "meta/episodes.jsonl",
+        "meta/tasks.jsonl",
+        "meta/stats.json",
+        "meta/episodes_stats.jsonl",
+    ] {
+        assert!(listed.contains(&needed), "{needed} is not in {listed:?}");
+    }
+}
+
 /// The gate still refuses a version this adapter does not read — a v1.x export, or anything whose
 /// major is outside the supported set — rather than misparsing it.
 #[test]
