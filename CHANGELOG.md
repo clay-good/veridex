@@ -104,6 +104,16 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **A `--metadata-only` run accused every stream of carrying no values.**
+  `STATISTICAL.UNMEASURED_VALUES` reads the *format*: a stream with no statistics is one whose values
+  the adapter does not interpret. Under `--metadata-only` that is true of every stream in every
+  format, by request — so the finding stopped describing the dataset and started describing the flag.
+  It named a bag's `/imu/data` as a stream carrying no statistics, over a recording a full read
+  measures per axis, beside a remedy telling the reader to go re-check the data in some other format.
+  The actual fix was to drop the flag, which `COVERAGE.METADATA_ONLY` already says. It is now
+  withheld under a narrow run, the same way `TEMPORAL.UNCOMPARED_STREAMS` is, and a full read still
+  names every payload it fingerprinted without interpreting.
+
 - **A metadata-only run reported a calibrated rig as missing its calibration provenance.** The
   element is decoded from ROS message bodies, which such a run does not open, so it read the absence
   it had created itself — the defect `autonomy.calibration-completeness` was fixed for a fortnight

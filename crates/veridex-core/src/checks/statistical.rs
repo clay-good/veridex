@@ -1065,6 +1065,25 @@ impl Check for ValueMeasurability {
     fn version(&self) -> &'static str {
         "1"
     }
+    /// Both codes are withheld under a metadata-only ingest.
+    ///
+    /// The same reasoning as `TEMPORAL.UNCOMPARED_STREAMS`, one family over. This check exists to
+    /// separate "checked and clean" from "never looked", and it does that by reading the *format*:
+    /// a stream with no statistics is one whose values this adapter does not interpret. Under
+    /// `--metadata-only` no adapter interprets anything, by request, so every stream qualifies and
+    /// the finding stops describing the dataset and starts describing the request — which
+    /// `COVERAGE.METADATA_ONLY` already states in full ("no timestamp, value, content hash, or media
+    /// header was examined").
+    ///
+    /// Left in, it actively misdirects: a bag's `/imu/data` was named as a stream carrying no
+    /// statistics — over a recording a full read measures per axis — beside a remedy telling the
+    /// reader to re-check the data in some other format. The fix is to drop the flag.
+    fn run_in(&self, dataset: &Dataset, context: &crate::check::CheckContext) -> Vec<Finding> {
+        if !context.frames_read {
+            return Vec::new();
+        }
+        self.run(dataset)
+    }
     fn run(&self, dataset: &Dataset) -> Vec<Finding> {
         // Reported once for the dataset: whether values are read is a property of the source format,
         // so one finding per episode would repeat the same fact for every episode.

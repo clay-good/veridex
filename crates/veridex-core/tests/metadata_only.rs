@@ -776,3 +776,63 @@ fn a_payload_derived_provenance_element_is_not_called_missing_when_no_payload_wa
         );
     }
 }
+
+#[test]
+fn a_narrow_run_does_not_accuse_a_stream_of_values_it_asked_not_to_read() {
+    // `STATISTICAL.UNMEASURED_VALUES` reads the *format*: a stream with no statistics is one whose
+    // values the adapter does not interpret. Under `--metadata-only` that is true of every stream in
+    // every format, by request — so the finding stopped describing the dataset and started
+    // describing the flag. It named a bag's `/imu/data` as carrying no statistics, over a recording
+    // a full read measures per axis, and told the reader to go re-check the data somewhere else.
+    // `COVERAGE.METADATA_ONLY` already says no value was examined.
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/rosbag2/clean_rig");
+    let options = veridex_core::adapter::IngestOptions {
+        metadata_only: true,
+        ..Default::default()
+    };
+    let out = veridex_core::pipeline::run_check(
+        &veridex_core::adapter::default_registry(),
+        &veridex_core::adapter::Source::Local(path.clone()),
+        None,
+        &options,
+    )
+    .expect("the bag's manifest is readable");
+    assert!(
+        out.verdict
+            .findings
+            .iter()
+            .any(|f| f.code == "COVERAGE.METADATA_ONLY"),
+        "the run's scope is still disclosed"
+    );
+    assert!(
+        !out.verdict
+            .findings
+            .iter()
+            .any(|f| f.code == "STATISTICAL.UNMEASURED_VALUES"),
+        "{:?}",
+        out.verdict
+            .findings
+            .iter()
+            .map(|f| &f.code)
+            .collect::<Vec<_>>()
+    );
+
+    // A full read of the same bag still reports the streams it genuinely could not measure — the
+    // camera and the LiDAR, whose payloads stay opaque. The finding is not being suppressed, it is
+    // being confined to the runs it describes.
+    let full = veridex_core::pipeline::run_check(
+        &veridex_core::adapter::default_registry(),
+        &veridex_core::adapter::Source::Local(path),
+        None,
+        &veridex_core::adapter::IngestOptions::default(),
+    )
+    .expect("the bag reads");
+    assert!(
+        full.verdict
+            .findings
+            .iter()
+            .any(|f| f.code == "STATISTICAL.UNMEASURED_VALUES"),
+        "a full read still names the payloads it fingerprinted without interpreting"
+    );
+}
