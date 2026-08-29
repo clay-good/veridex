@@ -4612,3 +4612,70 @@ fn an_unfingerprinted_episode_is_not_evidence_either_way() {
     // Four episodes are now unreadable, leaving one examined episode: too few to judge.
     assert!(structural::FrozenEpisode.run(&d).is_empty());
 }
+
+// ---- AUTONOMY.CALIBRATION_IMPLAUSIBLE ----
+
+#[test]
+fn a_camera_with_no_focal_length_is_not_a_calibrated_camera() {
+    // What an uncalibrated ROS camera driver publishes: a `CameraInfo` of all zeros. It satisfies
+    // every presence test — intrinsics are *there* — so the rig scored a clean pass and the
+    // `world-model-ready` calibration criterion reported green, over a camera that can project
+    // nothing. Present is not usable.
+    let mut zeroed = intr("cam");
+    zeroed.fx = 0.0;
+    zeroed.fy = 0.0;
+    zeroed.cx = 0.0;
+    zeroed.cy = 0.0;
+    let cal = veridex_core::cdm::Calibration {
+        transforms: vec![xf("base_link", "lidar"), xf("base_link", "cam")],
+        intrinsics: vec![zeroed],
+    };
+    let f = autonomy::CalibrationCompleteness.run(&rig_with_calibration(Some(cal)));
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "AUTONOMY.CALIBRATION_IMPLAUSIBLE");
+    assert_eq!(
+        f[0].severity,
+        Severity::Error,
+        "a focal length of zero is arithmetic with no answer, not a judgment call"
+    );
+    assert!(f[0].message.contains("focal length"), "{}", f[0].message);
+}
+
+#[test]
+fn an_uninitialized_transform_is_not_a_pose() {
+    // An all-zero quaternion is what an unset transform holds; it is not a rotation, so the
+    // transform places nothing — while a presence check counts it as a calibrated edge.
+    let mut dead = xf("base_link", "lidar");
+    dead.pose.rotation = [0.0, 0.0, 0.0, 0.0];
+    let cal = veridex_core::cdm::Calibration {
+        transforms: vec![dead, xf("base_link", "cam")],
+        intrinsics: vec![intr("cam")],
+    };
+    let f = autonomy::CalibrationCompleteness.run(&rig_with_calibration(Some(cal)));
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "AUTONOMY.CALIBRATION_IMPLAUSIBLE");
+    assert!(f[0].message.contains("zero rotation"), "{}", f[0].message);
+}
+
+#[test]
+fn only_impossible_calibration_is_flagged_never_merely_unusual() {
+    // A long lens, an off-centre principal point, a strong distortion coefficient and an
+    // unnormalized-but-real quaternion are all legitimate. Judging plausibility would need the image
+    // dimensions the CDM does not carry, so it is not attempted — a wrong accusation about a working
+    // rig is worse than the silence it replaces.
+    let mut unusual = intr("cam");
+    unusual.fx = 12_000.0;
+    unusual.fy = 0.5;
+    unusual.cx = 0.0;
+    unusual.cy = 4000.0;
+    unusual.distortion = vec![-3.0, 9.5, 0.0, 0.0, 0.0];
+    let mut off_norm = xf("base_link", "lidar");
+    off_norm.pose.rotation = [0.0, 0.0, 0.0, 0.998];
+    let cal = veridex_core::cdm::Calibration {
+        transforms: vec![off_norm, xf("base_link", "cam")],
+        intrinsics: vec![unusual],
+    };
+    assert!(autonomy::CalibrationCompleteness
+        .run(&rig_with_calibration(Some(cal)))
+        .is_empty());
+}

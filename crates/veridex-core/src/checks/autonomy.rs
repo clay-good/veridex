@@ -547,7 +547,10 @@ impl Check for CalibrationCompleteness {
         "autonomy.calibration-completeness"
     }
     fn finding_codes(&self) -> &'static [&'static str] {
-        &["AUTONOMY.CALIBRATION_INCOMPLETE"]
+        &[
+            "AUTONOMY.CALIBRATION_INCOMPLETE",
+            "AUTONOMY.CALIBRATION_IMPLAUSIBLE",
+        ]
     }
     fn title(&self) -> &'static str {
         "Rig calibration completeness"
@@ -583,6 +586,28 @@ impl Check for CalibrationCompleteness {
             .with_remedy(
                 "Record the full static TF tree relating every sensor frame, and a CameraInfo \
                  (intrinsics) for each camera, in the log.",
+            )
+        };
+        // The same shape, for calibration that is present and cannot be used. Error, not warning: a
+        // focal length of zero is not a judgment call, it is arithmetic with no answer.
+        let unusable = |episode: u64, msg: String| {
+            Finding::new(
+                "autonomy.calibration-completeness",
+                Category::Autonomy,
+                Severity::Error,
+                Location::Episode { episode },
+                "AUTONOMY.CALIBRATION_IMPLAUSIBLE",
+                msg,
+            )
+            .with_risk(
+                "Calibration that is present but arithmetically impossible is worse than \
+                 calibration that is absent: every presence check passes, so the rig certifies as \
+                 fusable while every projection built on it is undefined. It is what an \
+                 uncalibrated driver publishes by default.",
+            )
+            .with_remedy(
+                "Calibrate the camera and re-record, or re-publish the `CameraInfo` and static \
+                 transforms from the calibration file the rig actually uses.",
             )
         };
         for ep in &dataset.episodes {
@@ -644,6 +669,19 @@ impl Check for CalibrationCompleteness {
                          projecting points into the image is undefined",
                         ep.index
                     ),
+                ));
+            }
+
+            // Present is not the same as usable. An uncalibrated ROS camera driver publishes a
+            // `CameraInfo` of all zeros, which satisfies every presence test above while making the
+            // projection it exists for undefined — and the rig then certifies as world-model-ready
+            // on a camera with no focal length. Only impossibilities are judged, never
+            // implausibility: a focal length must be positive and finite, a principal point
+            // non-negative and finite, a rotation quaternion an actual rotation.
+            for reason in unusable_calibration(dataset) {
+                findings.push(unusable(
+                    ep.index,
+                    format!("episode {}: {reason}", ep.index),
                 ));
             }
         }
@@ -954,4 +992,58 @@ impl Check for SensorFrameResolution {
         }
         findings
     }
+}
+
+/// Every way a dataset's calibration is present and cannot be used, as sentences naming the element.
+///
+/// Only impossibilities, never implausibilities. A focal length must be positive and finite — the
+/// projection divides by it. A principal point must be finite and non-negative — it is a pixel
+/// coordinate. A rotation must be an actual rotation — an all-zero quaternion is the uninitialized
+/// value, not a pose. Nothing here judges whether a number is *sensible* for a given camera, which
+/// would need the image dimensions the CDM does not carry and would guess where it cannot know.
+fn unusable_calibration(dataset: &Dataset) -> Vec<String> {
+    let Some(calibration) = &dataset.calibration else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for k in &calibration.intrinsics {
+        let positive = |v: f64| v.is_finite() && v > 0.0;
+        let pixel = |v: f64| v.is_finite() && v >= 0.0;
+        if !positive(k.fx) || !positive(k.fy) {
+            out.push(format!(
+                "camera `{}` declares a focal length of ({}, {}) — a projection divides by it, so \
+                 it must be positive and finite",
+                k.stream, k.fx, k.fy
+            ));
+        } else if !pixel(k.cx) || !pixel(k.cy) {
+            out.push(format!(
+                "camera `{}` declares a principal point of ({}, {}) — it is a pixel coordinate, so \
+                 it must be finite and non-negative",
+                k.stream, k.cx, k.cy
+            ));
+        } else if k.distortion.iter().any(|d| !d.is_finite()) {
+            out.push(format!(
+                "camera `{}` declares a non-finite distortion coefficient, so undistortion has no \
+                 result",
+                k.stream
+            ));
+        }
+    }
+    for t in &calibration.transforms {
+        let q = t.pose.rotation;
+        let norm = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
+        if t.pose.translation.iter().any(|v| !v.is_finite()) || !norm.is_finite() {
+            out.push(format!(
+                "the transform `{}` → `{}` holds a non-finite value, so it places nothing",
+                t.parent_frame, t.child_frame
+            ));
+        } else if norm < 1e-6 {
+            out.push(format!(
+                "the transform `{}` → `{}` carries a zero rotation quaternion, which is not a \
+                 rotation — the uninitialized value, not a measured pose",
+                t.parent_frame, t.child_frame
+            ));
+        }
+    }
+    out
 }

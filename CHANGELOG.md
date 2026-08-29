@@ -10,6 +10,22 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A camera with no focal length certified as calibrated.** `autonomy.calibration-completeness`
+  tested that intrinsics were *present*. An uncalibrated ROS camera driver publishes a `CameraInfo`
+  of all zeros, which is present — so a rig carrying it scored a clean pass and the
+  `world-model-ready` calibration criterion reported green, over a camera that can project nothing.
+  Every fusion built on it is undefined, and Veridex would have signed it as ready.
+
+  `AUTONOMY.CALIBRATION_IMPLAUSIBLE` (error) now covers calibration that is present and cannot be
+  used: a focal length that is not positive and finite, a principal point that is not a finite
+  non-negative pixel coordinate, a non-finite distortion coefficient, a transform holding a
+  non-finite value or an all-zero rotation quaternion — the uninitialized value, not a pose. Only
+  **impossibilities** are judged, never implausibility: a long lens, an off-centre principal point, a
+  strong distortion coefficient and an unnormalized-but-real quaternion are all legitimate, and
+  telling sensible from silly would need image dimensions the CDM does not carry. Because the code
+  belongs to a check the readiness profile already judges, the defect reaches `ready` with no new
+  criterion to forget.
+
 - **`structural.frozen-episode` — the recording where the robot never moved.** The commonest failure
   in a teleoperated dataset, and it fell exactly between two checks that each defer to the other.
   `structural.stuck-stream` looks only at `Video`, because a frozen *scalar* stream is the
