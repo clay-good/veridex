@@ -118,7 +118,7 @@ See [profiles.md](profiles.md) for the profile's criteria and the full verificat
 | Source | Becomes |
 |---|---|
 | ROS/ROS 2 MCAP topics (`PointCloud2`, `Image`/`CameraInfo`, `Imu`, `NavSatFix`, `Odometry`, TF) | streams with rig modalities, camera intrinsics, the transform tree, the ego trajectory |
-| ROS 2 **rosbag2** (`.db3` or `.db3.zstd`, the `sqlite3` storage plugin) — a bag directory or a bare shard | the same, from the same message types; the bag's `metadata.yaml` also supplies the recording distribution and the message total the recording is reconciled against |
+| ROS 2 **rosbag2** — a bag directory (either storage plugin: `sqlite3` `.db3`/`.db3.zstd`, or the `.mcap` shards Jazzy records by default) or a bare `.db3` | the same, from the same message types; the bag's `metadata.yaml` also supplies the recording distribution and the message total the recording is reconciled against |
 | CAN frames + a `.dbc` | one named signal stream per `Message.Signal`, both Intel and Motorola byte order (point the CLI at the directory) |
 | ASAM MDF/MF4 (`.mf4`) | one stream per measured channel, on the group's time master, with linear conversions applied |
 | Producer metadata | rig lineage (firmware, platform, drive, region, map, redaction/consent) as provenance |

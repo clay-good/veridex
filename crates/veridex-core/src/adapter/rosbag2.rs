@@ -60,6 +60,41 @@ const CLOCK_ID: &str = "rosbag2-log";
 /// did not change.
 const SUPPORTED_VERSIONS: &[&str] = &["4", "5", "6", "7", "8", "9"];
 
+/// The storage plugins this adapter reads, by the identifier `metadata.yaml` records.
+const SUPPORTED_STORAGE: &[&str] = &["sqlite3", "mcap"];
+
+/// Which storage plugin wrote a bag's shards.
+///
+/// `ros2 bag record` wrote `sqlite3` through Iron and writes `mcap` from Jazzy on, and the two hold
+/// the same recording in completely different containers — a SQLite database of `topics`/`messages`
+/// rows, or an MCAP of channels and chunked messages. Everything *around* the shards is identical:
+/// the same `metadata.yaml`, the same topic inventory, the same message total to reconcile against,
+/// the same ROS types decoded into the same rig CDM. So the difference is confined to how one shard
+/// is read, and the rest of this adapter does not know which it got.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Storage {
+    Sqlite3,
+    Mcap,
+}
+
+impl Storage {
+    /// The identifier `metadata.yaml` records for this plugin.
+    fn identifier(self) -> &'static str {
+        match self {
+            Storage::Sqlite3 => "sqlite3",
+            Storage::Mcap => "mcap",
+        }
+    }
+
+    /// The shard extension this plugin writes, as it appears in a message about the bag.
+    fn extension(self) -> &'static str {
+        match self {
+            Storage::Sqlite3 => ".db3",
+            Storage::Mcap => ".mcap",
+        }
+    }
+}
+
 /// Adapter for ROS 2 rosbag2 recordings using the `sqlite3` storage plugin.
 pub struct Rosbag2Adapter;
 
@@ -388,6 +423,41 @@ impl Rosbag2Adapter {
             && (path.extension().and_then(|e| e.to_str()) == Some("db3") || is_zstd_shard(path))
     }
 
+    /// Whether `path` is an `.mcap` shard.
+    ///
+    /// Not `.mcap.zstd`: rosbag2's file-mode compression is a `sqlite3`-plugin feature, and the MCAP
+    /// writer compresses per chunk *inside* the file instead.
+    fn is_mcap(path: &Path) -> bool {
+        path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("mcap")
+    }
+
+    /// The `.mcap` shards inside a bag directory, ordered exactly as [`Rosbag2Adapter::shards_in`]
+    /// orders `.db3` ones, and for the same reason.
+    fn mcap_shards_in(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+        let mut out: Vec<PathBuf> = std::fs::read_dir(dir)?
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| Rosbag2Adapter::is_mcap(p))
+            .collect();
+        out.sort_by_key(|p| super::natural_key(&display(p)));
+        Ok(out)
+    }
+
+    /// Whether `dir` is a bag recorded through the **MCAP storage plugin** — what `ros2 bag record`
+    /// writes by default from Jazzy onward.
+    ///
+    /// Unlike the `.db3` case, the manifest is **required**. A directory holding a `.db3` is
+    /// unambiguously one bag; a directory holding `.mcap` files could as easily be a folder someone
+    /// dropped three unrelated recordings into, and reading those as one bag would concatenate three
+    /// timelines into one episode and report the seams as defects. `metadata.yaml` is what makes the
+    /// directory a bag, so it is what this asks for. A bag still being recorded has not written one
+    /// yet: point Veridex at the `.mcap` file itself, which the MCAP adapter reads.
+    fn is_mcap_bag_dir(dir: &Path) -> bool {
+        dir.is_dir()
+            && dir.join("metadata.yaml").is_file()
+            && Rosbag2Adapter::mcap_shards_in(dir).is_ok_and(|s| !s.is_empty())
+    }
+
     /// The `.db3` shards inside a bag directory, in **recording order**.
     ///
     /// Found by listing the directory, not by following `relative_file_paths`: the manifest is
@@ -428,7 +498,9 @@ impl Rosbag2Adapter {
     /// assumed in its place: no declared message total to reconcile the recording against, no
     /// recording distribution, no shard order beyond the shards' own numbering.
     fn is_bag_dir(dir: &Path) -> bool {
-        dir.is_dir() && Rosbag2Adapter::shards_in(dir).is_ok_and(|s| !s.is_empty())
+        dir.is_dir()
+            && (Rosbag2Adapter::shards_in(dir).is_ok_and(|s| !s.is_empty())
+                || Rosbag2Adapter::is_mcap_bag_dir(dir))
     }
 }
 
@@ -672,12 +744,124 @@ fn read_shard(
     Ok(())
 }
 
+/// Read one `.mcap` shard into `contents`, charging the ingest budgets as messages arrive.
+///
+/// The same accumulation the `.db3` reader performs, from the container `ros2 bag record` writes by
+/// default from Jazzy on. An MCAP channel carries what the `topics` table carries — the topic name,
+/// the schema (ROS type), the message encoding, and the publisher's QoS profile — so the modality,
+/// the latched flag and every decoded AV header come out identical: which storage plugin a team
+/// picked must not change the verdict over the same recording.
+///
+/// Read whole, and its chunks proved against their own declared sizes first, exactly as the MCAP
+/// adapter does — see [`super::mcap::validate_chunks`] for what that stops.
+fn read_mcap_shard(
+    path: &Path,
+    contents: &mut BagContents,
+    frames: &mut super::FrameBudget,
+    bytes_budget: &mut super::DecompressionBudget,
+    options: &IngestOptions,
+) -> Result<(), IngestError> {
+    let bytes = super::read_source_whole(
+        path,
+        FORMAT,
+        options,
+        "check the bag from its metadata.yaml with --metadata-only, which opens no shard, or raise \
+         the ceiling with --max-source-bytes (0 removes it)",
+    )?;
+    let mut declared = super::DecompressionBudget::new(options, bytes.len() as u64);
+    super::mcap::validate_chunks(&bytes, FORMAT, &mut declared)?;
+
+    let stream = mcap::MessageStream::new(&bytes)
+        .map_err(|e| parse_error(format!("{}: not a readable MCAP: {e}", display(path))))?;
+    for message in stream {
+        let message =
+            message.map_err(|e| parse_error(format!("{}: messages: {e}", display(path))))?;
+        let topic = message.channel.topic.clone();
+        let ros_type = message
+            .channel
+            .schema
+            .as_ref()
+            .map(|s| s.name.clone())
+            .unwrap_or_default();
+        let data = message.data.as_ref();
+
+        frames.take(FORMAT, 1)?;
+        bytes_budget.take(FORMAT, data.len() as u64)?;
+
+        // A `log_time` past `i64::MAX` is nanoseconds beyond the year 2262 — corrupt. Saturating
+        // rather than wrapping keeps it from flipping negative and reordering the timeline.
+        let ts = i64::try_from(message.log_time).unwrap_or(i64::MAX);
+        contents.min_ts = Some(contents.min_ts.map_or(ts, |m: i64| m.min(ts)));
+        contents.max_ts = Some(contents.max_ts.map_or(ts, |m: i64| m.max(ts)));
+
+        if !message.channel.message_encoding.is_empty() {
+            contents
+                .serialization_formats
+                .insert(message.channel.message_encoding.clone());
+        }
+
+        let builder = contents
+            .streams
+            .entry(topic.clone())
+            .or_insert_with(|| StreamBuilder {
+                modality: super::mcap::infer_modality(&ros_type, &topic),
+                ros_type: ros_type.clone(),
+                frames: Vec::new(),
+                latched: message
+                    .channel
+                    .metadata
+                    .get("offered_qos_profiles")
+                    .and_then(|qos| declares_latched(qos)),
+                point_fields: None,
+                frame_id: None,
+            });
+        builder.frames.push(Frame {
+            ts,
+            value_ref: ValueRef {
+                uri: topic.clone(),
+                byte_offset: None,
+                byte_len: Some(data.len() as u64),
+                content_hash: Some(Sha256::digest(data).into()),
+            },
+        });
+
+        if builder.frame_id.is_none() {
+            builder.frame_id = super::cdr::decode_header_frame_id(data);
+        }
+        if super::mcap::schema_is(&ros_type, "PointCloud2") {
+            if builder.point_fields.is_none() {
+                builder.point_fields = super::cdr::decode_point_cloud2_fields(data);
+            }
+        } else if super::mcap::schema_is(&ros_type, "CameraInfo") {
+            if !contents.intrinsics.contains_key(&topic) {
+                if let Some(ci) = super::cdr::decode_camera_info(data, &topic) {
+                    contents.intrinsics.insert(topic.clone(), ci);
+                }
+            }
+        } else if super::mcap::schema_is(&ros_type, "Odometry") {
+            if let Some(pose) = super::cdr::decode_odometry_pose(data) {
+                contents.ego_poses.push(EgoPose { ts, pose });
+            }
+        } else if super::mcap::schema_is(&ros_type, "TFMessage") {
+            if let Some(edges) = super::cdr::decode_tf_message(data) {
+                for t in edges {
+                    contents
+                        .transforms
+                        .entry((t.parent_frame.clone(), t.child_frame.clone()))
+                        .or_insert(t);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// A path as it should appear in an error message: the file name, which is what identifies a shard
 /// inside a bag, rather than the caller's whole path.
 fn display(path: &Path) -> String {
     path.file_name()
         .and_then(|s| s.to_str())
-        .unwrap_or("<db3>")
+        .unwrap_or("<shard>")
         .to_string()
 }
 
@@ -700,6 +884,7 @@ fn ingest_metadata_only(
     dataset_id: &str,
     manifest: &BagManifest,
     is_dir: bool,
+    storage: Storage,
 ) -> Result<Ingested, IngestError> {
     if !is_dir {
         return Err(IngestError::NotImplemented {
@@ -819,7 +1004,7 @@ fn ingest_metadata_only(
             "metadata.yaml topics_with_message_count.type -> stream.modality".into(),
         ],
         unmapped_fields: vec![UnmappedField {
-            source_path: "*.db3".into(),
+            source_path: format!("*{}", storage.extension()),
             note: format!(
                 "the bag's {} declared message(s) were not read: this is a metadata-only ingest",
                 counted
@@ -898,8 +1083,21 @@ impl Adapter for Rosbag2Adapter {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => BagManifest::default(),
                 Err(e) => return Err(IngestError::Io(e.to_string())),
             };
-            let found =
+            let db3 =
                 Rosbag2Adapter::shards_in(path).map_err(|e| IngestError::Io(e.to_string()))?;
+            let mcaps =
+                Rosbag2Adapter::mcap_shards_in(path).map_err(|e| IngestError::Io(e.to_string()))?;
+            // Both storages in one directory is not a bag this reader can speak for: whichever half
+            // it picked, the other half's messages would go unread while the verdict named the
+            // directory. Refused by name instead.
+            if !db3.is_empty() && !mcaps.is_empty() {
+                return Err(parse_error(
+                    "the directory holds both .db3 and .mcap shards, so it is not one bag: a \
+                     rosbag2 recording uses one storage plugin. Point Veridex at the shards of one \
+                     recording",
+                ));
+            }
+            let found = if db3.is_empty() { mcaps } else { db3 };
             let ordered = in_manifest_order(found, &manifest.relative_file_paths);
             (ordered, manifest, super::dataset_id_from_path(path, FORMAT))
         } else {
@@ -945,19 +1143,39 @@ impl Adapter for Rosbag2Adapter {
                 )));
             }
         }
-        // A bag recorded through a different storage plugin keeps its messages somewhere this
-        // adapter does not read. Refuse it by name rather than reporting an empty recording.
-        if let Some(storage) = &manifest.storage_identifier {
-            if !storage.eq_ignore_ascii_case("sqlite3") {
+        // Which storage plugin wrote the shards, decided by the shards themselves rather than by the
+        // manifest: the files are what is read, and `metadata.yaml` is content. Where the manifest
+        // disagrees with them, that is said out loud below rather than resolved silently either way.
+        let storage = if shards.iter().all(|p| Rosbag2Adapter::is_mcap(p)) {
+            Storage::Mcap
+        } else {
+            Storage::Sqlite3
+        };
+        // A bag recorded through a storage plugin neither reader speaks keeps its messages somewhere
+        // this adapter does not look. Refuse it by name rather than reporting an empty recording.
+        if let Some(declared) = &manifest.storage_identifier {
+            if !SUPPORTED_STORAGE
+                .iter()
+                .any(|s| declared.eq_ignore_ascii_case(s))
+            {
                 return Err(parse_error(format!(
-                    "the bag declares storage `{storage}`; this adapter reads the `sqlite3` storage \
-                     plugin (an MCAP-backed bag is read by pointing Veridex at its .mcap file)"
+                    "the bag declares storage `{declared}`; this adapter reads the {} storage \
+                     plugin(s)",
+                    SUPPORTED_STORAGE.join(" and ")
+                )));
+            }
+            if !declared.eq_ignore_ascii_case(storage.identifier()) {
+                return Err(parse_error(format!(
+                    "the bag declares storage `{declared}` but the directory holds {} shard(s); one \
+                     of the two does not describe this recording, and reading it either way would \
+                     speak for messages that were never opened",
+                    storage.extension()
                 )));
             }
         }
 
         if options.metadata_only {
-            return ingest_metadata_only(&dataset_id, &manifest, is_dir);
+            return ingest_metadata_only(&dataset_id, &manifest, is_dir, storage);
         }
 
         let source_bytes: u64 = shards
@@ -986,7 +1204,18 @@ impl Adapter for Rosbag2Adapter {
 
         let mut contents = BagContents::default();
         for shard in &shards {
-            read_shard(shard, &mut contents, &mut frames, &mut bytes_budget)?;
+            match storage {
+                Storage::Sqlite3 => {
+                    read_shard(shard, &mut contents, &mut frames, &mut bytes_budget)?
+                }
+                Storage::Mcap => read_mcap_shard(
+                    shard,
+                    &mut contents,
+                    &mut frames,
+                    &mut bytes_budget,
+                    options,
+                )?,
+            }
         }
 
         // Data the bag points at that this ingest did not read. Both arms are coverage holes, so
@@ -998,10 +1227,11 @@ impl Adapter for Rosbag2Adapter {
             if listed.contains('/') || listed.contains('\\') {
                 unread_sources.push(UnmappedField {
                     source_path: format!("metadata.yaml relative_file_paths[{listed}]"),
-                    note: "the manifest names a path with a directory component; Veridex reads only \
-                           the .db3 files inside the bag directory and does not follow a path out of \
-                           it"
-                        .into(),
+                    note: format!(
+                        "the manifest names a path with a directory component; Veridex reads only \
+                         the {} files inside the bag directory and does not follow a path out of it",
+                        storage.extension()
+                    ),
                 });
             } else if !present.contains(listed) {
                 unread_sources.push(UnmappedField {
@@ -1017,7 +1247,8 @@ impl Adapter for Rosbag2Adapter {
         // a hot journal — so a bag caught mid-recording under `journal_mode=WAL` has messages that
         // exist, are committed, and were not read. Silence there is the shape of defect this whole
         // crate is built to refuse: a report that speaks for a recording it only partly saw.
-        for shard in &shards {
+        // Only a SQLite shard has these; an MCAP one carries no sidecar.
+        for shard in shards.iter().filter(|_| storage == Storage::Sqlite3) {
             for (suffix, what) in [
                 ("-wal", "write-ahead log"),
                 ("-journal", "rollback journal"),
@@ -1098,8 +1329,9 @@ impl Adapter for Rosbag2Adapter {
                     source_path: "metadata.yaml message_count".into(),
                     note: format!(
                         "the manifest declares {declared} message(s) but {ingested} were read — \
-                         {} are missing from the bag's .db3 file(s)",
-                        declared - ingested
+                         {} are missing from the bag's {} file(s)",
+                        declared - ingested,
+                        storage.extension()
                     ),
                 }),
                 // The other direction is not unread data: every message present was read. It is the
@@ -1189,13 +1421,24 @@ impl Adapter for Rosbag2Adapter {
             calibration,
         };
 
-        let mut mapped_fields = vec![
-            "topics.name -> stream.name".into(),
-            "topics.type -> stream.modality".into(),
-            "messages.timestamp -> frame.ts".into(),
-            "messages.data.len -> frame.value_ref.byte_len".into(),
-            "messages.data -> frame.value_ref.content_hash (SHA-256)".into(),
-        ];
+        // Named in the terms of the container that was actually read, so a report over an
+        // MCAP-backed bag does not describe SQLite tables the bag does not have.
+        let mut mapped_fields: Vec<String> = match storage {
+            Storage::Sqlite3 => vec![
+                "topics.name -> stream.name".into(),
+                "topics.type -> stream.modality".into(),
+                "messages.timestamp -> frame.ts".into(),
+                "messages.data.len -> frame.value_ref.byte_len".into(),
+                "messages.data -> frame.value_ref.content_hash (SHA-256)".into(),
+            ],
+            Storage::Mcap => vec![
+                "channel.topic -> stream.name".into(),
+                "channel.schema.name -> stream.modality".into(),
+                "message.log_time -> frame.ts".into(),
+                "message.data.len -> frame.value_ref.byte_len".into(),
+                "message.data -> frame.value_ref.content_hash (SHA-256)".into(),
+            ],
+        };
         if has_point_fields {
             mapped_fields.push("PointCloud2.fields -> stream.point_fields".into());
         }
@@ -1214,21 +1457,40 @@ impl Adapter for Rosbag2Adapter {
             .flat_map(|e| &e.streams)
             .any(|s| s.latched.is_some())
         {
-            mapped_fields.push("topics.offered_qos_profiles durability -> stream.latched".into());
+            mapped_fields.push(match storage {
+                Storage::Sqlite3 => {
+                    "topics.offered_qos_profiles durability -> stream.latched".into()
+                }
+                Storage::Mcap => {
+                    "channel.metadata.offered_qos_profiles durability -> stream.latched".to_string()
+                }
+            });
         }
 
         let mut unmapped_fields = vec![
             UnmappedField {
-                source_path: "topics.offered_qos_profiles".into(),
+                source_path: match storage {
+                    Storage::Sqlite3 => "topics.offered_qos_profiles".into(),
+                    Storage::Mcap => "channel.metadata.offered_qos_profiles".to_string(),
+                },
                 note:
                     "only the durability policy is read (into `Stream::latched`); the CDM has no \
                        shape for the rest of a QoS profile — reliability, history depth, deadline, \
                        lifespan, liveliness"
                         .into(),
             },
-            UnmappedField {
-                source_path: "messages.id".into(),
-                note: "the bag's per-message rowid is not represented in the CDM".into(),
+            match storage {
+                Storage::Sqlite3 => UnmappedField {
+                    source_path: "messages.id".into(),
+                    note: "the bag's per-message rowid is not represented in the CDM".into(),
+                },
+                Storage::Mcap => UnmappedField {
+                    source_path: "message.publish_time".into(),
+                    note: "a message carries both the time it was logged and the time it was \
+                           published; the CDM timeline is the log time, and the second stamp has no \
+                           shape in it"
+                        .into(),
+                },
             },
         ];
         if let Some(mismatch) = count_mismatch {

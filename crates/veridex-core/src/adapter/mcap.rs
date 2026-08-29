@@ -169,7 +169,7 @@ const OP_CHUNK: u8 = 0x06;
 /// 500 MB file buys roughly half an hour of CPU. Charging on this walk closes the gap, and the cap
 /// on each drain is the smaller of what the chunk declared and what the budget has left, so a
 /// corrupt stream is stopped by the bound rather than merely billed for it afterwards.
-fn validate_chunks(
+pub(super) fn validate_chunks(
     bytes: &[u8],
     format_id: &'static str,
     budget: &mut super::DecompressionBudget,

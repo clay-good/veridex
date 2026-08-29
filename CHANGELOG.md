@@ -10,6 +10,28 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **rosbag2's MCAP storage plugin — the ROS 2 default since Jazzy — is read as a bag.** `ros2 bag
+  record` wrote `sqlite3` shards through Iron and writes `.mcap` ones now, and Veridex claimed only
+  the first: pointing it at a Jazzy bag directory answered "unsupported format: no adapter recognized
+  the source". The way through was to point it at one `bag_0.mcap`, which reads that shard as a bare
+  recording — losing the manifest (the recorder's distribution, the message total to reconcile
+  against, the order the shards were written in) and every other shard of a split recording.
+
+  A bag directory of `.mcap` shards is now read as the bag it is, through the same path the `.db3`
+  one takes: shards in manifest order, one episode, the same reconciliation against the bag's own
+  `message_count`, the same disclosure of a shard the manifest lists but the directory does not hold.
+  An MCAP channel carries what the `topics` table carries — topic, schema, encoding, the publisher's
+  QoS — so the modality, the latched flag and every decoded AV header come out identical; a test
+  pins that the same recording through either plugin yields the same CDM. The report names the
+  container it actually read, so an MCAP-backed bag's mapped fields speak of channels and log times
+  rather than SQLite tables it does not have.
+
+  Two refusals guard the edges. A directory of `.mcap` files with **no** `metadata.yaml` is not
+  claimed — it could as easily be three unrelated recordings in one folder, and reading those as one
+  bag would concatenate three timelines into one episode and report the seams as defects. And a
+  manifest that disagrees with the shards beside it (declaring `sqlite3` over `.mcap` files, or the
+  reverse) is refused by name: reading it either way would speak for messages nothing opened.
+
 - **A ceiling on one file read whole into memory (`--max-source-bytes`, 4 GiB by default).** MCAP,
   ASAM MF4 and a rosbag2 `.db3` are random-access containers — the summary sits at the end of the
   file, the block graph is a web of offsets, SQLite's b-tree walk seeks — so each is read whole, by

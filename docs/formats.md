@@ -227,6 +227,25 @@ are ordered by their number, then by the order the manifest lists them — the b
 it wrote them. Taking an ordering from the manifest follows no path: only the files already found in
 the bag directory are ever opened.
 
+A bag recorded through the **MCAP storage plugin** — what `ros2 bag record` writes by default from
+Jazzy on — is read as the bag it is, not as a loose file: point Veridex at the bag *directory* and it
+reads every `.mcap` shard in the order the manifest lists them, then reconciles the result against
+the bag's own `message_count` exactly as it does for `sqlite3`. Which plugin a team picked does not
+change what Veridex sees: an MCAP channel carries what the `topics` table carries — topic name,
+schema, encoding, and the publisher's QoS — so the same recording through either plugin yields the
+same streams, modalities, timestamps and rig calibration. What the storage does change is what the
+report *names*: an MCAP-backed bag's mapped fields speak of channels and log times, never of SQLite
+tables the bag does not have.
+
+The manifest is required for a directory of `.mcap` files, and only for that case. A directory
+holding a `.db3` is unambiguously one bag; a directory of `.mcap` files could as easily be a folder
+someone dropped three unrelated recordings into, and reading those as one bag would concatenate three
+timelines into one episode and report the seams as defects. `metadata.yaml` is what makes the
+directory a bag. A bag still being recorded has not written one yet — point Veridex at the `.mcap`
+file itself, which the MCAP adapter reads. A directory holding both `.db3` and `.mcap` shards is
+refused: one recording uses one plugin, and whichever half was picked, the other half's messages
+would go unread while the verdict named the directory.
+
 A bag recorded with `--compression-mode file --compression-format zstd` — which is how any
 recording large enough to care about is stored — is read directly. rosbag2 compresses the finished
 shard to `<shard>.db3.zstd` and deletes the original; Veridex unpacks it under the same

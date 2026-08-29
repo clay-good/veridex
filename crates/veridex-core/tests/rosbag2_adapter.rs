@@ -827,8 +827,11 @@ fn signature(d: &veridex_core::cdm::Dataset) -> Vec<EpisodeSig> {
     eps
 }
 
-/// Write an MCAP carrying the given `(schema, topic, log times)` channels.
-fn write_mcap(path: &std::path::Path, channels: &[(String, String, Vec<u64>)]) {
+/// One channel to write: its schema (ROS type), its topic, and the times of its messages.
+type Channel = (String, String, Vec<u64>);
+
+/// Write an MCAP carrying the given channels.
+fn write_mcap(path: &std::path::Path, channels: &[Channel]) {
     let mut out = Vec::new();
     {
         let mut w = mcap::Writer::new(Cursor::new(&mut out)).expect("an mcap writer");
@@ -875,7 +878,7 @@ fn the_same_recording_as_a_bag_and_as_mcap_yields_equivalent_cdms() {
         ("/odom", "nav_msgs/msg/Odometry"),
         ("/tf_static", "tf2_msgs/msg/TFMessage"),
     ];
-    let channels: Vec<(String, String, Vec<u64>)> = types
+    let channels: Vec<Channel> = types
         .iter()
         .map(|(topic, ty)| {
             let times = bag.episodes[0]
@@ -903,5 +906,281 @@ fn the_same_recording_as_a_bag_and_as_mcap_yields_equivalent_cdms() {
         signature(&bag),
         signature(&via_mcap),
         "one recording stored two ways must produce equivalent CDMs"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The MCAP storage plugin: what `ros2 bag record` writes by default from Jazzy on.
+// ---------------------------------------------------------------------------
+
+/// A bag directory holding `shards` (name, channels) and the manifest that describes them.
+fn write_mcap_bag(
+    dir: &std::path::Path,
+    shards: &[(&str, Vec<Channel>)],
+    storage_identifier: &str,
+    message_count: u64,
+) {
+    let mut listed = String::new();
+    let mut topics: BTreeMap<String, (String, u64)> = BTreeMap::new();
+    for (name, channels) in shards {
+        write_mcap(&dir.join(name), channels);
+        listed.push_str(&format!("    - {name}\n"));
+        for (ty, topic, times) in channels {
+            let entry = topics.entry(topic.clone()).or_insert((ty.clone(), 0));
+            entry.1 += times.len() as u64;
+        }
+    }
+    let mut inventory = String::new();
+    for (topic, (ty, count)) in &topics {
+        inventory.push_str(&format!(
+            "    - topic_metadata:\n        name: {topic}\n        type: {ty}\n        \
+             serialization_format: cdr\n        offered_qos_profiles: \"\"\n      \
+             message_count: {count}\n"
+        ));
+    }
+    std::fs::write(
+        dir.join("metadata.yaml"),
+        format!(
+            "rosbag2_bagfile_information:\n  version: 9\n  storage_identifier: \
+             {storage_identifier}\n  relative_file_paths:\n{listed}  message_count: \
+             {message_count}\n  topics_with_message_count:\n{inventory}  compression_format: \"\"\n  \
+             compression_mode: \"\"\n  ros_distro: jazzy\n"
+        ),
+    )
+    .unwrap();
+}
+
+/// One rig's worth of channels, as `clean_rig` records them.
+fn rig_channels(offset: u64, per_topic: usize) -> Vec<Channel> {
+    [
+        ("sensor_msgs/msg/PointCloud2", "/lidar/points"),
+        ("sensor_msgs/msg/Imu", "/imu/data"),
+        ("nav_msgs/msg/Odometry", "/odom"),
+    ]
+    .iter()
+    .map(|(ty, topic)| {
+        let times = (0..per_topic)
+            .map(|i| offset + i as u64 * 10_000_000)
+            .collect();
+        (ty.to_string(), topic.to_string(), times)
+    })
+    .collect()
+}
+
+#[test]
+fn a_bag_recorded_through_the_mcap_storage_plugin_is_read_as_a_bag() {
+    let dir = tempfile::tempdir().unwrap();
+    // Two shards, as a split recording writes: the second continues the first's timeline.
+    write_mcap_bag(
+        dir.path(),
+        &[
+            ("rec_0.mcap", rig_channels(1_000_000_000, 5)),
+            ("rec_1.mcap", rig_channels(1_100_000_000, 5)),
+        ],
+        "mcap",
+        30,
+    );
+
+    let adapter = veridex_core::adapter::rosbag2::Rosbag2Adapter;
+    assert_eq!(
+        adapter.detect(&Source::Local(dir.path().to_path_buf())),
+        Detection::Yes {
+            version: Some("9".into())
+        },
+        "a directory of .mcap shards with a manifest is a bag, and the manifest names its version"
+    );
+
+    let ingested = default_registry()
+        .ingest(
+            &Source::Local(dir.path().to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("the bag ingests");
+    assert_eq!(ingested.report.format_id, "rosbag2");
+    assert_eq!(ingested.report.coverage, Coverage::Full);
+
+    let ep = &ingested.dataset.episodes[0];
+    let lidar = ep
+        .streams
+        .iter()
+        .find(|s| s.name == "/lidar/points")
+        .expect("the lidar topic is a stream");
+    assert_eq!(
+        lidar.frames.len(),
+        10,
+        "both shards' messages land in one stream"
+    );
+    assert!(
+        lidar.frames.windows(2).all(|w| w[0].ts <= w[1].ts),
+        "the shards are read in the order the manifest lists them, so the timeline is in order"
+    );
+    assert_eq!(lidar.modality, Modality::PointCloud);
+
+    // The bag's own facts, which reading the bare `.mcap` would not have supplied.
+    let meta = |key: &str| {
+        ingested
+            .dataset
+            .metadata
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
+    };
+    assert_eq!(meta("rosbag2_storage").as_deref(), Some("mcap"));
+    assert_eq!(meta("ros_distro").as_deref(), Some("jazzy"));
+    assert_eq!(meta("serialization_format").as_deref(), Some("cdr"));
+
+    // The report describes the container that was actually read, not SQLite tables the bag has none
+    // of.
+    assert!(
+        ingested
+            .report
+            .mapped_fields
+            .iter()
+            .any(|f| f == "channel.topic -> stream.name"),
+        "{:?}",
+        ingested.report.mapped_fields
+    );
+    assert!(
+        !ingested
+            .report
+            .mapped_fields
+            .iter()
+            .any(|f| f.starts_with("topics.")),
+        "an MCAP-backed bag has no `topics` table: {:?}",
+        ingested.report.mapped_fields
+    );
+}
+
+#[test]
+fn which_storage_plugin_recorded_a_bag_does_not_change_what_veridex_sees() {
+    // The neutrality claim, one level down: the same recording through the two storage plugins of
+    // the same recorder must yield the same streams, modalities and timestamps.
+    let dir = tempfile::tempdir().unwrap();
+    let channels = rig_channels(1_000_000_000, 6);
+    write_mcap_bag(dir.path(), &[("rec_0.mcap", channels.clone())], "mcap", 18);
+
+    let as_bag = default_registry()
+        .ingest(
+            &Source::Local(dir.path().to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("the bag ingests")
+        .dataset;
+
+    let bare = dir.path().join("bare.mcap");
+    write_mcap(&bare, &channels);
+    let as_mcap = veridex_core::adapter::mcap::McapAdapter
+        .ingest(&Source::Local(bare), &IngestOptions::default())
+        .expect("the bare recording ingests")
+        .dataset;
+
+    assert_eq!(signature(&as_bag), signature(&as_mcap));
+}
+
+#[test]
+fn an_mcap_shard_the_manifest_lists_but_the_bag_does_not_hold_is_unread() {
+    let dir = tempfile::tempdir().unwrap();
+    write_mcap_bag(
+        dir.path(),
+        &[("rec_0.mcap", rig_channels(1_000_000_000, 4))],
+        "mcap",
+        24, // the manifest counts a second shard's messages too
+    );
+    // Name a shard that is not there, as a manifest written before a shard was lost does.
+    let manifest = std::fs::read_to_string(dir.path().join("metadata.yaml")).unwrap();
+    std::fs::write(
+        dir.path().join("metadata.yaml"),
+        manifest.replace("    - rec_0.mcap\n", "    - rec_0.mcap\n    - rec_1.mcap\n"),
+    )
+    .unwrap();
+
+    let ingested = default_registry()
+        .ingest(
+            &Source::Local(dir.path().to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("the bag still ingests over what it does hold");
+    let unread: Vec<String> = ingested
+        .report
+        .unread_sources
+        .iter()
+        .map(|u| format!("{} :: {}", u.source_path, u.note))
+        .collect();
+    assert!(
+        unread
+            .iter()
+            .any(|u| u.contains("rec_1.mcap") && u.contains("not in the bag directory")),
+        "the missing shard is a coverage hole: {unread:#?}"
+    );
+    assert!(
+        unread
+            .iter()
+            .any(|u| u.contains("message_count") && u.contains(".mcap file(s)")),
+        "the shortfall against the manifest's total names the storage that was read: {unread:#?}"
+    );
+}
+
+#[test]
+fn a_manifest_that_disagrees_with_the_shards_it_has_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    write_mcap_bag(
+        dir.path(),
+        &[("rec_0.mcap", rig_channels(1_000_000_000, 3))],
+        "sqlite3", // …over .mcap shards
+        9,
+    );
+    let err = default_registry()
+        .ingest(
+            &Source::Local(dir.path().to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect_err("a manifest that describes a different container is refused");
+    let text = err.to_string();
+    assert!(
+        text.contains("declares storage `sqlite3`") && text.contains(".mcap"),
+        "the refusal names both sides of the disagreement: {text}"
+    );
+}
+
+#[test]
+fn a_directory_of_mcap_files_with_no_manifest_is_not_claimed_as_a_bag() {
+    // A folder someone dropped three unrelated recordings into is not one bag, and reading it as one
+    // would concatenate three timelines into a single episode and report the seams as defects.
+    let dir = tempfile::tempdir().unwrap();
+    write_mcap(&dir.path().join("a.mcap"), &rig_channels(1_000_000_000, 2));
+    write_mcap(&dir.path().join("b.mcap"), &rig_channels(9_000_000_000, 2));
+    assert_eq!(
+        veridex_core::adapter::rosbag2::Rosbag2Adapter
+            .detect(&Source::Local(dir.path().to_path_buf())),
+        Detection::No
+    );
+}
+
+#[test]
+fn a_metadata_only_run_over_an_mcap_bag_names_the_shards_it_did_not_open() {
+    let dir = tempfile::tempdir().unwrap();
+    write_mcap_bag(
+        dir.path(),
+        &[("rec_0.mcap", rig_channels(1_000_000_000, 4))],
+        "mcap",
+        12,
+    );
+    let ingested = default_registry()
+        .ingest(
+            &Source::Local(dir.path().to_path_buf()),
+            &IngestOptions {
+                metadata_only: true,
+                ..IngestOptions::default()
+            },
+        )
+        .expect("a metadata-only run reads the manifest");
+    assert!(
+        ingested
+            .report
+            .unmapped_fields
+            .iter()
+            .any(|u| u.source_path == "*.mcap"),
+        "the unopened shards are named by the extension they actually have: {:?}",
+        ingested.report.unmapped_fields
     );
 }

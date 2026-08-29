@@ -33,7 +33,8 @@ Veridex Trust Report
 
 - **One command, any format.** LeRobot v3, RLDS/TFDS (what Open X-Embodiment ships in), HDF5 (what
   robomimic and most lab collectors write), Zarr (what Diffusion Policy and UMI ship in), MCAP,
-  ROS 2 rosbag2 (`.db3` / `.db3.zstd` — what a ROS 2 robot records by default), CAN+DBC, and ASAM MDF/MF4 all map
+  ROS 2 rosbag2 (both storage plugins — `.db3` / `.db3.zstd` and the `.mcap` shards Jazzy records by
+  default), CAN+DBC, and ASAM MDF/MF4 all map
   into one Canonical Dataset Model, so you check them the same way — no per-format tooling.
 - **Catches the failures that quietly ruin training.** Clock skew across sensors, broken episode
   boundaries, timeline gaps, duplicate frames, a video whose frame count no longer matches the
@@ -309,8 +310,10 @@ re-encoded video behind a camera stream; the v1 trust-score rubric, the `standar
 readiness profile;
 terminal, JSON, SARIF 2.1.0, and self-contained HTML reporting, each carrying rollups by category,
 episode and stream, and each shareable through `--redact`; **LeRobot v3, RLDS/TFDS, HDF5, Zarr, MCAP and ROS 2 rosbag2 (both with
-ROS-message decode into an autonomy rig; rosbag2 reads the `sqlite3` storage plugin — plain or
-zstd-compressed — through Veridex's own bounds-checked SQLite reader, reconciles the bag against its
+ROS-message decode into an autonomy rig; rosbag2 reads both storage plugins — the `sqlite3` one,
+plain or zstd-compressed, through Veridex's own bounds-checked SQLite reader, and the `mcap` one
+`ros2 bag record` writes by default from Jazzy on, so which plugin a team picked does not change the
+verdict — reconciles the bag against its
 `metadata.yaml` message total, and discloses a message on an undeclared topic as unread rather than
 dropping it; an MCAP is reconciled the same way against the message total in the summary section it
 writes about itself, so a recording short of its own count is disclosed as unread rather than read
