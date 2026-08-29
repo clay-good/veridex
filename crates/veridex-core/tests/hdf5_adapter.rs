@@ -649,8 +649,24 @@ fn everything_the_reader_skips_is_named_in_the_report() {
     says("linked more than once");
     says("variable-length array");
     says("scalar array");
-    says("sits beside the episode groups");
     says("holds several values");
+    says("neither a group nor a dataset");
+
+    // An array beside the episode groups holds rows nothing read, which is a hole in *coverage* —
+    // not a note about what the CDM can hold. It belongs in `unread_sources`, the only channel that
+    // reaches the verdict.
+    let unread: Vec<String> = ingested
+        .report
+        .unread_sources
+        .iter()
+        .map(|f| format!("{} :: {}", f.source_path, f.note))
+        .collect();
+    assert!(
+        unread
+            .iter()
+            .any(|n| n.starts_with("/data/sibling_array ::") && n.contains("2 row(s)")),
+        "the array beside the episode groups is not disclosed as unread: {unread:#?}"
+    );
 
     // A zero-row array is a stream with no frames — a fact for the structural checks to report,
     // not something to drop.
@@ -1509,4 +1525,102 @@ fn a_metadata_only_run_reads_no_chunk() {
         proved > 0,
         "no byte was found that a full read catches as chunk corruption, so this proves nothing"
     );
+}
+
+/// A `robomimic` file is not only `/data`: it carries `/mask` (which demonstrations are in the train
+/// split), and hand-rolled collectors park reward tables and raw logs at the root the same way. None
+/// of it is under an episode group, so none of it is read — and being unread, it has to reach the
+/// *verdict*, not a note only `inspect` prints.
+#[test]
+fn what_the_root_holds_beside_the_episodes_is_disclosed_as_unread() {
+    let ingested = ingest("root_siblings.h5", IngestOptions::default());
+    let unread: Vec<&str> = ingested
+        .report
+        .unread_sources
+        .iter()
+        .map(|f| f.source_path.as_str())
+        .collect();
+    assert_eq!(
+        unread,
+        ["/logs", "/mask", "/reward_model"],
+        "a group of arrays, an array, and a group whose arrays are two levels down are each data \
+         the file holds and this run did not read"
+    );
+
+    // The other half of the line: an object with no rows under it is a note about shape, not a hole
+    // in coverage. Calling it unread would fire `COVERAGE.SOURCE_UNREAD` over nothing.
+    let unmapped: Vec<&str> = ingested
+        .report
+        .unmapped_fields
+        .iter()
+        .map(|f| f.source_path.as_str())
+        .collect();
+    for quiet in ["/notes", "/zero_rows", "/scalar_at_root"] {
+        assert!(
+            unmapped.contains(&quiet) && !unread.contains(&quiet),
+            "{quiet} holds no rows, so it is unmapped rather than unread: {unmapped:?}"
+        );
+    }
+    assert_eq!(
+        ingested.report.coverage,
+        Coverage::Full,
+        "the episodes themselves were read in full; what is missing is disclosed as a finding"
+    );
+}
+
+#[test]
+fn an_unread_root_object_reaches_the_verdict_not_only_the_ingest_report() {
+    let outcome = veridex_core::pipeline::run_check(
+        &default_registry(),
+        &Source::Local(fixture("root_siblings.h5")),
+        None,
+        &IngestOptions::default(),
+    )
+    .expect("the run completes");
+    let finding = outcome
+        .verdict
+        .findings
+        .iter()
+        .find(|f| f.code == "COVERAGE.SOURCE_UNREAD")
+        .expect("the unread root objects surface as a coverage finding");
+    assert_eq!(finding.severity, veridex_core::check::Severity::Warning);
+    for named in ["/mask", "/reward_model", "/logs"] {
+        assert!(
+            finding.message.contains(named),
+            "the finding names every unread source: {}",
+            finding.message
+        );
+    }
+
+    // A file with nothing beside its episodes must not carry the finding at all.
+    let clean = veridex_core::pipeline::run_check(
+        &default_registry(),
+        &Source::Local(fixture("robomimic_small.h5")),
+        None,
+        &IngestOptions::default(),
+    )
+    .expect("the run completes");
+    assert!(
+        !clean
+            .verdict
+            .findings
+            .iter()
+            .any(|f| f.code == "COVERAGE.SOURCE_UNREAD"),
+        "a file whose root holds only `/data` has no unread source"
+    );
+}
+
+/// The disclosure is read from object headers, so declining to open a chunk cannot hide it.
+#[test]
+fn a_metadata_only_run_discloses_the_same_unread_root_objects() {
+    let full = ingest("root_siblings.h5", IngestOptions::default());
+    let headers = ingest("root_siblings.h5", metadata_only());
+    let paths = |i: &veridex_core::adapter::Ingested| -> Vec<String> {
+        i.report
+            .unread_sources
+            .iter()
+            .map(|f| f.source_path.clone())
+            .collect()
+    };
+    assert_eq!(paths(&full), paths(&headers));
 }

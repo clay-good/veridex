@@ -215,8 +215,22 @@ impl Adapter for Hdf5Adapter {
         let parent_header = file.object_header(episode_parent_addr)?;
         let parent_links = file.group_links(&parent_header, &mut notes.skipped_links)?;
 
-        let mut groups =
-            episode_groups(&mut file, &episode_parent_path, &parent_links, &mut notes)?;
+        // What the root holds beside the episodes. Only when the episodes came from `/data`: with a
+        // flat file the root *is* the episode parent, and `episode_groups` already names everything
+        // sitting beside the episode groups.
+        let mut unread_sources = if episode_parent_path.is_empty() {
+            Vec::new()
+        } else {
+            root_siblings(&mut file, &root_links, &mut notes)?
+        };
+
+        let mut groups = episode_groups(
+            &mut file,
+            &episode_parent_path,
+            &parent_links,
+            &mut notes,
+            &mut unread_sources,
+        )?;
         // A file whose arrays sit directly under the parent — what a simple collector writes when it
         // records one trajectory per file — is one episode, not zero. The parent group *is* the
         // episode; nothing is fabricated, because the arrays are still the only source of frames.
@@ -382,6 +396,10 @@ impl Adapter for Hdf5Adapter {
             elements,
         });
 
+        // Named in path order, so `inspect` prints the same list whatever order the file's link
+        // index happened to enumerate its objects in.
+        unread_sources.sort_by(|a, b| a.source_path.cmp(&b.source_path));
+
         let mut unmapped = std::mem::take(&mut notes.unmapped);
         for link in &notes.skipped_links {
             unmapped.push(UnmappedField {
@@ -493,7 +511,7 @@ impl Adapter for Hdf5Adapter {
         Ok(Ingested {
             dataset,
             report: IngestReport {
-                unread_sources: Vec::new(),
+                unread_sources,
                 format_id: FORMAT_ID,
                 source_version: Some(format!("superblock v{}", file.superblock_version())),
                 coverage,
@@ -530,11 +548,145 @@ fn named_link(links: &[(String, u64)], name: &str) -> Option<u64> {
 }
 
 /// The groups under `parent` that hold arrays — the file's episodes — in name order.
+/// Objects at the root that sit beside `/data`, the group the episodes were read from.
+///
+/// A `robomimic` file is not only `/data`: it commonly carries a `/mask` group of filter keys (which
+/// demonstrations are in the train split, which in the validation split), and hand-rolled collectors
+/// park calibration tables, reward models and raw logs at the root the same way. None of it is under
+/// an episode group, so none of it is read — and until this walked the root, none of it was said
+/// either: the file's whole second half could be absent from the report while coverage read `Full`.
+///
+/// The split follows the line the rest of the adapter draws. An object that **holds array rows** is
+/// data that is *there* and went unread, so it becomes an [`IngestReport::unread_sources`] entry and
+/// travels into the verdict as `COVERAGE.SOURCE_UNREAD`. An object that holds none — an empty group,
+/// a scalar array, a zero-row array, a committed datatype — is a note about shape, not a hole in
+/// coverage, so it lands in `unmapped_fields`.
+///
+/// Headers only: no chunk is read to answer this, so a metadata-only run discloses exactly what a
+/// full read discloses.
+fn root_siblings(
+    file: &mut H5File,
+    root_links: &[(String, u64)],
+    notes: &mut Notes,
+) -> Result<Vec<UnmappedField>, IngestError> {
+    let mut unread: Vec<UnmappedField> = Vec::new();
+    for (name, addr) in root_links {
+        if name == EPISODE_ROOT {
+            continue;
+        }
+        let path = format!("/{name}");
+        let header = file.object_header(*addr)?;
+        if header.is_group() {
+            let mut visited = BTreeSet::new();
+            if holds_array_rows(file, *addr, 0, &mut visited, notes)? {
+                unread.push(UnmappedField {
+                    source_path: path,
+                    note: format!(
+                        "this group sits beside `/{EPISODE_ROOT}`, where the episodes are, so no \
+                         episode is built from it and the arrays under it were not read"
+                    ),
+                });
+            } else {
+                notes.unmapped.push(UnmappedField {
+                    source_path: path,
+                    note: format!(
+                        "this group sits beside `/{EPISODE_ROOT}` and holds no arrays, so there is \
+                         nothing under it to read"
+                    ),
+                });
+            }
+            continue;
+        }
+        if !header.is_dataset() {
+            notes.unmapped.push(UnmappedField {
+                source_path: path,
+                note: "this object is neither a group nor a dataset (a committed datatype, say); \
+                       no stream is built from it"
+                    .into(),
+            });
+            continue;
+        }
+        let info = file.dataset_info(&header)?;
+        match info.dims.first() {
+            Some(rows) if *rows > 0 => unread.push(UnmappedField {
+                source_path: path,
+                note: format!(
+                    "this array sits beside `/{EPISODE_ROOT}`, where the episodes are, so it \
+                     belongs to no episode and its {rows} row(s) were not read"
+                ),
+            }),
+            Some(_) => notes.unmapped.push(UnmappedField {
+                source_path: path,
+                note: format!(
+                    "this array sits beside `/{EPISODE_ROOT}` and has no rows, so there is nothing \
+                     under it to read"
+                ),
+            }),
+            None => notes.unmapped.push(UnmappedField {
+                source_path: path,
+                note: "a scalar array has no first dimension, so it carries no timeline; it is \
+                       metadata, not a stream"
+                    .into(),
+            }),
+        }
+    }
+    Ok(unread)
+}
+
+/// Whether anything under an object holds array rows, answered from headers alone.
+///
+/// Stops at the first array with rows: the question is whether there is unread data here, not how
+/// much. A tree deeper than [`MAX_GROUP_DEPTH`], or one whose links this reader could not follow,
+/// answers `true` — "I stopped walking" is not "there is nothing here", and the honest direction for
+/// an unanswered question about coverage is to disclose.
+fn holds_array_rows(
+    file: &mut H5File,
+    addr: u64,
+    depth: usize,
+    visited: &mut BTreeSet<u64>,
+    notes: &mut Notes,
+) -> Result<bool, IngestError> {
+    if depth > MAX_GROUP_DEPTH {
+        return Ok(true);
+    }
+    if !visited.insert(addr) {
+        return Ok(false);
+    }
+    let header = file.object_header(addr)?;
+    let before = notes.skipped_links.len();
+    let links = file.group_links(&header, &mut notes.skipped_links)?;
+    if notes.skipped_links.len() != before {
+        return Ok(true);
+    }
+    for (_, child_addr) in links {
+        let child = file.object_header(child_addr)?;
+        if child.is_group() {
+            if holds_array_rows(file, child_addr, depth + 1, visited, notes)? {
+                return Ok(true);
+            }
+            continue;
+        }
+        if !child.is_dataset() {
+            continue;
+        }
+        if file
+            .dataset_info(&child)?
+            .dims
+            .first()
+            .is_some_and(|rows| *rows > 0)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn episode_groups(
     file: &mut H5File,
     parent_path: &str,
     links: &[(String, u64)],
     notes: &mut Notes,
+    unread: &mut Vec<UnmappedField>,
 ) -> Result<Vec<EpisodeGroup>, IngestError> {
     let mut groups: Vec<EpisodeGroup> = Vec::new();
     for (name, addr) in links {
@@ -542,14 +694,30 @@ fn episode_groups(
         if !header.is_group() {
             // An array (or a committed datatype) sitting beside the episode groups is not itself an
             // episode. It is still something the file holds and this ingest did not read, so it is
-            // named rather than passed over.
-            notes.unmapped.push(UnmappedField {
-                source_path: format!("{parent_path}/{name}"),
-                note:
-                    "this object sits beside the episode groups but is not a group, so no episode \
-                       is built from it"
+            // named rather than passed over — and an array with rows is named as a *coverage hole*,
+            // because the rows are there and nothing read them.
+            let path = format!("{parent_path}/{name}");
+            let rows = header
+                .is_dataset()
+                .then(|| file.dataset_info(&header))
+                .transpose()?
+                .and_then(|info| info.dims.first().copied())
+                .filter(|rows| *rows > 0);
+            match rows {
+                Some(rows) => unread.push(UnmappedField {
+                    source_path: path,
+                    note: format!(
+                        "this array sits beside the episode groups, so it belongs to no episode \
+                         and its {rows} row(s) were not read"
+                    ),
+                }),
+                None => notes.unmapped.push(UnmappedField {
+                    source_path: path,
+                    note: "this object sits beside the episode groups but is not a group, so no \
+                           episode is built from it"
                         .into(),
-            });
+                }),
+            }
             continue;
         }
         groups.push(EpisodeGroup {

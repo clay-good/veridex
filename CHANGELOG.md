@@ -10,6 +10,27 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **An HDF5 file is more than its episodes, and the report said nothing about the rest.** The
+  adapter reads episodes from `/data` and never looks anywhere else in the object tree. Everything
+  the root holds beside it went unread *and* undisclosed: `robomimic` ships a `/mask` group naming
+  which demonstrations belong to the train and validation splits, and hand-rolled collectors park
+  reward tables and raw logs at the root the same way. A file whose second half was never opened
+  produced `coverage: Full`, a full-marks structural pass, and a certifiable verdict speaking for
+  the whole file.
+
+  The root is now walked, and each object beside `/data` is classified on the line the rest of the
+  adapter uses: anything holding **rows** is data that is there and unread, so it becomes an
+  `unread_sources` entry and raises `COVERAGE.SOURCE_UNREAD` (warning) in the verdict; anything
+  holding none — an empty group, a scalar array, a zero-row array, a committed datatype — is an
+  unmapped note, because there is nothing there to have read. An array sitting beside the `demo_N`
+  groups *inside* `/data` was already named, but as unmapped; it holds rows, so it is now unread
+  too. The walk reads object headers only, so a `--metadata-only` run discloses exactly what a full
+  read discloses, and a subtree deeper than the walk's bound answers "unread" rather than "empty".
+
+  Pinned by `root_siblings.h5` (real `h5py` output) and three tests: the ingest-report split, the
+  finding reaching the verdict and naming every source, and full/metadata-only parity — each
+  verified red against the old behavior.
+
 - **A near-duplicate abstention deleted the near-duplicates it had already found.**
   `structural.near-duplicate-episode` returns an info finding when it could not examine every
   episode — one whose every frame hash is shared past the boilerplate ceiling, or a pair count past

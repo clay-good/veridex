@@ -141,5 +141,22 @@ with h5py.File("statistical_faults.h5", "w") as f:
     depth[5, 4, 4] = np.float32("nan")
     g.create_dataset("obs/depth", data=depth, chunks=(10, 20, 20), compression="gzip")
 
+# What a `robomimic` file holds beside `/data`: the `/mask` group of filter keys, plus a few shapes
+# that decide whether a root object is a coverage hole (rows nothing read) or only a note.
+rng = np.random.default_rng(53)
+with h5py.File("root_siblings.h5", "w") as f:
+    g = f.create_group("data").create_group("demo_0")
+    g.create_dataset("actions", data=rng.random((3, 2)).astype(np.float32))
+    mask = f.create_group("mask")
+    mask.create_dataset("train", data=np.array([b"demo_0"]))
+    mask.create_dataset("valid", data=np.zeros((4,), dtype=np.int64))
+    f.create_dataset("reward_model", data=rng.random((5, 3)).astype(np.float32))
+    f.create_group("notes")  # a group holding no arrays
+    f.create_dataset("zero_rows", data=np.zeros((0, 2), dtype=np.float32))
+    f.create_dataset("scalar_at_root", data=np.float32(2.5))
+    f.create_group("logs").create_group("run_0").create_dataset(
+        "events", data=np.zeros((2,), dtype=np.int32)
+    )  # arrays two levels down: the walk has to recurse to find them
+
 for name in sorted(n for n in os.listdir(".") if n.endswith(".h5")):
     print(name, os.path.getsize(name))

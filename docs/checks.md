@@ -292,9 +292,10 @@ A run that read less than the whole dataset *without being asked to* emits
 **`COVERAGE.SOURCE_UNREAD`** (**warning**, same check id): the dataset declares data the adapter did
 not read. Today that is a data shard resolving outside the dataset directory, a rosbag2 shard the
 bag's `metadata.yaml` lists but does not ship, a rosbag2 recording that falls short of the message
-total its own manifest declares, and a rosbag2 message on a topic the bag's `topics` table never
+total its own manifest declares, a rosbag2 message on a topic the bag's `topics` table never
 declares (there is no topic name to file it under, and inventing one would name a topic the bag does
-not). The
+not), and an HDF5 object holding rows that sits outside the episodes — `robomimic`'s `/mask` split
+group, a reward table parked at the root, an array beside the `demo_N` groups. The
 verdict's `coverage` field cannot express this, because a `Coverage::Full` ingest is one that read
 everything it was *willing* to read, which is not the same as everything the dataset declared. Until
 this existed, a LeRobot dataset with one of its two Parquet shards symlinked out of the directory

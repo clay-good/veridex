@@ -109,6 +109,14 @@ a NaN buried in joint 6, or a lone 250x spike is caught **per dimension** and na
 v0–v3, old- and new-style groups, contiguous, compact, and chunked storage, and the `deflate`,
 `shuffle`, and `fletcher32` filters. A structure it does not read is named rather than skipped past.
 
+An HDF5 file is usually more than its episodes, and the report says so. `robomimic` writes a `/mask`
+group of filter keys beside `/data`; collectors park reward tables and raw logs at the root the same
+way. None of that sits under an episode group, so none of it is read — and anything there holding
+rows is disclosed as `COVERAGE.SOURCE_UNREAD`, a warning in the verdict rather than a note only
+`inspect` prints, because a clean result over the episodes is not a clean result over the file. An
+object with no rows under it — an empty group, a scalar array, a zero-row array, a committed
+datatype — is named as unmapped instead: there is nothing there to have read.
+
 HDF5 records no clock either, so the same honesty rule applies: frames carry a step index, and the
 temporal checks abstain and say so. A file that *does* record time gets measured time — but only if
 it also declares its units (a `units` attribute on the timestamp array). Whether a bare `time`

@@ -314,7 +314,9 @@ zstd-compressed — through Veridex's own bounds-checked SQLite reader, reconcil
 `metadata.yaml` message total, and discloses a message on an undeclared topic as unread rather than
 dropping it; an MCAP is reconciled the same way against the message total in the summary section it
 writes about itself, so a recording short of its own count is disclosed as unread rather than read
-as complete), CAN+DBC, and ASAM
+as complete; an HDF5 file's root is walked past `/data`, so `robomimic`'s `/mask` split group — or
+anything else holding rows beside the episodes — is disclosed as unread rather than passed over),
+CAN+DBC, and ASAM
 MDF/MF4 adapters** with a passing cross-format
 neutrality gate (the same logical dataset yields equivalent CDMs as LeRobot v3 and as MCAP, and as rosbag2 and as MCAP); descriptive scenario-dimension coverage and **scenario/map/sim
 reference extraction** (OpenSCENARIO / OpenDRIVE / OSI / simulator, with the version read from the
