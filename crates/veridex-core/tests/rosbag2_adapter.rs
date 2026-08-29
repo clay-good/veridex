@@ -1206,3 +1206,34 @@ fn a_metadata_only_run_over_an_mcap_bag_names_the_shards_it_did_not_open() {
         ingested.report.unmapped_fields
     );
 }
+
+/// A recorder that died before writing a message leaves a shard with channels and no data. The bag
+/// still ingests — refusing it would say nothing about what is wrong — but it must not come back
+/// clean: an episode with no frames at all is the shape "silence reads as a pass" takes here.
+#[test]
+fn a_bag_whose_shard_holds_no_messages_fails_rather_than_passing_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    write_mcap_bag(dir.path(), &[("rec_0.mcap", vec![])], "mcap", 0);
+    let outcome = veridex_core::pipeline::run_check(
+        &default_registry(),
+        &Source::Local(dir.path().to_path_buf()),
+        None,
+        &IngestOptions::default(),
+    )
+    .expect("the bag ingests");
+    assert_eq!(outcome.verdict.status, veridex_core::engine::Status::Fail);
+    assert!(
+        outcome
+            .verdict
+            .findings
+            .iter()
+            .any(|f| f.code == "STRUCTURAL.EMPTY_EPISODE"),
+        "{:?}",
+        outcome
+            .verdict
+            .findings
+            .iter()
+            .map(|f| &f.code)
+            .collect::<Vec<_>>()
+    );
+}
