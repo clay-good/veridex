@@ -702,3 +702,77 @@ fn a_metadata_only_run_describes_the_same_dataset_minus_the_frames() {
         );
     }
 }
+
+/// A run that opened no payload cannot tell a dataset with no calibration or lineage from one whose
+/// calibration and lineage live in the payloads it declined to read. Reporting them missing there
+/// measures the request rather than the data — the defect `autonomy.calibration-completeness` was
+/// fixed for, arriving through provenance instead.
+///
+/// Concretely: a ROS 2 bag carries its transform tree and camera intrinsics in message bodies, so a
+/// full run records `calibration` provenance from them and a metadata-only run has none — and
+/// reported the fully calibrated bag as missing it.
+#[test]
+fn a_payload_derived_provenance_element_is_not_called_missing_when_no_payload_was_read() {
+    let bag = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/rosbag2/clean_rig");
+    let code = "PROVENANCE.MISSING_CALIBRATION";
+    let has = |options: &IngestOptions| {
+        veridex_core::pipeline::run_check(
+            &veridex_core::default_registry(),
+            &Source::Local(bag.clone()),
+            None,
+            options,
+        )
+        .expect("the run completes")
+        .verdict
+        .findings
+        .iter()
+        .any(|f| f.code == code)
+    };
+
+    assert!(
+        !has(&metadata_only()),
+        "the bag's calibration is in its message bodies, which this run did not open"
+    );
+    assert!(
+        !has(&IngestOptions::default()),
+        "and a full run reads that calibration, so it is not missing either"
+    );
+
+    // The check still speaks about it where the answer is real: a CDM with no calibration at all,
+    // from a run that did read frames.
+    let empty = veridex_core::cdm::Dataset {
+        id: "no-provenance".into(),
+        metadata: vec![],
+        provenance: vec![],
+        episodes: vec![],
+        calibration: None,
+    };
+    let findings = veridex_core::check::Check::run_in(
+        &veridex_core::checks::provenance::ProvenanceCompleteness,
+        &empty,
+        &veridex_core::check::CheckContext { frames_read: true },
+    );
+    assert!(findings.iter().any(|f| f.code == code));
+    let narrowed = veridex_core::check::Check::run_in(
+        &veridex_core::checks::provenance::ProvenanceCompleteness,
+        &empty,
+        &veridex_core::check::CheckContext { frames_read: false },
+    );
+    assert!(
+        !narrowed.iter().any(|f| f.code == code),
+        "and stays silent about it where no payload was read"
+    );
+    // Everything a manifest supplies is judged in both modes: its absence means the same thing.
+    for still in [
+        "PROVENANCE.MISSING_LICENSE",
+        "PROVENANCE.MISSING_SENSOR",
+        "PROVENANCE.MISSING_CLOCK",
+        "PROVENANCE.MISSING_ANNOTATOR",
+    ] {
+        assert!(
+            narrowed.iter().any(|f| f.code == still),
+            "{still} is read from a manifest, so a narrow run still judges it"
+        );
+    }
+}

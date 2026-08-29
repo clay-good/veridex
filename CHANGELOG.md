@@ -74,6 +74,15 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **A metadata-only run reported a calibrated rig as missing its calibration provenance.** The
+  element is decoded from ROS message bodies, which such a run does not open, so it read the absence
+  it had created itself — the defect `autonomy.calibration-completeness` was fixed for a fortnight
+  ago, arriving through provenance instead. Recording in-band calibration as provenance is what made
+  it visible: the full run started reporting it and the narrow one did not. `MISSING_CALIBRATION` and
+  `MISSING_UPSTREAM` (RLDS records lineage inside the TFRecord) are now silent where no payload was
+  read; every other expected element comes from a manifest, a header or a dataset card, which such a
+  run does read, so its absence still means the same thing in either mode.
+
 - **A boolean channel was reported as a saturated actuator.** `STATISTICAL.SATURATED` asks what
   fraction of a stream's values sit exactly at one extreme, which for a two-state channel is all of
   them: RLDS carries `is_first` and `is_last` on every step of every episode — 1 once, 0 for the rest

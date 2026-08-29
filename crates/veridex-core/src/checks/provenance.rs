@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use crate::cdm::{Dataset, ProvenanceClass};
-use crate::check::{Category, Check, Finding, Location, Scope, Severity};
+use crate::check::{Category, Check, CheckContext, Finding, Location, Scope, Severity};
 
 /// A provenance element Veridex expects a trustworthy dataset to carry, with the severity of its
 /// absence.
@@ -54,6 +54,15 @@ const EXPECTED: &[Expected] = &[
     },
 ];
 
+/// The expected elements an adapter can only get from a stream payload.
+///
+/// `calibration` is decoded from ROS message bodies (a `CameraInfo`, a `TFMessage`), and `upstream`
+/// from a per-episode field inside a TFRecord. A run that opens no payload has neither, and it has
+/// neither *by request* — so their absence there is a fact about the run, not about the dataset.
+/// Every other expected element is read from a manifest, a header or a dataset card, all of which a
+/// metadata-only run does read; their absence means the same thing in either mode.
+const PAYLOAD_DERIVED: &[&str] = &["calibration", "upstream"];
+
 /// Presence and internal consistency of dataset provenance.
 pub struct ProvenanceCompleteness;
 
@@ -89,6 +98,24 @@ impl Check for ProvenanceCompleteness {
         "1"
     }
     fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        self.evaluate(dataset, true)
+    }
+
+    /// A run that opened no stream payload cannot tell a dataset with no calibration or lineage from
+    /// one whose calibration and lineage live in the payloads it declined to read. Reporting them
+    /// missing there measures the request rather than the data — the same defect
+    /// `autonomy.calibration-completeness` was fixed for, arriving through provenance instead.
+    ///
+    /// Not visible from the CDM: a metadata-only rig and an uncalibrated one carry the same absence,
+    /// so the ingest's own answer is the one that decides. The narrowing itself is disclosed by
+    /// `COVERAGE.METADATA_ONLY`, so this silence is not the reader's only signal.
+    fn run_in(&self, dataset: &Dataset, context: &CheckContext) -> Vec<Finding> {
+        self.evaluate(dataset, !context.frames_read)
+    }
+}
+
+impl ProvenanceCompleteness {
+    fn evaluate(&self, dataset: &Dataset, skip_payload_derived: bool) -> Vec<Finding> {
         let mut findings = Vec::new();
 
         // Collect the best-known class per provenance key across all records, and check each
@@ -169,7 +196,9 @@ impl Check for ProvenanceCompleteness {
         // Surface each expected element that is absent or only ever `unknown`.
         for exp in EXPECTED {
             let present = known_value.get(exp.key).copied().unwrap_or(false);
-            if !present {
+            // An element only a stream payload could have supplied is not *missing* on a run that
+            // opened no payload; it was not looked for. See `PAYLOAD_DERIVED` and `run_in`.
+            if !present && !(skip_payload_derived && PAYLOAD_DERIVED.contains(&exp.key)) {
                 findings.push(
                     Finding::new(
                         self.id(),
