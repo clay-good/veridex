@@ -1280,7 +1280,13 @@ impl Check for NearDuplicateEpisode {
 /// gaps, skew) passes, yet the observations are stale garbage. Real camera frames are never
 /// byte-identical (sensor noise alone guarantees it), so a run of frames sharing one `content_hash`
 /// on a `Video` stream is a genuine freeze. This is scoped to `Video` because a constant *scalar*
-/// stream (an arm at rest) is legitimate — that case is `STATISTICAL.DEGENERATE`'s concern, not this.
+/// stream (an arm at rest) is legitimate.
+///
+/// Where a non-video stream really has stopped, two other checks cover it, and the deferral here was
+/// once to only the first of them — which left a real gap. `STATISTICAL.DEGENERATE` catches a stream
+/// constant across the statistics its source summarizes, and [`FrozenEpisode`] catches one constant
+/// through a single *episode* of a dataset where it moves in the others — the case DEGENERATE cannot
+/// see when those statistics are dataset-wide, as LeRobot's are.
 ///
 /// Only frames that carry a `content_hash` are compared (MCAP image messages are fingerprinted;
 /// LeRobot video features live outside the Parquet and are unhashed, so the check honestly abstains
