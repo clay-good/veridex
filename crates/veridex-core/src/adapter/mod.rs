@@ -176,6 +176,23 @@ pub const DEFAULT_MAX_FRAMES: u64 = 20_000_000;
 /// rarely clear 10x.
 pub const DEFAULT_MAX_DECOMPRESSION_RATIO: u64 = 100;
 
+/// The default ceiling on how many bytes of one source file an ingest will hold in memory at once.
+///
+/// MCAP, ASAM MF4 and a rosbag2 `.db3` are **random-access** containers: the summary lives at the
+/// end, the block graph is a web of file offsets, and SQLite's b-tree walk seeks. Each is therefore
+/// read whole, by design — see the note in `rosbag2::read_shard`. Whole means the allocation is the
+/// file's size, and a file far larger than the machine's memory does not fail with a verdict, it
+/// fails with the process: Rust aborts on a failed allocation, and the OOM killer does not wait for
+/// that. Either way the run dies with no report, no exit code anyone can act on, and no clue that
+/// the size was the problem.
+///
+/// So a file past this ceiling is refused *before* the read, by name, pointing at `--metadata-only`
+/// — which every format read this way supports, and which answers from headers alone at any size.
+/// Set well above real single-file recordings (a 30-minute ten-sensor MCAP is a few gigabytes) and
+/// far below what kills a workstation. It is a fixed number, not a fraction of free memory, because
+/// a verdict that depends on what else the machine was doing is not reproducible.
+pub const DEFAULT_MAX_SOURCE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
 /// The floor under a decompression budget, so a small file still gets a workable allowance.
 const DECOMPRESSION_BUDGET_FLOOR_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -193,6 +210,9 @@ pub struct IngestOptions {
     /// Ceiling on how far a compressed container may expand, as a multiple of the source's size;
     /// `None` removes the limit. Defaults to [`DEFAULT_MAX_DECOMPRESSION_RATIO`].
     pub max_decompression_ratio: Option<u64>,
+    /// Ceiling on the size of one source file an adapter reads whole into memory; `None` removes the
+    /// limit. Defaults to [`DEFAULT_MAX_SOURCE_BYTES`].
+    pub max_source_bytes: Option<u64>,
 }
 
 impl Default for IngestOptions {
@@ -202,7 +222,47 @@ impl Default for IngestOptions {
             sample: Sample::default(),
             max_frames: Some(DEFAULT_MAX_FRAMES),
             max_decompression_ratio: Some(DEFAULT_MAX_DECOMPRESSION_RATIO),
+            max_source_bytes: Some(DEFAULT_MAX_SOURCE_BYTES),
         }
+    }
+}
+
+/// Read one source file whole, refusing before the allocation one this ingest cannot hold.
+///
+/// The refusal is on `stat`, not on the read: a ceiling checked after the bytes are resident bounds
+/// nothing. See [`DEFAULT_MAX_SOURCE_BYTES`] for why these formats are read whole at all.
+pub(crate) fn read_source_whole(
+    path: &Path,
+    format_id: &'static str,
+    options: &IngestOptions,
+    hint: &'static str,
+) -> Result<Vec<u8>, IngestError> {
+    let size = std::fs::metadata(path)
+        .map_err(|e| IngestError::Io(e.to_string()))?
+        .len();
+    check_source_size(size, format_id, options, hint)?;
+    std::fs::read(path).map_err(|e| IngestError::Io(e.to_string()))
+}
+
+/// Refuse a source larger than this ingest will hold in memory at once.
+///
+/// Separate from [`read_source_whole`] for the reader that does its own reading — a rosbag2 shard is
+/// decompressed under the decompression budget as it arrives — but must still be refused on size
+/// first.
+pub(crate) fn check_source_size(
+    size: u64,
+    format_id: &'static str,
+    options: &IngestOptions,
+    hint: &'static str,
+) -> Result<(), IngestError> {
+    match options.max_source_bytes {
+        Some(limit) if size > limit => Err(IngestError::SourceTooLarge {
+            format_id,
+            limit,
+            size,
+            hint,
+        }),
+        _ => Ok(()),
     }
 }
 
@@ -437,6 +497,22 @@ pub enum IngestError {
         limit: u64,
         /// Decompressed bytes the source would have produced.
         requested: u64,
+    },
+
+    /// One source file is larger than this ingest will read into memory at once.
+    #[error("{format_id}: the source is {size} bytes, over the {limit}-byte ceiling on one file read whole into memory — {hint}")]
+    SourceTooLarge {
+        /// The recognizing adapter's format id.
+        format_id: &'static str,
+        /// The ceiling in force, in bytes.
+        limit: u64,
+        /// The file's size, in bytes.
+        size: u64,
+        /// What this format's reader can actually do about it. Per adapter, because it differs:
+        /// MCAP answers a metadata-only run from its summary section without the file, and an MF4
+        /// does not — its block graph is a web of offsets, so even a header-only read holds the
+        /// file. A hint that names a way out the format does not have is worse than none.
+        hint: &'static str,
     },
 
     /// The sampling request itself is meaningless (zero episodes, a non-positive fraction).

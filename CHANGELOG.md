@@ -8,6 +8,23 @@ All notable changes to Veridex are recorded here. The format follows
 The first shippable slice of the [`bootstrap-veridex-mvp`](openspec/changes/bootstrap-veridex-mvp/)
 change. Runs end-to-end: ingest → validate → score → report → sign.
 
+### Added
+
+- **A ceiling on one file read whole into memory (`--max-source-bytes`, 4 GiB by default).** MCAP,
+  ASAM MF4 and a rosbag2 `.db3` are random-access containers — the summary sits at the end of the
+  file, the block graph is a web of offsets, SQLite's b-tree walk seeks — so each is read whole, by
+  design. That makes the allocation the file's size, and a recording far past what the machine holds
+  did not fail with a verdict: it failed with the process, because a failed allocation aborts and the
+  OOM killer does not wait for that. No report, no exit code to act on, no clue that size was the
+  problem.
+
+  The size is now refused on `stat`, before the read, with an error naming the file's size, the
+  ceiling, and what to do about it. The way out is per format, because it differs: an MCAP and a
+  rosbag2 bag answer `--metadata-only` without holding the file (three seeks into the summary
+  section; the bag's `metadata.yaml`), and an MF4 does not — its block graph is offsets into the
+  file, so a header-only run holds it too, and its refusal says so rather than promising an escape
+  the format does not have. `--max-source-bytes 0` removes the ceiling.
+
 ### Fixed
 
 - **CAN traffic the DBC does not define was a note, not a coverage hole.** The CAN+DBC adapter

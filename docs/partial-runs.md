@@ -10,8 +10,15 @@ a dataset that would materialize more frames is refused with a clear error rathe
 memory, because the frame count is a product of two numbers the file itself controls. And a
 **decompression budget** for compressed containers (MCAP chunks and LeRobot Parquet), capping
 expansion at 100x the file's own size with a 64 MiB floor — so a small file cannot unpack into a
-gigabyte, while a genuinely large log keeps a proportionate allowance. Raise either with `--max-frames <n>` /
-`--max-decompression-ratio <n>`, or remove it with `0`.
+gigabyte, while a genuinely large log keeps a proportionate allowance. And a **source-size ceiling**
+(4 GiB by default) on one file read whole into memory: MCAP, ASAM MF4 and a rosbag2 `.db3` are
+random-access containers — the summary is at the end, the block graph is a web of offsets, SQLite
+seeks — so each is read whole by design, and a file past the ceiling is refused on `stat`, before the
+allocation. Without it the run does not fail with a verdict, it fails with the process: a failed
+allocation aborts, and the OOM killer does not wait for that. The refusal points at
+`--metadata-only`, which reads any of those three from its headers at any size. Raise any of the
+three with `--max-frames <n>` / `--max-decompression-ratio <n>` / `--max-source-bytes <n>`, or remove
+one with `0`.
 
 For a dataset too large to check in full on every commit, `check` and `inspect` can validate a subset
 of its episodes:

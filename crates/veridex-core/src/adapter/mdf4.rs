@@ -367,7 +367,16 @@ impl Adapter for Mdf4Adapter {
                 message: "remote MF4 ingestion is not supported".into(),
             });
         };
-        let bytes = std::fs::read(path).map_err(|e| IngestError::Io(e.to_string()))?;
+        // An MF4 file is a graph of links between blocks anywhere in the file, so it is read whole;
+        // one larger than this ingest will hold is refused by name rather than by the allocator, and
+        // `--metadata-only` describes it from its block headers at any size.
+        let bytes = super::read_source_whole(
+            path,
+            FORMAT_ID,
+            options,
+            "raise the ceiling with --max-source-bytes (0 removes it); an MF4 is held whole even for \
+             a header-only run, because its block graph is a web of offsets into the file",
+        )?;
 
         let version = id_version(&bytes).ok_or_else(|| IngestError::Parse {
             format_id: FORMAT_ID,

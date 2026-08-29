@@ -30,7 +30,7 @@ const EXIT_TOOL_ERROR: u8 = 2;
 const COMMANDS: &[(&str, &str)] = &[
     (
         "check",
-        "validate a dataset and report findings (--max-frames <n> / --max-decompression-ratio <n> raise the ingest ceilings; --sample-episodes / --sample-fraction check a subset; --print-config prints the effective config instead)",
+        "validate a dataset and report findings (--max-frames <n> / --max-decompression-ratio <n> / --max-source-bytes <n> raise the ingest ceilings; --sample-episodes / --sample-fraction check a subset; --print-config prints the effective config instead)",
     ),
     (
         "certify",
@@ -87,6 +87,7 @@ struct Args {
     allow_any_issuer: bool,
     max_frames: Option<String>,
     max_decompression_ratio: Option<String>,
+    max_source_bytes: Option<String>,
     sample_episodes: Option<String>,
     sample_fraction: Option<String>,
     sample_seed: Option<String>,
@@ -118,7 +119,7 @@ impl Args {
     /// The single source of truth for [`reject_flags_except`]. Adding a flag to the parser without
     /// adding it here means it is never checked, so the two lists are kept adjacent, and a test
     /// asserts this covers the parser's whole flag set.
-    fn given_flags(&self) -> [(&'static str, bool); 29] {
+    fn given_flags(&self) -> [(&'static str, bool); 30] {
         [
             ("--json", self.json),
             ("--sarif", self.sarif),
@@ -141,6 +142,7 @@ impl Args {
                 "--max-decompression-ratio",
                 self.max_decompression_ratio.is_some(),
             ),
+            ("--max-source-bytes", self.max_source_bytes.is_some()),
             ("--sample-episodes", self.sample_episodes.is_some()),
             ("--sample-fraction", self.sample_fraction.is_some()),
             ("--sample-seed", self.sample_seed.is_some()),
@@ -157,7 +159,12 @@ impl Args {
 }
 
 /// The flags every command that ingests a dataset honors, on top of its own.
-const INGEST_FLAGS: &[&str] = &["--format", "--max-frames", "--max-decompression-ratio"];
+const INGEST_FLAGS: &[&str] = &[
+    "--format",
+    "--max-frames",
+    "--max-decompression-ratio",
+    "--max-source-bytes",
+];
 
 /// The sampling flags, honored only where a partial verdict is meaningful (`check`, `inspect`).
 const SAMPLING_FLAGS: &[&str] = &["--sample-episodes", "--sample-fraction", "--sample-seed"];
@@ -187,6 +194,7 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
     let mut allow_any_issuer = false;
     let mut max_frames = None;
     let mut max_decompression_ratio = None;
+    let mut max_source_bytes = None;
     let mut sample_episodes = None;
     let mut sample_fraction = None;
     let mut sample_seed = None;
@@ -247,6 +255,7 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
             "--max-decompression-ratio" => {
                 max_decompression_ratio = Some(value("--max-decompression-ratio")?)
             }
+            "--max-source-bytes" => max_source_bytes = Some(value("--max-source-bytes")?),
             "--sample-episodes" => sample_episodes = Some(value("--sample-episodes")?),
             "--sample-fraction" => sample_fraction = Some(value("--sample-fraction")?),
             "--sample-seed" => sample_seed = Some(value("--sample-seed")?),
@@ -275,6 +284,7 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
         allow_any_issuer,
         max_frames,
         max_decompression_ratio,
+        max_source_bytes,
         sample_episodes,
         sample_fraction,
         sample_seed,
@@ -479,6 +489,11 @@ fn ingest_options(args: &Args) -> Result<IngestOptions, String> {
             "--max-decompression-ratio",
             args.max_decompression_ratio.as_deref(),
             defaults.max_decompression_ratio,
+        )?,
+        max_source_bytes: budget(
+            "--max-source-bytes",
+            args.max_source_bytes.as_deref(),
+            defaults.max_source_bytes,
         )?,
     })
 }
@@ -1007,6 +1022,7 @@ fn cmd_print_config(args: &Args) -> ExitCode {
             "--max-decompression-ratio",
             args.max_decompression_ratio.is_some(),
         ),
+        ("--max-source-bytes", args.max_source_bytes.is_some()),
         ("--format", args.format.is_some()),
         ("--sarif", args.sarif),
         ("--html", args.html),
@@ -2712,7 +2728,9 @@ fn print_help() {
     println!(
         "    --max-frames <n>     ceiling on frames an ingest may materialize (0 = no limit)
     --max-decompression-ratio <n>
-                         ceiling on compressed expansion, as a multiple of the file's size (0 = no limit)"
+                         ceiling on compressed expansion, as a multiple of the file's size (0 = no limit)
+    --max-source-bytes <n>
+                         ceiling on one file read whole into memory: MCAP, MF4, rosbag2 (0 = no limit)"
     );
     // The format list is asked of the registry rather than written here, so an adapter that starts
     // or stops supporting the flag cannot leave this line claiming otherwise.

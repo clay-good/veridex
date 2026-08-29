@@ -46,13 +46,18 @@ document states what Veridex guarantees, what it does **not**, and how signing k
 - **No wall-clock in core.** Issuance timestamps are caller-supplied, so signing is reproducible and
   testable; the core reads no ambient clock.
 - **Memory safety.** `veridex-core` is compiled with `#![forbid(unsafe_code)]`.
-- **Bounded ingestion.** Reading a dataset is reading untrusted input, so ingestion is bounded twice
-  before it allocates: a **frame budget** (20M frames by default, `--max-frames`) on what a file can
-  materialize, and a **decompression budget** (100x the file's own size, with a
+- **Bounded ingestion.** Reading a dataset is reading untrusted input, so ingestion is bounded three
+  ways before it allocates: a **frame budget** (20M frames by default, `--max-frames`) on what a file
+  can materialize, a **decompression budget** (100x the file's own size, with a
   64 MiB floor so a small file still gets a workable allowance; `--max-decompression-ratio`)
-  on how far a compressed container may expand. Both are charged against what the file *declares*,
-  and the decompression budget again against what actually arrives — so a header that understates
-  its expansion buys nothing. A file past either budget is refused with an error naming the limit.
+  on how far a compressed container may expand, and a **source-size ceiling** (4 GiB,
+  `--max-source-bytes`) on one file read whole into memory. All are charged against what the file
+  *declares* — the size ceiling on `stat`, before the read — and the decompression budget again
+  against what actually arrives, so a header that understates its expansion buys nothing. A file past
+  any of the three is refused with an error naming the limit and what to do about it. The size
+  ceiling exists because MCAP, MF4 and a rosbag2 `.db3` are random-access containers and are read
+  whole by design: past a certain size the run does not fail with a verdict, it fails with the
+  process, since a failed allocation aborts and the OOM killer does not wait for that.
 
 ## What Veridex does NOT guarantee
 

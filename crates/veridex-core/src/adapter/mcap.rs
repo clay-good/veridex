@@ -452,7 +452,17 @@ impl Adapter for McapAdapter {
             return ingest_summary_only(path, read_summary(path)?);
         }
 
-        let bytes = std::fs::read(path).map_err(|e| IngestError::Io(e.to_string()))?;
+        // Read whole: the summary is at the end, the chunk walk below indexes the file directly, and
+        // the reader seeks. So the file's size is the allocation, and one past what this ingest will
+        // hold is refused here rather than by the OOM killer — `--metadata-only` answers from the
+        // summary section at any size.
+        let bytes = super::read_source_whole(
+            path,
+            "mcap",
+            options,
+            "check it from its summary section with --metadata-only, which reads three seeks \
+             rather than the file, or raise the ceiling with --max-source-bytes (0 removes it)",
+        )?;
 
         // Honest origin metadata: the header (library/profile), any producer-written Metadata
         // records, and Attachment summaries.

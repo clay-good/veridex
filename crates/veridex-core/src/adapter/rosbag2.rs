@@ -968,6 +968,22 @@ impl Adapter for Rosbag2Adapter {
         let mut frames = super::FrameBudget::new(options);
         let mut bytes_budget = super::DecompressionBudget::new(options, source_bytes);
 
+        // A `.db3` is resident whole while it is walked (see `read_shard`), one shard at a time, so
+        // the ceiling is per shard rather than over the bag. Refused on `stat`, before the read:
+        // `--metadata-only` reads the bag from its `metadata.yaml` at any size.
+        for shard in &shards {
+            let size = std::fs::metadata(shard)
+                .map_err(|e| IngestError::Io(e.to_string()))?
+                .len();
+            super::check_source_size(
+                size,
+                FORMAT,
+                options,
+                "check the bag from its metadata.yaml with --metadata-only, which opens no shard, \
+                 or raise the ceiling with --max-source-bytes (0 removes it)",
+            )?;
+        }
+
         let mut contents = BagContents::default();
         for shard in &shards {
             read_shard(shard, &mut contents, &mut frames, &mut bytes_budget)?;

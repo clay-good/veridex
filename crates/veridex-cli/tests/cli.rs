@@ -845,6 +845,7 @@ fn every_command_refuses_the_flags_it_does_not_act_on() {
         ("diff", &["--min-score", "90"]),
         ("diff", &["--sarif"]),
         ("diff", &["--max-frames", "10"]),
+        ("keygen", &["--max-source-bytes", "10"]),
         ("keygen", &["--json"]),
         ("keygen", &["--profile", "world-model-ready"]),
     ];
@@ -873,6 +874,7 @@ fn every_command_still_accepts_the_flags_it_does_act_on() {
         ("check", &["--min-score", "1"]),
         ("check", &["--profile", "world-model-ready"]),
         ("check", &["--max-frames", "1000000"]),
+        ("check", &["--max-source-bytes", "1000000000"]),
         ("inspect", &["--json"]),
         ("inspect", &["--max-frames", "1000000"]),
         ("checks", &["--json"]),
