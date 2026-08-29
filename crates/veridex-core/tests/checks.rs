@@ -4392,3 +4392,28 @@ fn a_declared_rate_exactly_at_the_gap_factor_is_still_trusted() {
         "the declared cadence is trusted at exactly the factor, and 500 ns is inside 3x300"
     );
 }
+
+/// A declaration that is not a range describes nothing to conform to: a maximum below its own
+/// minimum would put every value outside it, turning one corrupt line into a finding about the data.
+#[test]
+fn an_inverted_declared_range_is_not_a_breach_of_itself() {
+    let mut stream = stream_with_stats("signal", stats(0.0, 10.0, 5.0, 2.0));
+    stream.observed_stats = stream.stats;
+    stream.stats = None;
+    stream.declared_range = Some(veridex_core::cdm::DeclaredRange {
+        min: 100.0,
+        max: -100.0,
+    });
+    let d = dataset(vec![episode(0, vec![stream.clone()])]);
+    assert!(
+        statistical::DeclaredRangeConformance.run(&d).is_empty(),
+        "an inverted declaration is corrupt, not a range the data failed"
+    );
+
+    // The same values against a real declaration they do exceed are reported.
+    let mut sound = stream;
+    sound.declared_range = Some(veridex_core::cdm::DeclaredRange { min: 0.0, max: 1.0 });
+    let f = statistical::DeclaredRangeConformance.run(&dataset(vec![episode(0, vec![sound])]));
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].code, "STATISTICAL.OUT_OF_DECLARED_RANGE");
+}

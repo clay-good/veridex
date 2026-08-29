@@ -298,7 +298,14 @@ impl Check for DeclaredRangeConformance {
                 else {
                     continue;
                 };
-                if !declared.min.is_finite() || !declared.max.is_finite() {
+                // A declaration that is not a range describes nothing to conform to. Non-finite
+                // bounds, or a maximum below its own minimum, would put *every* value outside it —
+                // one finding per stream over a corrupt declaration rather than over the data. The
+                // CAN parser already declines such a line, but a CDM can arrive as JSON.
+                if !declared.min.is_finite()
+                    || !declared.max.is_finite()
+                    || declared.min > declared.max
+                {
                     continue;
                 }
                 // Only what falls outside, and only when it is outside by more than the slack the
