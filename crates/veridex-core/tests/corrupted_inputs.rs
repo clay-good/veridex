@@ -7,7 +7,8 @@
 //! reading them, a vacuous `all()` over an empty collection), each a real file away from a real
 //! crash.
 //!
-//! So this sweep truncates and flips bytes in every committed binary fixture and asserts one thing
+//! So this sweep truncates and flips bytes in every committed binary fixture — files, Zarr stores,
+//! and rosbag2 bags under either storage plugin — and asserts one thing
 //! per mutation: ingestion returns `Ok` or `Err`, and does not unwind. A mutation that produces a
 //! readable dataset is checked as well, because a check can be handed a shape no honest adapter
 //! would produce.
@@ -293,4 +294,121 @@ fn no_damaged_file_takes_the_process_down() {
         failures.len(),
         failures.join("\n")
     );
+}
+
+/// The rosbag2 sweep: a bag is a *directory* too, and there are two of them — the `sqlite3` plugin's
+/// `.db3` shards and the `.mcap` ones `ros2 bag record` writes by default from Jazzy on. Each is a
+/// different reader over a different container behind one adapter, and neither was reachable from
+/// the single-file sweep above: a bag is only recognized as a directory, so damage has to go inside
+/// one. `metadata.yaml` is damaged along with the shards, because it is content like everything else
+/// — a manifest is exactly where a hostile bag would put a length or a path it wants followed.
+#[test]
+fn no_damaged_bag_takes_the_process_down() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mcap_bag = dir.path().join("mcap_bag");
+    write_mcap_bag(&mcap_bag);
+
+    let bags = [
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rosbag2/clean_rig"),
+        // The same recording zstd-compressed, so the decompression path meets damaged input too: a
+        // corrupt frame there is decoded before any of the SQLite reader's own bounds checks run.
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rosbag2/compressed_rig"),
+        mcap_bag,
+    ];
+
+    let mut checked = 0usize;
+    let mut failures: Vec<String> = Vec::new();
+    for source_bag in &bags {
+        assert!(source_bag.is_dir(), "{} must exist", source_bag.display());
+        let members = walk(source_bag);
+        assert!(members.len() > 1, "a bag has a manifest and a shard");
+        let bag_name = source_bag
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+
+        for member in &members {
+            let relative = member.strip_prefix(source_bag).expect("inside the bag");
+            let bytes = std::fs::read(member).expect("read member");
+            for (label, damaged) in mutations(&bytes) {
+                let bag = dir.path().join("damaged_bag");
+                let _ = std::fs::remove_dir_all(&bag);
+                copy_tree(source_bag, &bag);
+                std::fs::write(bag.join(relative), &damaged).expect("write damaged member");
+                checked += 1;
+                for forced in [None, Some("rosbag2")] {
+                    for metadata_only in [false, true] {
+                        if let Err(message) = survives_with(&bag, forced, metadata_only) {
+                            let how = forced.map_or("detected", |_| "forced");
+                            let mode = if metadata_only {
+                                "metadata-only"
+                            } else {
+                                "full"
+                            };
+                            failures.push(format!(
+                                "{bag_name}/{}: {label} ({how}, {mode}) → panic: {message}",
+                                relative.display()
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(checked > 20, "the sweep must actually run: {checked}");
+    assert!(
+        failures.is_empty(),
+        "{} of {checked} damaged bags took the process down:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// A minimal MCAP-storage bag: one shard of a two-topic rig, and the manifest that describes it.
+fn write_mcap_bag(bag: &Path) {
+    std::fs::create_dir_all(bag).expect("create the bag directory");
+    let mut out = Vec::new();
+    {
+        let mut writer = mcap::Writer::new(std::io::Cursor::new(&mut out)).expect("writer");
+        for (schema, topic) in [
+            ("sensor_msgs/msg/Imu", "/imu/data"),
+            ("sensor_msgs/msg/PointCloud2", "/lidar/points"),
+        ] {
+            let schema_id = writer
+                .add_schema(schema, "ros2msg", b"")
+                .expect("add schema");
+            let channel_id = writer
+                .add_channel(schema_id, topic, "cdr", &std::collections::BTreeMap::new())
+                .expect("add channel");
+            for i in 0..8u64 {
+                writer
+                    .write_to_known_channel(
+                        &mcap::records::MessageHeader {
+                            channel_id,
+                            sequence: i as u32,
+                            log_time: 1_000_000_000 + i * 10_000_000,
+                            publish_time: 1_000_000_000 + i * 10_000_000,
+                        },
+                        b"payload",
+                    )
+                    .expect("write message");
+            }
+        }
+        writer.finish().expect("finish");
+    }
+    std::fs::write(bag.join("rec_0.mcap"), &out).expect("write shard");
+    std::fs::write(
+        bag.join("metadata.yaml"),
+        "rosbag2_bagfile_information:\n  version: 9\n  storage_identifier: mcap\n  \
+         relative_file_paths:\n    - rec_0.mcap\n  message_count: 16\n  \
+         topics_with_message_count:\n    - topic_metadata:\n        name: /imu/data\n        \
+         type: sensor_msgs/msg/Imu\n        serialization_format: cdr\n        \
+         offered_qos_profiles: \"\"\n      message_count: 8\n    - topic_metadata:\n        \
+         name: /lidar/points\n        type: sensor_msgs/msg/PointCloud2\n        \
+         serialization_format: cdr\n        offered_qos_profiles: \"\"\n      message_count: 8\n  \
+         compression_format: \"\"\n  compression_mode: \"\"\n  ros_distro: jazzy\n",
+    )
+    .expect("write manifest");
 }

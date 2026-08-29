@@ -47,6 +47,17 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   file, so a header-only run holds it too, and its refusal says so rather than promising an escape
   the format does not have. `--max-source-bytes 0` removes the ceiling.
 
+### Changed
+
+- **The corrupted-input sweep now reaches rosbag2 bags.** The sweep damages every committed fixture
+  and asserts that ingestion returns `Ok` or `Err` rather than unwinding — a panic is not a finding,
+  not an exit code, and not something a CI gate can read. It covered HDF5 files, one MCAP, and Zarr
+  stores; a bag is only recognized as a *directory*, so neither the SQLite reader, the zstd shard
+  path, nor the new MCAP-storage reader was reachable from it. All three are swept now, manifest
+  included — `metadata.yaml` is content like everything else, and is exactly where a hostile bag
+  would put a length or a path it wants followed. No panic was found; the sweep is the regression
+  guard.
+
 ### Fixed
 
 - **CAN traffic the DBC does not define was a note, not a coverage hole.** The CAN+DBC adapter
