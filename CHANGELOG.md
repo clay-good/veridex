@@ -47,6 +47,23 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   file, so a header-only run holds it too, and its refusal says so rather than promising an escape
   the format does not have. `--max-source-bytes 0` removes the ceiling.
 
+### Fixed
+
+- **A diff never checked that its two reports were about the same dataset.** `veridex diff` compares
+  two saved reports and, with `--fail-on-regression`, gates CI on the result. It assumed the two were
+  about the same dataset and enforced nothing: a job whose baseline artifact path is wrong, or one
+  pointed at another project's report, got a confident "2 resolved, score +37" and exited 0 — a pass
+  that means nothing, and the one failure mode a regression gate has no other way to notice.
+
+  The dataset's **id** is now compared, reported first in the terminal render and in
+  `diff --json`, and treated as a regression. The guard that existed compared the CDM **content
+  hash**, which is exactly backwards: that hash differs between every pair of reports worth diffing —
+  a dataset that gained an episode since yesterday is the ordinary case — so it printed "these
+  reports describe different dataset content" on the intended workflow and said nothing about the
+  actual mistake. The hash is still read, for the one thing it does say: when both reports were
+  computed over identical content, the render says so, because then whatever moved moved in Veridex
+  or its configuration rather than in the data.
+
 ### Changed
 
 - **The corrupted-input sweep now reaches rosbag2 bags.** The sweep damages every committed fixture

@@ -27,6 +27,14 @@ pub struct ReportDiff {
     pub old_redacted: bool,
     /// See [`ReportDiff::old_redacted`].
     pub new_redacted: bool,
+    /// The dataset each report is about, by the id the CDM carries.
+    pub old_dataset: Option<String>,
+    /// See [`ReportDiff::old_dataset`].
+    pub new_dataset: Option<String>,
+    /// The CDM content hash each report was computed over, when it records one.
+    pub old_cdm_hash: Option<String>,
+    /// See [`ReportDiff::old_cdm_hash`].
+    pub new_cdm_hash: Option<String>,
     /// Ids of checks that crashed instead of producing findings, in the old report.
     pub old_errored: Vec<String>,
     /// See [`ReportDiff::old_errored`].
@@ -53,6 +61,37 @@ impl ReportDiff {
         match (&self.old_coverage, &self.new_coverage) {
             (Some(o), Some(n)) => o != n,
             // One report predating the coverage field is not evidence of a change.
+            _ => false,
+        }
+    }
+
+    /// Whether the two reports are about **different datasets**.
+    ///
+    /// A diff assumes the two reports describe the same dataset; nothing about the comparison holds
+    /// when they do not. A CI gate whose baseline artifact path is wrong, or one pointed at another
+    /// project's report, gets a confident "3 resolved, score +12" and exits 0 — a pass that means
+    /// nothing, and the one failure mode a regression gate has no other way to notice.
+    ///
+    /// Identity is the dataset **id**, not the content hash. The hash differs between *every* pair
+    /// of reports worth diffing — a dataset that gained an episode since yesterday is the ordinary
+    /// case, and the whole point of the comparison — so a guard on the hash fires on the intended
+    /// workflow and stays silent on the mistake. The id survives a revision and differs between
+    /// datasets, which is exactly the question being asked.
+    pub fn dataset_differs(&self) -> bool {
+        match (&self.old_dataset, &self.new_dataset) {
+            (Some(o), Some(n)) => o != n,
+            // One report predating the field, or a bare verdict, is not evidence of a mismatch.
+            _ => false,
+        }
+    }
+
+    /// Whether both reports were computed over byte-identical dataset content.
+    ///
+    /// Worth saying when true: any finding that moved did so because Veridex or its configuration
+    /// changed, not because the data did.
+    pub fn same_content(&self) -> bool {
+        match (&self.old_cdm_hash, &self.new_cdm_hash) {
+            (Some(o), Some(n)) => o == n,
             _ => false,
         }
     }
@@ -130,6 +169,25 @@ pub fn is_report_shaped(report: &Value) -> bool {
         .is_some_and(Value::is_array)
 }
 
+/// The dataset id a report is about, if it carries the dataset it was computed over.
+fn dataset_id(report: &Value) -> Option<String> {
+    report
+        .get("dataset")
+        .and_then(|d| d.get("id"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+/// The CDM content hash a report's verdict was computed over, if it records one.
+fn cdm_hash(report: &Value) -> Option<String> {
+    report
+        .get("verdict")
+        .unwrap_or(report)
+        .get("cdm_content_hash")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
 /// Findings array from a report, tolerant of either a full report envelope
 /// (`{"verdict": {"findings": [...]}}`) or a bare verdict (`{"findings": [...]}`).
 fn findings(report: &Value) -> Vec<Value> {
@@ -180,6 +238,10 @@ pub fn diff_reports(old: &Value, new: &Value) -> ReportDiff {
         new_redacted: is_redacted(new),
         old_coverage: coverage_kind(old),
         new_coverage: coverage_kind(new),
+        old_dataset: dataset_id(old),
+        new_dataset: dataset_id(new),
+        old_cdm_hash: cdm_hash(old),
+        new_cdm_hash: cdm_hash(new),
         old_errored: errored_checks(old),
         new_errored: errored_checks(new),
     }
@@ -204,6 +266,23 @@ pub fn render_diff(diff: &ReportDiff) -> String {
     let mut out = String::new();
 
     let _ = writeln!(out, "Veridex diff");
+    // First of all, because it invalidates everything after it more completely than anything else
+    // can: two reports about different datasets have nothing to say to each other.
+    if diff.dataset_differs() {
+        let _ = writeln!(
+            out,
+            "  Dataset: DIFFERENT — `{}` vs `{}`. These reports are about two different datasets, \
+             so every count below is a comparison between unrelated runs.",
+            diff.old_dataset.as_deref().unwrap_or("unknown"),
+            diff.new_dataset.as_deref().unwrap_or("unknown"),
+        );
+    } else if diff.same_content() {
+        let _ = writeln!(
+            out,
+            "  Dataset: identical content (same CDM hash), so anything that changed below changed \
+             in Veridex or its configuration, not in the data."
+        );
+    }
     // Stated before anything else, because it invalidates everything after it.
     if diff.redaction_differs() {
         let _ = writeln!(
@@ -278,6 +357,14 @@ pub fn render_diff(diff: &ReportDiff) -> String {
 pub fn render_diff_json(old: &Value, new: &Value) -> String {
     let diff = diff_reports(old, new);
     let doc = serde_json::json!({
+        // Leads for the same reason coverage does, one step further out: a diff between reports
+        // about two different datasets is not a weaker comparison, it is not a comparison.
+        "dataset": {
+            "old": diff.old_dataset,
+            "new": diff.new_dataset,
+            "changed": diff.dataset_differs(),
+            "same_content": diff.same_content(),
+        },
         "coverage": {
             "old": diff.old_coverage,
             "new": diff.new_coverage,

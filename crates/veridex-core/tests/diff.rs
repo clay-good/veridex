@@ -150,3 +150,107 @@ fn one_redacted_report_and_one_not_is_a_comparison_of_documents() {
     assert!(!both.redaction_differs());
     assert!(both.introduced.is_empty() && both.resolved.is_empty());
 }
+
+/// A report as the pipeline writes one: the dataset it was computed over, and the verdict's hash of
+/// that dataset's content.
+fn report_for(
+    dataset: &str,
+    cdm_hash: &str,
+    findings: serde_json::Value,
+    score: i64,
+) -> serde_json::Value {
+    json!({
+        "dataset": { "id": dataset },
+        "verdict": { "findings": findings, "cdm_content_hash": cdm_hash },
+        "trust_score": { "score": score },
+    })
+}
+
+/// A diff assumes the two reports are about the same dataset, and nothing enforced it. A CI gate
+/// whose baseline artifact path is wrong compares one project's report against another's and gets a
+/// confident "resolved, score up" — the one failure mode a regression gate has no other way to
+/// notice.
+#[test]
+fn two_reports_about_different_datasets_are_not_a_comparison() {
+    let old = report_for(
+        "warehouse_rig",
+        "aaaa",
+        json!([
+            finding("TEMPORAL.CLOCK_SKEW"),
+            finding("STRUCTURAL.EMPTY_STREAM")
+        ]),
+        61,
+    );
+    let new = report_for("some_other_dataset", "bbbb", json!([]), 98);
+    let d = diff_reports(&old, &new);
+
+    assert!(d.dataset_differs());
+    assert_eq!(d.old_dataset.as_deref(), Some("warehouse_rig"));
+    assert_eq!(d.new_dataset.as_deref(), Some("some_other_dataset"));
+
+    let text = render_diff(&d);
+    assert!(
+        text.contains("Dataset: DIFFERENT")
+            && text.contains("warehouse_rig")
+            && text.contains("some_other_dataset"),
+        "the mismatch has to lead, because it invalidates every count under it: {text}"
+    );
+
+    let doc: serde_json::Value =
+        serde_json::from_str(&veridex_core::render_diff_json(&old, &new)).expect("json");
+    assert_eq!(doc["dataset"]["changed"], json!(true));
+    assert_eq!(doc["dataset"]["old"], json!("warehouse_rig"));
+}
+
+/// The ordinary case, and the reason identity cannot be the content hash: a dataset that gained an
+/// episode since yesterday hashes differently, and diffing those two reports is the whole point.
+#[test]
+fn the_same_dataset_with_changed_content_is_the_ordinary_diff() {
+    let old = report_for(
+        "warehouse_rig",
+        "aaaa",
+        json!([finding("TEMPORAL.GAP")]),
+        74,
+    );
+    let new = report_for("warehouse_rig", "bbbb", json!([]), 88);
+    let d = diff_reports(&old, &new);
+
+    assert!(!d.dataset_differs(), "same dataset, later revision");
+    assert!(!d.same_content());
+    let text = render_diff(&d);
+    assert!(
+        !text.contains("Dataset:"),
+        "nothing to say about identity when it matches: {text}"
+    );
+    assert_eq!(d.resolved.len(), 1);
+}
+
+/// Byte-identical content with a different verdict says something specific and useful: whatever
+/// moved, moved in Veridex or its configuration.
+#[test]
+fn identical_content_says_the_change_was_not_in_the_data() {
+    let old = report_for("warehouse_rig", "aaaa", json!([]), 90);
+    let new = report_for(
+        "warehouse_rig",
+        "aaaa",
+        json!([finding("STATISTICAL.SATURATED_DIMENSION")]),
+        82,
+    );
+    let d = diff_reports(&old, &new);
+    assert!(d.same_content() && !d.dataset_differs());
+    let text = render_diff(&d);
+    assert!(
+        text.contains("identical content") && text.contains("not in the data"),
+        "{text}"
+    );
+}
+
+/// A report that carries no dataset id — a bare verdict, or one written before the field existed —
+/// is not evidence of a mismatch, and must not fail a gate.
+#[test]
+fn a_report_without_a_dataset_id_is_not_a_mismatch() {
+    let old = report(json!([finding("TEMPORAL.GAP")]), 74);
+    let new = report_for("warehouse_rig", "bbbb", json!([]), 88);
+    assert!(!diff_reports(&old, &new).dataset_differs());
+    assert!(!diff_reports(&new, &old).dataset_differs());
+}

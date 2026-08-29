@@ -2262,7 +2262,11 @@ fn is_regression(diff: &veridex_core::ReportDiff) -> bool {
     // cost 15, so the gate saw the vanished finding as resolved and the score as improved.
     // One redacted report and one not is the same kind of mismatch: every identifier-bearing
     // finding differs textually, so the comparison is between documents rather than runs.
-    diff.coverage_differs()
+    // And two reports about different datasets are not a weaker comparison, they are not a
+    // comparison: a gate whose baseline artifact path is wrong otherwise passes on a confident
+    // score movement between unrelated runs.
+    diff.dataset_differs()
+        || diff.coverage_differs()
         || diff.redaction_differs()
         || !diff.introduced.is_empty()
         || !diff.newly_errored().is_empty()
@@ -2552,20 +2556,6 @@ fn cmd_diff(rest: &[String]) -> ExitCode {
             return ExitCode::from(EXIT_TOOL_ERROR);
         }
     }
-    // Diffing two different datasets compares nothing meaningful; say so rather than printing a
-    // score movement between unrelated runs.
-    let bound = |v: &serde_json::Value| -> Option<String> {
-        v.get("verdict")
-            .and_then(|x| x.get("cdm_content_hash"))
-            .and_then(|x| x.as_str())
-            .map(str::to_string)
-    };
-    if let (Some(a), Some(b)) = (bound(&old), bound(&new)) {
-        if a != b {
-            eprintln!("veridex: note — these reports describe different dataset content ({a} vs {b}); the diff compares findings across two different datasets");
-        }
-    }
-
     let diff = veridex_core::diff_reports(&old, &new);
     if json_out {
         println!("{}", veridex_core::render_diff_json(&old, &new));
@@ -2576,6 +2566,16 @@ fn cmd_diff(rest: &[String]) -> ExitCode {
     // For CI: optionally fail when the new report regressed — any finding introduced, or a lower
     // trust score. Without the flag, diff is purely informational and always exits 0.
     if fail_on_regression && is_regression(&diff) {
+        if diff.dataset_differs() {
+            eprintln!(
+                "veridex: regression — these reports are about different datasets (`{}` vs `{}`), \
+                 so the comparison is between unrelated runs. Check the baseline artifact this gate \
+                 was pointed at",
+                diff.old_dataset.as_deref().unwrap_or("unknown"),
+                diff.new_dataset.as_deref().unwrap_or("unknown"),
+            );
+            return ExitCode::from(EXIT_FAIL);
+        }
         if diff.redaction_differs() {
             eprintln!(
                 "veridex: regression — one of these reports is redacted and the other is not, so \
@@ -2810,6 +2810,10 @@ mod tests {
             new_errored: vec![],
             old_redacted: false,
             new_redacted: false,
+            old_dataset: Some("rig".into()),
+            new_dataset: Some("rig".into()),
+            old_cdm_hash: Some("aaaa".into()),
+            new_cdm_hash: Some("bbbb".into()),
         };
         // No change → not a regression.
         assert!(!super::is_regression(&base));
@@ -2822,6 +2826,22 @@ mod tests {
             ..base.clone()
         };
         assert!(super::is_regression(&crashed));
+        // Two reports about different datasets are not a weaker comparison, they are not a
+        // comparison — even when every count looks like an improvement.
+        let unrelated = veridex_core::ReportDiff {
+            new_dataset: Some("some_other_dataset".into()),
+            new_score: Some(97),
+            resolved: vec![json!({"code": "TEMPORAL.GAP"})],
+            ..base.clone()
+        };
+        assert!(super::is_regression(&unrelated));
+        // The content hash moving is the ordinary case — the dataset gained an episode — and must
+        // not be read as a different dataset.
+        let same_dataset_new_data = veridex_core::ReportDiff {
+            new_cdm_hash: Some("cccc".into()),
+            ..base.clone()
+        };
+        assert!(!super::is_regression(&same_dataset_new_data));
         // A check that was already crashing in both runs is not a *new* regression.
         let still_crashing = veridex_core::ReportDiff {
             old_errored: vec!["temporal.clock-skew".into()],

@@ -66,9 +66,12 @@ Store a baseline report and compare:
 ```
 
 `diff` fails the job when the new report introduces a finding, drops the trust score, crashes a check
-that used to run, or — the two that matter most — when the two reports **cover different amounts** of
-the dataset or **one of them is redacted**. Both of those make the comparison meaningless in the
-flattering direction, so they are treated as regressions rather than improvements.
+that used to run, or — the three that matter most — when the two reports are about **different
+datasets**, **cover different amounts** of the dataset, or **one of them is redacted**. Each of those
+makes the comparison meaningless in the flattering direction, so it is treated as a regression rather
+than an improvement. The dataset check is on the dataset's *id*, not its content: a dataset that
+gained an episode since the baseline hashes differently, and comparing those two reports is the whole
+point — a baseline artifact from another project is the mistake being caught.
 
 ## GitLab CI
 
