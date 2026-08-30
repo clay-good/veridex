@@ -17,10 +17,17 @@
 //! storage plugin, and a CAN+DBC dataset — written on the spot, since it is two text files. ASAM MF4
 //! has a sweep of its own in `mdf4_adapter.rs`, broader than this one: nine block-graph shapes,
 //! every byte position, three mutations each, and the header-only path as well. Left uncovered:
-//! **LeRobot and RLDS/TFDS**, whose fixtures only exist as demo *examples*, and a test cannot build
-//! an example without spawning `cargo` — which contends with the rest of the suite and makes it
-//! flaky. Closing that means lifting the generators out of `examples/` into something a test can
-//! call, which is a change to make deliberately rather than as a side effect of this sweep.
+//! **LeRobot**, whose fixture only exists as a demo *example*, and a test cannot build an example
+//! without spawning `cargo` — which contends with the rest of the suite and makes it flaky. Closing
+//! that means lifting the generator out of `examples/` into something a test can call, which is a
+//! change to make deliberately rather than as a side effect of this sweep.
+//!
+//! RLDS/TFDS is swept in `rlds_adapter.rs` instead, and has to be: a TFRecord checksums both its
+//! length prefix and its payload, so a byte flipped here would be refused at the CRC and the
+//! protobuf reader behind it would never see the damage. A checksum is a defence against accidental
+//! corruption, not against a hostile file — an attacker mutates the payload and recomputes it. That
+//! sweep re-frames every mutated record through the format writer, so the record arrives looking
+//! intact and the parser has to survive it on its own.
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};

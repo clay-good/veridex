@@ -2066,3 +2066,177 @@ fn the_boolean_step_flags_are_not_reported_as_saturated() {
         .collect();
     assert!(saturated.is_empty(), "{saturated:?}");
 }
+
+/// A hostile record, framed correctly.
+///
+/// Every corruption test above flips a byte and watches the CRC catch it — which means the protobuf
+/// reader, the feature decoder and the shape arithmetic *behind* that checksum have never been
+/// handed a damaged record at all. A checksum is a defence against accidental corruption, not
+/// against a hostile file: an attacker mutates the payload and recomputes the CRC, and the record
+/// arrives looking intact. So this sweep does exactly that — mutate the record body, then re-frame
+/// it through the same writer, so the length prefix and both checksums are valid and the parser must
+/// survive the record on its own.
+#[test]
+fn a_hostile_record_with_valid_framing_never_takes_the_process_down() {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    std::fs::write(dir.join("features.json"), features_json()).unwrap();
+    std::fs::write(
+        dir.join("dataset_info.json"),
+        dataset_info_json(Some(vec![1]), "tfrecord"),
+    )
+    .unwrap();
+    let shard_path = dir.join("demo_rlds-train.tfrecord-00000-of-00001");
+
+    let good = episode_record(4, &["pick up the block"], "/raw/ep0.h5", 0.0);
+    // The pristine record must read first, or a sweep over something the adapter declines outright
+    // survives every mutation and proves nothing.
+    std::fs::write(&shard_path, shard(std::slice::from_ref(&good))).unwrap();
+    assert!(
+        ingest(dir).is_ok(),
+        "the pristine record must ingest, or this sweep tests nothing"
+    );
+
+    let mut checked = 0usize;
+    // How deep the sweep actually got. If every mutation were refused at one early gate, or every
+    // one accepted, the sweep would be exercising that gate rather than the parser behind it.
+    let mut accepted = 0usize;
+    let mut refused = 0usize;
+    let mut panics: Vec<String> = Vec::new();
+    let attempt = |bytes: Vec<u8>,
+                   label: String,
+                   panics: &mut Vec<String>,
+                   accepted: &mut usize,
+                   refused: &mut usize| {
+        std::fs::write(&shard_path, shard(&[bytes])).unwrap();
+        let result = catch_unwind(AssertUnwindSafe(|| ingest(dir).is_ok()));
+        match &result {
+            Ok(true) => *accepted += 1,
+            Ok(false) => *refused += 1,
+            Err(_) => {}
+        }
+        if let Err(panic) = result {
+            let message = panic
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| panic.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "non-string panic".to_string());
+            panics.push(format!("{label} → panic: {message}"));
+        }
+    };
+
+    // Every byte position, spread evenly, with three mutations each: a flipped byte breaks a wire
+    // tag or a length varint; 0xFF over eight aligned bytes is the shape of every allocation abort
+    // this repo has fixed.
+    let stride = (good.len() / 250).max(1);
+    for at in (0..good.len()).step_by(stride) {
+        for mutate in [0xFFu8, 0x01, 0x80] {
+            let mut payload = good.clone();
+            payload[at] ^= mutate;
+            attempt(
+                payload,
+                format!("byte {at} ^ {mutate:#04x}"),
+                &mut panics,
+                &mut accepted,
+                &mut refused,
+            );
+            checked += 1;
+        }
+        let mut maxed = good.clone();
+        let end = (at + 8).min(maxed.len());
+        for byte in &mut maxed[at..end] {
+            *byte = 0xFF;
+        }
+        attempt(
+            maxed,
+            format!("size field at {at} maxed"),
+            &mut panics,
+            &mut accepted,
+            &mut refused,
+        );
+        checked += 1;
+    }
+    // A record cut short but framed as if whole: the protobuf reader runs off the end of a payload
+    // whose own framing says it is complete.
+    for cut in (0..good.len()).step_by(stride) {
+        attempt(
+            good[..cut].to_vec(),
+            format!("payload truncated to {cut}"),
+            &mut panics,
+            &mut accepted,
+            &mut refused,
+        );
+        checked += 1;
+    }
+
+    assert!(checked > 100, "the sweep must actually run: {checked}");
+    // Both outcomes must occur. All-refused would mean the sweep never got past a framing check;
+    // all-accepted would mean the mutations never reached anything that validates.
+    assert!(
+        accepted > 0 && refused > 0,
+        "the sweep must reach the parser, not one gate: {accepted} accepted, {refused} refused"
+    );
+    assert!(
+        panics.is_empty(),
+        "{} of {checked} correctly framed hostile records took the process down:\n{}",
+        panics.len(),
+        panics.join("\n")
+    );
+}
+
+/// The same reasoning for the two JSON manifests, which no checksum protects at all.
+#[test]
+fn a_hostile_manifest_never_takes_the_process_down() {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    write_dataset(dir, 2, 4);
+    assert!(ingest(dir).is_ok(), "the pristine dataset must ingest");
+
+    let mut panics: Vec<String> = Vec::new();
+    let mut checked = 0usize;
+    for name in ["features.json", "dataset_info.json"] {
+        let path = dir.join(name);
+        let good = std::fs::read(&path).unwrap();
+        let stride = (good.len() / 150).max(1);
+        for at in (0..good.len()).step_by(stride) {
+            for mutate in [0xFFu8, 0x01] {
+                let mut damaged = good.clone();
+                damaged[at] ^= mutate;
+                std::fs::write(&path, &damaged).unwrap();
+                checked += 1;
+                if let Err(panic) = catch_unwind(AssertUnwindSafe(|| {
+                    let _ = ingest(dir);
+                })) {
+                    let message = panic
+                        .downcast_ref::<&str>()
+                        .map(|s| s.to_string())
+                        .or_else(|| panic.downcast_ref::<String>().cloned())
+                        .unwrap_or_else(|| "non-string panic".to_string());
+                    panics.push(format!("{name} byte {at} → panic: {message}"));
+                }
+            }
+            std::fs::write(&path, &good[..at]).unwrap();
+            checked += 1;
+            if catch_unwind(AssertUnwindSafe(|| {
+                let _ = ingest(dir);
+            }))
+            .is_err()
+            {
+                panics.push(format!("{name} truncated to {at} → panic"));
+            }
+        }
+        std::fs::write(&path, &good).unwrap();
+    }
+
+    assert!(checked > 100, "the sweep must actually run: {checked}");
+    assert!(
+        panics.is_empty(),
+        "{} of {checked} damaged manifests took the process down:\n{}",
+        panics.len(),
+        panics.join("\n")
+    );
+}

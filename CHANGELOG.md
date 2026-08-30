@@ -22,10 +22,25 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   asserted to ingest to real frames before it is mutated: a sweep over a fixture the adapter
   silently declines survives every mutation and proves nothing. Nothing panicked.
 
-  LeRobot and RLDS/TFDS stay uncovered, and the file now says so instead of claiming otherwise. A
-  test cannot build a demo *example* without spawning `cargo`, which contends with the rest of the
-  suite and made it flaky; closing that gap means lifting the generators out of `examples/` into
-  something a test can call, which is a change to make deliberately.
+  LeRobot stays uncovered, and the file now says so instead of claiming otherwise: a test cannot
+  build a demo *example* without spawning `cargo`, which contends with the rest of the suite and
+  made it flaky, so closing that gap means lifting the generator out of `examples/` into something a
+  test can call — a change to make deliberately.
+
+- **A checksum was shielding the RLDS parser from every corruption test.** A TFRecord checksums both
+  its length prefix and its payload, and both of the adapter's damage tests flipped a byte and
+  watched the CRC catch it. That is the right behavior for accidental corruption — and it means the
+  protobuf reader, the feature decoder and the shape arithmetic *behind* the checksum had never been
+  handed a damaged record at all. A checksum is not a defence against a hostile file: an attacker
+  mutates the payload and recomputes it.
+
+  The new sweep does exactly that. It mutates the record body, then re-frames it through the same
+  independent format writer the fixtures use, so the length prefix and both CRCs are valid and the
+  record arrives looking intact. Every byte position, three mutations each, plus an eight-byte
+  `0xFF` run (the shape behind every allocation abort this repo has fixed) and a payload cut short
+  but framed as whole. The two JSON manifests, which no checksum protects at all, get the same
+  treatment. The sweep asserts that mutations land on *both* sides — some accepted, some refused —
+  because an all-refused run would only be exercising the gate it never got past. Nothing panicked.
 
 - **The MF4 corruption sweep only ever ran over one file shape.** It mutated an uncompressed `##DT`
   fixture, so it never reached the decompressor, the data-list walker, the record demultiplexer, the
