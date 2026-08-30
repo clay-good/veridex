@@ -10,6 +10,22 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **Pointing at the folder that holds your dataset got you a list of eight format names.** It is the
+  most common first-use mistake — `veridex check recordings/` rather than
+  `veridex check recordings/drive.mcap` — and the answer was `unsupported format: no adapter
+  recognized the source (supported: lerobot, mcap, rosbag2, …)`. Correct about the directory, and
+  silent about the four recordings sitting one level inside it.
+
+  A failed detection on a directory now says what is in it:
+  `but 2 entries inside it are readable — point Veridex at one of them: drive-a.mcap (mcap),
+  drive-b.mf4 (mf4)`, and `the directory is empty` when that is the answer. A directory of things
+  nothing can read gets no hint, because an empty list is noise, and an unreadable *file* is
+  unchanged — there is nothing inside it to point at.
+
+  The scan is one level deep and bounded (200 entries looked at, 5 named). Detection opens files,
+  and walking a tree to be helpful is how a tool that refused to read anything ends up reading
+  everything.
+
 - **Nothing held the config reference to the config parser.** `docs/veridex.toml.example` is where a
   reader learns a key exists — the README points at it for the `VERIDEX_*` environment twins too —
   and a tolerance added to the parser but not to the example is a knob nobody can find. The two

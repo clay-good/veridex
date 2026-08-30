@@ -658,10 +658,47 @@ fn ingest(args: &Args) -> Result<veridex_core::Ingested, ExitCode> {
         Some(fmt) => registry.ingest_as(fmt, &source, &opts),
         None => registry.ingest(&source, &opts),
     };
-    result.map_err(|e| {
-        eprintln!("veridex: {e}");
-        ExitCode::from(EXIT_TOOL_ERROR)
-    })
+    result.map_err(|e| report_ingest_error(&registry, &source, &e))
+}
+
+/// Print an ingest failure, with a hint when the source is a directory holding things Veridex *can*
+/// read.
+///
+/// The most common first-use mistake is pointing at the folder that holds a dataset rather than at
+/// the dataset. `unsupported format: no adapter recognized the source` is correct about the
+/// directory and says nothing about the four recordings sitting one level inside it, so a reader who
+/// is one `cd` away from working gets a list of eight format names instead.
+fn report_ingest_error(
+    registry: &veridex_core::AdapterRegistry,
+    source: &Source,
+    error: &veridex_core::adapter::IngestError,
+) -> ExitCode {
+    eprintln!("veridex: {error}");
+    if let (veridex_core::adapter::IngestError::UnsupportedFormat { .. }, Source::Local(path)) =
+        (error, source)
+    {
+        if path.is_dir() {
+            let readable = registry.readable_entries(path);
+            if readable.is_empty() {
+                if std::fs::read_dir(path).is_ok_and(|d| d.count() == 0) {
+                    eprintln!("       the directory is empty");
+                }
+            } else {
+                let named: Vec<String> = readable
+                    .iter()
+                    .map(|(name, format)| format!("{name} ({format})"))
+                    .collect();
+                eprintln!(
+                    "       but {} entr{} inside it {} readable — point Veridex at one of them: {}",
+                    readable.len(),
+                    if readable.len() == 1 { "y" } else { "ies" },
+                    if readable.len() == 1 { "is" } else { "are" },
+                    named.join(", ")
+                );
+            }
+        }
+    }
+    ExitCode::from(EXIT_TOOL_ERROR)
 }
 
 /// Parse and range-check a `--min-score` value: an integer 0–100. Returns a human-readable error
@@ -2034,10 +2071,7 @@ fn ingest_with(
         Some(f) => registry.ingest_as(f, source, options),
         None => registry.ingest(source, options),
     };
-    result.map_err(|e| {
-        eprintln!("veridex: {e}");
-        ExitCode::from(EXIT_TOOL_ERROR)
-    })
+    result.map_err(|e| report_ingest_error(registry, source, &e))
 }
 
 /// The attestation document's own timestamp, for the certificate's record of it.

@@ -3075,3 +3075,57 @@ fn the_autonomy_quickstart_still_prints_what_it_says_it_does() {
         }
     }
 }
+
+#[test]
+fn a_directory_holding_datasets_says_so_instead_of_listing_eight_format_names() {
+    // The most common first-use mistake is pointing at the folder that *holds* a dataset rather than
+    // at the dataset. `unsupported format: no adapter recognized the source` is correct about the
+    // directory and says nothing about the recordings one level inside it, so a reader who is one
+    // `cd` away from working got a list of eight format names and no hint.
+    let dir = temp_dir("holding-directory");
+    let holder = dir.join("recordings");
+    std::fs::create_dir_all(&holder).expect("mkdir");
+    veridex_demo::mcap::write(&holder.join("drive-a.mcap"), "clean").expect("write mcap");
+    veridex_demo::mf4::write(&holder.join("drive-b.mf4"), "clean").expect("write mf4");
+
+    let (code, _, stderr) = run(&["check", holder.to_str().unwrap()]);
+    assert_eq!(code, 2, "it is still an error");
+    assert!(
+        stderr.contains("2 entries inside it are readable"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("drive-a.mcap (mcap)") && stderr.contains("drive-b.mf4 (mf4)"),
+        "each is named with the adapter that reads it: {stderr}"
+    );
+
+    // A dataset directory one level down is the same mistake and gets the same help.
+    let parent = dir.join("parent");
+    veridex_demo::lerobot::write(&parent.join("my-dataset"), "clean").expect("write lerobot");
+    let (_, _, stderr) = run(&["check", parent.to_str().unwrap()]);
+    assert!(
+        stderr.contains("1 entry inside it is readable") && stderr.contains("my-dataset (lerobot)"),
+        "{stderr}"
+    );
+
+    // An empty directory says that instead, because there is nothing to point at.
+    let empty = dir.join("empty");
+    std::fs::create_dir_all(&empty).expect("mkdir");
+    let (_, _, stderr) = run(&["check", empty.to_str().unwrap()]);
+    assert!(stderr.contains("the directory is empty"), "{stderr}");
+
+    // A directory of things nothing can read gets no hint — an empty list would be noise.
+    let junk = dir.join("junk");
+    std::fs::create_dir_all(&junk).expect("mkdir");
+    std::fs::write(junk.join("notes.txt"), "hello").expect("write");
+    let (_, _, stderr) = run(&["check", junk.to_str().unwrap()]);
+    assert!(!stderr.contains("readable"), "{stderr}");
+    assert!(!stderr.contains("is empty"), "{stderr}");
+
+    // And a plain unreadable *file* is unchanged: there is nothing inside it to point at.
+    let file = dir.join("notes.txt");
+    std::fs::write(&file, "hello").expect("write");
+    let (_, _, stderr) = run(&["check", file.to_str().unwrap()]);
+    assert!(stderr.contains("unsupported format"), "{stderr}");
+    assert!(!stderr.contains("readable"), "{stderr}");
+}

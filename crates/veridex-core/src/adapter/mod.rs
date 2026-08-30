@@ -435,6 +435,12 @@ pub fn provenance_key_for(meta_key: &str) -> Option<&'static str> {
     }
 }
 
+/// How many directory entries a "did you mean one of these?" hint will look at, and how many
+/// matches it will name. Detection opens files, so a hint over a directory someone typed by mistake
+/// has to be cheap or absent — never a walk of everything under it.
+const MAX_HINT_SCAN: usize = 200;
+const MAX_HINT_MATCHES: usize = 5;
+
 /// A source field that existed but the CDM cannot represent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnmappedField {
@@ -764,6 +770,49 @@ impl AdapterRegistry {
                 candidates: many.iter().map(|a| a.format_id()).collect(),
             }),
         }
+    }
+
+    /// Entries directly inside `dir` that an adapter does recognize, as `(name, format_id)`.
+    ///
+    /// The answer to the most common first-use mistake: pointing Veridex at the folder that *holds*
+    /// a dataset rather than at the dataset. `UnsupportedFormat` is correct about the directory and
+    /// tells the reader nothing about the recordings sitting one level inside it.
+    ///
+    /// Deliberately one level, and bounded. Detection opens files, and a directory the user typed by
+    /// mistake may hold an enormous number of them; walking a tree to be helpful is how a tool that
+    /// refused to read anything ends up reading everything. Scanning stops at
+    /// [`MAX_HINT_SCAN`] entries or [`MAX_HINT_MATCHES`] matches, whichever comes first, so a hint is
+    /// cheap or absent.
+    pub fn readable_entries(&self, dir: &Path) -> Vec<(String, &'static str)> {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return Vec::new();
+        };
+        let mut names: Vec<std::path::PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .take(MAX_HINT_SCAN)
+            .collect();
+        // Stable output: the directory order the filesystem returns is not one.
+        names.sort();
+        let mut out = Vec::new();
+        for path in names {
+            let source = Source::Local(path.clone());
+            if let Some(adapter) = self
+                .adapters
+                .iter()
+                .find(|a| matches!(a.detect(&source), Detection::Yes { .. }))
+            {
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                out.push((name, adapter.format_id()));
+                if out.len() >= MAX_HINT_MATCHES {
+                    break;
+                }
+            }
+        }
+        out
     }
 
     /// Ingest `source` with the adapter whose `format_id` matches `format`, bypassing autodetection.
