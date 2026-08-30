@@ -10,6 +10,16 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **Every SARIF rule sent a reader to the top of a four-hundred-line page.** `helpUri` is the one
+  link a code-scanning system shows someone who has never used Veridex, and all of them pointed at
+  `docs/checks.md` with no fragment — so the reader landed on the whole catalog and had to find
+  their own finding in it. Each rule now lands on its family's section.
+
+  An anchor is fragile against a reworded heading in a way a bare page link is not, so a test asserts
+  every anchor the reporter produces is a heading the page actually has, for every code in the
+  catalog. (Rewording one heading makes the test name the code, the anchor, and the headings that do
+  exist.)
+
 - **A setting written in the config file was reported as a default.** The effective configuration
   answers "was this run configured, and by whom", and it is signed into every certificate. Three
   settings have no "unset" value to test for — `fail_on` defaults to `error`, `disabled_checks` and

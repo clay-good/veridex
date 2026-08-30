@@ -791,3 +791,69 @@ fn no_user_facing_message_was_mangled_by_the_formatter() {
         mangled.join("\n")
     );
 }
+
+#[test]
+fn every_sarif_help_link_lands_on_a_heading_that_exists() {
+    // SARIF's `helpUri` is the one link a code-scanning system shows a reader who has never used
+    // Veridex, and every rule pointed at the top of a four-hundred-line page. Each now lands on its
+    // family's section — which means the link carries a heading anchor, and an anchor is fragile
+    // against a reworded heading in a way a bare page link is not. So the anchors are checked
+    // against the page.
+    let page =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/checks.md"))
+            .expect("docs/checks.md is readable");
+
+    // GitHub's slug: lowercase, drop anything that is not alphanumeric, space or hyphen, then
+    // spaces to hyphens. An em dash becomes nothing, so `A — b` slugs to `a--b`.
+    let slug = |heading: &str| -> String {
+        heading
+            .to_lowercase()
+            .chars()
+            .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-')
+            .collect::<String>()
+            .replace(' ', "-")
+    };
+    let anchors: std::collections::BTreeSet<String> = page
+        .lines()
+        .filter_map(|l| l.strip_prefix("## "))
+        .map(slug)
+        .collect();
+    assert!(
+        anchors.len() > 5,
+        "the page must have sections: {anchors:?}"
+    );
+
+    let engine = veridex_core::checks::default_engine().expect("standard checks");
+    let codes: Vec<&str> = engine
+        .catalog()
+        .into_iter()
+        .flat_map(|c| c.finding_codes.iter().copied())
+        .collect();
+    assert!(
+        codes.len() > 20,
+        "the catalog must have codes: {}",
+        codes.len()
+    );
+
+    let mut linked = 0usize;
+    for code in codes {
+        let uri = veridex_core::report::checks_doc_uri_for_test(code);
+        let Some((_, fragment)) = uri.split_once('#') else {
+            panic!("`{code}` still points at the bare page — every family has a section");
+        };
+        assert!(
+            anchors.contains(fragment),
+            "`{code}` links to #{fragment}, which docs/checks.md has no heading for. \
+             Known: {anchors:?}"
+        );
+        linked += 1;
+    }
+    assert_eq!(
+        linked,
+        engine
+            .catalog()
+            .iter()
+            .flat_map(|c| c.finding_codes.iter())
+            .count()
+    );
+}

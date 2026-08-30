@@ -917,6 +917,40 @@ const CHECK_ERRORED_RULE: &str = "VERIDEX.CHECK_ERRORED";
 const PROFILE_RULE: &str = "VERIDEX.PROFILE_NOT_READY";
 
 /// SARIF severity level for a finding.
+/// [`checks_doc_uri`], exposed so the docs guard in `tests/report.rs` can hold the anchors it
+/// produces to the headings `docs/checks.md` actually has. Not part of the reporting API.
+#[doc(hidden)]
+pub fn checks_doc_uri_for_test(code: &str) -> String {
+    checks_doc_uri(code)
+}
+
+/// Where in `docs/checks.md` a finding code is documented, as a GitHub heading anchor.
+///
+/// SARIF's `helpUri` is the one link a code-scanning system shows a reader who has never used
+/// Veridex, and every rule pointed at the top of a four-hundred-line page. The family a code belongs
+/// to is its first segment, and every family has a section on that page — so the link can land on
+/// it. A code whose family has no section (a disclosure the engine emits, like `COVERAGE.*`) keeps
+/// the plain page link rather than a fragment that resolves to nothing.
+///
+/// The anchors are GitHub's slug of the heading, which is fragile against a reworded heading — so
+/// `tests/report.rs` asserts every anchor this produces is a heading the page actually has, through
+/// [`checks_doc_uri_for_test`].
+fn checks_doc_uri(code: &str) -> String {
+    const PAGE: &str = "https://github.com/clay-good/veridex/blob/main/docs/checks.md";
+    match code.split('.').next().unwrap_or_default() {
+        "STRUCTURAL" => format!("{PAGE}#structural--is-the-dataset-shaped-like-trainable-data"),
+        "TEMPORAL" => format!("{PAGE}#temporal--is-the-time-base-sound"),
+        "STATISTICAL" => {
+            format!("{PAGE}#statistical--do-the-stored-per-stream-statistics-hold-together")
+        }
+        "SEMANTIC" => format!("{PAGE}#semantic--are-labels-and-keys-usable"),
+        "VIDEO" => format!("{PAGE}#video--does-the-media-match-the-data-it-is-paired-with"),
+        "PROVENANCE" => format!("{PAGE}#provenance--do-we-know-where-the-data-came-from"),
+        "AUTONOMY" => format!("{PAGE}#autonomy--is-the-sensor-rig-internally-consistent"),
+        _ => PAGE.to_string(),
+    }
+}
+
 fn sarif_level(sev: Severity) -> &'static str {
     match sev {
         Severity::Error => "error",
@@ -966,7 +1000,7 @@ pub fn render_sarif_with_readiness(
                 "name": id,
                 "shortDescription": { "text": id },
                 "fullDescription": { "text": risk },
-                "helpUri": "https://github.com/clay-good/veridex/blob/main/docs/checks.md"
+                "helpUri": checks_doc_uri(id)
             })
         })
         .collect();
