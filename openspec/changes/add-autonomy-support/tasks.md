@@ -123,8 +123,10 @@ No code until this change is approved; this is the build plan.
       generalization of `TEMPORAL.CLOCK_SKEW`: on a rig episode (≥3 AV-native sensors) it reports the
       rig-wide span spread as one finding and suppresses the pairwise `CLOCK_SKEW`. New `autonomy`
       check family/category. Proven end-to-end on the `av` demo + unit tests. Explicit trigger/latency
-      offsets (a per-sensor expected-offset table) remain a follow-up — needs decoded per-sensor
-      metadata (A1).
+      offsets (a per-sensor expected-offset table) remain a follow-up. What a constant offset costs
+      today is pinned by test: it is *not* a sync spread — a whole-stream shift leaves every span the
+      same length, so `RIG_SYNC` is silent and `TEMPORAL.START_OFFSET`/`END_OFFSET` report it, which
+      is what is actually true about it.
 - [~] `AUTONOMY.LIDAR_CAM_REPROJ` + extrinsic/TF consistency + missing-calibration checks. Realized as
       `AUTONOMY.CALIBRATION_INCOMPLETE` (`autonomy.calibration-completeness`): since Veridex never
       decodes the bulk point payload it cannot reproject actual points, so it verifies the calibration

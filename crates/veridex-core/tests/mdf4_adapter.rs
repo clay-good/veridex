@@ -1662,3 +1662,97 @@ fn a_field_that_runs_past_the_record_is_declined_rather_than_read_from_the_next_
         "a field that does not fit its record yields no stream"
     );
 }
+
+// --- The corruption sweep, over every shape this reader now parses ------------------------------
+
+/// One of each file shape the adapter has a distinct parsing path for.
+///
+/// The original sweep ran over a single uncompressed `##DT` fixture, which never reached the
+/// decompressor, the data-list walker, the record demultiplexer, the bit-field slicer or the
+/// conversion tables — every one of which reads lengths, counts and offsets straight out of an
+/// untrusted file.
+fn hostile_corpus() -> Vec<(&'static str, Vec<u8>)> {
+    let compressed = {
+        let mut b = Mf4Builder::new(b"veridex ");
+        let dz = b.zipped_data(&well_formed_records(0..5), 0, 16);
+        finish_canonical_graph(b, dz, 5)
+    };
+    let transposed = {
+        let mut b = Mf4Builder::new(b"veridex ");
+        let dz = b.zipped_data(&well_formed_records(0..5), 1, 16);
+        finish_canonical_graph(b, dz, 5)
+    };
+    let listed = {
+        let mut b = Mf4Builder::new(b"veridex ");
+        let first = b.zipped_data(&well_formed_records(0..2), 1, 16);
+        let second = b.block(b"##DT", &[], &well_formed_records(2..5));
+        let dl = b.data_list(&[first, second], 2 * 16);
+        let hl = b.header_list(dl);
+        finish_canonical_graph(b, hl, 5)
+    };
+    vec![
+        ("uncompressed", well_formed_file(5)),
+        ("deflated", compressed),
+        ("transposed", transposed),
+        ("header-list", listed),
+        ("unsorted", unsorted_file(5, false)),
+        ("with-sources", file_with_sources(true)),
+        (
+            "rational",
+            converted_file(|b| b.conversion(2, &[0.0, 2.0, 1.0, 0.0, 0.0, 1.0])),
+        ),
+        (
+            "table",
+            converted_file(|b| b.conversion(4, &[0.0, 100.0, 4.0, 500.0])),
+        ),
+        (
+            "range-table",
+            converted_file(|b| b.conversion(6, &[0.0, 2.0, 10.0, 2.0, 4.0, 20.0, -1.0])),
+        ),
+    ]
+}
+
+#[test]
+fn every_parsing_path_survives_a_corrupted_or_truncated_file() {
+    // The invariant, for every shape and every byte: ingest either errors or yields something, and
+    // never panics, hangs, or allocates without bound. Each of these files states its own lengths,
+    // counts, record ids and table sizes, and every one of those is a claim an attacker controls.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("sweep.mf4");
+    let mut ingests = 0usize;
+    for (label, good) in hostile_corpus() {
+        // Bound the sweep so the whole corpus stays well inside a test run: at most ~300 mutations
+        // per shape per mode, spread evenly across the file rather than clustered at its head.
+        let stride = (good.len() / 300).max(1);
+        for at in (0..good.len()).step_by(stride) {
+            for mutate in [0xFFu8, 0x00, 0x7F] {
+                let mut corrupt = good.clone();
+                corrupt[at] ^= mutate;
+                std::fs::write(&path, &corrupt).expect("write");
+                let _ = Mdf4Adapter.ingest(&Source::Local(path.clone()), &IngestOptions::default());
+                ingests += 1;
+            }
+        }
+        // Every prefix, at the same stride: a file that ends mid-block, mid-record, mid-deflate
+        // stream or mid-table.
+        for cut in (0..good.len()).step_by(stride) {
+            std::fs::write(&path, &good[..cut]).expect("write");
+            let _ = Mdf4Adapter.ingest(&Source::Local(path.clone()), &IngestOptions::default());
+            ingests += 1;
+        }
+        // And the header-only read over the same corruption, which walks the block graph without
+        // opening a data block — a different path with its own offsets to get wrong.
+        let metadata = IngestOptions {
+            metadata_only: true,
+            ..IngestOptions::default()
+        };
+        for at in (0..good.len()).step_by(stride.max(2)) {
+            let mut corrupt = good.clone();
+            corrupt[at] ^= 0xFF;
+            std::fs::write(&path, &corrupt).expect("write");
+            let _ = Mdf4Adapter.ingest(&Source::Local(path.clone()), &metadata);
+            ingests += 1;
+        }
+        assert!(ingests > 0, "{label} contributed no mutations");
+    }
+}

@@ -2407,6 +2407,50 @@ fn a_rig_with_a_drifting_sensor_is_flagged_once() {
     assert!(f[0].message.contains("imu"), "names the drifted sensor");
 }
 
+/// A rig sensor shifted whole by a constant latency: the same span, starting and ending later.
+fn rig_stream_shifted(name: &str, modality: Modality, span_ns: i64, shift_ns: i64) -> Stream {
+    const STEP_NS: i64 = 10_000_000; // 100 Hz
+    let ts: Vec<i64> = (0..=(span_ns / STEP_NS))
+        .map(|i| i * STEP_NS + shift_ns)
+        .collect();
+    let mut s = stream(name, "rig", None, &ts);
+    s.modality = modality;
+    s
+}
+
+#[test]
+fn a_constant_sensor_latency_is_a_start_and_end_offset_not_a_sync_spread() {
+    // A rig whose LiDAR is triggered a constant 200 ms after the rest is a known, ordinary rig
+    // characteristic — and it is worth pinning which check says so, because the two answer different
+    // questions and the docs described this case as the wrong one.
+    //
+    // `AUTONOMY.RIG_SYNC` compares *durations*, and a whole-stream shift does not change a duration,
+    // so it is silent — correctly: nothing drifted. What is true is that the LiDAR starts and ends
+    // later than its peers on the same clock, which is exactly `TEMPORAL.START_OFFSET` and its mirror
+    // `TEMPORAL.END_OFFSET`. Anyone reading a rig report needs that boundary to hold.
+    let ep = episode(
+        0,
+        vec![
+            rig_stream("gnss", Modality::Gnss, 1_000_000_000),
+            rig_stream("imu", Modality::Imu, 1_000_000_000),
+            rig_stream_shifted("lidar", Modality::PointCloud, 1_000_000_000, 200_000_000),
+        ],
+    );
+    let d = dataset(vec![ep]);
+
+    assert!(
+        autonomy::RigSync::default().run(&d).is_empty(),
+        "a constant latency shifts a sensor, it does not drift it: every span is still 1.0 s"
+    );
+    let starts = temporal::StartOffset::default().run(&d);
+    assert_eq!(starts.len(), 1);
+    assert_eq!(starts[0].code, "TEMPORAL.START_OFFSET");
+    assert!(starts[0].message.contains("lidar"), "{}", starts[0].message);
+    let ends = temporal::EndOffset::default().run(&d);
+    assert_eq!(ends.len(), 1);
+    assert_eq!(ends[0].code, "TEMPORAL.END_OFFSET");
+}
+
 #[test]
 fn a_synced_rig_is_clean() {
     let ep = episode(

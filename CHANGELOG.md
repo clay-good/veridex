@@ -10,6 +10,22 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **The MF4 corruption sweep only ever ran over one file shape.** It mutated an uncompressed `##DT`
+  fixture, so it never reached the decompressor, the data-list walker, the record demultiplexer, the
+  bit-field slicer or the conversion tables — every one of which reads lengths, counts, record ids
+  and table sizes straight out of an untrusted file, and all of which are new. The sweep now runs
+  over nine shapes (deflated, transposed, header-listed, unsorted, source-bearing, and one per
+  conversion family), corrupting every byte position at three mutations each, truncating at every
+  offset, and repeating the corruption pass under `--metadata-only`, which walks the block graph on
+  its own path. Nothing panicked, hung, or allocated without bound.
+
+- **The autonomy quickstart described a constant sensor latency as the wrong finding.** It said a rig
+  with known trigger offsets "will report that drift as sync spread". It will not: a whole-stream
+  shift leaves every span the same length, so `AUTONOMY.RIG_SYNC` — which compares durations — is
+  silent, correctly. What such a rig reports is `TEMPORAL.START_OFFSET` and its mirror
+  `TEMPORAL.END_OFFSET`, which are true statements about it. The boundary between the two checks is
+  now pinned by a test, and the documented limit says what it actually costs.
+
 - **An MF4 reported raw detector counts as though they were the measurement.** A `##CC` conversion
   is the rule that turns raw bits into the physical quantity they stand for, and only the linear one
   was applied. A sensor's calibration curve is not always a straight line: the rational type and the

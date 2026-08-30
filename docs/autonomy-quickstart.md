@@ -152,8 +152,14 @@ little to check.
   the ECU, bus, I/O device or tool the samples came from — becomes `provenance.sensor`, qualified by
   its bus or path. It is the one provenance element the format carries natively; the other five come
   from `veridex certify` inputs or a richer source.
-- **Per-sensor trigger/latency offsets** aren't modeled yet, so a rig with known constant offsets
-  will report that drift as sync spread.
+- **Per-sensor trigger/latency offsets aren't modeled yet**, and it is worth being precise about what
+  that costs. A sensor triggered a constant 200 ms after the rest is *shifted*, not drifting: every
+  span is still the same length, so `AUTONOMY.RIG_SYNC` is silent — correctly. What the rig does
+  report is `TEMPORAL.START_OFFSET` and its mirror `TEMPORAL.END_OFFSET`, which are true statements:
+  that sensor does start and end later than its peers on the same clock. Veridex has no way to tell a
+  known, deliberate latency from an accidental one, so it reports what it measured; a declared
+  offset table is a follow-up, and a run that simply disables those two checks loses everything else
+  they catch.
 - **A latched topic is exempt only where the source says it is latched.** `AUTONOMY.RIG_SYNC`
   compares sensors only, so the topics recorded beside a rig (`/rosout`, `/parameter_events`,
   `/diagnostics`) do not fail it. A transform tree published once at startup is additionally exempt
