@@ -8,7 +8,7 @@ network or a live dataset.
 Regenerate it with the workspace example:
 
 ```sh
-cargo run -q -p veridex-core --example make_demo_mcap -- crates/veridex-cli/tests/fixtures/demo.mcap
+cargo run -q -p veridex-demo --example make_demo_mcap -- crates/veridex-cli/tests/fixtures/demo.mcap
 ```
 
 It intentionally contains a cross-stream clock skew, so `veridex check` reports an error and exits

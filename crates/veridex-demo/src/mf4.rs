@@ -1,10 +1,9 @@
-//! Generate a small demo ASAM MDF 4.x (MF4) measurement for trying the CLI end-to-end — written the
+//! The demo ASAM MDF 4.x (MF4) measurement — written the
 //! way a real logger writes one, with the records deflated into `##DZ` chunks chained by an `##HL`
-//! header list and a `##DL` data list. Pick a variant with the second argument:
+//! header list and a `##DL` data list. [`VARIANTS`]:
 //!
-//! - (default, also named `saturated`) — a ~4 s, 100 Hz vehicle raster whose `steering_angle` is
-//!   pinned at its
-//!   positive end-stop for most of the drive → `STATISTICAL.SATURATED`. The controller cannot tell
+//! - `saturated` (the default) — a ~4 s, 100 Hz vehicle raster whose `steering_angle` is pinned at
+//!   its positive end-stop for most of the drive → `STATISTICAL.SATURATED`. The controller cannot tell
 //!   "at the limit" from "wants to go further", so a policy trained on it imitates an observation
 //!   that stopped tracking intent.
 //! - `clean` — the same raster with the wheel actually turning, no findings.
@@ -16,9 +15,15 @@
 //!   mean.
 //!
 //! Usage:
-//! `cargo run -p veridex-core --example make_demo_mf4 -- <output.mf4> [saturated|clean|gap|uncompressed]`
+//! `cargo run -p veridex-demo --example make_demo_mf4 -- <output.mf4> [saturated|clean|gap|uncompressed]`
 
 use std::io::Write;
+use std::path::Path;
+
+use crate::DemoError;
+
+/// Every variant `write` accepts. `saturated` is the default and the one the docs show.
+pub const VARIANTS: &[&str] = &["saturated", "clean", "gap", "uncompressed"];
 
 /// `cn_data_type`: little-endian unsigned / signed integer, little-endian IEEE float.
 const UINT_LE: u8 = 0;
@@ -33,23 +38,11 @@ const HZ: usize = 100;
 const SECONDS: usize = 4;
 const RECORDS_PER_CHUNK: usize = 150;
 
-fn main() {
-    let path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "demo.mf4".to_string());
-    let mode = std::env::args().nth(2);
-    if let Some(other) = mode.as_deref() {
-        if !matches!(other, "saturated" | "clean" | "gap" | "uncompressed") {
-            eprintln!(
-                "unknown variant `{other}` — known: saturated, clean, gap, uncompressed (omit for \
-                 the default saturated-steering measurement)"
-            );
-            std::process::exit(2);
-        }
-    }
-    let uncompressed = mode.as_deref() == Some("uncompressed");
-    let clean = mode.as_deref() == Some("clean") || uncompressed;
-    let gap = mode.as_deref() == Some("gap");
+pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
+    crate::check_variant(variant, VARIANTS)?;
+    let uncompressed = variant == "uncompressed";
+    let clean = variant == "clean" || uncompressed;
+    let gap = variant == "gap";
 
     let records = records(clean || gap, gap);
     let count = records.len() / RECORD_LEN;
@@ -91,16 +84,22 @@ fn main() {
 
     // 2024-03-01T12:00:00Z, in nanoseconds since the epoch.
     let bytes = b.finish(dg, 1_709_294_400_000_000_000);
-    std::fs::write(&path, &bytes).expect("write the measurement");
-    println!(
-        "wrote {path} ({} bytes, {count} records, {} storage)",
-        bytes.len(),
-        if uncompressed {
-            "uncompressed ##DT"
-        } else {
-            "##HL/##DL of deflated ##DZ chunks"
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
         }
-    );
+    }
+    std::fs::write(path, &bytes)?;
+    Ok(())
+}
+
+/// How the records of the measurement `write` just produced are stored, for a caller to report.
+pub fn storage(variant: &str) -> &'static str {
+    if variant == "uncompressed" {
+        "uncompressed ##DT"
+    } else {
+        "##HL/##DL of deflated ##DZ chunks"
+    }
 }
 
 /// The measurement's records. `turning` swings the wheel instead of pinning it at its end-stop;

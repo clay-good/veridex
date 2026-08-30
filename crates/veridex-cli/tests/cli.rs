@@ -674,22 +674,7 @@ fn a_command_refuses_a_gate_flag_it_cannot_honor() {
 /// generator the quickstart documents. Returns the dataset path.
 fn make_lerobot(tag: &str) -> std::path::PathBuf {
     let dir = temp_dir(tag).join("lerobot");
-    let _ = std::fs::remove_dir_all(&dir);
-    let status = Command::new(env!("CARGO"))
-        .args([
-            "run",
-            "--quiet",
-            "-p",
-            "veridex-core",
-            "--example",
-            "make_demo_lerobot",
-            "--",
-        ])
-        .arg(&dir)
-        .arg("clean")
-        .status()
-        .expect("generate the demo LeRobot dataset");
-    assert!(status.success(), "demo generator failed");
+    veridex_demo::lerobot::write(&dir, "clean").expect("write the demo LeRobot dataset");
     dir
 }
 
@@ -1021,21 +1006,7 @@ fn check_reports_the_profile_it_judged_against() {
     // one thing it did not report.
     let dir = temp_dir("check-profile");
     let path = dir.join("av.mcap");
-    let status = std::process::Command::new(env!("CARGO"))
-        .args([
-            "run",
-            "--quiet",
-            "-p",
-            "veridex-core",
-            "--example",
-            "make_demo_mcap",
-            "--",
-        ])
-        .arg(&path)
-        .arg("av")
-        .status()
-        .expect("run the demo generator");
-    assert!(status.success());
+    veridex_demo::mcap::write(&path, "av").expect("write the demo rig recording");
     let path = path.to_str().unwrap();
 
     let (_, stdout, _) = run(&["check", path, "--profile", "world-model-ready"]);
@@ -1303,21 +1274,7 @@ fn a_certificate_verifies_from_inside_the_dataset_it_was_issued_for() {
 fn a_profile_verdict_reaches_the_machine_readable_outputs() {
     let dir = temp_dir("profile-machine-output");
     let path = dir.join("av.mcap");
-    let status = std::process::Command::new(env!("CARGO"))
-        .args([
-            "run",
-            "--quiet",
-            "-p",
-            "veridex-core",
-            "--example",
-            "make_demo_mcap",
-            "--",
-        ])
-        .arg(&path)
-        .arg("av")
-        .status()
-        .expect("run the demo generator");
-    assert!(status.success());
+    veridex_demo::mcap::write(&path, "av").expect("write the demo rig recording");
     let path = path.to_str().unwrap();
 
     let (_, stdout, _) = run(&["check", path, "--json", "--profile", "world-model-ready"]);
@@ -1397,21 +1354,7 @@ fn every_command_accepts_help() {
 /// above do. It stands in for the *second* state of a dataset that changes mid-watch: a different
 /// finding set from the manipulation demo's, so the diff a watch prints is a real one.
 fn write_av_mcap(path: &std::path::Path) {
-    let status = std::process::Command::new(env!("CARGO"))
-        .args([
-            "run",
-            "--quiet",
-            "-p",
-            "veridex-core",
-            "--example",
-            "make_demo_mcap",
-            "--",
-        ])
-        .arg(path)
-        .arg("av")
-        .status()
-        .expect("run the demo generator");
-    assert!(status.success(), "the demo generator must succeed");
+    veridex_demo::mcap::write(path, "av").expect("write the demo rig recording");
 }
 
 #[test]
@@ -2887,21 +2830,7 @@ fn a_gate_across_two_veridex_versions_blames_the_tool_not_the_data() {
 /// Generate the demo MF4 into `dir/name` and return its path as a string.
 fn make_demo_mf4(dir: &std::path::Path, name: &str, variant: &str) -> String {
     let path = dir.join(name);
-    let status = std::process::Command::new(env!("CARGO"))
-        .args([
-            "run",
-            "--quiet",
-            "-p",
-            "veridex-core",
-            "--example",
-            "make_demo_mf4",
-            "--",
-        ])
-        .arg(&path)
-        .arg(variant)
-        .status()
-        .expect("run the demo generator");
-    assert!(status.success());
+    veridex_demo::mf4::write(&path, variant).expect("write the demo measurement");
     path.to_str().unwrap().to_string()
 }
 

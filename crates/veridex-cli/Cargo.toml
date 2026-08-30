@@ -30,4 +30,6 @@ serde_json.workspace = true
 libc = "0.2"
 
 [dev-dependencies]
+# The demo dataset generators, called directly rather than through `cargo run --example`.
+veridex-demo = { path = "../veridex-demo" }
 serde_json.workspace = true

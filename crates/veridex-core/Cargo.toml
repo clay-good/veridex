@@ -51,6 +51,10 @@ proptest = "1"
 tempfile = "3"
 # The MF4 fixtures build real `##DZ` blocks, which means really deflating their records.
 flate2 = "1"
+# The demo dataset generators, called directly. They used to be `examples/` here, which meant a test
+# could only build one by spawning `cargo run --example` — and several test binaries doing that at
+# once contend on the build lock and make the suite fail in unrelated places.
+veridex-demo = { path = "../veridex-demo" }
 arrow = "59"
 parquet = "59"
 serde_json.workspace = true

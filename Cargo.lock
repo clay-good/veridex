@@ -1786,6 +1786,7 @@ dependencies = [
  "libc",
  "serde_json",
  "veridex-core",
+ "veridex-demo",
 ]
 
 [[package]]
@@ -1807,8 +1808,20 @@ dependencies = [
  "thiserror",
  "toml",
  "ureq",
+ "veridex-demo",
  "zeroize",
  "zstd",
+]
+
+[[package]]
+name = "veridex-demo"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "flate2",
+ "mcap",
+ "parquet",
+ "serde_json",
 ]
 
 [[package]]

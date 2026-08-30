@@ -189,7 +189,7 @@ the build plan.
       real Hub answers a manifest read with a *relative* redirect (`/api/resolve-cache/…`), which
       the host allowlist refused because it was not an absolute URL.
 
-      Still open: a **real MCAP recording** (the synthetic `examples/make_demo_mcap` rig covers the
+      Still open: a **real MCAP recording** (the synthetic `veridex-demo` MCAP rig covers the
       format end-to-end, including the `av` five-sensor variant).
 - [~] Reproduce detection of a synthetic cross-stream skew (done: the demo MCAP triggers
       `TEMPORAL.CLOCK_SKEW` + `TEMPORAL.END_OFFSET`, and `make_demo_mcap -- <out> late-start` triggers

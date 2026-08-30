@@ -1,7 +1,6 @@
-//! Generate a small demo LeRobot v3 dataset for trying the CLI end-to-end.
+//! The demo LeRobot v3 dataset for trying the CLI end-to-end.
 //!
-//! Writes a minimal on-disk LeRobot v3 layout (`meta/info.json` + one Parquet shard). Pick a variant
-//! with the second argument:
+//! Writes a minimal on-disk LeRobot v3 layout (`meta/info.json` + one Parquet shard). [`VARIANTS`]:
 //!
 //! - (default) `broken` — two episodes; episode 1 has an out-of-order timestamp → `TEMPORAL.NON_MONOTONIC`.
 //! - `clean` — a well-formed two-episode dataset with no findings.
@@ -41,6 +40,28 @@
 
 use std::fs;
 use std::path::Path;
+
+use crate::DemoError;
+
+/// Every variant `write` accepts. `non-monotonic` is the default the docs show.
+pub const VARIANTS: &[&str] = &[
+    "non-monotonic",
+    "clean",
+    "truncated",
+    "boundary",
+    "jitter",
+    "short-episode",
+    "duplicate",
+    "near-duplicate",
+    "saturated",
+    "spike",
+    "nan",
+    "multi-joint",
+    "video",
+    "video-desync",
+    "video-missing",
+    "video-reencoded",
+];
 use std::sync::Arc;
 
 use arrow::array::{ArrayRef, FixedSizeListArray, Float32Array, Float64Array, Int64Array};
@@ -79,45 +100,49 @@ impl Mode {
     }
 }
 
-fn main() {
-    let dir = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "demo-lerobot".to_string());
-    let mode = match std::env::args().nth(2).as_deref() {
-        Some("clean") => Mode::Clean,
-        Some("truncated") => Mode::Truncated,
-        Some("boundary") => Mode::Boundary,
-        Some("jitter") => Mode::Jitter,
-        Some("short-episode") => Mode::ShortEpisode,
-        Some("duplicate") => Mode::Duplicate,
-        Some("near-duplicate") => Mode::NearDuplicate,
-        Some("saturated") => Mode::Saturated,
-        Some("spike") => Mode::Spike,
-        Some("nan") => Mode::Nan,
-        Some("multi-joint") => Mode::MultiJoint,
-        Some("video") => Mode::Video,
-        Some("video-desync") => Mode::VideoDesync,
-        Some("video-missing") => Mode::VideoMissing,
-        Some("video-reencoded") => Mode::VideoReencoded,
-        None => Mode::NonMonotonic,
-        // A typo used to fall through to the default dataset, so `late_start` or `videodesync`
-        // silently produced a *different* fixture than the one asked for — and a CI gate built on
-        // these examples would go green against data it never meant to check.
-        Some(other) => {
-            eprintln!(
-                "unknown variant `{other}` — known: clean, truncated, boundary, jitter, \
-                 short-episode, duplicate, near-duplicate, saturated, spike, nan, multi-joint, \
-                 video, \
-                 video-desync, video-missing, video-reencoded (omit for the default \
-                 non-monotonic dataset)"
-            );
-            std::process::exit(2);
-        }
-    };
-    let dir = Path::new(&dir);
-
+/// Write the demo LeRobot v3 dataset into `dir`, replacing anything already there.
+pub fn write(dir: &Path, variant: &str) -> Result<(), DemoError> {
+    // A typo used to fall through to the default dataset, so `late_start` or `videodesync` silently
+    // produced a *different* fixture than the one asked for — and a CI gate built on these examples
+    // would go green against data it never meant to check.
+    let mode = mode_of(variant)?;
+    crate::fresh_dir(dir)?;
     write_dataset(dir, mode);
+    Ok(())
+}
 
+/// What each variant name selects.
+fn mode_of(variant: &str) -> Result<Mode, DemoError> {
+    Ok(match variant {
+        "clean" => Mode::Clean,
+        "non-monotonic" => Mode::NonMonotonic,
+        "truncated" => Mode::Truncated,
+        "boundary" => Mode::Boundary,
+        "jitter" => Mode::Jitter,
+        "short-episode" => Mode::ShortEpisode,
+        "duplicate" => Mode::Duplicate,
+        "near-duplicate" => Mode::NearDuplicate,
+        "saturated" => Mode::Saturated,
+        "spike" => Mode::Spike,
+        "nan" => Mode::Nan,
+        "multi-joint" => Mode::MultiJoint,
+        "video" => Mode::Video,
+        "video-desync" => Mode::VideoDesync,
+        "video-missing" => Mode::VideoMissing,
+        "video-reencoded" => Mode::VideoReencoded,
+        other => {
+            return Err(DemoError::UnknownVariant {
+                asked: other.to_string(),
+                known: VARIANTS,
+            })
+        }
+    })
+}
+
+/// One line describing what `variant` produces and which finding it is meant to fire, for a caller
+/// that wants to report it.
+pub fn describe(variant: &str) -> Result<&'static str, DemoError> {
+    let mode = mode_of(variant)?;
     let what = match mode {
         Mode::Clean => "clean (well-formed)",
         Mode::NonMonotonic => "broken (episode 1 has an out-of-order timestamp → TEMPORAL.NON_MONOTONIC)",
@@ -163,8 +188,7 @@ fn main() {
             "video-reencoded (videos re-encoded at 320x240 against a declared 640x480 → VIDEO.RESOLUTION_MISMATCH)"
         }
     };
-    println!("Wrote {what} LeRobot v3 dataset to {}", dir.display());
-    println!("Try:  veridex check {}", dir.display());
+    Ok(what)
 }
 
 fn write_dataset(dir: &Path, mode: Mode) {

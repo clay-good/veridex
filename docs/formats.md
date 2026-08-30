@@ -25,7 +25,7 @@ one (its second episode carries an out-of-order timestamp) and check it the same
 # generate a demo LeRobot v3 dataset; append `clean`, `truncated`, `boundary`, `jitter`,
 # `short-episode`, `duplicate`, `saturated`, `spike`, `nan`, `multi-joint`, `video`,
 # `video-desync`, `video-missing`, or `video-reencoded`
-cargo run -p veridex-core --example make_demo_lerobot -- /tmp/demo-lerobot
+cargo run -p veridex-demo --example make_demo_lerobot -- /tmp/demo-lerobot
 cargo run -p veridex-cli -- check /tmp/demo-lerobot   # fires TEMPORAL.NON_MONOTONIC, exits 20
 ```
 
@@ -70,7 +70,7 @@ robot datasets ship in, and the third format behind the same command:
 
 ```sh
 # generate a demo RLDS dataset in the TFDS layout; append `truncated`, `desynced`, or `corrupt`
-cargo run -p veridex-core --example make_demo_rlds -- /tmp/demo-rlds
+cargo run -p veridex-demo --example make_demo_rlds -- /tmp/demo-rlds
 cargo run -p veridex-cli -- check /tmp/demo-rlds
 ```
 
@@ -357,7 +357,7 @@ channel.
 ```sh
 # a demo measurement: ~4 s at 100 Hz, records deflated into ##DZ chunks behind an ##HL header
 # list — how a logger actually writes one. Append `clean`, `gap`, or `uncompressed`.
-cargo run -p veridex-core --example make_demo_mf4 -- /tmp/drive.mf4
+cargo run -p veridex-demo --example make_demo_mf4 -- /tmp/drive.mf4
 cargo run -p veridex-cli -- check /tmp/drive.mf4   # fires STATISTICAL.SATURATED
 ```
 
@@ -386,8 +386,8 @@ measurement both ways and the CDM hashes match exactly:
 
 ```sh
 mkdir -p /tmp/packed /tmp/plain
-cargo run -p veridex-core --example make_demo_mf4 -- /tmp/packed/drive.mf4 clean
-cargo run -p veridex-core --example make_demo_mf4 -- /tmp/plain/drive.mf4  uncompressed
+cargo run -p veridex-demo --example make_demo_mf4 -- /tmp/packed/drive.mf4 clean
+cargo run -p veridex-demo --example make_demo_mf4 -- /tmp/plain/drive.mf4  uncompressed
 cargo run -p veridex-cli -- check /tmp/packed/drive.mf4 | grep 'CDM hash'
 cargo run -p veridex-cli -- check /tmp/plain/drive.mf4  | grep 'CDM hash'   # the same hash
 ```

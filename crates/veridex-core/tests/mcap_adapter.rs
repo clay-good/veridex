@@ -1369,21 +1369,7 @@ fn a_corrupt_chunk_stream_is_refused_rather_than_unpacked_forever() {
     // Not a slow check and not an error: a process that grows until it is killed.
     let dir = tempfile::tempdir().unwrap();
     let good = dir.path().join("good.mcap");
-    let status = std::process::Command::new(env!("CARGO"))
-        .args([
-            "run",
-            "--quiet",
-            "-p",
-            "veridex-core",
-            "--example",
-            "make_demo_mcap",
-            "--",
-        ])
-        .arg(&good)
-        .arg("av")
-        .status()
-        .expect("run the demo generator");
-    assert!(status.success());
+    veridex_demo::mcap::write(&good, "av").expect("write the demo rig recording");
 
     let bytes = std::fs::read(&good).unwrap();
     // The clean file still ingests, so the new pre-pass is not refusing valid chunks.
@@ -1424,21 +1410,7 @@ fn a_corrupt_chunk_stream_is_refused_rather_than_unpacked_forever() {
 fn a_chunk_behind_a_malformed_record_is_still_charged_to_the_budget() {
     let dir = tempfile::tempdir().unwrap();
     let good = dir.path().join("good.mcap");
-    let status = std::process::Command::new(env!("CARGO"))
-        .args([
-            "run",
-            "--quiet",
-            "-p",
-            "veridex-core",
-            "--example",
-            "make_demo_mcap",
-            "--",
-        ])
-        .arg(&good)
-        .arg("av")
-        .status()
-        .expect("run the demo generator");
-    assert!(status.success());
+    veridex_demo::mcap::write(&good, "av").expect("write the demo rig recording");
 
     // Overstate the first chunk's uncompressed size so it exceeds the budget's 64 MB floor, which
     // otherwise swallows anything a 7.7 KB demo log can declare. Record framing past the 8-byte

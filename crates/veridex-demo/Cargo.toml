@@ -1,0 +1,17 @@
+[package]
+name = "veridex-demo"
+description = "Demo dataset generators for Veridex: the fixtures the docs tell you to run, and the ones the tests damage."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+# Test and documentation scaffolding, not part of the shipped product.
+publish = false
+
+[dependencies]
+arrow = "59"
+parquet = "59"
+mcap = "0.25"
+flate2 = "1"
+serde_json.workspace = true

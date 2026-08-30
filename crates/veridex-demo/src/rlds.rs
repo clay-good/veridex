@@ -1,5 +1,5 @@
-//! Generate a small demo RLDS dataset in the TFDS on-disk layout, for trying the CLI end-to-end
-//! without downloading an Open X-Embodiment shard. Pick a variant with the second argument:
+//! The demo RLDS dataset, in the TFDS on-disk layout, for trying the CLI end-to-end
+//! without downloading an Open X-Embodiment shard. [`VARIANTS`]:
 //!
 //! - (default) `clean` — three distinct 20-step episodes with a 7-DoF action, a 3-DoF state, an
 //!   encoded camera image and a per-step instruction. Nothing about the data is wrong, so the only
@@ -14,9 +14,14 @@
 //! - `corrupt` — a clean dataset with one byte flipped inside a record. Only the TFRecord checksum
 //!   notices, so this shows the shard being rejected instead of parsed past.
 //!
-//! Usage: `cargo run -p veridex-core --example make_demo_rlds -- <output-dir> [clean|truncated|desynced|corrupt]`
+//! Usage: `cargo run -p veridex-demo --example make_demo_rlds -- <output-dir> [clean|truncated|desynced|corrupt]`
 
 use std::path::Path;
+
+use crate::DemoError;
+
+/// Every variant `write` accepts.
+pub const VARIANTS: &[&str] = &["clean", "truncated", "desynced", "corrupt"];
 
 // ---- CRC-32C, as TFRecord frames it ----
 
@@ -220,30 +225,19 @@ fn dataset_info_json(declared_episodes: u64) -> String {
     .to_string()
 }
 
-fn main() {
-    let mut args = std::env::args().skip(1);
-    let out = args.next().unwrap_or_else(|| {
-        eprintln!(
-            "usage: make_demo_rlds <output-dir> [clean|truncated|desynced|corrupt]\n\
-             then: veridex check <output-dir>"
-        );
-        std::process::exit(2);
-    });
-    let variant = args.next().unwrap_or_else(|| "clean".into());
-    let dir = Path::new(&out);
-    std::fs::create_dir_all(dir).expect("create the output directory");
+/// Write the demo RLDS/TFDS export into `dir`, replacing anything already there.
+pub fn write(dir: &Path, variant: &str) -> Result<(), DemoError> {
+    crate::check_variant(variant, VARIANTS)?;
+    crate::fresh_dir(dir)?;
 
-    let (episodes, declared, images) = match variant.as_str() {
+    let (episodes, declared, images) = match variant {
         "clean" => (3, 3, STEPS),
         // The manifest promises one more episode than the shard holds.
         "truncated" => (3, 4, STEPS),
         // One camera image short of the actions it is paired with.
         "desynced" => (1, 1, STEPS - 1),
         "corrupt" => (3, 3, STEPS),
-        other => {
-            eprintln!("unknown variant `{other}` (clean|truncated|desynced|corrupt)");
-            std::process::exit(2);
-        }
+        _ => unreachable!("checked against VARIANTS above"),
     };
 
     let records: Vec<Vec<u8>> = (0..episodes).map(|e| episode(e, images)).collect();
@@ -254,16 +248,11 @@ fn main() {
         bytes[at] ^= 0x01;
     }
 
-    std::fs::write(dir.join("features.json"), features_json()).expect("write features.json");
-    std::fs::write(dir.join("dataset_info.json"), dataset_info_json(declared))
-        .expect("write dataset_info.json");
-    std::fs::write(dir.join("demo_rlds-train.tfrecord-00000-of-00001"), &bytes)
-        .expect("write the shard");
-
-    println!(
-        "wrote {} ({variant}): {episodes} episode(s) x {STEPS} steps, {} bytes of TFRecord",
-        dir.display(),
-        bytes.len()
-    );
-    println!("try: veridex check {}", dir.display());
+    std::fs::write(dir.join("features.json"), features_json())?;
+    std::fs::write(dir.join("dataset_info.json"), dataset_info_json(declared))?;
+    std::fs::write(dir.join("demo_rlds-train.tfrecord-00000-of-00001"), &bytes)?;
+    Ok(())
 }
+
+/// Steps per episode, for a caller that wants to report the shape it asked for.
+pub const STEPS_PER_EPISODE: usize = STEPS;

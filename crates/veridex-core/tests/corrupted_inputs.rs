@@ -14,13 +14,10 @@
 //! fixture the adapter silently declines survives every mutation and proves nothing.
 //!
 //! **What is covered, and where.** Here: HDF5 files, an MCAP, Zarr stores, rosbag2 bags under either
-//! storage plugin, and a CAN+DBC dataset — written on the spot, since it is two text files. ASAM MF4
-//! has a sweep of its own in `mdf4_adapter.rs`, broader than this one: nine block-graph shapes,
-//! every byte position, three mutations each, and the header-only path as well. Left uncovered:
-//! **LeRobot**, whose fixture only exists as a demo *example*, and a test cannot build an example
-//! without spawning `cargo` — which contends with the rest of the suite and makes it flaky. Closing
-//! that means lifting the generator out of `examples/` into something a test can call, which is a
-//! change to make deliberately rather than as a side effect of this sweep.
+//! storage plugin, a CAN+DBC dataset written on the spot, and a LeRobot dataset from
+//! `veridex-demo`. ASAM MF4 has a sweep of its own in `mdf4_adapter.rs`, broader than this one:
+//! nine block-graph shapes, every byte position, three mutations each, and the header-only path as
+//! well.
 //!
 //! RLDS/TFDS is swept in `rlds_adapter.rs` instead, and has to be: a TFRecord checksums both its
 //! length prefix and its payload, so a byte flipped here would be refused at the CRC and the
@@ -538,6 +535,75 @@ fn write_can_dbc(dir: &Path) {
         ));
     }
     std::fs::write(dir.join("drive.log"), log).expect("write log");
+}
+
+/// Damage every member of a dataset *directory* in turn, forcing `format` as well as letting
+/// detection choose.
+fn sweep_directory(
+    source: &Path,
+    format: &str,
+    scratch: &Path,
+    checked: &mut usize,
+    reach: &mut Reach,
+    failures: &mut Vec<String>,
+) {
+    assert_reads(source, format);
+    for member in walk(source) {
+        let relative = member.strip_prefix(source).expect("inside the dataset");
+        let bytes = std::fs::read(&member).expect("read member");
+        for (label, damaged) in mutations(&bytes) {
+            let store = scratch.join(format!("damaged-{format}"));
+            let _ = std::fs::remove_dir_all(&store);
+            copy_tree(source, &store);
+            std::fs::write(store.join(relative), &damaged).expect("write damaged member");
+            *checked += 1;
+            for forced in [None, Some(format)] {
+                for metadata_only in [false, true] {
+                    let outcome = outcome_of(&store, forced, metadata_only);
+                    reach.record(&outcome);
+                    if let Outcome::Panicked(message) = outcome {
+                        failures.push(format!(
+                            "{format} {}: {label} → panic: {message}",
+                            relative.display()
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// LeRobot, the last format this sweep's doc comment promised and did not cover.
+///
+/// It had no committed fixture — the demo dataset only existed as an `examples/` binary, and a test
+/// cannot build one without spawning `cargo`, which contends with the rest of the suite. Now that
+/// the generators live in `veridex-demo` as ordinary functions, the sweep can build one directly.
+#[test]
+fn no_damaged_lerobot_dataset_takes_the_process_down() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let source = dir.path().join("lerobot");
+    veridex_demo::lerobot::write(&source, "clean").expect("write the demo dataset");
+
+    let mut checked = 0usize;
+    let mut reach = Reach::default();
+    let mut failures: Vec<String> = Vec::new();
+    sweep_directory(
+        &source,
+        "lerobot",
+        dir.path(),
+        &mut checked,
+        &mut reach,
+        &mut failures,
+    );
+
+    assert!(checked > 20, "the sweep must actually run: {checked}");
+    reach.assert_reached_the_reader("lerobot");
+    assert!(
+        failures.is_empty(),
+        "{} of {checked} damaged datasets took the process down:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
 }
 
 /// The CAN+DBC adapter, which this sweep's own doc comment promised and did not cover.

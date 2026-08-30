@@ -22,7 +22,7 @@ def _demo_dataset(tmp_path):
     """Generate a demo MCAP via the workspace example; return its path."""
     out = tmp_path / "demo.mcap"
     subprocess.run(
-        ["cargo", "run", "-q", "-p", "veridex-core", "--example", "make_demo_mcap", "--", str(out)],
+        ["cargo", "run", "-q", "-p", "veridex-demo", "--example", "make_demo_mcap", "--", str(out)],
         check=True,
     )
     return out
@@ -243,7 +243,7 @@ def _demo_lerobot(tmp_path):
     out = tmp_path / "lerobot"
     subprocess.run(
         [
-            "cargo", "run", "-q", "-p", "veridex-core",
+            "cargo", "run", "-q", "-p", "veridex-demo",
             "--example", "make_demo_lerobot", "--", str(out), "clean",
         ],
         check=True,

@@ -1,5 +1,4 @@
-//! Generate a small demo MCAP recording for trying the CLI end-to-end. Pick a variant with the
-//! second argument:
+//! The demo MCAP recording for trying the CLI end-to-end. [`VARIANTS`]:
 //!
 //! - (default) `skew` — a camera (~30 Hz over ~1.0 s) and a robot stream (~50 Hz over ~1.2 s) that
 //!   span different durations from a shared start, so their clocks drift → `TEMPORAL.CLOCK_SKEW`
@@ -24,38 +23,37 @@
 //!   chain of transforms reaches the camera → `AUTONOMY.SENSOR_FRAME_UNRELATED`: the LiDAR-camera
 //!   reprojection is undefined, which no check on the tree's own shape can see.
 //!
-//! Usage: `cargo run -p veridex-core --example make_demo_mcap -- <output.mcap> [clean|late-start|stuck|av|av-miscalibrated]`
+//! Usage: `cargo run -p veridex-demo --example make_demo_mcap -- <output.mcap> [clean|late-start|stuck|av|av-miscalibrated]`
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
+use std::path::Path;
 
-fn main() {
-    let path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "demo.mcap".to_string());
-    let mode = std::env::args().nth(2);
-    let stuck = mode.as_deref() == Some("stuck");
-    // `stuck` is a single-camera dataset like `clean`, but with a frozen (byte-identical) feed.
-    let clean = mode.as_deref() == Some("clean") || stuck;
-    let late_start = mode.as_deref() == Some("late-start");
-    // `av-miscalibrated` is the same rig with the LiDAR stranded outside the camera's transform
-    // subtree, so the LiDAR-camera reprojection is undefined.
-    let miscalibrated = mode.as_deref() == Some("av-miscalibrated");
-    let av = mode.as_deref() == Some("av") || miscalibrated;
+use crate::DemoError;
+
+/// Every variant `write` accepts. `skew` is the default the docs show.
+pub const VARIANTS: &[&str] = &[
+    "skew",
+    "clean",
+    "stuck",
+    "late-start",
+    "av",
+    "av-miscalibrated",
+];
+
+/// Write the demo MCAP recording to `path`, replacing anything already there.
+pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
     // A typo used to fall through to the default skew dataset, silently producing a different
     // fixture than the one asked for.
-    if let Some(other) = mode.as_deref() {
-        if !matches!(
-            other,
-            "clean" | "stuck" | "late-start" | "av" | "av-miscalibrated"
-        ) {
-            eprintln!(
-                "unknown variant `{other}` — known: clean, stuck, late-start, av, \
-                 av-miscalibrated (omit for the default clock-skew recording)"
-            );
-            std::process::exit(2);
-        }
-    }
+    crate::check_variant(variant, VARIANTS)?;
+    let stuck = variant == "stuck";
+    // `stuck` is a single-camera dataset like `clean`, but with a frozen (byte-identical) feed.
+    let clean = variant == "clean" || stuck;
+    let late_start = variant == "late-start";
+    // `av-miscalibrated` is the same rig with the LiDAR stranded outside the camera's transform
+    // subtree, so the LiDAR-camera reprojection is undefined.
+    let miscalibrated = variant == "av-miscalibrated";
+    let av = variant == "av" || miscalibrated;
 
     let mut buf = Vec::new();
     {
@@ -109,8 +107,13 @@ fn main() {
         w.finish().expect("finish");
     }
 
-    std::fs::write(&path, &buf).expect("write file");
-    println!("wrote {} ({} bytes)", path, buf.len());
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    std::fs::write(path, &buf)?;
+    Ok(())
 }
 
 /// Write the manipulation-format variants (camera, optionally a robot-state stream).

@@ -10,6 +10,26 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **The demo generators could only be built by spawning `cargo`.** They lived as `examples/` under
+  `veridex-core`, so a test that wanted one ran `cargo run --example` — and when several test
+  binaries do that at once they contend on the build lock and the shared target directory, and an
+  invocation fails. It fails inside an *unrelated* test, so it reads as a real regression. That is
+  what stopped the corruption sweep from covering LeRobot, and it is why the CLI suite had been
+  quietly one more concurrent generator away from going red.
+
+  The four generators now live in a new **`veridex-demo`** crate (`publish = false`) as ordinary
+  functions — `veridex_demo::{lerobot, rlds, mcap, mf4}::write(dir, variant)` — with the
+  `examples/` binaries kept as thin wrappers, because the docs point at them by name. Nothing in the
+  crate depends on `veridex-core`: a generator that shared the reader's idea of a format could not
+  catch the reader being wrong about it, so each still writes the on-disk layout from the format's
+  own specification.
+
+  Every test that used to shell out now calls the function. **LeRobot joins the corruption sweep**,
+  which was the point. The commands in the README and `docs/formats.md` change from
+  `cargo run -p veridex-core --example …` to `cargo run -p veridex-demo --example …`; nothing else
+  about them moves. A mistyped variant is still refused by name rather than silently producing a
+  different fixture — that check now lives in one place instead of four.
+
 - **The "every adapter" corruption sweep reached four of the eight.** `corrupted_inputs.rs` opens by
   calling itself every adapter over damaged versions of its own fixtures, and it damaged HDF5, MCAP,
   Zarr and rosbag2 — the four formats with a committed binary fixture. MF4, CAN+DBC, LeRobot and

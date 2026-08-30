@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/veridex-core",
+    "crates/veridex-demo",
     "crates/veridex-cli",
     "crates/veridex-py",
 ]

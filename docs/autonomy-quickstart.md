@@ -8,7 +8,7 @@ Check a multi-sensor rig log â€” LiDAR, cameras, IMU, GNSS, ego-odometry, CAN â€
 The repo ships a synthetic five-sensor rig with a deliberately desynced IMU:
 
 ```sh
-cargo run -p veridex-core --example make_demo_mcap -- /tmp/av.mcap av
+cargo run -p veridex-demo --example make_demo_mcap -- /tmp/av.mcap av
 ```
 
 ## 2. See what Veridex read
@@ -70,7 +70,7 @@ sensor to the camera does not exist. Nothing about the tree's own shape reveals 
 `base_link`:
 
 ```sh
-cargo run -p veridex-core --example make_demo_mcap -- /tmp/av-bad.mcap av-miscalibrated
+cargo run -p veridex-demo --example make_demo_mcap -- /tmp/av-bad.mcap av-miscalibrated
 cargo run -p veridex-cli -- check /tmp/av-bad.mcap
 ```
 
