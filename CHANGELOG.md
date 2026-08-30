@@ -10,6 +10,16 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **`veridex inspect` showed one sensor out of thirty-two.** The provenance summary picked a single
+  element per key, so a bus log recording one ECU per transmitting node, a rig with several `##SI`
+  acquisition devices, and a dataset merged from three parents each showed exactly one — with a
+  coverage line reading `1/6` either way, which is correct and gives no hint that the line above it
+  is a thirty-second of the answer. (The JSON and the Croissant/PROV documents carried them all;
+  only the human summary collapsed.)
+
+  Every value for a key is listed now, deduplicated, four at a time with the remainder counted, and
+  tagged with the strongest class present — the same one the coverage above counts.
+
 - **A gateway log's ECU list was the file deciding how many provenance elements to build.** The
   CAN+DBC extraction added one `sensor` element per transmitting node with no bound at all, and the
   MF4 one trimmed at eight without saying so. A `.dbc` may define any number of messages each with

@@ -1374,33 +1374,56 @@ fn provenance_summary(d: &veridex_core::cdm::Dataset) -> String {
         cov.asserted,
         cov.unknown,
     );
+    /// How many values a single provenance key lists before the remainder is counted. A bus log
+    /// names one ECU per node and a merged dataset one upstream per parent; the line stays a
+    /// sentence a person can read, and the count says what it left out.
+    const MAX_LISTED_VALUES: usize = 4;
+
     for key in veridex_core::certificate::EXPECTED_PROVENANCE_KEYS {
-        // Show the *strongest* covering element for the key (known > asserted), matching how
-        // ProvenanceCoverage counts it — a plain `.find()` would show whichever happens to come first,
-        // so the displayed `[class]` could disagree with the counted coverage above.
+        // Show the *strongest* covering class for the key (known > asserted), matching how
+        // ProvenanceCoverage counts it — a plain `.find()` would show whichever happens to come
+        // first, so the displayed `[class]` could disagree with the counted coverage above.
         let class_rank = |c: ProvenanceClass| match c {
             ProvenanceClass::Known => 2,
             ProvenanceClass::Asserted => 1,
             ProvenanceClass::Unknown => 0,
         };
-        let best = d
+        let covering: Vec<&veridex_core::cdm::ProvenanceElement> = d
             .provenance
             .iter()
             .flat_map(|r| &r.elements)
             .filter(|e| e.key == *key && e.class != ProvenanceClass::Unknown && e.has_real_value())
-            .max_by_key(|e| class_rank(e.class));
-        match best {
-            Some(e) => {
-                let _ = writeln!(
-                    out,
-                    "      {key}: {} [{}]",
-                    e.value.as_deref().unwrap_or_default(),
-                    e.class.tag()
-                );
+            .collect();
+        let Some(strongest) = covering.iter().map(|e| class_rank(e.class)).max() else {
+            let _ = writeln!(out, "      {key}: missing");
+            continue;
+        };
+        // Every value the dataset carries for this key, not the first one. A rig acquired from four
+        // devices and a dataset merged from three parents each record several elements, and showing
+        // one of them looks like the whole answer.
+        let mut values: Vec<&str> = Vec::new();
+        for e in covering.iter().filter(|e| class_rank(e.class) == strongest) {
+            let value = e.value.as_deref().unwrap_or_default();
+            if !values.contains(&value) {
+                values.push(value);
             }
-            None => {
-                let _ = writeln!(out, "      {key}: missing");
-            }
+        }
+        let class = covering
+            .iter()
+            .find(|e| class_rank(e.class) == strongest)
+            .map(|e| e.class.tag())
+            .unwrap_or_default();
+        let shown = values
+            .iter()
+            .take(MAX_LISTED_VALUES)
+            .copied()
+            .collect::<Vec<_>>()
+            .join(", ");
+        let rest = values.len().saturating_sub(MAX_LISTED_VALUES);
+        if rest > 0 {
+            let _ = writeln!(out, "      {key}: {shown} (+{rest} more) [{class}]");
+        } else {
+            let _ = writeln!(out, "      {key}: {shown} [{class}]");
         }
     }
     out
@@ -2987,6 +3010,74 @@ mod tests {
         assert!(s.contains("license: apache-2.0 [known]"));
         // The placeholder sensor is shown as missing, matching the coverage score.
         assert!(s.contains("sensor: missing"), "unexpected: {s}");
+    }
+
+    #[test]
+    fn a_key_with_several_values_shows_every_one_bounded_by_a_count() {
+        // A bus log records one `sensor` element per transmitting ECU and a merged dataset one
+        // `upstream` per parent. Showing the first of them looks like the whole answer, and the
+        // coverage line above says `1/6` either way — so the line has to say how many there are.
+        use veridex_core::cdm::{Dataset, Provenance, ProvenanceClass, ProvenanceScope};
+        let element =
+            |key: &str, value: &str, class: ProvenanceClass| veridex_core::cdm::ProvenanceElement {
+                key: key.into(),
+                value: Some(value.into()),
+                class,
+            };
+        let with = |values: Vec<&str>| Dataset {
+            id: "d".into(),
+            calibration: None,
+            metadata: vec![],
+            provenance: vec![Provenance {
+                scope: ProvenanceScope::Dataset,
+                elements: values
+                    .into_iter()
+                    .map(|v| element("sensor", v, ProvenanceClass::Known))
+                    .collect(),
+            }],
+            episodes: vec![],
+        };
+
+        let s = super::provenance_summary(&with(vec!["ECU00", "ECU01"]));
+        assert!(
+            s.contains("sensor: ECU00, ECU01 [known]"),
+            "unexpected: {s}"
+        );
+        assert!(
+            s.contains("1/6 covered"),
+            "several values are still one key: {s}"
+        );
+
+        let many: Vec<&str> = vec!["a", "b", "c", "d", "e", "f"];
+        let s = super::provenance_summary(&with(many));
+        assert!(
+            s.contains("sensor: a, b, c, d (+2 more) [known]"),
+            "unexpected: {s}"
+        );
+
+        // A repeated value is one value: the same ECU on two messages is one sensor.
+        let s = super::provenance_summary(&with(vec!["ECU00", "ECU00", "ECU01"]));
+        assert!(
+            s.contains("sensor: ECU00, ECU01 [known]"),
+            "unexpected: {s}"
+        );
+
+        // Mixed classes show the strongest, matching how the coverage above counts it.
+        let mixed = Dataset {
+            id: "d".into(),
+            calibration: None,
+            metadata: vec![],
+            provenance: vec![Provenance {
+                scope: ProvenanceScope::Dataset,
+                elements: vec![
+                    element("sensor", "claimed", ProvenanceClass::Asserted),
+                    element("sensor", "extracted", ProvenanceClass::Known),
+                ],
+            }],
+            episodes: vec![],
+        };
+        let s = super::provenance_summary(&mixed);
+        assert!(s.contains("sensor: extracted [known]"), "unexpected: {s}");
     }
 
     #[test]
