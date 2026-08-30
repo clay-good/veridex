@@ -11,6 +11,11 @@
 //! than a note only `inspect` prints: a log whose ids are mostly absent from the DBC otherwise reads
 //! as a clean, certifiable pass over the fraction that was decoded.
 //!
+//! Provenance comes from the database itself: each `BO_` line names the ECU that puts that message
+//! on the bus, and the transmitters of the messages the log *actually carried* become
+//! `provenance.sensor` — `known`, extracted rather than asserted. A node the database declares but
+//! whose traffic never appears is not claimed, and the `Vector__XXX` placeholder names nothing.
+//!
 //! Scope: both DBC byte orders are decoded — little-endian (Intel, `@1`) and big-endian (Motorola,
 //! `@0`) — with factor/offset applied and signed signals sign-extended. Decoded values are
 //! fingerprinted into `frame.value_ref.content_hash`, so the CDM hash is sensitive to actual signal
@@ -21,7 +26,10 @@ use std::path::Path;
 
 use sha2::{Digest, Sha256};
 
-use crate::cdm::{ClockKind, Dataset, DeclaredRange, Episode, Frame, Modality, Stream, ValueRef};
+use crate::cdm::{
+    ClockKind, Dataset, DeclaredRange, Episode, Frame, Modality, Provenance, ProvenanceClass,
+    ProvenanceElement, ProvenanceScope, Stream, ValueRef,
+};
 
 /// How many undefined CAN ids are named individually in the coverage disclosure.
 ///
@@ -80,8 +88,16 @@ enum Mux {
 #[derive(Debug, Clone, Default)]
 struct DbcMessage {
     name: String,
+    /// The `BO_` line's transmitter: the ECU that puts this message on the bus. `None` when the
+    /// database omits it or writes the `Vector__XXX` placeholder, which names no node.
+    transmitter: Option<String>,
     signals: Vec<DbcSignal>,
 }
+
+/// The DBC placeholder for "no node specified". Recording it as provenance would be a value that is
+/// present in form and empty in substance — the exact shape `ProvenanceElement::has_real_value`
+/// exists to keep out of a coverage score.
+const DBC_NO_NODE: &str = "Vector__XXX";
 
 /// Parse the subset of DBC we need: `BO_` message headers and their `SG_` signal lines.
 fn parse_dbc(text: &str) -> BTreeMap<u32, DbcMessage> {
@@ -94,11 +110,17 @@ fn parse_dbc(text: &str) -> BTreeMap<u32, DbcMessage> {
             let mut it = rest.split_whitespace();
             let id = it.next().and_then(|s| s.parse::<u32>().ok());
             let name = it.next().unwrap_or("").trim_end_matches(':').to_string();
+            // `<dlc>` then `<transmitter>`.
+            let transmitter = it
+                .nth(1)
+                .map(str::to_string)
+                .filter(|t| t != DBC_NO_NODE && !t.is_empty());
             if let Some(id) = id {
                 // Mask off the extended-frame flag bit if present (bit 31).
                 let id = id & 0x1FFF_FFFF;
                 messages.entry(id).or_insert_with(|| DbcMessage {
                     name,
+                    transmitter,
                     signals: Vec::new(),
                 });
                 current = Some(id);
@@ -435,6 +457,11 @@ impl Adapter for CanDbcAdapter {
         // indistinguishable from a good read.
         let mut signal_ranges: BTreeMap<String, (f64, f64)> = BTreeMap::new();
         let mut unknown_ids: BTreeMap<u32, u64> = BTreeMap::new();
+        // The ECUs that actually put traffic on this bus — the transmitter of every message the log
+        // carried, not every node the database declares. A `BU_` list is a claim about the network;
+        // this is what produced the data in front of us.
+        let mut transmitters: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
         let mut min_ts: Option<i64> = None;
         let mut max_ts: Option<i64> = None;
 
@@ -445,6 +472,9 @@ impl Adapter for CanDbcAdapter {
                 *unknown_ids.entry(frame.id).or_insert(0) += 1;
                 continue;
             };
+            if let Some(node) = &message.transmitter {
+                transmitters.insert(node.clone());
+            }
             // Which multiplexed set this frame carries, if the message is multiplexed at all.
             let selector = message
                 .signals
@@ -532,8 +562,39 @@ impl Adapter for CanDbcAdapter {
 
         let dataset = Dataset {
             id: crate::adapter::dataset_id_from_path(dir, "candbc"),
-            metadata: vec![("source_format".into(), "candbc".into())],
-            provenance: vec![],
+            metadata: {
+                let mut m = vec![("source_format".into(), "candbc".into())];
+                if !transmitters.is_empty() {
+                    m.push((
+                        "dbc_transmitters".into(),
+                        transmitters.iter().cloned().collect::<Vec<_>>().join(", "),
+                    ));
+                }
+                m
+            },
+            // Until this existed a CAN+DBC dataset carried *no* provenance record at all — not even
+            // the `source_format` element every other adapter emits — so it scored 0/6 while its own
+            // database named the ECUs that produced the traffic.
+            provenance: vec![Provenance {
+                scope: ProvenanceScope::Dataset,
+                elements: {
+                    let mut elements = vec![ProvenanceElement {
+                        key: "source_format".into(),
+                        value: Some("candbc".into()),
+                        class: ProvenanceClass::Known,
+                    }];
+                    if !transmitters.is_empty() {
+                        elements.push(ProvenanceElement {
+                            key: "sensor".into(),
+                            value: Some(
+                                transmitters.iter().cloned().collect::<Vec<_>>().join(", "),
+                            ),
+                            class: ProvenanceClass::Known,
+                        });
+                    }
+                    elements
+                },
+            }],
             episodes: vec![Episode {
                 index: 0,
                 start_ts: min_ts,
@@ -601,7 +662,15 @@ impl Adapter for CanDbcAdapter {
                         .into(),
                     "candump frame timestamp -> frame.ts".into(),
                     "decoded signal value -> frame.value_ref.content_hash (SHA-256)".into(),
-                ],
+                ]
+                .into_iter()
+                .chain(
+                    // Claimed only when the database named a transmitter for traffic the log
+                    // actually carried: a mapped field is a statement that this run read something.
+                    (!transmitters.is_empty())
+                        .then(|| "DBC BO_ transmitter -> provenance.sensor".to_string()),
+                )
+                .collect(),
                 unmapped_fields: Vec::new(),
                 omitted_fields: vec![
                     "CAN frames are one continuous timeline; no episode segmentation".into(),

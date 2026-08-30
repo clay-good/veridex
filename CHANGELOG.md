@@ -10,6 +10,18 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A CAN+DBC dataset carried no provenance record at all.** Not the ECU that produced the traffic,
+  not even the `source_format` element every other adapter emits — the field was literally empty, so
+  a bus log scored 0/6 while its own signal database named the node behind every message.
+
+  Each `BO_` line names the ECU that puts that message on the bus, and the transmitters of the
+  messages the log *actually carried* are now `provenance.sensor`, `known`, each node named once
+  however many of its messages appear. Two things are deliberately not claimed: a node the database
+  declares but whose traffic never reaches the wire (that would attribute the data to an ECU that
+  produced none of it), and `Vector__XXX`, the DBC's way of writing "no node specified" — a value
+  present in form and empty in substance, which is what the placeholder rule exists to keep out of a
+  coverage score.
+
 - **A `robomimic` file named its robot in a root attribute and provenance scored it unknown.**
   `robomimic`, MimicGen and the robosuite tooling all record the embodiment in one place: the
   `env_args` attribute, whose `env_kwargs.robots` names the robot the trajectories were recorded on.

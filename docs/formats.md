@@ -345,6 +345,12 @@ family grades a CAN channel exactly as it grades a LeRobot feature:
 #       omitted:  CAN frames are one continuous timeline; no episode segmentation
 ```
 
+**The database says whose traffic this is.** Every `BO_` line names the ECU that transmits that
+message, so the nodes behind the frames the log actually carried become `provenance.sensor` — read
+out of the database, not claimed by whoever handed the log over. Only nodes that actually
+transmitted: a message the database declares but that never appears on the wire attributes nothing,
+and `Vector__XXX`, the DBC's way of writing "no node specified", names nobody.
+
 **A partial DBC is the failure mode worth naming.** Bus traffic on an id the database never defines
 decodes into nothing, and so does a log line that is not a candump frame — and a run that passed over
 that silently would read as a clean, certifiable verdict over whichever fraction of the bus the `.dbc`

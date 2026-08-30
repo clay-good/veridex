@@ -484,3 +484,143 @@ fn values_within_the_declared_range_are_clean() {
         .run(&ingested.dataset)
         .is_empty());
 }
+
+// --- What the database says about which ECU produced the traffic --------------------------------
+
+fn ingest_dir(dir: &std::path::Path) -> veridex_core::adapter::Ingested {
+    CanDbcAdapter
+        .ingest(&Source::Local(dir.to_path_buf()), &IngestOptions::default())
+        .expect("ingest")
+}
+
+fn provenance_value(ingested: &veridex_core::adapter::Ingested, key: &str) -> Option<String> {
+    ingested
+        .dataset
+        .provenance
+        .iter()
+        .flat_map(|r| &r.elements)
+        .find(|e| e.key == key)
+        .and_then(|e| e.value.clone())
+}
+
+#[test]
+fn the_transmitting_ecu_becomes_sensor_provenance() {
+    // A `BO_` line names the ECU that puts that message on the bus. That is what produced the data,
+    // and it is exactly what `provenance.sensor` asks — yet a CAN+DBC dataset used to carry no
+    // provenance record at all, not even the `source_format` element every other adapter emits, so
+    // it scored 0/6 while its own database named the node.
+    let dir = write_dataset();
+    let ingested = ingest_dir(dir.path());
+    assert_eq!(
+        provenance_value(&ingested, "sensor").as_deref(),
+        Some("ECU")
+    );
+    assert_eq!(
+        provenance_value(&ingested, "source_format").as_deref(),
+        Some("candbc")
+    );
+    assert!(
+        ingested
+            .report
+            .mapped_fields
+            .iter()
+            .any(|f| f.contains("BO_ transmitter") && f.contains("provenance.sensor")),
+        "{:?}",
+        ingested.report.mapped_fields
+    );
+
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let hash = veridex_core::content_hash(&ingested.dataset);
+    let verdict = engine.run(&ingested.dataset, hash, &veridex_core::RunConfig::default());
+    assert!(
+        verdict
+            .findings
+            .iter()
+            .all(|f| f.code != "PROVENANCE.MISSING_SENSOR"),
+        "an extracted transmitter clears the MISSING_SENSOR finding"
+    );
+}
+
+#[test]
+fn every_transmitting_node_is_named_once() {
+    // A bus carries several ECUs, and each is named once however many of its messages the log holds.
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(
+        dir.path().join("vehicle.dbc"),
+        "BO_ 256 EngineData: 8 ECM\n SG_ Rpm : 0|16@1+ (1,0) [0|65535] \"rpm\" Vector__XXX\n\
+         BO_ 257 BrakeData: 8 ABS\n SG_ Pressure : 0|16@1+ (1,0) [0|65535] \"bar\" Vector__XXX\n\
+         BO_ 258 MoreEngine: 8 ECM\n SG_ Torque : 0|16@1+ (1,0) [0|65535] \"Nm\" Vector__XXX\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("drive.log"),
+        "(1000.000000) can0 100#0100000000000000\n\
+         (1000.100000) can0 101#0200000000000000\n\
+         (1000.200000) can0 102#0300000000000000\n\
+         (1000.300000) can0 100#0400000000000000\n",
+    )
+    .unwrap();
+    assert_eq!(
+        provenance_value(&ingest_dir(dir.path()), "sensor").as_deref(),
+        Some("ABS, ECM"),
+        "each node once, in a stable order"
+    );
+}
+
+#[test]
+fn the_dbc_placeholder_node_is_not_a_sensor() {
+    // `Vector__XXX` is the DBC's way of saying "no node specified". Recording it would put a value
+    // that is present in form and empty in substance into the coverage score — the exact thing
+    // `has_real_value` exists to keep out.
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(
+        dir.path().join("vehicle.dbc"),
+        "BO_ 256 EngineData: 8 Vector__XXX\n SG_ Rpm : 0|16@1+ (1,0) [0|65535] \"rpm\" Vector__XXX\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("drive.log"),
+        "(1000.000000) can0 100#0100000000000000\n",
+    )
+    .unwrap();
+    let ingested = ingest_dir(dir.path());
+    assert_eq!(provenance_value(&ingested, "sensor"), None);
+    assert!(
+        !ingested
+            .report
+            .mapped_fields
+            .iter()
+            .any(|f| f.contains("BO_ transmitter")),
+        "{:?}",
+        ingested.report.mapped_fields
+    );
+    // The dataset still ingests and still carries the format element.
+    assert_eq!(
+        provenance_value(&ingested, "source_format").as_deref(),
+        Some("candbc")
+    );
+}
+
+#[test]
+fn a_node_that_never_transmitted_is_not_claimed() {
+    // The database declares what the *network* holds; the log holds what was actually on the wire.
+    // Naming an ECU whose messages never appeared would attribute this data to a node that produced
+    // none of it.
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(
+        dir.path().join("vehicle.dbc"),
+        "BO_ 256 EngineData: 8 ECM\n SG_ Rpm : 0|16@1+ (1,0) [0|65535] \"rpm\" Vector__XXX\n\
+         BO_ 999 NeverSeen: 8 GATEWAY\n SG_ X : 0|8@1+ (1,0) [0|255] \"\" Vector__XXX\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("drive.log"),
+        "(1000.000000) can0 100#0100000000000000\n",
+    )
+    .unwrap();
+    assert_eq!(
+        provenance_value(&ingest_dir(dir.path()), "sensor").as_deref(),
+        Some("ECM"),
+        "only the node whose traffic is actually in the log"
+    );
+}
