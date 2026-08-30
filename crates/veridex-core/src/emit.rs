@@ -117,11 +117,21 @@ pub fn to_croissant(dataset: &Dataset, cdm_content_hash: &str) -> Value {
     if let Some(license) = known_value(dataset, "license") {
         doc.insert("license".into(), json!(license));
     }
-    if let Some(annotator) = known_value(dataset, "annotator") {
-        doc.insert(
-            "creator".into(),
-            json!({ "@type": "Person", "name": annotator }),
-        );
+    // `creator` is a schema.org `Person`, so only a value that names one goes there. A category —
+    // `crowdsourced`, `machine-generated` — is still the honest answer to who annotated the data,
+    // and it is carried in `veridex:provenance` below with its class, where it says what it is
+    // instead of asserting a person by that name.
+    match known_value(dataset, "annotator") {
+        Some(annotator) if annotator_names_an_agent(annotator) => {
+            doc.insert(
+                "creator".into(),
+                json!({ "@type": "Person", "name": annotator }),
+            );
+        }
+        Some(annotator) => {
+            doc.insert("veridex:annotationCreators".into(), json!(annotator));
+        }
+        None => {}
     }
 
     // The CDM content hash as a Croissant FileObject the certificate also binds to.
@@ -140,6 +150,38 @@ pub fn to_croissant(dataset: &Dataset, cdm_content_hash: &str) -> Value {
     doc.insert("veridex:provenance".into(), json!(provenance));
 
     Value::Object(doc)
+}
+
+/// The Hugging Face `annotations_creators` vocabulary: how a dataset's annotations were *produced*,
+/// not who produced them. A LeRobot card writes `crowdsourced` or `machine-generated` here, and
+/// those are the honest answer to the question `provenance.annotator` asks — but they are categories,
+/// not agents.
+///
+/// The distinction matters exactly where this file does: schema.org's `creator` is a `Person` or an
+/// `Organization`, and PROV's `prov:Person` is a person. Emitting `{"@type": "Person", "name":
+/// "crowdsourced"}` asserts a person by that name, which no source said and no validator would
+/// catch — a fabrication of precisely the kind the Croissant output promises not to make.
+const ANNOTATION_CREATOR_CATEGORIES: &[&str] = &[
+    "crowdsourced",
+    "expert-generated",
+    "machine-generated",
+    "found",
+    "no-annotation",
+    "other",
+];
+
+/// Whether an `annotator` value names an agent that can be attributed to, rather than a category of
+/// how the annotations were made.
+///
+/// A value is a category only if *every* part of it is one, so a card that lists
+/// `crowdsourced, Acme Labs` still attributes to the named organization.
+fn annotator_names_an_agent(value: &str) -> bool {
+    value.split(',').map(str::trim).any(|part| {
+        !part.is_empty()
+            && !ANNOTATION_CREATOR_CATEGORIES
+                .iter()
+                .any(|c| c.eq_ignore_ascii_case(part))
+    })
 }
 
 /// Known provenance elements that name an agent the dataset can be honestly attributed to, each
@@ -205,8 +247,15 @@ pub fn to_prov(dataset: &Dataset) -> Value {
     // Build agent nodes and the entity's attribution references from known provenance.
     let mut agent_nodes: Vec<Value> = Vec::new();
     let mut attributed: Vec<Value> = Vec::new();
+    // Set when the `annotator` element holds a category rather than an agent, so the entity can
+    // carry it as a description instead of the graph gaining a person nobody named.
+    let mut annotation_categories: Option<String> = None;
     for (key, prov_type) in PROV_AGENTS {
         if let Some(value) = known_value(dataset, key) {
+            if *key == "annotator" && !annotator_names_an_agent(value) {
+                annotation_categories = Some(value.to_string());
+                continue;
+            }
             let id = format!("veridex:agent/{key}/{}", iri_segment(value));
             agent_nodes.push(json!({
                 "@id": id,
@@ -223,6 +272,9 @@ pub fn to_prov(dataset: &Dataset) -> Value {
     entity.insert("@type".into(), json!("prov:Entity"));
     if !attributed.is_empty() {
         entity.insert("prov:wasAttributedTo".into(), json!(attributed));
+    }
+    if let Some(categories) = annotation_categories {
+        entity.insert("veridex:annotationCreators".into(), json!(categories));
     }
     // Autonomy rig lineage as descriptive properties on the entity (known values only).
     for key in PROV_ENTITY_PROPERTIES {

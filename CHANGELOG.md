@@ -10,6 +10,21 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **The Croissant would have asserted a person named "crowdsourced".** A Hugging Face card's
+  `annotations_creators` says how a dataset's annotations were *produced* — `crowdsourced`,
+  `machine-generated`, `expert-generated` — which is the honest answer to what `provenance.annotator`
+  asks. But the emitters mapped any `annotator` value straight onto schema.org's `creator` as a
+  `Person`, and onto a `prov:Person` node in the PROV graph. Reading LeRobot cards would have put
+  `{"@type": "Person", "name": "crowdsourced"}` into a standards document: something no source said,
+  no validator would catch, and precisely what the Croissant output promises not to do.
+
+  A category is now carried as `veridex:annotationCreators` — saying what it is — instead of being
+  asserted as an agent, in both the Croissant and the PROV entity, and the PROV graph gains no
+  person node and no attribution to one. A value that *names* someone still attributes exactly as
+  before, and a card listing both (`crowdsourced, Acme Labs`) attributes to the name rather than
+  losing it. The defect was reachable from any adapter, not just LeRobot: an MCAP `Metadata` record
+  with `annotator: machine` would have done the same.
+
 - **The README's provenance claim was two weeks behind the code.** Its "What's built" row named
   only the scenario/map/sim reference extraction and the Croissant + PROV emission, and the headline
   bullet described provenance as something surfaced and scored without saying where any of it comes

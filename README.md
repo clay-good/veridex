@@ -50,8 +50,9 @@ Veridex Trust Report
   source does not say stays missing rather than being invented
   ([what each format supplies](docs/checks.md#what-each-format-can-supply)). Then surfaced, scored,
   and emitted two ways: as a signed trust certificate, and as Croissant + W3C PROV documents
-  (`veridex provenance --emit`) for tools that speak them. The Croissant carries what Veridex actually extracted — name, license, creator,
-  the CDM hash, and every provenance element with its class — and deliberately omits `datePublished`,
+  (`veridex provenance --emit`) for tools that speak them. The Croissant carries what Veridex actually extracted — name, license, creator
+  *when a person was actually named*, the CDM hash, and every provenance element with its class —
+  and deliberately omits `datePublished`,
   `url` and `version`, which it has no honest value for. A Croissant validator warns about exactly
   those three; it will not warn about anything Veridex made up.
 - **A number you can trust and share.** A deterministic 0–100 trust score and A–F grade. Same

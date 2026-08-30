@@ -469,3 +469,77 @@ fn the_croissant_omits_exactly_the_three_fields_it_has_no_honest_value_for() {
     // And what it *does* say about identity is the thing it can prove.
     assert_eq!(doc["distribution"][0]["sha256"], "deadbeef");
 }
+
+// --- An annotation *category* is not a person ---------------------------------------------------
+
+fn known(key: &str, value: &str) -> ProvenanceElement {
+    ProvenanceElement {
+        key: key.into(),
+        value: Some(value.into()),
+        class: ProvenanceClass::Known,
+    }
+}
+
+#[test]
+fn an_annotation_category_is_never_emitted_as_a_person() {
+    // A Hugging Face card's `annotations_creators` says how the annotations were *produced*, not who
+    // produced them — and it is the honest answer to what `provenance.annotator` asks. But
+    // schema.org's `creator` is a Person and PROV's `prov:Person` is a person, so emitting
+    // `{"@type": "Person", "name": "crowdsourced"}` asserts a person by that name: something no
+    // source said, no validator would catch, and exactly what the Croissant output promises not to
+    // do.
+    let d = dataset_with(vec![known("annotator", "crowdsourced")]);
+    let croissant = to_croissant(&d, &content_hash(&d).to_hex());
+    assert!(
+        croissant.get("creator").is_none(),
+        "no person is asserted: {croissant}"
+    );
+    assert_eq!(
+        croissant["veridex:annotationCreators"], "crowdsourced",
+        "the answer is still carried, saying what it is"
+    );
+    // And it is still in the classified provenance list, which is where the honest record lives.
+    let listed = croissant["veridex:provenance"]
+        .as_array()
+        .expect("the provenance list")
+        .iter()
+        .any(|e| e["key"] == "annotator" && e["value"] == "crowdsourced");
+    assert!(listed, "{croissant}");
+
+    let prov = to_prov(&d);
+    let graph = prov["@graph"].as_array().expect("a graph");
+    assert!(
+        !graph.iter().any(|n| n["@type"] == "prov:Person"),
+        "no person node is fabricated: {prov}"
+    );
+    assert_eq!(graph[0]["veridex:annotationCreators"], "crowdsourced");
+    assert!(
+        graph[0].get("prov:wasAttributedTo").is_none(),
+        "and nothing is attributed to it: {prov}"
+    );
+}
+
+#[test]
+fn a_named_annotator_is_still_a_person() {
+    // The fix must not cost the case it was built around: a real name still attributes.
+    let d = dataset_with(vec![known("annotator", "Jane Doe")]);
+    let croissant = to_croissant(&d, &content_hash(&d).to_hex());
+    assert_eq!(croissant["creator"]["@type"], "Person");
+    assert_eq!(croissant["creator"]["name"], "Jane Doe");
+
+    let prov = to_prov(&d);
+    let graph = prov["@graph"].as_array().expect("a graph");
+    assert!(graph.iter().any(|n| n["@type"] == "prov:Person"));
+    assert!(
+        graph[0]["prov:wasAttributedTo"].is_array() || graph[0]["prov:wasAttributedTo"].is_object()
+    );
+}
+
+#[test]
+fn a_card_that_lists_both_a_category_and_a_name_attributes_to_the_name() {
+    // `annotations_creators: [crowdsourced, Acme Labs]` names an agent as well as a category.
+    // Dropping the whole value would lose a real attribution the source made.
+    let d = dataset_with(vec![known("annotator", "crowdsourced, Acme Labs")]);
+    let croissant = to_croissant(&d, &content_hash(&d).to_hex());
+    assert_eq!(croissant["creator"]["name"], "crowdsourced, Acme Labs");
+}
