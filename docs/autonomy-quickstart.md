@@ -96,14 +96,17 @@ cargo run -p veridex-cli -- certify /tmp/av.mcap --key /tmp/issuer \
 ```
 
 ```
-certified av — grade C (70), bound to 87cbf54311e1f0c4
+certified av — fail, grade C (73), bound to 845c0ac76fbc80f0
   world-model-ready profile: NOT READY
     ✗ autonomy.rig-sync — rig sensors within a 20 ms cross-sensor span drift
     ✓ autonomy.sequence-complete — no rig sensor dropping more than 5% of its frames
     ✓ autonomy.ego-pose-continuity — ego trajectory continuous (no step above 100 m/s implied speed)
-    ✗ autonomy.calibration-completeness — connected transform (TF) tree and camera intrinsics present
+    ✗ autonomy.calibration-completeness — connected transform (TF) tree and camera intrinsics present, and arithmetically usable
     ✓ autonomy.sensor-frame-resolution — every sensor's own frame resolves through the tree to a camera
 ```
+
+A certificate is issued for a failing dataset too — it records what is true, and what is true here is
+`fail`. It is the *readiness* verdict, not the issuance, that a consumer gates on.
 
 Anyone can read that back offline, with no network and no access to your data:
 

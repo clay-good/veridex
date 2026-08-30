@@ -10,6 +10,16 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **The autonomy quickstart printed output the tool no longer produces.** Its `certify` block showed
+  `grade C (70)` and a criterion line from an older build; the real run says `fail, grade C (73)` and
+  names the arithmetic check the criterion gained. A page whose whole value is "run this and see the
+  same thing" is worth exactly as much as its pasted output is current.
+
+  Fixed, and pinned: a test runs the very commands the page prints against the demo rig and asserts
+  the page still contains the status line, the measured `RIG_SYNC` numbers, every readiness criterion
+  verdict, and the certified line. Pasted output rots in silence; this makes it fail loudly instead.
+  (Reverting the fix makes the test name the exact line that drifted.)
+
 - **One report said an element was both attested and missing.** Applying a producer attestation
   raised provenance coverage from 33% to 50% — the attested `clock` counted, and
   `PROVENANCE.ATTESTED` named it and the key that signed it — while `PROVENANCE.MISSING_CLOCK` fired

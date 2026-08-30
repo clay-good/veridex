@@ -2993,3 +2993,85 @@ fn a_redacted_report_does_not_carry_the_dataset_name_in_its_new_field() {
     let doc: serde_json::Value = serde_json::from_str(&stdout).expect("json");
     assert_eq!(doc["dataset"]["id"], "secret-robot-corpus");
 }
+
+#[test]
+fn the_autonomy_quickstart_still_prints_what_it_says_it_does() {
+    // `docs/autonomy-quickstart.md` is a walkthrough of real output, and its value is that a reader
+    // can run the commands and see the same thing. It had drifted: the certify block showed a score
+    // and a status line from an older build. Pasted output rots silently, so the numbers the page
+    // commits to are pinned here against a live run of the very commands it prints.
+    let quickstart = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/autonomy-quickstart.md"),
+    )
+    .expect("the quickstart exists");
+
+    let dir = temp_dir("quickstart");
+    let rig = dir.join("av.mcap");
+    veridex_demo::mcap::write(&rig, "av").expect("write the demo rig");
+    let rig = rig.to_str().unwrap();
+
+    // Step 3: `veridex check /tmp/av.mcap`.
+    let (_, stdout, _) = run(&["check", rig]);
+    let score_line = stdout
+        .lines()
+        .find(|l| l.trim_start().starts_with("Status:"))
+        .expect("a status line")
+        .trim()
+        .to_string();
+    assert!(
+        quickstart.contains(&score_line),
+        "the quickstart's `check` output has drifted; it should show:\n  {score_line}"
+    );
+    let rig_sync = stdout
+        .lines()
+        .find(|l| l.contains("rig sensors are out of sync"))
+        .expect("the RIG_SYNC message");
+    // The page wraps the message across lines, so compare the half that carries the numbers.
+    let measured = rig_sync
+        .split_once("— ")
+        .map(|(_, rest)| {
+            rest.split(',')
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .to_string()
+        })
+        .expect("the measured half");
+    assert!(
+        quickstart.contains(&measured),
+        "the quickstart's RIG_SYNC message has drifted; it should show:\n  {measured}"
+    );
+
+    // Step 4: `veridex certify … --profile world-model-ready`.
+    let key = dir.join("issuer");
+    run(&["keygen", key.to_str().unwrap()]);
+    let cert = dir.join("av.veridex.json");
+    let (_, stdout, _) = run(&[
+        "certify",
+        rig,
+        "--key",
+        key.to_str().unwrap(),
+        "--out",
+        cert.to_str().unwrap(),
+        "--profile",
+        "world-model-ready",
+    ]);
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        // The criterion verdicts and the certified line — not the `wrote <path>` line, which is the
+        // caller's own path, nor the bound hash, which the page shows truncated.
+        if trimmed.starts_with('✓') || trimmed.starts_with('✗') {
+            assert!(
+                quickstart.contains(trimmed),
+                "the quickstart's readiness block has drifted; it should show:\n  {trimmed}"
+            );
+        }
+        if let Some(head) = trimmed.strip_prefix("certified av — ") {
+            let claim = head.split(", bound to").next().unwrap_or_default();
+            assert!(
+                quickstart.contains(claim),
+                "the quickstart's certify line has drifted; it should show:\n  certified av — {claim}"
+            );
+        }
+    }
+}
