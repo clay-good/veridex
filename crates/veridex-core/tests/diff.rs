@@ -311,3 +311,37 @@ fn two_veridex_versions_are_a_comparison_of_catalogs_not_of_data() {
         .remove("veridex_version");
     assert!(!diff_reports(&legacy, &new).version_differs());
 }
+
+#[test]
+fn a_redacted_reports_placeholder_id_is_not_a_dataset_mismatch() {
+    // A redacted report's dataset id is a placeholder by construction, so comparing one against a
+    // real id is guaranteed to differ and says nothing about which dataset either describes. The
+    // mismatch that matters is the redaction one, and blaming the datasets instead would send
+    // someone to audit a baseline artifact that is perfectly fine.
+    let plain = serde_json::json!({
+        "dataset": { "id": "acme/pick" },
+        "verdict": { "redacted": false, "findings": [], "cdm_content_hash": "aa" }
+    });
+    // Redaction is detected the way it is disclosed: by the finding the redactor adds.
+    let redacted = serde_json::json!({
+        "dataset": { "id": "dataset" },
+        "verdict": {
+            "findings": [{ "code": "REPORT.REDACTED", "severity": "info" }],
+            "cdm_content_hash": "aa"
+        }
+    });
+    let d = veridex_core::diff::diff_reports(&plain, &redacted);
+    assert!(d.redaction_differs(), "the real mismatch is reported");
+    assert!(
+        !d.dataset_differs(),
+        "and it does not masquerade as a dataset mismatch"
+    );
+
+    // With redaction agreeing, a genuine mismatch is still caught.
+    let other = serde_json::json!({
+        "dataset": { "id": "acme/place" },
+        "verdict": { "redacted": false, "findings": [], "cdm_content_hash": "bb" }
+    });
+    let d = veridex_core::diff::diff_reports(&plain, &other);
+    assert!(d.dataset_differs(), "two real, different ids still differ");
+}

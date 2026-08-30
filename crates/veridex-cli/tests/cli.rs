@@ -2927,3 +2927,69 @@ fn command_help_lists_only_that_commands_options() {
     let (_, stdout, _) = run(&["nonsense", "--help"]);
     assert!(stdout.contains("COMMANDS:"), "{stdout}");
 }
+
+#[test]
+fn diff_refuses_to_compare_two_different_datasets_silently() {
+    // `ReportDiff::dataset_differs` is documented as the guard against comparing unrelated runs —
+    // "nothing about the comparison holds otherwise" — and it was dead: it reads the dataset id out
+    // of a report, and the reports `check --json` writes never carried one. So diffing last week's
+    // report of dataset A against this week's report of dataset B produced a clean-looking
+    // "3 introduced, score -5" with nothing saying they are different datasets.
+    let dir = temp_dir("diff-different-datasets");
+    let a_dir = dir.join("alpha");
+    let b_dir = dir.join("beta");
+    veridex_demo::lerobot::write(&a_dir, "clean").expect("write alpha");
+    veridex_demo::lerobot::write(&b_dir, "spike").expect("write beta");
+    let a = dir.join("a.json");
+    let b = dir.join("b.json");
+    run(&[
+        "check",
+        a_dir.to_str().unwrap(),
+        "--json",
+        "--out",
+        a.to_str().unwrap(),
+    ]);
+    run(&[
+        "check",
+        b_dir.to_str().unwrap(),
+        "--json",
+        "--out",
+        b.to_str().unwrap(),
+    ]);
+
+    let (_, stdout, _) = run(&["diff", a.to_str().unwrap(), b.to_str().unwrap()]);
+    assert!(
+        stdout.contains("Dataset: DIFFERENT")
+            && stdout.contains("alpha")
+            && stdout.contains("beta"),
+        "the mismatch must be named: {stdout}"
+    );
+
+    // The same dataset twice says nothing about a mismatch, so the line is a signal and not noise.
+    let (_, stdout, _) = run(&["diff", a.to_str().unwrap(), a.to_str().unwrap()]);
+    assert!(!stdout.contains("Dataset: DIFFERENT"), "{stdout}");
+}
+
+#[test]
+fn a_redacted_report_does_not_carry_the_dataset_name_in_its_new_field() {
+    // `--redact` exists so a report can be shared. A field added for `diff` must go through the same
+    // redactor as everything else, or the one thing the flag promises is undone by a new key.
+    let dir = temp_dir("redact-dataset-id").join("secret-robot-corpus");
+    veridex_demo::lerobot::write(&dir, "clean").expect("write the dataset");
+    let (_, stdout, _) = run(&["check", dir.to_str().unwrap(), "--json", "--redact"]);
+    assert!(
+        !stdout.contains("secret-robot-corpus"),
+        "the dataset's name must not survive redaction anywhere in the report: {stdout}"
+    );
+    let doc: serde_json::Value = serde_json::from_str(&stdout).expect("json");
+    let id = doc["dataset"]["id"].as_str().expect("a dataset id");
+    assert!(
+        !id.contains("secret") && !id.is_empty(),
+        "the id is a placeholder, not the name: {id}"
+    );
+
+    // Without the flag the real id is carried, which is what makes `diff` able to compare at all.
+    let (_, stdout, _) = run(&["check", dir.to_str().unwrap(), "--json"]);
+    let doc: serde_json::Value = serde_json::from_str(&stdout).expect("json");
+    assert_eq!(doc["dataset"]["id"], "secret-robot-corpus");
+}

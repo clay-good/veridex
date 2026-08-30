@@ -10,6 +10,24 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **`veridex diff` could not tell you that you compared two different datasets.** The guard exists
+  and is documented — "a diff assumes the two reports describe the same dataset; nothing about the
+  comparison holds otherwise" — and it was dead. It reads the dataset id out of a report, and the
+  reports `check --json` writes never carried one, so it saw `None` every time. Diffing last week's
+  report of dataset A against this week's report of dataset B produced a clean-looking
+  "3 introduced, score -5" and said nothing.
+
+  A check report now carries `dataset: { id }` — through the same redactor as everything else, so a
+  `--redact` report carries the placeholder rather than the name a shared report must not leak. The
+  field is optional and a report without one is treated as no evidence of a mismatch, so an older
+  report still diffs.
+
+  One interaction fell out and is fixed with it: a redacted report's id is a placeholder by
+  construction, so comparing it against a real one is guaranteed to differ. The redaction mismatch
+  is the true cause and is already reported on its own, so the dataset guard stands down when the
+  two reports disagree about redaction — otherwise the gate would send someone to audit a baseline
+  artifact that is perfectly fine.
+
 - **`veridex verify --help` printed every flag for eight other commands.** Asking a subcommand how
   to use it returned the whole tool's help — the previous fix for `--help` being rejected outright —
   so a reader had to scan a wall of options for a hand-written `(verify)` suffix to find their own.

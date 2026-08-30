@@ -66,11 +66,27 @@ pub fn render_inspect_json(ingested: &crate::adapter::Ingested) -> String {
     serde_json::to_string_pretty(&doc).expect("inspect summary serializes")
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReportDataset<'a> {
+    /// The dataset id the CDM carries — the same one `veridex inspect` prints.
+    pub id: &'a str,
+}
+
 /// The machine-readable JSON report envelope.
 #[derive(Debug, Clone, Serialize)]
 pub struct JsonReport<'a> {
     /// Schema identifier, e.g. `veridex.report/1`.
     pub schema: &'static str,
+    /// Which dataset the report is about.
+    ///
+    /// `veridex diff` reads this to refuse a comparison of two *different* datasets — a guard that
+    /// is documented on `ReportDiff::dataset_differs` and was dead in practice, because the reports
+    /// the CLI writes never carried the id it reads. Absent from a report produced without one, so
+    /// an older report still diffs, and the guard treats a missing id as no evidence of a mismatch
+    /// rather than as one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dataset: Option<ReportDataset<'a>>,
     /// The full verdict.
     pub verdict: &'a Verdict,
     /// The trust score, when the report is produced alongside scoring.
@@ -86,7 +102,7 @@ pub struct JsonReport<'a> {
 
 /// Render the verdict as stable, versioned JSON.
 pub fn render_json(verdict: &Verdict, trust_score: Option<TrustScore>) -> String {
-    render_json_with_readiness(verdict, trust_score, None)
+    render_json_with_readiness(verdict, trust_score, None, None)
 }
 
 /// As [`render_json`], plus the per-criterion readiness verdict when a profile was named.
@@ -100,9 +116,11 @@ pub fn render_json_with_readiness(
     verdict: &Verdict,
     trust_score: Option<TrustScore>,
     readiness: Option<&crate::certificate::ReadinessReport>,
+    dataset_id: Option<&str>,
 ) -> String {
     let report = JsonReport {
         schema: REPORT_SCHEMA_VERSION,
+        dataset: dataset_id.map(|id| ReportDataset { id }),
         verdict,
         trust_score,
         readiness,

@@ -164,10 +164,13 @@ fn check(
     let readiness = profile.as_ref().filter(|p| p.judges_readiness()).map(|p| {
         veridex_core::certificate::ReadinessReport::evaluate(p, &out.verdict, &out.ingested.dataset)
     });
+    // Which dataset the report is about, redacted exactly as the verdict is — see `redacted_id`.
+    let dataset_id = redacted_id(redact, &out, &attested_values);
     Ok(veridex_core::render_json_with_readiness(
         &redacted_if(redact, &out, &attested_values),
         Some(out.trust),
         readiness.as_ref(),
+        Some(&dataset_id),
     ))
 }
 
@@ -195,6 +198,31 @@ fn redacted_if(
             .redact_verdict(&out.verdict)
     } else {
         out.verdict.clone()
+    }
+}
+
+/// The dataset id a report should carry: the run's, or its placeholder under `--redact`.
+///
+/// Built from the same redactor as the verdict, so a shared report cannot carry the dataset's real
+/// name in this field just because it is a new one.
+fn redacted_id(
+    redact: bool,
+    out: &veridex_core::CheckOutput,
+    attested_values: &[String],
+) -> String {
+    if redact {
+        veridex_core::Redactor::for_dataset(&out.ingested.dataset)
+            .and_unread_sources(
+                out.ingested
+                    .report
+                    .unread_sources
+                    .iter()
+                    .map(|u| u.source_path.as_str()),
+            )
+            .and_attested(attested_values.to_vec())
+            .redact_text(&out.ingested.dataset.id)
+    } else {
+        out.ingested.dataset.id.clone()
     }
 }
 

@@ -82,6 +82,13 @@ impl ReportDiff {
     /// workflow and stays silent on the mistake. The id survives a revision and differs between
     /// datasets, which is exactly the question being asked.
     pub fn dataset_differs(&self) -> bool {
+        // A redacted report's id is a *placeholder* by construction, so comparing one against a real
+        // id is guaranteed to differ and says nothing about which dataset either describes. The
+        // mismatch that matters there is the redaction one, which is reported on its own and is the
+        // true cause — blaming the datasets would send someone to audit a baseline that is fine.
+        if self.redaction_differs() {
+            return false;
+        }
         match (&self.old_dataset, &self.new_dataset) {
             (Some(o), Some(n)) => o != n,
             // One report predating the field, or a bare verdict, is not evidence of a mismatch.

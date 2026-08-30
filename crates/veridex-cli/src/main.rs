@@ -872,6 +872,13 @@ fn cmd_check(rest: &[String]) -> ExitCode {
         Some(r) => r.redact_verdict(&out.verdict),
         None => out.verdict.clone(),
     };
+    // Which dataset the report is about, so `veridex diff` can refuse a comparison of two different
+    // ones. Through the same redactor as the verdict: a shared report must not carry the dataset's
+    // real name in a field just because it is a new one.
+    let reported_dataset_id = match &mut redactor {
+        Some(r) => r.redact_text(&out.ingested.dataset.id),
+        None => out.ingested.dataset.id.clone(),
+    };
 
     // The readiness verdict, when a profile was named. Rendered for *every* output shape, not only
     // the terminal one: a profile is what the run is "judged against", and a CI consumer -- which
@@ -930,6 +937,7 @@ fn cmd_check(rest: &[String]) -> ExitCode {
             &rendered,
             Some(out.trust),
             readiness.as_ref(),
+            Some(&reported_dataset_id),
         )) {
             return code;
         }
