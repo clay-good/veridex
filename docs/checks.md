@@ -212,7 +212,7 @@ What each format offers is different, because their manifests are:
 
 | Format | Read without touching the data |
 |---|---|
-| LeRobot | `meta/` — the declared episode set and per-episode lengths, every feature's dtype/shape/rate, the stored statistics, and the dataset card's licence |
+| LeRobot | `meta/` — the declared episode set and per-episode lengths, every feature's dtype/shape/rate, the stored statistics, and the dataset card's licence, source datasets and annotation creators |
 | ROS 2 rosbag2 | `metadata.yaml` — the topic inventory with each topic's ROS type, the declared message total, the recorder and storage |
 | RLDS/TFDS | `dataset_info.json` + `features.json` — the per-split shard lengths (so the episode count), the file format and version, the citation and licence, and every per-step feature's dtype and shape |
 | Zarr | `.zarray` / `.zattrs` per array and the `meta/` group — the episode boundaries and their lengths, every array's dtype and per-row shape, and the store's own metadata |

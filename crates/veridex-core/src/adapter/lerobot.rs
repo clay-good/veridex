@@ -1144,7 +1144,7 @@ fn ingest_metadata_only(
     // v2.1's statistics are per episode; without this a header-only run over one reports a dataset
     // that ships statistics as shipping none — the same misreport the full read used to make.
     let episode_stats = load_episode_stats(dir);
-    let card_license = load_card_license(dir);
+    let card = load_dataset_card(dir);
 
     let episodes: Vec<Episode> = episode_indices
         .iter()
@@ -1216,13 +1216,11 @@ fn ingest_metadata_only(
             class: ProvenanceClass::Known,
         });
     }
-    if let Some(license) = &card_license {
-        elements.push(ProvenanceElement {
-            key: "license".into(),
-            value: Some(license.clone()),
-            class: ProvenanceClass::Known,
-        });
-    }
+    // Everything the dataset card declares: the license, the dataset(s) this one was derived from,
+    // and who produced its annotations. All three are standard Hub card fields, all three are
+    // exactly what a provenance element asks, and until this read them a LeRobot dataset that said
+    // so in its own card still scored them as unknown.
+    elements.extend(card_provenance(&card));
 
     // Whether the declared episode total is worth recording as a claim to check against depends on
     // where the episode set came from. When `meta/episodes.jsonl` supplied it, `total_episodes` is an
@@ -1291,9 +1289,7 @@ fn ingest_metadata_only(
     if declared_total_is_independent && info.total_episodes.is_some() {
         mapped_fields.push("total_episodes -> declared episode-count check".into());
     }
-    if card_license.is_some() {
-        mapped_fields.push("README.md license -> provenance.license".into());
-    }
+    mapped_fields.extend(card_mapped_fields(&card));
 
     let manifest_tasks = declared_lengths
         .values()
@@ -1342,46 +1338,145 @@ fn ingest_metadata_only(
     Ok(Ingested { dataset, report })
 }
 
-/// Read the SPDX license from a Hugging Face dataset card's YAML frontmatter (`README.md`), the place
-/// LeRobot datasets actually record it (`meta/info.json` carries none). Only the leading `---`-fenced
-/// block is inspected, and only the `license:` key — either a scalar (`license: apache-2.0`) or the
-/// first item of a YAML list. Returns `None` when there is no card, no frontmatter, or no license, so
-/// a missing license stays honestly missing (the completeness check then reports it). This is a
-/// deliberately minimal parse — no YAML dependency for one well-known field.
-fn load_card_license(dir: &Path) -> Option<String> {
-    let contents = std::fs::read_to_string(dir.join("README.md")).ok()?;
+/// What a Hugging Face dataset card declares about a LeRobot dataset's origins.
+///
+/// `meta/info.json` carries none of this; the card's YAML frontmatter is where a LeRobot dataset
+/// actually records it, and the three fields here are standard card fields whose meaning is fixed by
+/// the Hub, not guessed at.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct DatasetCard {
+    /// `license:` — the SPDX identifier, scalar or the first item of a list.
+    pub license: Option<String>,
+    /// `source_datasets:` — the dataset(s) this one was derived from, with `original` (the Hub's
+    /// word for "derived from nothing") removed, because it names no upstream.
+    pub source_datasets: Vec<String>,
+    /// `annotations_creators:` — who produced the annotations, with `no-annotation` removed for the
+    /// same reason: it names no annotator.
+    pub annotations_creators: Vec<String>,
+}
+
+/// The Hub's word for a dataset derived from nothing. It answers the upstream question with "none",
+/// which is what a *missing* `upstream` element already conveys — so it is recorded as metadata and
+/// never as provenance, because claiming coverage for it would raise the score of a dataset that
+/// named no source.
+const SOURCE_DATASETS_NONE: &str = "original";
+/// The Hub's word for a dataset nobody annotated. Handled exactly as `original` is, and for the same
+/// reason.
+const ANNOTATIONS_CREATORS_NONE: &str = "no-annotation";
+
+/// The card frontmatter keys this adapter reads. Anything else in the card is left alone.
+const CARD_KEYS: &[&str] = &["license", "source_datasets", "annotations_creators"];
+
+/// Read a Hugging Face dataset card's YAML frontmatter (`README.md`).
+///
+/// Only the leading `---`-fenced block is inspected, and only [`CARD_KEYS`] within it — each as a
+/// scalar (`license: apache-2.0`) or a YAML list. Absent keys stay absent, so what the card does not
+/// say is reported missing rather than invented (the completeness check then says so). A deliberately
+/// minimal parse: no YAML dependency for three well-known fields.
+fn load_dataset_card(dir: &Path) -> DatasetCard {
+    let mut card = DatasetCard::default();
+    let Ok(contents) = std::fs::read_to_string(dir.join("README.md")) else {
+        return card;
+    };
     let mut lines = contents.lines();
     // Frontmatter must be the very first non-empty content and open with a `---` fence.
-    if lines.by_ref().find(|l| !l.trim().is_empty())?.trim() != "---" {
-        return None;
+    match lines.by_ref().find(|l| !l.trim().is_empty()) {
+        Some(first) if first.trim() == "---" => {}
+        _ => return card,
     }
-    let mut in_license_list = false;
+    // Which key's list we are inside, when a key introduced one instead of a scalar.
+    let mut in_list: Option<&str> = None;
+    let mut values: std::collections::BTreeMap<&str, Vec<String>> =
+        std::collections::BTreeMap::new();
     for line in lines {
         let trimmed = line.trim();
         if trimmed == "---" {
             break; // end of frontmatter
         }
-        if in_license_list {
-            // First item of a `license:`-introduced YAML list.
+        if let Some(key) = in_list {
             if let Some(item) = trimmed.strip_prefix('-') {
                 let v = clean_yaml_scalar(item);
                 if !v.is_empty() {
-                    return Some(v);
+                    values.entry(key).or_default().push(v);
                 }
+                continue;
             }
-            // A non-item line ends the list without a value.
-            in_license_list = false;
+            // A non-item line ends the list.
+            in_list = None;
         }
-        if let Some(rest) = trimmed.strip_prefix("license:") {
-            let v = clean_yaml_scalar(rest);
-            if v.is_empty() {
-                in_license_list = true; // list form: value(s) on following lines
-            } else {
-                return Some(v);
+        for key in CARD_KEYS {
+            if let Some(rest) = trimmed.strip_prefix(&format!("{key}:")) {
+                let v = clean_yaml_scalar(rest);
+                if v.is_empty() {
+                    in_list = Some(key); // list form: value(s) on the following lines
+                } else {
+                    values.entry(key).or_default().push(v);
+                }
+                break;
             }
         }
     }
-    None
+
+    card.license = values.get("license").and_then(|v| v.first().cloned());
+    card.source_datasets = values
+        .remove("source_datasets")
+        .unwrap_or_default()
+        .into_iter()
+        // A Hub `source_datasets` item may be qualified (`extended|other-foo`); the qualifier after
+        // the pipe is the dataset, and a bare `original` is not one.
+        .filter(|v| v != SOURCE_DATASETS_NONE)
+        .collect();
+    card.annotations_creators = values
+        .remove("annotations_creators")
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|v| v != ANNOTATIONS_CREATORS_NONE)
+        .collect();
+    card
+}
+
+/// The provenance elements a card contributes, in a stable order. Empty when the card said nothing,
+/// so a dataset without one is exactly as covered as it was before.
+fn card_provenance(card: &DatasetCard) -> Vec<ProvenanceElement> {
+    let mut out = Vec::new();
+    if let Some(license) = &card.license {
+        out.push(ProvenanceElement {
+            key: "license".into(),
+            value: Some(license.clone()),
+            class: ProvenanceClass::Known,
+        });
+    }
+    if !card.source_datasets.is_empty() {
+        out.push(ProvenanceElement {
+            key: "upstream".into(),
+            value: Some(card.source_datasets.join(", ")),
+            class: ProvenanceClass::Known,
+        });
+    }
+    if !card.annotations_creators.is_empty() {
+        out.push(ProvenanceElement {
+            key: "annotator".into(),
+            value: Some(card.annotations_creators.join(", ")),
+            class: ProvenanceClass::Known,
+        });
+    }
+    out
+}
+
+/// The mapped fields a card contributes, matching [`card_provenance`] exactly — a run must never
+/// report reading a field the card did not carry.
+fn card_mapped_fields(card: &DatasetCard) -> Vec<String> {
+    let mut out = Vec::new();
+    if card.license.is_some() {
+        out.push("README.md license -> provenance.license".into());
+    }
+    if !card.source_datasets.is_empty() {
+        out.push("README.md source_datasets -> provenance.upstream".into());
+    }
+    if !card.annotations_creators.is_empty() {
+        out.push("README.md annotations_creators -> provenance.annotator".into());
+    }
+    out
 }
 
 /// Trim a minimal YAML scalar: surrounding whitespace, a trailing `# comment`, and matching quotes.
@@ -1819,14 +1914,8 @@ impl Adapter for LeRobotAdapter {
             });
         }
         // The dataset card (README.md frontmatter) is where LeRobot records the license.
-        let card_license = load_card_license(dir);
-        if let Some(license) = &card_license {
-            elements.push(ProvenanceElement {
-                key: "license".into(),
-                value: Some(license.clone()),
-                class: ProvenanceClass::Known,
-            });
-        }
+        let card = load_dataset_card(dir);
+        elements.extend(card_provenance(&card));
 
         let dataset = Dataset {
             id: crate::adapter::dataset_id_from_path(dir, "lerobot"),
@@ -1933,9 +2022,7 @@ impl Adapter for LeRobotAdapter {
                  ({from_manifest} episode(s) state one)"
             ));
         }
-        if card_license.is_some() {
-            mapped_fields.push("README.md license -> provenance.license".into());
-        }
+        mapped_fields.extend(card_mapped_fields(&card));
         // The dataset-level declared totals are only comparable against a full ingest; under a sample
         // they are reported as omitted rather than as mapped-but-unused.
         if selected.is_some() {

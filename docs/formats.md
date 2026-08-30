@@ -54,6 +54,16 @@ checks scan every joint, not just element 0, which is where real robot data hide
 variant also ships a Hugging Face-style dataset card (`README.md`), so `veridex inspect` surfaces the
 extracted `license` as covered provenance rather than a `PROVENANCE.MISSING_LICENSE` gap.
 
+The card is read for more than the license. Two other standard Hub fields answer provenance
+questions outright: `source_datasets` says which dataset this one was derived from
+(`provenance.upstream`) and `annotations_creators` says who produced its annotations
+(`provenance.annotator`). Both are extracted as `known` — read out of the card, not claimed by
+whoever handed the data over. The Hub's two "none" values are deliberately *not* extracted:
+`original` means derived from nothing and `no-annotation` means nobody annotated it, and both answer
+the question the same way a missing element already does, so counting them as coverage would raise
+the score of a dataset that named no source and no annotator. A card that carries only a license has
+the report say only that — a mapped field is a statement that the run read something.
+
 Four more variants add a real camera feature backed by `.mp4` files, because a video dataset is two
 artifacts that nothing reconciles — a manifest and a data table on one side, a container on the
 other, paired by frame index and never checked against each other. `video` is the clean baseline;

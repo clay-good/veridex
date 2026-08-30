@@ -130,8 +130,11 @@ the build plan.
 - [~] Extract provenance from LeRobot v3 and MCAP sources. (MCAP now extracts source_format, the
       header library/profile, producer-written Metadata records — with well-known keys mapped to
       typed provenance — and Attachment summaries incl. calibration. LeRobot extracts robot_type as
-      a sensor element and the SPDX license from the dataset card's (`README.md`) YAML frontmatter;
-      richer LeRobot-side extraction remains a follow-up.)
+      a sensor element and, from the dataset card's (`README.md`) YAML frontmatter, the SPDX license,
+      `source_datasets` as `upstream` and `annotations_creators` as `annotator` — the Hub's two
+      "none" values (`original`, `no-annotation`) deliberately excluded, since they answer the
+      question the same way a missing element does. Still open on the LeRobot side: nothing in
+      `meta/` names a clock or a calibration, so those two stay honestly unknown.)
 - [x] Emit Croissant (JSON-LD) + minimal W3C PROV lineage from the CDM (honest classes, no
       fabrication). Wired to `veridex provenance --emit croissant|prov`.
 

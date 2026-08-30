@@ -2062,3 +2062,144 @@ fn an_episode_where_the_robot_never_moved_is_flagged_end_to_end() {
         "the summary statistics are healthy — that is why this check exists"
     );
 }
+
+// --- What the dataset card says about where the data came from ---------------------------------
+
+/// A LeRobot dataset with `card` written as its `README.md`.
+fn lerobot_with_card(dir: &std::path::Path, card: &str) -> veridex_core::cdm::Dataset {
+    write_lerobot(dir, &[("observation.state", "float32")], 10.0, &[(0, 0.0)]);
+    fs::write(dir.join("README.md"), card).unwrap();
+    ingest_lerobot(dir)
+}
+
+fn element<'a>(
+    d: &'a veridex_core::cdm::Dataset,
+    key: &str,
+) -> Option<&'a veridex_core::cdm::ProvenanceElement> {
+    d.provenance
+        .iter()
+        .flat_map(|r| &r.elements)
+        .find(|e| e.key == key)
+}
+
+#[test]
+fn the_card_names_the_dataset_this_one_was_derived_from() {
+    // `source_datasets` is a standard Hub card field and it is exactly the question
+    // `provenance.upstream` asks. A LeRobot dataset that said so in its own card still scored
+    // upstream as unknown, and a re-upload of somebody else's data looked as unattributed as one
+    // that genuinely had no source.
+    let dir = tempfile::tempdir().unwrap();
+    let d = lerobot_with_card(
+        dir.path(),
+        "---\nlicense: mit\nsource_datasets:\n- extended|open-x-embodiment\n- bridge_v2\n---\n",
+    );
+    let upstream = element(&d, "upstream").expect("upstream extracted from the card");
+    assert_eq!(
+        upstream.value.as_deref(),
+        Some("extended|open-x-embodiment, bridge_v2"),
+        "every source the card names, not just the first"
+    );
+    assert_eq!(upstream.class, veridex_core::cdm::ProvenanceClass::Known);
+
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let hash = veridex_core::content_hash(&d);
+    let verdict = engine.run(&d, hash, &veridex_core::RunConfig::default());
+    assert!(
+        verdict
+            .findings
+            .iter()
+            .all(|f| f.code != "PROVENANCE.MISSING_UPSTREAM"),
+        "an extracted upstream clears the MISSING_UPSTREAM finding"
+    );
+}
+
+#[test]
+fn the_card_names_who_produced_the_annotations() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = lerobot_with_card(
+        dir.path(),
+        "---\nannotations_creators:\n- expert-generated\n---\n",
+    );
+    let annotator = element(&d, "annotator").expect("annotator extracted from the card");
+    assert_eq!(annotator.value.as_deref(), Some("expert-generated"));
+    assert_eq!(annotator.class, veridex_core::cdm::ProvenanceClass::Known);
+}
+
+#[test]
+fn a_card_declaring_no_source_and_no_annotator_claims_neither() {
+    // `original` is the Hub's word for a dataset derived from nothing, and `no-annotation` for one
+    // nobody annotated. Both answer the question with "none" — which is what a *missing* element
+    // already conveys, so claiming coverage for them would raise the score of a dataset that named
+    // no source and no annotator. The distinction is the whole point of the provenance axis.
+    let dir = tempfile::tempdir().unwrap();
+    let d = lerobot_with_card(
+        dir.path(),
+        "---\nlicense: mit\nsource_datasets:\n- original\nannotations_creators:\n- no-annotation\n---\n",
+    );
+    assert!(
+        element(&d, "upstream").is_none(),
+        "`original` names no upstream"
+    );
+    assert!(
+        element(&d, "annotator").is_none(),
+        "`no-annotation` names no annotator"
+    );
+    assert_eq!(
+        element(&d, "license").and_then(|e| e.value.as_deref()),
+        Some("mit"),
+        "the rest of the card is still read"
+    );
+}
+
+#[test]
+fn a_card_that_says_nothing_has_the_run_claim_nothing() {
+    // A mapped field is a statement that the run read something. A dataset whose card carries only
+    // a license must not have its report say the run read a `source_datasets` or an
+    // `annotations_creators` it never saw.
+    let dir = tempfile::tempdir().unwrap();
+    write_lerobot(
+        dir.path(),
+        &[("observation.state", "float32")],
+        10.0,
+        &[(0, 0.0)],
+    );
+    fs::write(dir.path().join("README.md"), "---\nlicense: mit\n---\n").unwrap();
+    let ingested = veridex_core::adapter::lerobot::LeRobotAdapter
+        .ingest(
+            &veridex_core::adapter::Source::Local(dir.path().to_path_buf()),
+            &veridex_core::adapter::IngestOptions::default(),
+        )
+        .expect("ingest");
+    let mapped = &ingested.report.mapped_fields;
+    assert!(
+        mapped.iter().any(|f| f.contains("provenance.license")),
+        "{mapped:?}"
+    );
+    assert!(
+        !mapped.iter().any(|f| f.contains("provenance.upstream")),
+        "{mapped:?}"
+    );
+    assert!(
+        !mapped.iter().any(|f| f.contains("provenance.annotator")),
+        "{mapped:?}"
+    );
+}
+
+#[test]
+fn the_scalar_form_of_each_card_field_is_read_too() {
+    // Hub cards write these as lists by convention, but a scalar is valid YAML and appears in the
+    // wild. Reading only the list form would silently drop the value.
+    let dir = tempfile::tempdir().unwrap();
+    let d = lerobot_with_card(
+        dir.path(),
+        "---\nsource_datasets: bridge_v2\nannotations_creators: crowdsourced\n---\n",
+    );
+    assert_eq!(
+        element(&d, "upstream").and_then(|e| e.value.as_deref()),
+        Some("bridge_v2")
+    );
+    assert_eq!(
+        element(&d, "annotator").and_then(|e| e.value.as_deref()),
+        Some("crowdsourced")
+    );
+}

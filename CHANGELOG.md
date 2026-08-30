@@ -10,6 +10,23 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A LeRobot dataset named its source in its own card and still scored it unknown.** The adapter
+  read one field out of the Hugging Face dataset card — the license — while two other standard Hub
+  fields answer provenance questions outright: `source_datasets` says which dataset this one was
+  derived from, and `annotations_creators` says who produced its annotations. A re-upload of
+  somebody else's data looked exactly as unattributed as one that genuinely had no source.
+
+  Both are now extracted as `known` — read out of the card, not claimed by whoever handed the data
+  over — mapping to `provenance.upstream` and `provenance.annotator`, in scalar or list form, with
+  every value the card names rather than the first.
+
+  The Hub's two "none" values are deliberately **not** extracted. `original` means derived from
+  nothing and `no-annotation` means nobody annotated it; both answer the question the same way a
+  *missing* element already does, so counting them as coverage would raise the score of a dataset
+  that named no source and no annotator — which is the one distinction the provenance axis exists to
+  make. And a card that carries only a license has the run report only that: a mapped field is a
+  statement that something was read.
+
 - **The demo generators could only be built by spawning `cargo`.** They lived as `examples/` under
   `veridex-core`, so a test that wanted one ran `cargo run --example` — and when several test
   binaries do that at once they contend on the build lock and the shared target directory, and an
