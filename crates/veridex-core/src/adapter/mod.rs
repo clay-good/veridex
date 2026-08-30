@@ -780,9 +780,8 @@ impl AdapterRegistry {
     ///
     /// Deliberately one level, and bounded. Detection opens files, and a directory the user typed by
     /// mistake may hold an enormous number of them; walking a tree to be helpful is how a tool that
-    /// refused to read anything ends up reading everything. Scanning stops at
-    /// [`MAX_HINT_SCAN`] entries or [`MAX_HINT_MATCHES`] matches, whichever comes first, so a hint is
-    /// cheap or absent.
+    /// refused to read anything ends up reading everything. Scanning stops at 200 entries or 5
+    /// matches, whichever comes first, so a hint is cheap or absent.
     pub fn readable_entries(&self, dir: &Path) -> Vec<(String, &'static str)> {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return Vec::new();
