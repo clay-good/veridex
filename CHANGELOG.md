@@ -10,6 +10,20 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **`docs/formats.md` claimed to demonstrate eight formats and showed six.** CAN+DBC and ASAM
+  MDF/MF4 had no section on the page README sends readers to for exactly those two. Both are there
+  now, each with a runnable demo and its real output: the CAN one is two heredocs (a four-line
+  candump log and the `.dbc` that gives its bytes meaning), and the MF4 one is a new
+  `make_demo_mf4` example.
+
+  That example writes a measurement the way a logger writes one — a ~4 s, 100 Hz vehicle raster
+  whose records are deflated into `##DZ` chunks, transposed column-major first, chained through a
+  `##DL` behind an `##HL` — with `clean`, `gap`, `saturated` and `uncompressed` variants. The
+  `uncompressed` variant exists to be diffed against `clean`: generated under the same file name in
+  different directories, the compressed and uncompressed measurements produce an identical CDM
+  hash, which a new CLI test pins end-to-end through the binary. How the records were stored is not
+  what they mean.
+
 - **A real MF4 measurement ingested to zero frames.** The MF4 adapter read a data group's records
   only from an uncompressed `##DT` block. Loggers do not write those. They deflate the records into
   a `##DZ`, split them across a `##DL` data list as the drive runs, or both behind an `##HL` header

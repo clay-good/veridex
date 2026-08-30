@@ -2883,3 +2883,83 @@ fn a_gate_across_two_veridex_versions_blames_the_tool_not_the_data() {
     let _ = std::fs::remove_file(&old);
     let _ = std::fs::remove_file(&new);
 }
+
+/// Generate the demo MF4 into `dir/name` and return its path as a string.
+fn make_demo_mf4(dir: &std::path::Path, name: &str, variant: &str) -> String {
+    let path = dir.join(name);
+    let status = std::process::Command::new(env!("CARGO"))
+        .args([
+            "run",
+            "--quiet",
+            "-p",
+            "veridex-core",
+            "--example",
+            "make_demo_mf4",
+            "--",
+        ])
+        .arg(&path)
+        .arg(variant)
+        .status()
+        .expect("run the demo generator");
+    assert!(status.success());
+    path.to_str().unwrap().to_string()
+}
+
+#[test]
+fn a_compressed_mf4_checks_to_exactly_what_the_uncompressed_one_does() {
+    // The end-to-end form of the MF4 adapter's `##DZ`/`##DL`/`##HL` support, through the binary and
+    // on a measurement written the way a logger writes one: the records deflated into chunks behind
+    // a header list. Reading only `##DT` gave this file no frames at all, and every check passed on
+    // nothing while the score still read 100 on the data axis.
+    //
+    // The two files are generated under the *same* file name in different directories, because the
+    // dataset id is part of the CDM hash: named differently they would hash differently for a reason
+    // that has nothing to do with what was read.
+    let dir = temp_dir("mf4-compressed");
+    let packed = std::fs::create_dir(dir.join("packed")).map(|_| dir.join("packed"));
+    let plain = std::fs::create_dir(dir.join("plain")).map(|_| dir.join("plain"));
+    let (packed, plain) = (packed.expect("mkdir"), plain.expect("mkdir"));
+
+    let compressed = make_demo_mf4(&packed, "drive.mf4", "clean");
+    let uncompressed = make_demo_mf4(&plain, "drive.mf4", "uncompressed");
+    assert!(
+        std::fs::metadata(&compressed).unwrap().len()
+            < std::fs::metadata(&uncompressed).unwrap().len(),
+        "the compressed measurement must actually be smaller, or it proves nothing"
+    );
+
+    let hash = |path: &str| -> String {
+        let (_, stdout, _) = run(&["check", path, "--json"]);
+        let v: serde_json::Value = serde_json::from_str(&stdout).expect("json report");
+        v["verdict"]["cdm_content_hash"]
+            .as_str()
+            .expect("a cdm content hash")
+            .to_string()
+    };
+    assert_eq!(
+        hash(&compressed),
+        hash(&uncompressed),
+        "how the records were stored is not what they mean: the two must hash identically"
+    );
+
+    // And the frames are really there — not "identical because both read nothing".
+    let (_, stdout, _) = run(&["check", &compressed, "--json"]);
+    let v: serde_json::Value = serde_json::from_str(&stdout).expect("json report");
+    assert!(
+        !v["verdict"]["findings"]
+            .as_array()
+            .expect("findings")
+            .iter()
+            .any(|f| f["code"] == "COVERAGE.SOURCE_UNREAD"),
+        "nothing in the measurement went unread: {stdout}"
+    );
+
+    // The default variant's pinned steering wheel is caught, which needs the values to have been
+    // decompressed, untransposed, converted and measured.
+    let saturated = make_demo_mf4(&packed, "saturated.mf4", "saturated");
+    let (_, stdout, _) = run(&["check", &saturated]);
+    assert!(
+        stdout.contains("STATISTICAL.SATURATED") && stdout.contains("steering_angle"),
+        "{stdout}"
+    );
+}

@@ -1,8 +1,8 @@
 # The formats, one at a time
 
 The claim behind Veridex is that one command reads eight formats into one shape and runs the same
-checks over all of them. This page is that claim, demonstrated: what each adapter reads, what it
-refuses to guess, and what it will not pretend to know.
+checks over all of them. This page is that claim, demonstrated one format at a time: what each adapter
+reads, what it refuses to guess, and what it will not pretend to know.
 
 Every example runs against a fixture or a generated demo in this repository, so you can follow it
 without a dataset of your own. The general shape is always the same:
@@ -288,6 +288,135 @@ refuses a page outside the file, refuses a b-tree or overflow chain that revisit
 the payload it will assemble before the bytes are copied. It is tested against fixtures written by
 Python's own `sqlite3` — a reader proven only against a writer from the same repository proves the
 two agree with each other, not that either matches the format.
+
+And on a **CAN + DBC** log — raw vehicle-bus traffic, which on its own is opaque bytes. The `.dbc` is
+the signal database that gives those bytes meaning, so Veridex ingests the two together: point it at a
+directory holding one `.dbc` and one or more candump logs, and it decodes each frame per the database
+into one stream per named signal. Both DBC byte orders are read — little-endian (Intel, `@1`) and
+big-endian (Motorola, `@0`) — with factor and offset applied and signed signals sign-extended.
+
+Nothing needs generating; the whole demo is two text files:
+
+```sh
+mkdir -p /tmp/can-demo && cd /tmp/can-demo
+cat > vehicle.dbc <<'DBC'
+VERSION ""
+
+BO_ 291 EngineData: 8 ECU
+ SG_ EngineRPM : 0|16@1+ (0.25,0) [0|16383.75] "rpm" Vector__XXX
+ SG_ VehicleSpeed : 16|16@1+ (0.01,0) [0|655.35] "km/h" Vector__XXX
+DBC
+cat > drive.log <<'LOG'
+(1709294400.000000) can0 123#7017B80B00000000
+(1709294400.010000) can0 123#7A17BC0B00000000
+(1709294400.020000) can0 4A2#DEADBEEF
+(1709294400.030000) can0 123#8D17C40B00000000
+LOG
+cd -
+cargo run -p veridex-cli -- inspect /tmp/can-demo
+```
+
+The decoded signals become ordinary streams — measured, not just fingerprinted — so the statistical
+family grades a CAN channel exactly as it grades a LeRobot feature:
+
+```
+#   · episode 0 — 2 stream(s), 6 frame(s), 0.030s
+#       EngineData.EngineRPM [can-signal] — 3 frame(s), clock `can`, float64
+#       EngineData.VehicleSpeed [can-signal] — 3 frame(s), clock `can`, float64
+#   coverage notes:
+#       UNREAD:   can id 0x4a2 (1 frame(s) with no DBC message definition (coverage gap))
+#       omitted:  CAN frames are one continuous timeline; no episode segmentation
+```
+
+**A partial DBC is the failure mode worth naming.** Bus traffic on an id the database never defines
+decodes into nothing, and so does a log line that is not a candump frame — and a run that passed over
+that silently would read as a clean, certifiable verdict over whichever fraction of the bus the `.dbc`
+happened to cover. Both are traffic that was there and went into no stream, so both are disclosed as
+unread and raise a warning:
+
+```
+#   [warning] COVERAGE.SOURCE_UNREAD  dataset
+#       1 source(s) the dataset declares were not read (can id 0x4a2), so every result below speaks
+#       for the part that was
+```
+
+Past eight undefined ids the remainder is counted rather than listed — still disclosed, in a sentence
+a person can read. A CAN log is one continuous timeline with no
+episode boundaries and nothing that describes it in front of the frames, so it segments into a single
+episode and `--metadata-only` is refused by name rather than answered with a guess.
+
+And on an **ASAM MDF/MF4** measurement — the format every automotive fleet logger and CAN/vehicle-bus
+recorder writes, and the one an autonomy team's vehicle-dynamics data arrives in. An MF4 is not a
+directory of files but a linked graph of typed blocks: a header chains data groups, each holding a
+channel group whose channels describe fixed-offset fields inside every record of one data block.
+Veridex walks that graph with its own bounds-checked reader, takes each group's **time master** as
+the timeline, applies each channel's `##CC` conversion, and emits one stream per measured channel.
+
+```sh
+# a demo measurement: ~4 s at 100 Hz, records deflated into ##DZ chunks behind an ##HL header
+# list — how a logger actually writes one. Append `clean`, `gap`, or `uncompressed`.
+cargo run -p veridex-core --example make_demo_mf4 -- /tmp/drive.mf4
+cargo run -p veridex-cli -- check /tmp/drive.mf4   # fires STATISTICAL.SATURATED
+```
+
+```
+#   [warning] STATISTICAL.SATURATED  episode 0 · stream `steering_angle`
+#       stream `steering_angle`: 75% of values sit exactly at its maximum (2048) — a saturated or
+#       clamped channel
+```
+
+The point of that finding is that it needs the *values*, not the file's shape: the records had to be
+decompressed, untransposed, sliced at the right byte offsets, and run through the channel's linear
+conversion before anything could notice the wheel was pinned at its end-stop. An MF4 channel is
+measured the same way a LeRobot feature is, so the whole statistical family reaches it — a buried
+NaN, a 250x spike, a dead constant channel.
+
+**How the records are stored is not what they mean.** A logger deflates its records into `##DZ`
+blocks and chains them through a `##DL` data list behind an `##HL` header list, flushing a chunk at a
+time as the drive runs; `dz_zip_type` 1 additionally lays the bytes out column-major before deflating,
+because like-typed bytes compress far better adjacently. All of that is storage. Generate the same
+measurement both ways and the CDM hashes match exactly:
+
+```sh
+mkdir -p /tmp/packed /tmp/plain
+cargo run -p veridex-core --example make_demo_mf4 -- /tmp/packed/drive.mf4 clean
+cargo run -p veridex-core --example make_demo_mf4 -- /tmp/plain/drive.mf4  uncompressed
+cargo run -p veridex-cli -- check /tmp/packed/drive.mf4 | grep 'CDM hash'
+cargo run -p veridex-cli -- check /tmp/plain/drive.mf4  | grep 'CDM hash'   # the same hash
+```
+
+(Same *file name*, different directories: the dataset id is part of the hash, so two files named
+differently would differ for a reason that has nothing to do with what was read.)
+
+Every length in a compressed block is a claim the file makes about itself, and none of them is
+trusted. The declared expansion is charged to the decompression budget before a decompressor is
+pointed at the stream, each read is capped at that declared length, and a stream that produces fewer
+bytes than it promised is reported rather than decoded — a short buffer would drop the tail of the
+measurement in silence. A data list whose elements do not all resolve refuses the whole group, for
+the same reason: half a list is not a shorter measurement, it is a misaligned one, because every
+record after the missing chunk would be read at the wrong offset.
+
+What is still declined is declined out loud, as **unread** — the data is in the file and nobody read
+it, so it raises `COVERAGE.SOURCE_UNREAD` rather than sitting in a note only `inspect` prints: a
+`##DZ` holding something other than a `DT` record stream, an undefined zip type, an unsorted data
+group that interleaves records behind record ids, a group with no usable time master, a channel
+declaring per-sample invalidation, a group declaring more cycles than its block holds. Bit-packed and
+non-numeric channels and the conversions that need a lookup table are **unmapped** instead, and cost
+the reader nothing: the CDM has no shape for them.
+
+MF4 records one continuous measurement rather than episodes, and its channels declare no nominal
+sample rate — so `inspect` says both out loud rather than letting the checks that need them come back
+clean:
+
+```
+#   coverage notes:
+#       omitted:  episode-segmentation (MF4 records one continuous measurement)
+#       omitted:  declared-rate (MF4 channels declare no nominal sample rate)
+```
+
+`--metadata-only` reads the `##HD`/`##DG`/`##CG`/`##CN` block tree alone — every channel's name and
+raster and the cycle count each group declares — without opening or decompressing a single data
+block, which is the cheapest way to inventory a large measurement.
 
 ## Reading a dataset you have not downloaded
 
