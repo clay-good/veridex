@@ -10,6 +10,14 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A gateway log's ECU list was the file deciding how many provenance elements to build.** The
+  CAN+DBC extraction added one `sensor` element per transmitting node with no bound at all, and the
+  MF4 one trimmed at eight without saying so. A `.dbc` may define any number of messages each with
+  its own transmitter, and a `##SI` chain is as long as the file makes it, so both are now bounded —
+  and both **disclose the trim**. A cap that fires in silence is a report that names 32 of 40 ECUs
+  and looks complete over less than it covers; the full list stays readable in dataset metadata
+  either way.
+
 - **Three ECUs became one agent called "A, B, C".** The provenance extraction added this week joined
   several sources into a single element — a rig's `##SI` devices, a bus's transmitting nodes, a
   card's `source_datasets` — and the lineage emitters then read each as one thing. The PROV graph

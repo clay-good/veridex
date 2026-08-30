@@ -31,6 +31,14 @@ use crate::cdm::{
     ProvenanceElement, ProvenanceScope, Stream, ValueRef,
 };
 
+/// How many transmitting nodes are named individually in `provenance.sensor`.
+///
+/// A `.dbc` is untrusted input and may define any number of messages, each with its own transmitter,
+/// so the element list is bounded rather than being decided by the file. Past this the remainder is
+/// counted, and the trim is disclosed: a cap that fires in silence is a report that looks complete
+/// over less than it covers.
+const MAX_NAMED_TRANSMITTERS: usize = 32;
+
 /// How many undefined CAN ids are named individually in the coverage disclosure.
 ///
 /// Every unread source is named in the `COVERAGE.SOURCE_UNREAD` message, and a bus can carry
@@ -586,7 +594,7 @@ impl Adapter for CanDbcAdapter {
                     // One element per node, not one joined string: a bus with three ECUs on it has
                     // three sensors, and a lineage document naming a single agent called "A, B, C"
                     // names an agent nobody has.
-                    for node in &transmitters {
+                    for node in transmitters.iter().take(MAX_NAMED_TRANSMITTERS) {
                         elements.push(ProvenanceElement {
                             key: "sensor".into(),
                             value: Some(node.clone()),
@@ -672,7 +680,19 @@ impl Adapter for CanDbcAdapter {
                         .then(|| "DBC BO_ transmitter -> provenance.sensor".to_string()),
                 )
                 .collect(),
-                unmapped_fields: Vec::new(),
+                unmapped_fields: if transmitters.len() > MAX_NAMED_TRANSMITTERS {
+                    vec![UnmappedField {
+                        source_path: "DBC BO_ transmitters".into(),
+                        note: format!(
+                            "{MAX_NAMED_TRANSMITTERS} of {} transmitting nodes are named in \
+                             provenance; the rest are counted in `dbc_transmitters` rather than \
+                             recorded as elements",
+                            transmitters.len()
+                        ),
+                    }]
+                } else {
+                    Vec::new()
+                },
                 omitted_fields: vec![
                     "CAN frames are one continuous timeline; no episode segmentation".into(),
                 ],

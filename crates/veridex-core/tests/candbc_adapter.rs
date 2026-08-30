@@ -635,3 +635,51 @@ fn a_node_that_never_transmitted_is_not_claimed() {
         "only the node whose traffic is actually in the log"
     );
 }
+
+#[test]
+fn a_bus_with_more_nodes_than_the_cap_says_so_rather_than_trimming_in_silence() {
+    // A `.dbc` may define any number of messages, each with its own transmitter, so the element list
+    // is bounded rather than being decided by the file. What must not happen is the cap firing
+    // quietly: a report that names 32 of 40 ECUs and says nothing looks complete over less than it
+    // covers.
+    let dir = tempfile::tempdir().unwrap();
+    let mut dbc = String::new();
+    let mut log = String::new();
+    for i in 0..40u32 {
+        let id = 0x100 + i;
+        dbc.push_str(&format!(
+            "BO_ {id} Msg{i}: 8 ECU{i:02}\n SG_ V{i} : 0|8@1+ (1,0) [0|255] \"\" Vector__XXX\n"
+        ));
+        log.push_str(&format!(
+            "({:.6}) can0 {id:X}#0100000000000000\n",
+            1000.0 + f64::from(i) * 0.01
+        ));
+    }
+    fs::write(dir.path().join("vehicle.dbc"), dbc).unwrap();
+    fs::write(dir.path().join("drive.log"), log).unwrap();
+
+    let ingested = ingest_dir(dir.path());
+    let named = ingested
+        .dataset
+        .provenance
+        .iter()
+        .flat_map(|r| &r.elements)
+        .filter(|e| e.key == "sensor")
+        .count();
+    assert_eq!(named, 32, "the element list is bounded");
+    assert!(
+        ingested
+            .report
+            .unmapped_fields
+            .iter()
+            .any(|u| u.note.contains("32 of 40 transmitting nodes")),
+        "the trim reaches the report: {:?}",
+        ingested.report.unmapped_fields
+    );
+    // And the full count is still readable in metadata, so nothing about the bus is lost.
+    assert!(ingested
+        .dataset
+        .metadata
+        .iter()
+        .any(|(k, v)| k == "dbc_transmitters" && v.contains("ECU39")));
+}

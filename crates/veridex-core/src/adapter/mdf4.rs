@@ -559,8 +559,12 @@ impl AcquisitionSource {
 
 /// `si_type` names, indexed by the code. Anything past the end is a value MDF does not define.
 const SI_TYPES: &[&str] = &["other", "ECU", "bus", "I/O", "tool", "user"];
-/// How many acquisition sources are named individually in `provenance.sensor`. A gateway log can
-/// name hundreds; past this the remainder is counted, so the value stays a readable sentence.
+/// How many acquisition sources are named individually in `provenance.sensor`.
+///
+/// A gateway log can name hundreds, and every one would become a provenance element built from a
+/// count in an untrusted file. Past this the remainder is counted rather than recorded — and the
+/// trim is disclosed, because a cap that fires in silence is a report that looks complete over less
+/// than it covers.
 const MAX_NAMED_SOURCES: usize = 8;
 /// `si_bus_type` names, indexed by the code.
 const SI_BUS_TYPES: &[&str] = &[
@@ -862,6 +866,20 @@ impl Adapter for Mdf4Adapter {
                     key: "sensor".into(),
                     value: Some(source.label()),
                     class: ProvenanceClass::Known,
+                });
+            }
+            // A cap that trims in silence is a report that looks complete over less than it covers.
+            // The metadata line above already counts the remainder; this puts it where `inspect`
+            // and the report's unmapped list will show it too.
+            if sources.len() > MAX_NAMED_SOURCES {
+                unmapped.push(UnmappedField {
+                    source_path: "##SI acquisition sources".into(),
+                    note: format!(
+                        "{} of {} acquisition sources are named in provenance; the rest are counted \
+                         in `mdf_acquisition_sources` rather than recorded as elements",
+                        MAX_NAMED_SOURCES,
+                        sources.len()
+                    ),
                 });
             }
         }
