@@ -1703,3 +1703,80 @@ fn arrays_disagreeing_on_the_episodes_length_are_flagged_end_to_end() {
     );
     assert_eq!(verdict.status, veridex_core::Status::Fail);
 }
+
+// --- `env_args`: what a robomimic file says about the embodiment that produced it ---------------
+
+#[test]
+fn the_env_args_blob_names_the_robot_and_becomes_sensor_provenance() {
+    // `robomimic`, MimicGen and the robosuite tooling all record the embodiment in one root
+    // attribute: `env_args`, whose `env_kwargs.robots` names the robot the trajectories were
+    // recorded on. That is exactly what `provenance.sensor` asks, and a file that said so scored it
+    // unknown — a lab's whole HDF5 corpus came back with the same provenance as a dataset that
+    // named nothing.
+    let ingested = ingest("robomimic_env_args.h5", IngestOptions::default());
+    let sensor = ingested
+        .dataset
+        .provenance
+        .iter()
+        .flat_map(|r| &r.elements)
+        .find(|e| e.key == "sensor")
+        .expect("the robot becomes sensor provenance");
+    assert_eq!(sensor.value.as_deref(), Some("Panda"));
+    assert_eq!(
+        sensor.class,
+        veridex_core::cdm::ProvenanceClass::Known,
+        "read out of the file, never asserted by a producer"
+    );
+    assert!(
+        ingested
+            .report
+            .mapped_fields
+            .iter()
+            .any(|f| f.contains("env_kwargs.robots") && f.contains("provenance.sensor")),
+        "{:?}",
+        ingested.report.mapped_fields
+    );
+
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let hash = veridex_core::content_hash(&ingested.dataset);
+    let verdict = engine.run(&ingested.dataset, hash, &veridex_core::RunConfig::default());
+    assert!(
+        verdict
+            .findings
+            .iter()
+            .all(|f| f.code != "PROVENANCE.MISSING_SENSOR"),
+        "an extracted robot clears the MISSING_SENSOR finding"
+    );
+}
+
+#[test]
+fn an_env_args_that_names_no_robot_claims_none() {
+    // `robomimic_small.h5` carries the short form of the blob — `env_name` and `type`, no
+    // `env_kwargs` — which names no embodiment. A file that did not say must not be reported as if
+    // it had, and the mapped-field list must not claim a read that never happened.
+    let ingested = ingest("robomimic_small.h5", IngestOptions::default());
+    assert!(
+        ingested
+            .dataset
+            .provenance
+            .iter()
+            .flat_map(|r| &r.elements)
+            .all(|e| e.key != "sensor"),
+        "no robot is named, so no sensor element is invented"
+    );
+    assert!(
+        !ingested
+            .report
+            .mapped_fields
+            .iter()
+            .any(|f| f.contains("env_kwargs.robots")),
+        "{:?}",
+        ingested.report.mapped_fields
+    );
+    // The blob itself is still carried as metadata, exactly as before.
+    assert!(ingested
+        .dataset
+        .metadata
+        .iter()
+        .any(|(k, v)| k == "h5:env_args" && v.contains("Lift")));
+}

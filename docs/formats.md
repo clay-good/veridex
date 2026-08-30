@@ -126,6 +126,13 @@ a NaN buried in joint 6, or a lone 250x spike is caught **per dimension** and na
 v0–v3, old- and new-style groups, contiguous, compact, and chunked storage, and the `deflate`,
 `shuffle`, and `fletcher32` filters. A structure it does not read is named rather than skipped past.
 
+The file's own account of what recorded it is read too. `robomimic`, MimicGen and the robosuite
+tooling all write one root attribute, `env_args`, whose `env_kwargs.robots` names the robot the
+trajectories were recorded on — which is exactly what `provenance.sensor` asks. It is extracted as
+`known`, out of the file rather than claimed by whoever handed it over. A blob that names no robot
+(the short `env_name`-only form) has nothing extracted and nothing claimed: the report does not list
+the mapping either, because a mapped field is a statement that the run read something.
+
 An HDF5 file is usually more than its episodes, and the report says so. `robomimic` writes a `/mask`
 group of filter keys beside `/data`; collectors park reward tables and raw logs at the root the same
 way. None of that sits under an episode group, so none of it is read — and anything there holding

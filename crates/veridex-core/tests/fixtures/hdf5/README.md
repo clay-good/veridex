@@ -22,6 +22,7 @@ Regenerating changes the row hashes pinned in the tests (the arrays are drawn fr
 
 | File | What it covers |
 |---|---|
+| `robomimic_env_args.h5` | The full `env_args` blob a real `robomimic` / MimicGen file writes, whose `env_kwargs.robots` names the robot — the short form in `robomimic_small.h5` names none |
 | `robomimic_small.h5` | The `robomimic` layout: `/data/demo_N` episodes, nested `obs/`, a gzip-chunked `uint8` image array, `num_samples` / `total` / `env_args` attributes, a variable-length string attribute (global heap) |
 | `timed_rig.h5` | A timestamp array with declared `units`, plus `shuffle` + `deflate` + `fletcher32` filters and a big-endian `float32` array |
 | `untimed_units.h5` | A `time` array with **no** `units` attribute — which must not become a clock |

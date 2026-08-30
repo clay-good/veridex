@@ -11,6 +11,7 @@ script prints the ones the tests assert.
 """
 
 import hashlib
+import json
 import os
 
 import h5py
@@ -168,6 +169,30 @@ with h5py.File("step_mismatch.h5", "w") as f:
     g.create_dataset("actions", data=rng.random((100, 7)).astype(np.float32))
     g.create_dataset("obs/robot0_eef_pos", data=rng.random((50, 3)).astype(np.float32))
     g.create_dataset("terminal_obs", data=rng.random((101, 3)).astype(np.float32))
+
+# What a real `robomimic` / MimicGen file records about the embodiment that produced it: the full
+# `env_args` blob, whose `env_kwargs.robots` names the robot. `robomimic_small.h5` carries only the
+# short form (`env_name` and `type`), so nothing in the fixture set exercised the robot extraction.
+rng = np.random.default_rng(97)
+with h5py.File("robomimic_env_args.h5", "w") as f:
+    data = f.create_group("data")
+    data.attrs["total"] = 6
+    data.attrs["env_args"] = json.dumps(
+        {
+            "env_name": "Lift",
+            "type": 1,
+            "env_kwargs": {
+                "robots": ["Panda"],
+                "controller_configs": {"type": "OSC_POSE"},
+                "has_renderer": False,
+            },
+        }
+    )
+    for demo in range(2):
+        g = data.create_group(f"demo_{demo}")
+        g.attrs["num_samples"] = 3
+        g.create_dataset("actions", data=rng.random((3, 7)).astype(np.float32))
+        g.create_dataset("obs/robot0_eef_pos", data=rng.random((3, 3)).astype(np.float32))
 
 for name in sorted(n for n in os.listdir(".") if n.endswith(".h5")):
     print(name, os.path.getsize(name))

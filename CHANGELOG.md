@@ -10,6 +10,20 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A `robomimic` file named its robot in a root attribute and provenance scored it unknown.**
+  `robomimic`, MimicGen and the robosuite tooling all record the embodiment in one place: the
+  `env_args` attribute, whose `env_kwargs.robots` names the robot the trajectories were recorded on.
+  Veridex carried the whole blob into metadata and read nothing out of it, so a lab's entire HDF5
+  corpus came back with the same `provenance.sensor` as a dataset that named nothing — and the
+  README calls HDF5 "what most lab collectors write".
+
+  The robot is now extracted as `provenance.sensor`, `known`, naming every robot the blob lists (a
+  bimanual setup has two). A blob that is absent, is not JSON, or names no robot has nothing
+  extracted and nothing claimed — the mapped-field list stays silent too, because it is a statement
+  that the run read something. The short `env_name`-only form that `robomimic_small.h5` carries is
+  exactly that case, and a new fixture (`robomimic_env_args.h5`, real `h5py` output like the rest)
+  carries the full form.
+
 - **A LeRobot dataset named its source in its own card and still scored it unknown.** The adapter
   read one field out of the Hugging Face dataset card — the license — while two other standard Hub
   fields answer provenance questions outright: `source_datasets` says which dataset this one was

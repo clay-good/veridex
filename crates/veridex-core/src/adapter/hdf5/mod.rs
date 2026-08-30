@@ -4,7 +4,7 @@
 //! An HDF5 robot dataset is a tree of groups and datasets. The layout these collectors share is:
 //!
 //! ```text
-//! /data                      (attrs: total, env_args, …)
+//! /data                      (attrs: total, env_args, …)   -> `env_args.env_kwargs.robots` is the robot
 //!   /demo_0                  (attrs: num_samples, …)  -> one episode
 //!     actions                [T, 7]  float32          -> one stream, T frames
 //!     rewards                [T]     float64          -> one stream
@@ -88,6 +88,40 @@ const PROVENANCE_ATTRS: &[(&str, &str)] = &[
     ("author", "author"),
     ("date", "created"),
 ];
+
+/// The attribute `robomimic`, MimicGen and the robosuite tooling write to record what produced the
+/// data: a JSON blob naming the environment and, inside `env_kwargs`, the robot.
+const ENV_ARGS_ATTR: &str = "env_args";
+
+/// The robot named by a `robomimic`-style `env_args` blob, if it names one.
+///
+/// The layout is fixed by robosuite: `{"env_name": …, "env_kwargs": {"robots": ["Panda"], …}}`. That
+/// robot is the embodiment the trajectories were recorded on, which is exactly what
+/// `provenance.sensor` asks — and until this read it, a `robomimic` file that said so in its own
+/// root attribute scored the element unknown.
+///
+/// `None` whenever the blob is absent, is not JSON, or names no robot: the attribute is arbitrary
+/// text, and a file that did not say must not be reported as if it had.
+fn env_args_robots(text: &str) -> Option<String> {
+    let parsed: serde_json::Value = serde_json::from_str(text).ok()?;
+    let robots = parsed.get("env_kwargs")?.get("robots")?;
+    let named: Vec<String> = match robots {
+        // The usual form: a list, because a bimanual setup has two.
+        serde_json::Value::Array(items) => items
+            .iter()
+            .filter_map(|v| v.as_str())
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+            .collect(),
+        serde_json::Value::String(one) if !one.is_empty() => vec![one.clone()],
+        _ => return None,
+    };
+    if named.is_empty() {
+        None
+    } else {
+        Some(named.join(", "))
+    }
+}
 
 /// How deep the object tree is walked below one episode group.
 ///
@@ -329,6 +363,9 @@ impl Adapter for Hdf5Adapter {
             value: Some(FORMAT_ID.into()),
             class: ProvenanceClass::Known,
         }];
+        // Whether the file named the robot it was recorded on, so the report can claim the mapping
+        // only when there was one to read.
+        let mut robots_read = false;
         for (name, value) in root_attrs.iter().chain(parent_attrs.iter()) {
             if let Some((_, key)) = PROVENANCE_ATTRS
                 .iter()
@@ -340,6 +377,18 @@ impl Adapter for Hdf5Adapter {
                         value: Some(text.clone()),
                         class: ProvenanceClass::Known,
                     });
+                }
+            }
+            if name.eq_ignore_ascii_case(ENV_ARGS_ATTR) {
+                if let AttrValue::Text(text) = value {
+                    if let Some(robots) = env_args_robots(text) {
+                        elements.push(ProvenanceElement {
+                            key: "sensor".into(),
+                            value: Some(robots),
+                            class: ProvenanceClass::Known,
+                        });
+                        robots_read = true;
+                    }
                 }
             }
             match value {
@@ -440,6 +489,11 @@ impl Adapter for Hdf5Adapter {
             "array shape after the first dimension -> stream.shape".into(),
             "object attributes -> dataset metadata".into(),
         ];
+        // Claimed only when the file actually named a robot: a mapped field is a statement that
+        // this run read something.
+        if robots_read {
+            mapped_fields.push("env_args env_kwargs.robots -> provenance.sensor".into());
+        }
         let mut omitted_fields = vec![
             "image/point payload decoding (frames are fingerprints, not pixels)".into(),
             "declared sample rates (HDF5 states none, so the rate and gap checks have no nominal \
