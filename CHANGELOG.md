@@ -10,6 +10,13 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **The autonomy quickstart's rig table understated three adapters.** It said MF4 applies "linear
+  conversions" (it applies every numeric one now), said nothing about bit-packed channels or the
+  `##SI` sources that became `provenance.sensor`, said nothing about the DBC transmitter that became
+  the same, and described producer metadata without saying a rosbag2 `custom_data` map now reaches
+  it through the same shared key table. A table of "what Veridex reads from a rig log" is worth
+  keeping current.
+
 - **Pointing at the folder that holds your dataset got you a list of eight format names.** It is the
   most common first-use mistake — `veridex check recordings/` rather than
   `veridex check recordings/drive.mcap` — and the answer was `unsupported format: no adapter

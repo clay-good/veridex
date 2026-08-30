@@ -122,9 +122,9 @@ See [profiles.md](profiles.md) for the profile's criteria and the full verificat
 |---|---|
 | ROS/ROS 2 MCAP topics (`PointCloud2`, `Image`/`CameraInfo`, `Imu`, `NavSatFix`, `Odometry`, TF) | streams with rig modalities, camera intrinsics, the transform tree, the ego trajectory |
 | ROS 2 **rosbag2** — a bag directory (either storage plugin: `sqlite3` `.db3`/`.db3.zstd`, or the `.mcap` shards Jazzy records by default) or a bare `.db3` | the same, from the same message types; the bag's `metadata.yaml` also supplies the recording distribution and the message total the recording is reconciled against |
-| CAN frames + a `.dbc` | one named signal stream per `Message.Signal`, both Intel and Motorola byte order (point the CLI at the directory) |
-| ASAM MDF/MF4 (`.mf4`) | one stream per measured channel, on the group's time master, with linear conversions applied — and the converted values measured, so a channel at its end-stop is `STATISTICAL.SATURATED` |
-| Producer metadata | rig lineage (firmware, platform, drive, region, map, redaction/consent) as provenance |
+| CAN frames + a `.dbc` | one named signal stream per `Message.Signal`, both Intel and Motorola byte order (point the CLI at the directory); each `BO_` line's transmitting ECU becomes `provenance.sensor` |
+| ASAM MDF/MF4 (`.mf4`) | one stream per measured channel, on that channel group's time master, sliced at any bit offset and width — how bus signals are actually stored — with every numeric `##CC` conversion applied (linear, rational, both value-to-value tables, value-range-to-value); the converted values are measured, so a channel at its end-stop is `STATISTICAL.SATURATED`; the `##SI` acquisition sources become `provenance.sensor` |
+| Producer metadata | rig lineage (firmware, platform, drive, region, map, redaction/consent) as provenance — from an MCAP `Metadata` record or a rosbag2 `custom_data` map, through one shared key table |
 | Scenario/map references (`.xosc`, `.xodr`, OSI, simulator) | provenance, with the version read from the sidecar's own ASAM header |
 
 CAN traffic the `.dbc` does not define is not silently dropped: frames on an undefined id, and log
