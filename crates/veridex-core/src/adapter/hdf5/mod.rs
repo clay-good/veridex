@@ -82,7 +82,14 @@ const DECLARED_TOTAL_ATTR: &str = "total";
 /// Attributes carrying an episode's natural-language task.
 const TASK_ATTRS: &[&str] = &["language_instruction", "task"];
 
-/// Root attributes that are lineage facts rather than free-form metadata.
+/// This reader's own root attributes, checked before the shared well-known table.
+///
+/// Two of them disagree with it deliberately. `author` here is who wrote the *file*, which is not
+/// the same question `provenance.annotator` asks (who labelled the data), so it stays its own
+/// element rather than inheriting the recording-metadata reading; and `date` is kept as `created`,
+/// which the shared table has no row for. Everything else — `sensor`, `device`, `derived_from`,
+/// `calibration`, the rig-lineage keys — now resolves through [`provenance_key_for`], so a key
+/// called `sensor` means the same thing in a store attribute as in an MCAP `Metadata` record.
 const PROVENANCE_ATTRS: &[(&str, &str)] = &[
     ("license", "license"),
     ("author", "author"),
@@ -367,13 +374,15 @@ impl Adapter for Hdf5Adapter {
         // only when there was one to read.
         let mut robots_read = false;
         for (name, value) in root_attrs.iter().chain(parent_attrs.iter()) {
-            if let Some((_, key)) = PROVENANCE_ATTRS
+            if let Some(key) = PROVENANCE_ATTRS
                 .iter()
                 .find(|(attr, _)| attr.eq_ignore_ascii_case(name))
+                .map(|(_, key)| *key)
+                .or_else(|| crate::adapter::provenance_key_for(name))
             {
                 if let AttrValue::Text(text) = value {
                     elements.push(ProvenanceElement {
-                        key: (*key).into(),
+                        key: key.into(),
                         value: Some(text.clone()),
                         class: ProvenanceClass::Known,
                     });

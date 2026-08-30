@@ -1780,3 +1780,34 @@ fn an_env_args_that_names_no_robot_claims_none() {
         .iter()
         .any(|(k, v)| k == "h5:env_args" && v.contains("Lift")));
 }
+
+#[test]
+fn a_store_attribute_means_what_the_same_key_means_in_a_recording() {
+    // The well-known provenance-key table lived in the MCAP adapter alone, so an HDF5 file that
+    // named its `device` or its `source_dataset` had them read as free-form metadata while the
+    // identical key inside an MCAP `Metadata` record became typed provenance. One key, one meaning.
+    use veridex_core::adapter::provenance_key_for;
+    assert_eq!(provenance_key_for("device"), Some("sensor"));
+    assert_eq!(provenance_key_for("lidar_model"), Some("sensor"));
+    assert_eq!(provenance_key_for("source_dataset"), Some("upstream"));
+    assert_eq!(
+        provenance_key_for("calibration_version"),
+        Some("calibration")
+    );
+    assert_eq!(provenance_key_for("SPDX_License"), Some("license"));
+    // A producer's arbitrary key is still preserved as metadata, never promoted to provenance.
+    assert_eq!(provenance_key_for("notes_blob"), None);
+
+    // And this reader's own two rows still win, deliberately: `author` here is who wrote the file,
+    // not who labelled the data, so it stays its own element rather than becoming `annotator`.
+    let ingested = ingest("robomimic_small.h5", IngestOptions::default());
+    let keys: Vec<&str> = ingested
+        .dataset
+        .provenance
+        .iter()
+        .flat_map(|r| &r.elements)
+        .map(|e| e.key.as_str())
+        .collect();
+    assert!(keys.contains(&"author"), "{keys:?}");
+    assert!(!keys.contains(&"annotator"), "{keys:?}");
+}

@@ -10,6 +10,21 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A key called `sensor` meant one thing in an MCAP and nothing in an HDF5.** Veridex has a curated
+  table of well-known metadata keys — `device`, `lidar_model`, `source_dataset`, `calibration_version`
+  and two dozen more — that map a producer's free-form key onto a typed provenance element. It lived
+  inside the MCAP adapter, so an HDF5 or Zarr store naming its device or its upstream dataset had
+  them read as free-form metadata while the identical key inside an MCAP `Metadata` record became
+  provenance.
+
+  The table now lives in `adapter/mod.rs` and all three use it. One key, one meaning, whichever
+  container it was written in.
+
+  Each store reader keeps two rows of its own, checked first and deliberately: `author` in a store's
+  root attribute is who wrote the *file*, which is not the question `provenance.annotator` asks (who
+  labelled the data), so it stays its own element rather than inheriting the recording-metadata
+  reading; and `date` stays `created`, which the shared table has no row for.
+
 - **A CAN+DBC dataset carried no provenance record at all.** Not the ECU that produced the traffic,
   not even the `source_format` element every other adapter emits — the field was literally empty, so
   a bus log scored 0/6 while its own signal database named the node behind every message.

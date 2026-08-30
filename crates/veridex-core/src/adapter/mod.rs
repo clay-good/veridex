@@ -387,6 +387,46 @@ pub enum Coverage {
     },
 }
 
+/// Map a producer-written metadata key (case-insensitive) to a CDM provenance key, when it names one
+/// Veridex tracks. Conservative: only well-known spellings map, so a producer's arbitrary keys are
+/// not misread as typed provenance (they are still preserved in dataset metadata).
+///
+/// Shared by every adapter whose source carries free-form key/value metadata — an MCAP `Metadata`
+/// record, an HDF5 root attribute, a Zarr `.zattrs` entry — because a key called `sensor` means the
+/// same thing whichever of them it is written in. It used to live in the MCAP adapter alone, so an
+/// HDF5 store that named its `device` or its `source_dataset` had them read as free-form metadata
+/// while the identical key in an MCAP became typed provenance.
+///
+/// Covers the core keys (license/sensor/calibration/operator/upstream) plus the autonomy sensor-rig
+/// lineage (design A3): sensor firmware, the calibration session, the platform/vehicle and drive/run
+/// identity, the capture region, the HD-map version, and the redaction/consent status — the last two
+/// being acute for public-road capture (design A7).
+pub fn provenance_key_for(meta_key: &str) -> Option<&'static str> {
+    match meta_key.trim().to_ascii_lowercase().as_str() {
+        "license" | "spdx" | "spdx_license" | "license_id" => Some("license"),
+        "sensor" | "sensors" | "device" | "camera_model" | "lidar_model" | "hardware" => {
+            Some("sensor")
+        }
+        "calibration" | "calibration_id" | "calib" | "calibration_version" => Some("calibration"),
+        "operator" | "annotator" | "author" | "recorded_by" | "operator_id" => Some("annotator"),
+        "upstream" | "derived_from" | "source_dataset" | "parent_dataset" | "upstream_dataset" => {
+            Some("upstream")
+        }
+        // --- autonomy rig lineage (A3) ---
+        "firmware" | "firmware_version" | "fw" | "fw_version" => Some("firmware"),
+        "calibration_session" | "calib_session" | "calibration_session_id" => {
+            Some("calibration_session")
+        }
+        "platform" | "vehicle" | "vehicle_id" | "platform_id" => Some("platform"),
+        "drive" | "drive_id" | "run_id" | "session_id" | "log_id" => Some("drive"),
+        "region" | "geo_region" | "country" | "locale" => Some("region"),
+        "map_version" | "map" | "hdmap_version" | "map_id" => Some("map_version"),
+        "redaction" | "redacted" | "redaction_status" | "pii_redaction" => Some("redaction"),
+        "consent" | "consent_status" | "data_consent" => Some("consent"),
+        _ => None,
+    }
+}
+
 /// A source field that existed but the CDM cannot represent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnmappedField {
