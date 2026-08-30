@@ -10,6 +10,27 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **An MF4 reported raw detector counts as though they were the measurement.** A `##CC` conversion
+  is the rule that turns raw bits into the physical quantity they stand for, and only the linear one
+  was applied. A sensor's calibration curve is not always a straight line: the rational type and the
+  three look-up tables are how a real one is stored, and each was skipped with the raw value
+  recorded in its place — then summarized, graded by the whole statistical family, and signed into a
+  certificate as the channel's values.
+
+  Every numeric conversion MDF defines is now applied: rational
+  (`(p1x² + p2x + p3) / (p4x² + p5x + p6)`), value-to-value with interpolation and without (nearest
+  key), and value-range-to-value with its default. A table whose keys are out of order — or hold a
+  NaN — is declined rather than read at the wrong entry, and `cc_val_count` is bounded by the
+  block's own length, so a forged count cannot read past it or allocate beyond it.
+
+  What is still unevaluated is now filed by what it costs the reader. The **algebraic-formula** type
+  produces a number that is in the file as a rule, so leaving it unevaluated means every value of
+  that stream is a raw count standing in for a physical quantity — that is `COVERAGE.SOURCE_UNREAD`
+  in the verdict, not a note only `inspect` prints. The four **text-valued** types produce a string
+  a numeric stream has no shape for, and recording the raw code is the honest answer — those stay
+  unmapped, costing nothing. Both now name the rule (`conversion type 3 (algebraic formula)`) rather
+  than a bare number.
+
 - **An MF4 full of bus traffic produced almost no streams.** The adapter decoded only whole-byte
   channels on a byte boundary, and that is not how an automotive measurement stores signals: a
   12-bit pedal position starting three bits into a byte, a 4-bit gear packed above it in the same

@@ -18,17 +18,27 @@
 //! contiguous stream per channel group first, each at that group's own record length.
 //!
 //! Scope, stated honestly rather than guessed at (design D2 — never silently drop what could affect a
-//! verdict). Decoded: byte-aligned integer and float channels (little- and big-endian), with identity
-//! or linear (`##CC` type 1) conversion applied. Everything else contributes no frames and is
-//! reported, so a reader always knows what the verdict did and did not cover — split two ways,
-//! because the two mean different things. **Unread** (a `COVERAGE.SOURCE_UNREAD` warning in the
-//! verdict): a `##DZ` holding something other than a `DT` record stream or using an undefined zip
-//! type, a data list whose elements do not all resolve, an unsorted record tagged with an id no
-//! channel group claims, a variable-length signal-data group, a group with no usable time master, a
-//! channel declaring per-sample invalidation, a group declaring more cycles than its block holds —
-//! samples that are in the file and nobody read them, so every result is over less of the
-//! measurement than it appears to be. **Unmapped** (a note about shape, costing the reader nothing):
-//! non-byte-aligned and non-numeric channels, other conversion types.
+//! verdict). Decoded: little-endian integer channels at **any bit offset and any width up to 64
+//! bits** — which is how an automotive measurement stores bus signals — plus big-endian integers and
+//! IEEE floats in whole bytes on a byte boundary, with every numeric `##CC` conversion applied:
+//! identity, linear, rational, the two value-to-value look-up tables, and value-range-to-value. A
+//! bit-packed big-endian field is declined rather than guessed at, because MDF's bit numbering for a
+//! straddling Motorola field is not the DBC sawtooth and a wrong reading there is a plausible number,
+//! not a failure.
+//!
+//! Everything else contributes no frames — or no *physical* value — and is reported, so a reader
+//! always knows what the verdict did and did not cover, split two ways because the two mean different
+//! things. **Unread** (a `COVERAGE.SOURCE_UNREAD` warning in the verdict): a `##DZ` holding something
+//! other than a `DT` record stream or using an undefined zip type, a data list whose elements do not
+//! all resolve, an unsorted record tagged with an id no channel group claims, a variable-length
+//! signal-data group, a group with no usable time master, a channel declaring per-sample
+//! invalidation, a group declaring more cycles than its block holds, a bit-packed big-endian field, a
+//! channel that runs past the end of its record, and a numeric `##CC` conversion left unevaluated —
+//! the physical value is defined in the file as a rule, and the raw count stood in for it. All of it
+//! is in the file and nobody read it, so every result is over less of the measurement than it appears
+//! to be. **Unmapped** (a note about shape, costing the reader nothing): non-numeric channels, and
+//! the four text-valued conversions, whose physical value is a string a numeric stream cannot hold
+//! and whose raw code is the honest thing to record.
 //!
 //! Decompression is charged to the shared [`DecompressionBudget`] before a decompressor is pointed
 //! at a stream, and each block's read is capped at the length it declares, so a forged expansion is
@@ -154,22 +164,90 @@ fn text_block(bytes: &[u8], at: u64) -> Option<String> {
     Some(String::from_utf8_lossy(&data[..end]).trim().to_string())
 }
 
-/// A channel's value conversion. Only the two conversions that need no lookup table are applied; any
-/// other type leaves the raw value untouched and is reported as unmapped.
-#[derive(Debug, Clone, Copy)]
+/// A channel's value conversion: the rule that turns the raw bits in a record into the physical
+/// quantity they stand for.
+///
+/// Every numeric conversion MDF defines is applied. What is left — the algebraic-formula type, which
+/// needs an expression evaluator, and the four text-valued types, whose physical value is a string
+/// the CDM's numeric stream has no shape for — leaves the raw value untouched and is reported.
+#[derive(Debug, Clone)]
 enum Conversion {
     /// Physical value is the raw value.
     Identity,
     /// `phys = p1 + p2 * raw` (`##CC` type 1).
     Linear { p1: f64, p2: f64 },
+    /// `phys = (p1·raw² + p2·raw + p3) / (p4·raw² + p5·raw + p6)` (`##CC` type 2). How a sensor's
+    /// calibration curve is stored when it is not a straight line.
+    Rational { p: [f64; 6] },
+    /// A value-to-value look-up table (`##CC` types 4 and 5): ascending `(key, value)` pairs, read
+    /// with linear interpolation between them (type 4) or by nearest key (type 5).
+    Table {
+        pairs: Vec<(f64, f64)>,
+        interpolate: bool,
+    },
+    /// A value-range-to-value look-up table (`##CC` type 6): `(min, max, value)` triples matched on
+    /// `min <= raw < max`, with a default for a raw value in no range.
+    RangeTable {
+        ranges: Vec<(f64, f64, f64)>,
+        default: f64,
+    },
 }
 
 impl Conversion {
-    fn apply(self, raw: f64) -> f64 {
+    fn apply(&self, raw: f64) -> f64 {
         match self {
             Conversion::Identity => raw,
             Conversion::Linear { p1, p2 } => p1 + p2 * raw,
+            // A zero denominator yields a non-finite value rather than a silently substituted one.
+            // That is the file's own conversion saying the sample has no physical value there, and
+            // `STATISTICAL.NON_FINITE_OBSERVED` is the finding that says so.
+            Conversion::Rational { p } => {
+                (p[0] * raw * raw + p[1] * raw + p[2]) / (p[3] * raw * raw + p[4] * raw + p[5])
+            }
+            Conversion::Table { pairs, interpolate } => table_lookup(pairs, *interpolate, raw),
+            Conversion::RangeTable { ranges, default } => ranges
+                .iter()
+                .find(|(min, max, _)| raw >= *min && raw < *max)
+                .map_or(*default, |(_, _, value)| *value),
         }
+    }
+}
+
+/// Read `raw` off an ascending `(key, value)` table.
+///
+/// Type 4 interpolates linearly between the two keys that bracket the value and clamps outside the
+/// table; type 5 takes the value of the nearest key. Both are what a sensor linearization curve is
+/// stored as, and reading the raw count instead reports a detector count as though it were a
+/// temperature.
+fn table_lookup(pairs: &[(f64, f64)], interpolate: bool, raw: f64) -> f64 {
+    let Some(&(first_key, first_value)) = pairs.first() else {
+        return raw;
+    };
+    let &(last_key, last_value) = pairs.last().expect("non-empty, checked above");
+    if raw <= first_key {
+        return first_value;
+    }
+    if raw >= last_key {
+        return last_value;
+    }
+    // The keys ascend (verified when the block was read), so the first key above `raw` and the one
+    // before it bracket it.
+    let upper = pairs
+        .iter()
+        .position(|(key, _)| *key >= raw)
+        .expect("`raw` is below the last key");
+    let (hi_key, hi_value) = pairs[upper];
+    let (lo_key, lo_value) = pairs[upper - 1];
+    if interpolate {
+        let span = hi_key - lo_key;
+        if span == 0.0 {
+            return lo_value;
+        }
+        lo_value + (raw - lo_key) * (hi_value - lo_value) / span
+    } else if raw - lo_key <= hi_key - raw {
+        lo_value
+    } else {
+        hi_value
     }
 }
 
@@ -186,20 +264,103 @@ fn conversion_at(bytes: &[u8], at: u64) -> (Conversion, Option<u8>) {
         return (Conversion::Identity, None);
     };
     let cc_type = data.first().copied().unwrap_or(0);
+    // Data layout: type u8, precision u8, flags u16, ref_count u16, val_count u16,
+    // phy_range_min f64, phy_range_max f64, then val_count f64 parameters.
+    const PARAMS_AT: usize = 1 + 1 + 2 + 2 + 2 + 8 + 8;
+    // `cc_val_count` is the file's claim about how many parameters follow; the block's own length
+    // is the bound. A forged count cannot make this read past the block or allocate beyond it.
+    let declared = le_u16(data, 6).unwrap_or(0) as usize;
+    let available = data.len().saturating_sub(PARAMS_AT) / 8;
+    let count = declared.min(available);
+    let param = |i: usize| le_f64(data, PARAMS_AT + i * 8);
     match cc_type {
         // 0 = 1:1 (no conversion).
         0 => (Conversion::Identity, None),
         // 1 = linear: the first two conversion parameters are the offset and factor.
-        1 => {
-            // Data layout: type u8, precision u8, flags u16, ref_count u16, val_count u16,
-            // phy_range_min f64, phy_range_max f64, then val_count f64 parameters.
-            let params_at = 1 + 1 + 2 + 2 + 2 + 8 + 8;
-            match (le_f64(data, params_at), le_f64(data, params_at + 8)) {
-                (Some(p1), Some(p2)) => (Conversion::Linear { p1, p2 }, None),
-                _ => (Conversion::Identity, Some(1)),
+        1 => match (param(0), param(1)) {
+            (Some(p1), Some(p2)) if count >= 2 => (Conversion::Linear { p1, p2 }, None),
+            _ => (Conversion::Identity, Some(1)),
+        },
+        // 2 = rational: a quadratic over a quadratic. How a sensor's calibration curve is stored
+        // when it is not a straight line.
+        2 if count >= 6 => {
+            let mut p = [0f64; 6];
+            for (i, slot) in p.iter_mut().enumerate() {
+                match param(i) {
+                    Some(v) => *slot = v,
+                    None => return (Conversion::Identity, Some(2)),
+                }
             }
+            (Conversion::Rational { p }, None)
+        }
+        // 4 = value-to-value with interpolation, 5 = without: ascending `(key, value)` pairs.
+        4 | 5 if count >= 2 => {
+            let mut pairs: Vec<(f64, f64)> = Vec::with_capacity(count / 2);
+            for i in 0..count / 2 {
+                match (param(i * 2), param(i * 2 + 1)) {
+                    (Some(key), Some(value)) => pairs.push((key, value)),
+                    _ => return (Conversion::Identity, Some(cc_type)),
+                }
+            }
+            // The lookup walks the table assuming ascending keys, which MDF requires. A file whose
+            // table is out of order would be read at the wrong entry, so it is not applied at all.
+            // A NaN key is "not ascending" too: it compares to nothing, so no walk of the table
+            // can be relied on.
+            if pairs.windows(2).any(|w| {
+                !matches!(
+                    w[0].0.partial_cmp(&w[1].0),
+                    Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+                )
+            }) {
+                return (Conversion::Identity, Some(cc_type));
+            }
+            (
+                Conversion::Table {
+                    pairs,
+                    interpolate: cc_type == 4,
+                },
+                None,
+            )
+        }
+        // 6 = value-range-to-value: `(min, max, value)` triples then a default.
+        6 if count >= 4 => {
+            let triples = (count - 1) / 3;
+            let mut ranges: Vec<(f64, f64, f64)> = Vec::with_capacity(triples);
+            for i in 0..triples {
+                match (param(i * 3), param(i * 3 + 1), param(i * 3 + 2)) {
+                    (Some(min), Some(max), Some(value)) => ranges.push((min, max, value)),
+                    _ => return (Conversion::Identity, Some(6)),
+                }
+            }
+            let Some(default) = param(triples * 3) else {
+                return (Conversion::Identity, Some(6));
+            };
+            (Conversion::RangeTable { ranges, default }, None)
         }
         other => (Conversion::Identity, Some(other)),
+    }
+}
+
+/// `##CC` types whose physical value is *text*. A numeric CDM stream has no shape for a string, so
+/// recording the raw code is the honest answer and costs the reader nothing — unlike a numeric
+/// conversion that went unevaluated, which leaves raw counts summarized as physical quantities.
+const TEXT_VALUED_CONVERSIONS: &[u8] = &[7, 8, 9, 10];
+
+/// What `##CC` type `cc` is called, so a report names the rule rather than a number.
+fn cc_type_name(cc: u8) -> &'static str {
+    match cc {
+        0 => "1:1",
+        1 => "linear",
+        2 => "rational",
+        3 => "algebraic formula",
+        4 => "value-to-value, interpolated",
+        5 => "value-to-value",
+        6 => "value-range-to-value",
+        7 => "value-to-text",
+        8 => "value-range-to-text",
+        9 => "text-to-value",
+        10 => "text-to-text",
+        _ => "unknown",
     }
 }
 
@@ -1588,12 +1749,26 @@ fn decode_channel_group(
         }
         if let Some(cc) = channel.unapplied_conversion {
             if reported_conversions.insert(cc) {
-                out.unmapped.push(UnmappedField {
+                // Where this lands is the difference between "the CDM has no shape for it" and
+                // "the physical value is defined in this file and nobody computed it". A text-valued
+                // conversion turns a code into a string, which a numeric stream cannot hold, and the
+                // raw code is the honest thing to record — that costs the reader nothing. An
+                // algebraic formula produces a *number*, which is in the file as a rule and was not
+                // evaluated, so every value this stream carries is a raw count summarized as though
+                // it were the physical quantity. That has to reach the verdict.
+                let field = UnmappedField {
                     source_path: locate(&channel.name),
                     note: format!(
-                        "##CC conversion type {cc} is not applied; the raw value is recorded instead"
+                        "##CC conversion type {cc} ({}) is not applied; the raw value is recorded \
+                         instead",
+                        cc_type_name(cc)
                     ),
-                });
+                };
+                if TEXT_VALUED_CONVERSIONS.contains(&cc) {
+                    out.unmapped.push(field);
+                } else {
+                    out.unread.push(field);
+                }
             }
         }
         let mut frames: Vec<Frame> = Vec::with_capacity(count);

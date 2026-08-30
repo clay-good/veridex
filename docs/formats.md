@@ -368,8 +368,13 @@ cargo run -p veridex-cli -- check /tmp/drive.mf4   # fires STATISTICAL.SATURATED
 ```
 
 The point of that finding is that it needs the *values*, not the file's shape: the records had to be
-decompressed, untransposed, sliced at the right byte offsets, and run through the channel's linear
-conversion before anything could notice the wheel was pinned at its end-stop. An MF4 channel is
+decompressed, untransposed, sliced at the right byte offsets, and run through the channel's `##CC`
+conversion before anything could notice the wheel was pinned at its end-stop. Every numeric
+conversion MDF defines is applied — linear, rational, the two value-to-value look-up tables, and
+value-range-to-value — because a sensor's calibration curve is not always a straight line, and
+reporting the raw count instead grades a detector count as though it were a temperature. A numeric
+conversion this reader *cannot* evaluate (the algebraic-formula type) is disclosed as unread for the
+same reason: the physical value is defined in the file and nobody computed it. An MF4 channel is
 measured the same way a LeRobot feature is, so the whole statistical family reaches it — a buried
 NaN, a 250x spike, a dead constant channel.
 
@@ -417,8 +422,10 @@ channel group claims, a variable-length signal-data group (its records are lengt
 fixed-stride, so slicing them at a fixed width would read every one at the wrong offset), a group
 with no usable time master, a channel declaring per-sample invalidation, a group declaring more
 cycles than its block holds, a bit-packed big-endian field, a channel that runs past the end of its
-record. Non-numeric channels and the conversions that need a lookup table are **unmapped** instead,
-and cost the reader nothing: the CDM has no shape for them.
+record, a numeric `##CC` conversion left unevaluated. Non-numeric channels and the four text-valued
+conversions are **unmapped** instead, and cost the reader nothing: a value-to-text conversion turns a
+code into a string, which a numeric stream has no shape for, and the raw code is the honest thing to
+record.
 
 **Bit-packed signals are read.** An MF4 carrying bus traffic does not store one signal per byte: a
 12-bit pedal position starting three bits into a byte, a 4-bit gear packed above it in the same word,

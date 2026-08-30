@@ -82,13 +82,26 @@ impl Mf4Builder {
         self.block(b"##CC", &[0, 0, 0, 0], &data)
     }
 
-    /// A conversion type the adapter does not apply (rational, type 2).
-    fn rational_conversion(&mut self) -> u64 {
+    /// A `##CC` of any type, with `params` as its `cc_val` array.
+    fn conversion(&mut self, cc_type: u8, params: &[f64]) -> u64 {
         let mut data = Vec::new();
-        data.push(2u8);
-        data.extend_from_slice(&[0u8; 7]);
-        data.extend_from_slice(&[0u8; 16]);
+        data.push(cc_type);
+        data.push(0u8); // precision
+        data.extend_from_slice(&0u16.to_le_bytes()); // flags
+        data.extend_from_slice(&0u16.to_le_bytes()); // ref_count
+        data.extend_from_slice(&(params.len() as u16).to_le_bytes()); // val_count
+        data.extend_from_slice(&0f64.to_le_bytes()); // phy_range_min
+        data.extend_from_slice(&0f64.to_le_bytes()); // phy_range_max
+        for p in params {
+            data.extend_from_slice(&p.to_le_bytes());
+        }
         self.block(b"##CC", &[0, 0, 0, 0], &data)
+    }
+
+    /// A conversion type the adapter does not apply: an algebraic formula (type 3), whose physical
+    /// value is a number this reader has no expression evaluator for.
+    fn algebraic_conversion(&mut self) -> u64 {
+        self.conversion(3, &[])
     }
 
     /// A channel block. Returns its offset; `cn_next` is patched by the caller.
@@ -455,35 +468,128 @@ fn a_linear_conversion_is_applied_to_the_physical_value() {
 }
 
 #[test]
-fn an_unapplied_conversion_is_reported_rather_than_silently_ignored() {
+fn an_unapplied_numeric_conversion_reaches_the_verdict_as_data_that_went_unread() {
+    // An algebraic formula produces a *number*, and it is in the file as a rule. Not evaluating it
+    // leaves every value of the stream a raw count summarized as though it were the physical
+    // quantity — so the run has to say so in the verdict, not in a note only `inspect` prints.
+    let ingested = ingest(&converted_file(|b| b.algebraic_conversion()));
+    assert_eq!(ingested.dataset.episodes[0].streams.len(), 1);
+    assert!(
+        ingested.report.unread_sources.iter().any(|u| u
+            .note
+            .contains("conversion type 3 (algebraic formula) is not applied")),
+        "{:?}",
+        ingested.report.unread_sources
+    );
+}
+
+/// The canonical conversion fixture: a `value` channel carrying the raw counts 0, 1, 2, 3, 4 under
+/// whatever `##CC` the caller builds.
+fn converted_file(make_cc: impl FnOnce(&mut Mf4Builder) -> u64) -> Vec<u8> {
     let mut b = Mf4Builder::new(b"veridex ");
     let mut data = Vec::new();
-    for i in 0..3u32 {
-        data.extend_from_slice(&(i as f64 * 0.1).to_le_bytes());
+    for i in 0..5u32 {
+        data.extend_from_slice(&(f64::from(i) * 0.1).to_le_bytes());
         data.extend_from_slice(&i.to_le_bytes());
     }
     let dt = b.block(b"##DT", &[], &data);
-    let cc = b.rational_conversion();
-    let value = b.channel("rational_value", 0, 0, UINT_LE, 0, 8, 32, Some(cc));
+    let cc = make_cc(&mut b);
+    let value = b.channel("value", 0, 0, UINT_LE, 0, 8, 32, Some(cc));
     let time = b.channel("t", 2, 1, FLOAT_LE, 0, 0, 64, None);
     b.patch_link(time, 0, value);
-    let cg = b.channel_group(3, 12);
+    let cg = b.channel_group(5, 12);
     b.patch_link(cg, 1, time);
     let dg = b.data_group(0);
     b.patch_link(dg, 1, cg);
     b.patch_link(dg, 2, dt);
-    let ingested = ingest(&b.finish(dg, 0));
+    b.finish(dg, 0)
+}
 
-    // The channel is still ingested — with its raw value — and the unapplied conversion is disclosed.
-    assert_eq!(ingested.dataset.episodes[0].streams.len(), 1);
+/// The converted values of the fixture's single stream, for raw counts 0..5.
+fn converted_values(bytes: &[u8]) -> Vec<f64> {
+    let ingested = ingest(bytes);
+    assert!(
+        ingested.report.unread_sources.is_empty(),
+        "the conversion must be applied, not disclosed: {:?}",
+        ingested.report.unread_sources
+    );
+    let stream = &ingested.dataset.episodes[0].streams[0];
+    let stats = stream.observed_stats.expect("statistics");
+    // The recomputed statistics are over the converted values; min/max/mean pin the whole curve
+    // well enough for these tables, and the per-sample assertions below use them.
+    vec![stats.min, stats.max, stats.mean]
+}
+
+#[test]
+fn a_text_valued_conversion_records_the_raw_code_and_costs_the_reader_nothing() {
+    // A value-to-text conversion turns a code into a string, which a numeric CDM stream has no
+    // shape for. Recording the raw code is the honest answer, so it is `unmapped`, not `unread`.
+    let ingested = ingest(&converted_file(|b| b.conversion(7, &[0.0, 1.0])));
+    assert!(
+        ingested.report.unmapped_fields.iter().any(|u| u
+            .note
+            .contains("conversion type 7 (value-to-text) is not applied")),
+        "{:?}",
+        ingested.report.unmapped_fields
+    );
+    assert!(
+        !ingested
+            .report
+            .unread_sources
+            .iter()
+            .any(|u| u.note.contains("conversion type 7")),
+        "a code the CDM cannot hold as text is not unread data: {:?}",
+        ingested.report.unread_sources
+    );
+}
+
+#[test]
+fn a_rational_conversion_is_applied_rather_than_leaving_raw_counts_in_the_verdict() {
+    // A sensor's calibration curve is not always a straight line. `(2x + 1) / 1` over raw 0..4.
+    let bytes = converted_file(|b| b.conversion(2, &[0.0, 2.0, 1.0, 0.0, 0.0, 1.0]));
+    assert_eq!(converted_values(&bytes), vec![1.0, 9.0, 5.0]);
+}
+
+#[test]
+fn a_value_to_value_table_is_interpolated_between_its_keys() {
+    // Keys 0 and 4 map to 100 and 500; raw 1, 2, 3 land a quarter, half and three quarters along.
+    let bytes = converted_file(|b| b.conversion(4, &[0.0, 100.0, 4.0, 500.0]));
+    assert_eq!(converted_values(&bytes), vec![100.0, 500.0, 300.0]);
+}
+
+#[test]
+fn a_value_to_value_table_without_interpolation_takes_the_nearest_key() {
+    // The same table read as type 5: every raw count snaps to whichever key it is closest to, so
+    // nothing between 100 and 500 is ever invented.
+    let bytes = converted_file(|b| b.conversion(5, &[0.0, 100.0, 4.0, 500.0]));
+    // raw 0,1,2 -> 100 (2 ties to the lower key); raw 3,4 -> 500. Mean = (100*3 + 500*2) / 5.
+    assert_eq!(converted_values(&bytes), vec![100.0, 500.0, 260.0]);
+}
+
+#[test]
+fn a_value_range_table_maps_each_range_and_falls_back_to_its_default() {
+    // 0..2 -> 10, 2..4 -> 20, anything else -> -1. Raw 4 is in no range (the upper bound is open).
+    let bytes = converted_file(|b| b.conversion(6, &[0.0, 2.0, 10.0, 2.0, 4.0, 20.0, -1.0]));
+    // raw 0,1 -> 10; raw 2,3 -> 20; raw 4 -> -1. Mean = (10+10+20+20-1)/5.
+    assert_eq!(converted_values(&bytes), vec![-1.0, 20.0, 11.8]);
+}
+
+#[test]
+fn a_table_whose_keys_are_out_of_order_is_not_applied() {
+    // The lookup walks the table assuming ascending keys, which MDF requires. A file that breaks
+    // that would be read at the wrong entry — a plausible wrong number for every sample — so the
+    // conversion is declined and disclosed instead.
+    let ingested = ingest(&converted_file(|b| {
+        b.conversion(4, &[4.0, 500.0, 0.0, 100.0])
+    }));
     assert!(
         ingested
             .report
-            .unmapped_fields
+            .unread_sources
             .iter()
-            .any(|u| u.note.contains("conversion type 2 is not applied")),
+            .any(|u| u.note.contains("conversion type 4")),
         "{:?}",
-        ingested.report.unmapped_fields
+        ingested.report.unread_sources
     );
 }
 
@@ -857,7 +963,7 @@ fn a_conversion_on_the_time_master_that_cannot_be_applied_stops_the_group() {
         data.extend_from_slice(&i.to_le_bytes());
     }
     let dt = b.block(b"##DT", &[], &data);
-    let cc = b.rational_conversion();
+    let cc = b.algebraic_conversion();
     let value = b.channel("value", 0, 0, UINT_LE, 0, 8, 32, None);
     let time = b.channel("t", 2, 1, FLOAT_LE, 0, 0, 64, Some(cc));
     b.patch_link(time, 0, value);
@@ -872,7 +978,7 @@ fn a_conversion_on_the_time_master_that_cannot_be_applied_stops_the_group() {
     assert!(
         ingested.report.unread_sources.iter().any(|u| u
             .note
-            .contains("time master carries ##CC conversion type 2")),
+            .contains("time master carries ##CC conversion type 3")),
         "{:?}",
         ingested.report.unread_sources
     );
