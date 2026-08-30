@@ -27,6 +27,17 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   made it flaky, so closing that gap means lifting the generator out of `examples/` into something a
   test can call — a change to make deliberately.
 
+- **A corruption sweep that only asserts "nothing panicked" cannot tell you what it reached.** Every
+  sweep in `corrupted_inputs.rs` counted mutations and checked for unwinds, and a run in which every
+  single mutation was refused at a magic number or a checksum looks identical to one that reached
+  the parser behind it. That is how the RLDS blind spot below stayed invisible.
+
+  Each sweep now records what each mutation *did* — the process died, the adapter refused the
+  source, or it read it anyway — and asserts that both non-fatal outcomes occur, per format. An
+  all-refused run is exercising one gate; an all-accepted run is not damaging anything the source
+  validates. All four sweeps pass today, so the assertion is a tripwire: a future change that starts
+  refusing everything early will say so instead of quietly proving less.
+
 - **A checksum was shielding the RLDS parser from every corruption test.** A TFRecord checksums both
   its length prefix and its payload, and both of the adapter's damage tests flipped a byte and
   watched the CRC catch it. That is the right behavior for accidental corruption — and it means the

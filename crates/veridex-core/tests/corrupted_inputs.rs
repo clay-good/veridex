@@ -97,7 +97,8 @@ fn mutations(bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
     out
 }
 
-/// Ingest and, when that succeeds, validate — catching an unwind rather than letting it end the run.
+/// Ingest and, when that succeeds, validate — catching an unwind rather than letting it end the run,
+/// and reporting which of the three things happened.
 ///
 /// `format` forces an adapter rather than letting detection choose. Both paths matter and they are
 /// not the same test: with a destroyed header, detection declines the file and nothing parses it,
@@ -110,7 +111,21 @@ fn mutations(bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
 /// file states about *itself* — an MCAP's summary pointer, an HDF5 object header, a Zarr `.zarray` —
 /// and does so without the frame reading that would otherwise trip over the same corruption first.
 /// A hostile file must not be able to panic either one.
-fn survives_with(path: &Path, format: Option<&str>, metadata_only: bool) -> Result<(), String> {
+/// What one mutation did: the process died, the adapter refused the source, or it read it anyway.
+///
+/// The last two matter as much as the first. A sweep whose every mutation is *refused* is exercising
+/// whichever gate refused it — a magic number, a checksum — and not the reader behind that gate; a
+/// sweep whose every mutation is *accepted* is not damaging anything the source validates. Both
+/// shapes look identical to a "nothing panicked" assertion, which is how a sweep comes to prove
+/// less than it claims.
+#[derive(Debug)]
+enum Outcome {
+    Panicked(String),
+    Refused,
+    Ingested,
+}
+
+fn outcome_of(path: &Path, format: Option<&str>, metadata_only: bool) -> Outcome {
     let result = catch_unwind(AssertUnwindSafe(|| {
         let registry = default_registry();
         let source = Source::Local(path.to_path_buf());
@@ -128,23 +143,54 @@ fn survives_with(path: &Path, format: Option<&str>, metadata_only: bool) -> Resu
             Some(f) => registry.ingest_as(f, &source, &options),
             None => registry.ingest(&source, &options),
         };
-        if let Ok(mut ingested) = ingested {
-            ingested.dataset.canonicalize_order();
-            let hash = veridex_core::content_hash(&ingested.dataset);
-            let engine = veridex_core::checks::default_engine().expect("standard checks");
-            let _ = engine.run(&ingested.dataset, hash, &RunConfig::default());
+        match ingested {
+            Ok(mut ingested) => {
+                ingested.dataset.canonicalize_order();
+                let hash = veridex_core::content_hash(&ingested.dataset);
+                let engine = veridex_core::checks::default_engine().expect("standard checks");
+                let _ = engine.run(&ingested.dataset, hash, &RunConfig::default());
+                true
+            }
+            Err(_) => false,
         }
     }));
     match result {
-        Ok(()) => Ok(()),
-        Err(panic) => {
-            let message = panic
+        Ok(true) => Outcome::Ingested,
+        Ok(false) => Outcome::Refused,
+        Err(panic) => Outcome::Panicked(
+            panic
                 .downcast_ref::<&str>()
                 .map(|s| s.to_string())
                 .or_else(|| panic.downcast_ref::<String>().cloned())
-                .unwrap_or_else(|| "non-string panic".to_string());
-            Err(message)
+                .unwrap_or_else(|| "non-string panic".to_string()),
+        ),
+    }
+}
+
+/// How deep one format's sweep actually reached.
+#[derive(Debug, Default)]
+struct Reach {
+    ingested: usize,
+    refused: usize,
+}
+
+impl Reach {
+    fn record(&mut self, outcome: &Outcome) {
+        match outcome {
+            Outcome::Ingested => self.ingested += 1,
+            Outcome::Refused => self.refused += 1,
+            Outcome::Panicked(_) => {}
         }
+    }
+
+    /// Both outcomes must occur, or the sweep is testing one gate rather than the reader behind it.
+    fn assert_reached_the_reader(&self, what: &str) {
+        assert!(
+            self.ingested > 0 && self.refused > 0,
+            "{what}: the sweep never got past a single gate — {} damaged sources read, {} refused",
+            self.ingested,
+            self.refused
+        );
     }
 }
 
@@ -186,6 +232,7 @@ fn no_damaged_store_takes_the_process_down() {
 
     let dir = tempfile::tempdir().expect("temp dir");
     let mut checked = 0usize;
+    let mut reach = Reach::default();
     let mut failures: Vec<String> = Vec::new();
     for member in &members {
         let relative = member
@@ -200,7 +247,9 @@ fn no_damaged_store_takes_the_process_down() {
             checked += 1;
             for forced in [None, Some("zarr")] {
                 for metadata_only in [false, true] {
-                    if let Err(message) = survives_with(&store, forced, metadata_only) {
+                    let outcome = outcome_of(&store, forced, metadata_only);
+                    reach.record(&outcome);
+                    if let Outcome::Panicked(message) = outcome {
                         let how = forced.map_or("detected", |_| "forced");
                         let mode = if metadata_only {
                             "metadata-only"
@@ -218,6 +267,7 @@ fn no_damaged_store_takes_the_process_down() {
     }
 
     assert!(checked > 20, "the sweep must actually run: {checked}");
+    reach.assert_reached_the_reader("zarr");
     assert!(
         failures.is_empty(),
         "{} of {checked} damaged stores took the process down:\n{}",
@@ -265,6 +315,9 @@ fn copy_tree(from: &Path, to: &Path) {
 fn no_damaged_file_takes_the_process_down() {
     let dir = tempfile::tempdir().expect("temp dir");
     let mut checked = 0usize;
+    // Per format, because they are different readers behind different gates — and MCAP's framing
+    // carries checksums that HDF5's superblock does not.
+    let mut reach: std::collections::BTreeMap<String, Reach> = std::collections::BTreeMap::new();
     let mut failures: Vec<String> = Vec::new();
 
     for fixture in fixtures() {
@@ -287,7 +340,9 @@ fn no_damaged_file_takes_the_process_down() {
             for forced in [None, Some(format.as_str())] {
                 for metadata_only in [false, true] {
                     checked += 1;
-                    if let Err(message) = survives_with(&path, forced, metadata_only) {
+                    let outcome = outcome_of(&path, forced, metadata_only);
+                    reach.entry(format.clone()).or_default().record(&outcome);
+                    if let Outcome::Panicked(message) = outcome {
                         let how = forced.map_or("detected", |_| "forced");
                         let mode = if metadata_only {
                             "metadata-only"
@@ -304,6 +359,10 @@ fn no_damaged_file_takes_the_process_down() {
     }
 
     assert!(checked > 100, "the sweep must actually run: {checked}");
+    assert!(reach.len() >= 2, "both file formats must have been swept");
+    for (format, r) in &reach {
+        r.assert_reached_the_reader(format);
+    }
     assert!(
         failures.is_empty(),
         "{} of {checked} damaged files took the process down:\n{}",
@@ -321,6 +380,7 @@ fn no_damaged_file_takes_the_process_down() {
 #[test]
 fn no_damaged_bag_takes_the_process_down() {
     let dir = tempfile::tempdir().expect("temp dir");
+    let mut reach = Reach::default();
     let mcap_bag = dir.path().join("mcap_bag");
     write_mcap_bag(&mcap_bag);
 
@@ -355,7 +415,9 @@ fn no_damaged_bag_takes_the_process_down() {
                 checked += 1;
                 for forced in [None, Some("rosbag2")] {
                     for metadata_only in [false, true] {
-                        if let Err(message) = survives_with(&bag, forced, metadata_only) {
+                        let outcome = outcome_of(&bag, forced, metadata_only);
+                        reach.record(&outcome);
+                        if let Outcome::Panicked(message) = outcome {
                             let how = forced.map_or("detected", |_| "forced");
                             let mode = if metadata_only {
                                 "metadata-only"
@@ -374,6 +436,7 @@ fn no_damaged_bag_takes_the_process_down() {
     }
 
     assert!(checked > 20, "the sweep must actually run: {checked}");
+    reach.assert_reached_the_reader("rosbag2");
     assert!(
         failures.is_empty(),
         "{} of {checked} damaged bags took the process down:\n{}",
@@ -493,6 +556,7 @@ fn no_damaged_bus_log_takes_the_process_down() {
     let members = walk(&bus);
     assert_eq!(members.len(), 2, "one database and one log");
     let mut checked = 0usize;
+    let mut reach = Reach::default();
     let mut failures: Vec<String> = Vec::new();
     for member in &members {
         let relative = member.strip_prefix(&bus).expect("inside the dataset");
@@ -505,7 +569,9 @@ fn no_damaged_bus_log_takes_the_process_down() {
             checked += 1;
             for forced in [None, Some("candbc")] {
                 for metadata_only in [false, true] {
-                    if let Err(message) = survives_with(&store, forced, metadata_only) {
+                    let outcome = outcome_of(&store, forced, metadata_only);
+                    reach.record(&outcome);
+                    if let Outcome::Panicked(message) = outcome {
                         failures.push(format!(
                             "candbc {}: {label} → panic: {message}",
                             relative.display()
@@ -517,6 +583,7 @@ fn no_damaged_bus_log_takes_the_process_down() {
     }
 
     assert!(checked > 20, "the sweep must actually run: {checked}");
+    reach.assert_reached_the_reader("candbc");
     assert!(
         failures.is_empty(),
         "{} of {checked} damaged bus logs took the process down:\n{}",
