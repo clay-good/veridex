@@ -560,9 +560,20 @@ fn every_transmitting_node_is_named_once() {
          (1000.300000) can0 100#0400000000000000\n",
     )
     .unwrap();
+    // One element per node, not one joined string: a bus with several ECUs on it has several
+    // sensors, and a lineage document naming a single agent called "A, B" names an agent nobody has.
+    let ingested = ingest_dir(dir.path());
+    let sensors: Vec<String> = ingested
+        .dataset
+        .provenance
+        .iter()
+        .flat_map(|r| &r.elements)
+        .filter(|e| e.key == "sensor")
+        .filter_map(|e| e.value.clone())
+        .collect();
     assert_eq!(
-        provenance_value(&ingest_dir(dir.path()), "sensor").as_deref(),
-        Some("ABS, ECM"),
+        sensors,
+        vec!["ABS".to_string(), "ECM".to_string()],
         "each node once, in a stable order"
     );
 }

@@ -543,3 +543,38 @@ fn a_card_that_lists_both_a_category_and_a_name_attributes_to_the_name() {
     let croissant = to_croissant(&d, &content_hash(&d).to_hex());
     assert_eq!(croissant["creator"]["name"], "crowdsourced, Acme Labs");
 }
+
+#[test]
+fn every_agent_reaches_the_lineage_document_not_just_the_first() {
+    // A rig acquired from three devices records three `sensor` elements, and a bus log one per
+    // transmitting ECU. Naming one of three is worse than naming none, because it looks complete —
+    // the same reasoning `prov:wasDerivedFrom` already applied to upstreams and nothing else did.
+    let d = dataset_with(vec![
+        known("sensor", "Powertrain ECU"),
+        known("sensor", "Brake ECU"),
+        known("annotator", "Jane Doe"),
+        known("annotator", "Acme Labs"),
+    ]);
+
+    let prov = to_prov(&d);
+    let graph = prov["@graph"].as_array().expect("a graph");
+    let labels: Vec<&str> = graph
+        .iter()
+        .filter(|n| n["veridex:role"] == "sensor")
+        .filter_map(|n| n["veridex:label"].as_str())
+        .collect();
+    assert_eq!(labels, vec!["Brake ECU", "Powertrain ECU"], "{prov}");
+    assert_eq!(
+        graph[0]["prov:wasAttributedTo"]
+            .as_array()
+            .expect("attributions")
+            .len(),
+        4,
+        "both sensors and both annotators: {prov}"
+    );
+
+    let croissant = to_croissant(&d, &content_hash(&d).to_hex());
+    let creators = croissant["creator"].as_array().expect("a creator list");
+    assert_eq!(creators.len(), 2, "{croissant}");
+    assert!(creators.iter().all(|c| c["@type"] == "Person"));
+}

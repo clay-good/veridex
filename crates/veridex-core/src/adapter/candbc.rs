@@ -583,12 +583,13 @@ impl Adapter for CanDbcAdapter {
                         value: Some("candbc".into()),
                         class: ProvenanceClass::Known,
                     }];
-                    if !transmitters.is_empty() {
+                    // One element per node, not one joined string: a bus with three ECUs on it has
+                    // three sensors, and a lineage document naming a single agent called "A, B, C"
+                    // names an agent nobody has.
+                    for node in &transmitters {
                         elements.push(ProvenanceElement {
                             key: "sensor".into(),
-                            value: Some(
-                                transmitters.iter().cloned().collect::<Vec<_>>().join(", "),
-                            ),
+                            value: Some(node.clone()),
                             class: ProvenanceClass::Known,
                         });
                     }

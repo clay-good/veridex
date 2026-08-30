@@ -2093,12 +2093,24 @@ fn the_card_names_the_dataset_this_one_was_derived_from() {
         dir.path(),
         "---\nlicense: mit\nsource_datasets:\n- extended|open-x-embodiment\n- bridge_v2\n---\n",
     );
-    let upstream = element(&d, "upstream").expect("upstream extracted from the card");
+    // One element per source, which is what the emitters rely on: `prov:wasDerivedFrom` names every
+    // parent, and a single joined node would name a dataset nobody has.
+    let upstreams: Vec<String> = d
+        .provenance
+        .iter()
+        .flat_map(|r| &r.elements)
+        .filter(|e| e.key == "upstream")
+        .filter_map(|e| e.value.clone())
+        .collect();
     assert_eq!(
-        upstream.value.as_deref(),
-        Some("extended|open-x-embodiment, bridge_v2"),
+        upstreams,
+        vec![
+            "extended|open-x-embodiment".to_string(),
+            "bridge_v2".to_string()
+        ],
         "every source the card names, not just the first"
     );
+    let upstream = element(&d, "upstream").expect("upstream extracted from the card");
     assert_eq!(upstream.class, veridex_core::cdm::ProvenanceClass::Known);
 
     let engine = veridex_core::checks::default_engine().unwrap();

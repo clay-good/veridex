@@ -853,11 +853,17 @@ impl Adapter for Mdf4Adapter {
                     .collect::<Vec<_>>()
                     .join(", "),
             ));
-            elements.push(ProvenanceElement {
-                key: "sensor".into(),
-                value: Some(value),
-                class: ProvenanceClass::Known,
-            });
+            // One element per source, not one joined string. Provenance is a list precisely so a
+            // measurement acquired from several devices records several of them — and a lineage
+            // document that turns three ECUs into a single agent called "A, B, C" names an agent
+            // nobody has. The metadata entry above keeps the readable one-line form.
+            for source in sources.iter().take(MAX_NAMED_SOURCES) {
+                elements.push(ProvenanceElement {
+                    key: "sensor".into(),
+                    value: Some(source.label()),
+                    class: ProvenanceClass::Known,
+                });
+            }
         }
         metadata.push(("mdf_version".into(), version.clone()));
         if let Some(start) = start_time_ns {

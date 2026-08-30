@@ -121,17 +121,33 @@ pub fn to_croissant(dataset: &Dataset, cdm_content_hash: &str) -> Value {
     // `crowdsourced`, `machine-generated` — is still the honest answer to who annotated the data,
     // and it is carried in `veridex:provenance` below with its class, where it says what it is
     // instead of asserting a person by that name.
-    match known_value(dataset, "annotator") {
-        Some(annotator) if annotator_names_an_agent(annotator) => {
+    // Every annotator the source named, not the first: schema.org's `creator` takes a list, and a
+    // dataset annotated by two teams that credits one credits the wrong number of people. A
+    // *category* (`crowdsourced`, `machine-generated`) is not a person and is carried separately —
+    // see `annotator_names_an_agent`.
+    let (people, categories): (Vec<&str>, Vec<&str>) = known_values(dataset, "annotator")
+        .into_iter()
+        .partition(|v| annotator_names_an_agent(v));
+    match people.as_slice() {
+        [] => {}
+        [one] => {
+            doc.insert("creator".into(), json!({ "@type": "Person", "name": one }));
+        }
+        many => {
             doc.insert(
                 "creator".into(),
-                json!({ "@type": "Person", "name": annotator }),
+                json!(many
+                    .iter()
+                    .map(|name| json!({ "@type": "Person", "name": name }))
+                    .collect::<Vec<_>>()),
             );
         }
-        Some(annotator) => {
-            doc.insert("veridex:annotationCreators".into(), json!(annotator));
-        }
-        None => {}
+    }
+    if !categories.is_empty() {
+        doc.insert(
+            "veridex:annotationCreators".into(),
+            json!(categories.join(", ")),
+        );
     }
 
     // The CDM content hash as a Croissant FileObject the certificate also binds to.
@@ -250,10 +266,15 @@ pub fn to_prov(dataset: &Dataset) -> Value {
     // Set when the `annotator` element holds a category rather than an agent, so the entity can
     // carry it as a description instead of the graph gaining a person nobody named.
     let mut annotation_categories: Option<String> = None;
+    // Every value, not the first one — the same reasoning `prov:wasDerivedFrom` already applies to
+    // upstreams. A rig acquired from three devices records three `sensor` elements, and a bus log
+    // one per transmitting ECU; naming one of three is worse than naming none, because it looks
+    // complete.
+    let mut categories: Vec<&str> = Vec::new();
     for (key, prov_type) in PROV_AGENTS {
-        if let Some(value) = known_value(dataset, key) {
+        for value in known_values(dataset, key) {
             if *key == "annotator" && !annotator_names_an_agent(value) {
-                annotation_categories = Some(value.to_string());
+                categories.push(value);
                 continue;
             }
             let id = format!("veridex:agent/{key}/{}", iri_segment(value));
@@ -265,6 +286,9 @@ pub fn to_prov(dataset: &Dataset) -> Value {
             }));
             attributed.push(json!({ "@id": id }));
         }
+    }
+    if !categories.is_empty() {
+        annotation_categories = Some(categories.join(", "));
     }
 
     let mut entity = Map::new();

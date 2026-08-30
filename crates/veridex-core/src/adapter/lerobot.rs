@@ -1446,17 +1446,20 @@ fn card_provenance(card: &DatasetCard) -> Vec<ProvenanceElement> {
             class: ProvenanceClass::Known,
         });
     }
-    if !card.source_datasets.is_empty() {
+    // One element per value, not one joined string. Provenance is a list so a dataset merged from
+    // several parents records several upstreams — the emitters already rely on that, and a lineage
+    // document that turns two into a single node called "a, b" names a dataset nobody has.
+    for source in &card.source_datasets {
         out.push(ProvenanceElement {
             key: "upstream".into(),
-            value: Some(card.source_datasets.join(", ")),
+            value: Some(source.clone()),
             class: ProvenanceClass::Known,
         });
     }
-    if !card.annotations_creators.is_empty() {
+    for creator in &card.annotations_creators {
         out.push(ProvenanceElement {
             key: "annotator".into(),
-            value: Some(card.annotations_creators.join(", ")),
+            value: Some(creator.clone()),
             class: ProvenanceClass::Known,
         });
     }

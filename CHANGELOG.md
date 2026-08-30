@@ -10,6 +10,18 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **Three ECUs became one agent called "A, B, C".** The provenance extraction added this week joined
+  several sources into a single element — a rig's `##SI` devices, a bus's transmitting nodes, a
+  card's `source_datasets` — and the lineage emitters then read each as one thing. The PROV graph
+  gained an agent with a label no device has; the Croissant credited one creator for a dataset two
+  teams annotated. The CDM has always been able to hold several: provenance is a list, and
+  `prov:wasDerivedFrom` already relied on it for upstreams and nothing else did.
+
+  Each adapter now emits one element per source, and both emitters name every one — several
+  `prov:Agent` nodes with the entity attributed to all of them, and a `creator` list rather than a
+  single Person. The readable one-line form is still in dataset metadata, where a joined string is
+  what a reader wants.
+
 - **The Croissant would have asserted a person named "crowdsourced".** A Hugging Face card's
   `annotations_creators` says how a dataset's annotations were *produced* — `crowdsourced`,
   `machine-generated`, `expert-generated` — which is the honest answer to what `provenance.annotator`

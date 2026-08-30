@@ -1461,9 +1461,20 @@ fn a_channels_own_source_is_named_beside_its_groups() {
     // A channel may name a source finer than its group's — a sensor on an ECU's raster. Both are in
     // the file, so both reach provenance, each once however many channels point at them.
     let ingested = ingest(&file_with_sources(true));
+    let sensors: Vec<String> = ingested.dataset.provenance[0]
+        .elements
+        .iter()
+        .filter(|e| e.key == "sensor")
+        .filter_map(|e| e.value.clone())
+        .collect();
     assert_eq!(
-        sensor_provenance(&ingested).as_deref(),
-        Some("Powertrain ECU (CAN), Wheel speed sensor")
+        sensors,
+        vec![
+            "Powertrain ECU (CAN)".to_string(),
+            "Wheel speed sensor".to_string()
+        ],
+        "one element per source, so a lineage document names both rather than one agent called \
+         `A, B`"
     );
 }
 
