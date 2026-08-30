@@ -174,6 +174,126 @@ const SAMPLING_FLAGS: &[&str] = &["--sample-episodes", "--sample-fraction", "--s
 /// every episode, none of the data — rather than some episodes, all of their data.
 const METADATA_ONLY_FLAG: &[&str] = &["--metadata-only"];
 
+/// Every command's supported flags, and the argument shape its usage line shows.
+///
+/// One table, read by two things that must never disagree: `reject_flags_except`, which refuses a
+/// flag a command does not honor, and `print_command_help`, which lists what it does. They used to
+/// be a per-call-site array and a hand-written prose suffix respectively, so the help could claim a
+/// flag the parser rejected and nothing would catch it.
+const COMMAND_FLAGS: &[(&str, &[&[&str]], &str)] = &[
+    (
+        "check",
+        &[
+            &[
+                "--json",
+                "--sarif",
+                "--html",
+                "--config",
+                "--fail-on",
+                "--min-score",
+                "--profile",
+                "--print-config",
+                "--redact",
+                "--full",
+                "--out",
+                "--attestation",
+            ],
+            INGEST_FLAGS,
+            SAMPLING_FLAGS,
+            METADATA_ONLY_FLAG,
+        ],
+        "<dataset>",
+    ),
+    (
+        "inspect",
+        &[
+            &["--json"],
+            INGEST_FLAGS,
+            SAMPLING_FLAGS,
+            METADATA_ONLY_FLAG,
+        ],
+        "<dataset>",
+    ),
+    (
+        "certify",
+        &[
+            &[
+                "--key",
+                "--out",
+                "--timestamp",
+                "--profile",
+                "--config",
+                "--attestation",
+            ],
+            INGEST_FLAGS,
+        ],
+        "--key <secret> <dataset>",
+    ),
+    (
+        "verify",
+        &[
+            &["--json", "--certificate", "--key", "--allow-any-issuer"],
+            INGEST_FLAGS,
+        ],
+        "--certificate <cert.json> --key <public> [<dataset>]",
+    ),
+    (
+        "label",
+        &[&["--certificate", "--key", "--allow-any-issuer", "--out"]],
+        "--certificate <cert.json> --key <public>",
+    ),
+    (
+        "attest",
+        &[&["--key", "--set", "--out", "--timestamp"], INGEST_FLAGS],
+        "--key <secret> --set <key>=<value> <dataset>",
+    ),
+    ("keygen", &[&["--force"]], "<output-path>"),
+    (
+        "provenance",
+        &[&["--emit", "--out", "--attestation"], INGEST_FLAGS],
+        "<dataset>",
+    ),
+    (
+        "watch",
+        &[
+            &[
+                "--json",
+                "--config",
+                "--fail-on",
+                "--interval",
+                "--iterations",
+                "--full",
+            ],
+            INGEST_FLAGS,
+        ],
+        "<dataset>",
+    ),
+    (
+        "diff",
+        &[&["--json", "--fail-on-regression"]],
+        "<report-a.json> <report-b.json>",
+    ),
+    ("checks", &[&["--json"]], ""),
+];
+
+/// The flag groups `command` honors, or nothing for a name that is not a command.
+fn supported_flags(command: &str) -> &'static [&'static [&'static str]] {
+    COMMAND_FLAGS
+        .iter()
+        .find(|(name, _, _)| *name == command)
+        .map(|(_, groups, _)| *groups)
+        .unwrap_or(&[])
+}
+
+/// The argument shape `command`'s usage line shows.
+fn usage_args(command: &str) -> &'static str {
+    COMMAND_FLAGS
+        .iter()
+        .find(|(name, _, _)| *name == command)
+        .map(|(_, _, args)| *args)
+        .unwrap_or("<dataset>")
+}
+
 /// Parse the shared flag set. Rejects unknown `--`-flags and value-flags whose value is missing or
 /// looks like another flag, so a typo can never silently disable a gate (e.g. `--min-scor 90` would
 /// otherwise drop the score threshold) nor swallow the next flag as a value (`--key --format`).
@@ -337,7 +457,8 @@ fn reject_extra_positionals(command: &str, args: &Args, noun: &str) -> Result<()
     Ok(())
 }
 
-fn reject_flags_except(command: &str, args: &Args, supported: &[&[&str]]) -> Result<(), ExitCode> {
+fn reject_flags_except(command: &str, args: &Args) -> Result<(), ExitCode> {
+    let supported = supported_flags(command);
     for (flag, given) in args.given_flags() {
         if given && !supported.iter().any(|group| group.contains(&flag)) {
             eprintln!("veridex: {command} does not support {flag}");
@@ -384,7 +505,10 @@ fn main() -> ExitCode {
     // only the flags that command *does* something with. Asking a tool how to use it should not be
     // an error.
     if args.len() > 1 && args[1..].iter().any(|a| a == "--help" || a == "-h") {
-        print_help();
+        // Just that command's options. Printing the whole tool's help here was the previous fix for
+        // `--help` being rejected outright, and it is a wall of flags for eight other commands with
+        // the reader left to scan for their own.
+        print_command_help(&args[0]);
         return ExitCode::SUCCESS;
     }
     match args.first().map(String::as_str) {
@@ -557,29 +681,7 @@ fn cmd_check(rest: &[String]) -> ExitCode {
         Err(code) => return code,
     };
     // `check` neither signs nor emits: the certificate and provenance flags have no effect here.
-    if let Err(code) = reject_flags_except(
-        "check",
-        &args,
-        &[
-            &[
-                "--json",
-                "--sarif",
-                "--html",
-                "--config",
-                "--fail-on",
-                "--min-score",
-                "--profile",
-                "--print-config",
-                "--redact",
-                "--full",
-                "--out",
-                "--attestation",
-            ],
-            INGEST_FLAGS,
-            SAMPLING_FLAGS,
-            METADATA_ONLY_FLAG,
-        ],
-    ) {
+    if let Err(code) = reject_flags_except("check", &args) {
         return code;
     }
     if let Err(code) = reject_extra_positionals("check", &args, "dataset path") {
@@ -1143,7 +1245,7 @@ fn cmd_checks(rest: &[String]) -> ExitCode {
         Err(code) => return code,
     };
     // `checks` reads no dataset and runs nothing; only the output format applies.
-    if let Err(code) = reject_flags_except("checks", &args, &[&["--json"]]) {
+    if let Err(code) = reject_flags_except("checks", &args) {
         return code;
     }
     let engine = match veridex_core::checks::default_engine() {
@@ -1202,16 +1304,7 @@ fn cmd_inspect(rest: &[String]) -> ExitCode {
         Err(code) => return code,
     };
     // `inspect` runs no checks, so nothing about gating, scoring, or signing applies to it.
-    if let Err(code) = reject_flags_except(
-        "inspect",
-        &args,
-        &[
-            &["--json"],
-            INGEST_FLAGS,
-            SAMPLING_FLAGS,
-            METADATA_ONLY_FLAG,
-        ],
-    ) {
+    if let Err(code) = reject_flags_except("inspect", &args) {
         return code;
     }
     if let Err(code) = reject_extra_positionals("inspect", &args, "dataset path") {
@@ -1475,21 +1568,7 @@ fn cmd_certify(rest: &[String]) -> ExitCode {
         return ExitCode::from(EXIT_TOOL_ERROR);
     }
     // Otherwise: no report-format flags — `certify` writes a signed document, not a report.
-    if let Err(code) = reject_flags_except(
-        "certify",
-        &args,
-        &[
-            &[
-                "--key",
-                "--out",
-                "--timestamp",
-                "--profile",
-                "--config",
-                "--attestation",
-            ],
-            INGEST_FLAGS,
-        ],
-    ) {
+    if let Err(code) = reject_flags_except("certify", &args) {
         return code;
     }
     if let Err(code) = reject_extra_positionals("certify", &args, "dataset path") {
@@ -1725,14 +1804,7 @@ fn cmd_verify(rest: &[String]) -> ExitCode {
     };
     // No sampling: a certificate binds to the whole dataset's hash, so a sampled re-ingest would
     // hash to something else and read as a transplant, which is not what the user asked about.
-    if let Err(code) = reject_flags_except(
-        "verify",
-        &args,
-        &[
-            &["--json", "--certificate", "--key", "--allow-any-issuer"],
-            INGEST_FLAGS,
-        ],
-    ) {
+    if let Err(code) = reject_flags_except("verify", &args) {
         return code;
     }
     if let Err(code) = reject_extra_positionals("verify", &args, "dataset path") {
@@ -1875,11 +1947,7 @@ fn cmd_label(rest: &[String]) -> ExitCode {
         Err(code) => return code,
     };
     // `label` reads a certificate, not a dataset: nothing about ingestion or scoring applies.
-    if let Err(code) = reject_flags_except(
-        "label",
-        &args,
-        &[&["--certificate", "--key", "--allow-any-issuer", "--out"]],
-    ) {
+    if let Err(code) = reject_flags_except("label", &args) {
         return code;
     }
     if !args.positionals.is_empty() {
@@ -2069,11 +2137,7 @@ fn cmd_attest(rest: &[String]) -> ExitCode {
         Ok(a) => a,
         Err(code) => return code,
     };
-    if let Err(code) = reject_flags_except(
-        "attest",
-        &args,
-        &[&["--key", "--set", "--out", "--timestamp"], INGEST_FLAGS],
-    ) {
+    if let Err(code) = reject_flags_except("attest", &args) {
         return code;
     }
     if let Err(code) = reject_extra_positionals("attest", &args, "dataset path") {
@@ -2175,7 +2239,7 @@ fn cmd_keygen(rest: &[String]) -> ExitCode {
         Err(code) => return code,
     };
     // `keygen` touches no dataset; only the overwrite guard applies.
-    if let Err(code) = reject_flags_except("keygen", &args, &[&["--force"]]) {
+    if let Err(code) = reject_flags_except("keygen", &args) {
         return code;
     }
     if let Err(code) = reject_extra_positionals("keygen", &args, "output path") {
@@ -2224,11 +2288,7 @@ fn cmd_provenance(rest: &[String]) -> ExitCode {
     };
     // No sampling: emitted provenance describes a dataset, and from a sample it would describe a
     // subset while carrying the dataset's name.
-    if let Err(code) = reject_flags_except(
-        "provenance",
-        &args,
-        &[&["--emit", "--out", "--attestation"], INGEST_FLAGS],
-    ) {
+    if let Err(code) = reject_flags_except("provenance", &args) {
         return code;
     }
     if let Err(code) = reject_extra_positionals("provenance", &args, "dataset path") {
@@ -2337,21 +2397,7 @@ fn cmd_watch(rest: &[String]) -> ExitCode {
     // `watch` ingests and reports; it does not sign, emit, sample, or gate on a score. Sampling is
     // excluded deliberately: the point of a watch is the data arriving now, which is exactly what a
     // sample of the first N episodes does not look at.
-    if let Err(code) = reject_flags_except(
-        "watch",
-        &args,
-        &[
-            &[
-                "--json",
-                "--config",
-                "--fail-on",
-                "--interval",
-                "--iterations",
-                "--full",
-            ],
-            INGEST_FLAGS,
-        ],
-    ) {
+    if let Err(code) = reject_flags_except("watch", &args) {
         return code;
     }
     if let Err(code) = reject_extra_positionals("watch", &args, "dataset path") {
@@ -2545,7 +2591,7 @@ fn cmd_diff(rest: &[String]) -> ExitCode {
         Err(code) => return code,
     };
     // `diff` reads two reports, not a dataset: nothing about ingestion, scoring, or signing applies.
-    if let Err(code) = reject_flags_except("diff", &args, &[&["--json", "--fail-on-regression"]]) {
+    if let Err(code) = reject_flags_except("diff", &args) {
         return code;
     }
     let json_out = args.json;
@@ -2706,6 +2752,109 @@ fn rfc3339_utc(secs: i64) -> String {
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
 }
 
+/// One documented option, and which commands it applies to.
+///
+/// The applicability used to be hand-written into each description as a `(check, inspect)` suffix,
+/// which meant it was prose: nothing could read it, and `veridex verify --help` printed every option
+/// for every command and left the reader to scan for their own. Here it is data, so the same table
+/// renders both the global list and one command's.
+struct OptionDoc {
+    /// The flag column, exactly as it prints (may be several lines for a wrapped signature).
+    flags: String,
+    /// What it does, without the applicability suffix.
+    desc: String,
+    /// Set for the two flags every command answers (`--help`, `--version`), which no command's
+    /// allow-list names because they are handled before parsing.
+    always: bool,
+}
+
+fn option_docs() -> Vec<OptionDoc> {
+    // The format lists are asked of the registry rather than written here, so an adapter that starts
+    // or stops supporting a flag cannot leave this line claiming otherwise.
+    let registry = veridex_core::default_registry();
+    let metadata_only_formats = registry.formats_supporting_metadata_only().join(", ");
+    let sampling_formats = registry.formats_supporting_sampling().join(", ");
+    let doc = |flags: &str, desc: &str| OptionDoc {
+        flags: flags.to_string(),
+        desc: desc.to_string(),
+        always: false,
+    };
+    let always = |flags: &str, desc: &str| OptionDoc {
+        flags: flags.to_string(),
+        desc: desc.to_string(),
+        always: true,
+    };
+    vec![
+        doc("--format <fmt>", "force an adapter (e.g. mcap) instead of autodetecting"),
+        doc("--json", "machine-readable JSON output"),
+        doc("--sarif", "SARIF 2.1.0 output for CI code scanning"),
+        doc("--html", "self-contained HTML report"),
+        doc("--key <file>", "the issuer secret key when signing, the trusted public key when verifying"),
+        doc("--certificate <file>", "certificate to verify or render"),
+        doc("--attestation <file>", "apply a signed producer attestation"),
+        doc("--set <key>=<value>", "a provenance element to attest, repeatable"),
+        doc("--out <file>", "write the output to a file instead of stdout"),
+        doc("--timestamp <ts>", "issuance timestamp (defaults to now, as RFC 3339 UTC)"),
+        doc("--emit <fmt>", "provenance format: croissant (default) or prov"),
+        doc("--fail-on <sev>", "check failure threshold: error (default) or warning"),
+        doc("--min-score <0-100>", "fail (exit 20) if the trust score is below this"),
+        doc("--fail-on-regression", "fail (exit 20) if the new report introduced findings or a lower score"),
+        doc("--interval <secs>", "how often watch polls for a change (default 2)"),
+        doc("--iterations <n>", "stop watch after n polling ticks (default: until interrupted)"),
+        doc("--config <file>", "veridex.toml (auto-discovered in cwd if present)"),
+        doc("--print-config", "print the effective config and where each value came from, then exit"),
+        doc("--redact", "replace dataset/stream/task/provenance names with placeholders, for a report you can share"),
+        doc("--full", "print every finding's risk and remedy, including info"),
+        doc("--profile <name>", "policy profile to run under: standard, strict, world-model-ready"),
+        doc("--max-frames <n>", "ceiling on frames an ingest may materialize (0 = no limit)"),
+        doc("--max-decompression-ratio <n>", "ceiling on compressed expansion, as a multiple of the file's size (0 = no limit)"),
+        doc("--max-source-bytes <n>", "ceiling on one file read whole into memory: MCAP, MF4, rosbag2 (0 = no limit)"),
+        doc("--sample-episodes <n>", &format!("check only the first n episodes ({sampling_formats})")),
+        doc("--sample-fraction <f>", "check a deterministic fraction of episodes, f in (0, 1]"),
+        doc("--sample-seed <n>", "fix the --sample-fraction draw (default 0)"),
+        doc(
+            "--metadata-only",
+            &format!(
+                "check what the source declares about itself — the manifest, stored stats,\n\
+                 and provenance — without reading any stream payload ({metadata_only_formats})"
+            ),
+        ),
+        doc("--allow-any-issuer", "verify without pinning an issuer key — accepts ANY signer"),
+        doc("--force", "overwrite existing key files"),
+        always("--version", "print the version"),
+        always("--help", "print this help"),
+    ]
+}
+
+/// Print one option, wrapping its description under a flag column too wide to share a line.
+fn print_option(doc: &OptionDoc, applicability: bool) {
+    // In the whole-tool help, each option says which commands honor it — read from the same table
+    // the parser enforces, so the list cannot claim a flag the command rejects.
+    let suffix = if applicability && !doc.always {
+        match commands_honoring(first_flag(&doc.flags)).as_slice() {
+            [] => String::new(),
+            names => format!(" ({})", names.join(", ")),
+        }
+    } else {
+        String::new()
+    };
+    let mut lines = doc.desc.lines();
+    let first = lines.next().unwrap_or_default();
+    if doc.flags.len() <= 20 {
+        println!("    {:<20} {first}", doc.flags);
+    } else {
+        println!("    {}", doc.flags);
+        println!("    {:<20} {first}", "");
+    }
+    for line in lines {
+        println!("    {:<20} {}", "", line.trim());
+    }
+    if !suffix.is_empty() {
+        println!("    {:<20}{suffix}", "");
+    }
+}
+
+/// The whole-tool help: every command, then every option with the commands it applies to.
 fn print_help() {
     println!(
         "veridex {} — cross-format trust layer for physical-AI data",
@@ -2725,81 +2874,124 @@ fn print_help() {
         println!("    {name:<12} {desc}");
     }
     println!();
+    println!("    `veridex <command> --help` prints just that command's options.");
+    println!();
     println!("OPTIONS:");
-    println!("    --format <fmt>       force an adapter (e.g. mcap) instead of autodetecting");
-    println!(
-        "    --json               machine-readable JSON output (check, inspect, diff, checks, watch)"
-    );
-    println!("    --sarif              SARIF 2.1.0 output for CI code scanning (check)");
-    println!("    --html               self-contained HTML report (check)");
-    println!("    --key <file>         issuer secret key (certify) or trusted public key (verify)");
-    println!("    --certificate <file> certificate to verify");
-    println!(
-        "    --attestation <file> apply a signed producer attestation (check, certify)
-    --set <key>=<value>  a provenance element to attest, repeatable (attest)"
-    );
-    println!(
-        "    --out <file>         write the output to a file instead of stdout (check, certify, label)"
-    );
-    println!(
-        "    --timestamp <ts>     issuance timestamp (certify, attest; defaults to now, as RFC 3339 UTC)"
-    );
-    println!("    --emit <fmt>         provenance format: croissant (default) or prov");
-    println!(
-        "    --fail-on <sev>      check failure threshold: error (default) or warning
-    --min-score <0-100>  fail (exit 20) if the trust score is below this (check)
-    --fail-on-regression fail (exit 20) if the new report introduced findings or a lower score (diff)"
-    );
-    println!(
-        "    --interval <secs>    how often watch polls for a change (default 2)
-    --iterations <n>     stop watch after n polling ticks (default: until interrupted)"
-    );
-    println!("    --config <file>      veridex.toml (auto-discovered in cwd if present)");
-    println!(
-        "    --print-config       print the effective config and where each value came from, then exit (check)"
-    );
-    println!(
-        "    --redact             replace dataset/stream/task/provenance names with placeholders, for a report you can share (check)"
-    );
-    println!(
-        "    --full               print every finding's risk and remedy, including info (check, watch)"
-    );
-    println!(
-        "    --profile <name>     policy profile to run under: standard, strict, world-model-ready (check, certify)"
-    );
-    println!(
-        "    --max-frames <n>     ceiling on frames an ingest may materialize (0 = no limit)
-    --max-decompression-ratio <n>
-                         ceiling on compressed expansion, as a multiple of the file's size (0 = no limit)
-    --max-source-bytes <n>
-                         ceiling on one file read whole into memory: MCAP, MF4, rosbag2 (0 = no limit)"
-    );
-    // The format list is asked of the registry rather than written here, so an adapter that starts
-    // or stops supporting the flag cannot leave this line claiming otherwise.
-    let registry = veridex_core::default_registry();
-    let metadata_only_formats = registry.formats_supporting_metadata_only().join(", ");
-    let sampling_formats = registry.formats_supporting_sampling().join(", ");
-    println!(
-        "    --sample-episodes <n>
-                         check only the first n episodes (check, inspect; {sampling_formats})
-    --sample-fraction <f>
-                         check a deterministic fraction of episodes, f in (0, 1]
-    --sample-seed <n>    fix the --sample-fraction draw (default 0)
-    --metadata-only      check what the source declares about itself — the manifest, stored stats,
-                         and provenance — without reading any stream payload
-                         (check, inspect; {metadata_only_formats})"
-    );
-    println!("    --allow-any-issuer   verify without pinning an issuer key — accepts ANY signer (verify)");
-    println!("    --force              overwrite existing key files (keygen)");
-    println!("    --version            print the version");
-    println!("    --help               print this help");
+    for doc in option_docs() {
+        print_option(&doc, true);
+    }
     println!();
     println!("EXIT CODES: 0 pass · 10 pass-with-warnings · 20 fail · 2 tool-error");
+}
+
+/// Whether `command` honors `flag`, read from the same table the parser enforces.
+fn command_honors(command: &str, flag: &str) -> bool {
+    supported_flags(command)
+        .iter()
+        .any(|group| group.contains(&flag))
+}
+
+/// Every command that honors `flag`, in the order the help lists commands.
+fn commands_honoring(flag: &str) -> Vec<&'static str> {
+    COMMAND_FLAGS
+        .iter()
+        .filter(|(_, groups, _)| groups.iter().any(|g| g.contains(&flag)))
+        .map(|(name, _, _)| *name)
+        .collect()
+}
+
+/// One command's help: what it does, and only the options it actually honors.
+///
+/// Falls back to the whole-tool help for a name that is not a command, so a typo still gets the list
+/// it needs rather than an empty page.
+fn print_command_help(command: &str) {
+    let Some((name, desc)) = COMMANDS.iter().find(|(n, _)| *n == command) else {
+        print_help();
+        return;
+    };
+    println!("veridex {} — {name}", veridex_core::VERSION);
+    println!();
+    println!("    {desc}");
+    println!();
+    println!("USAGE:");
+    let shape = usage_args(name);
+    if shape.is_empty() {
+        println!("    veridex {name} [options]");
+    } else {
+        println!("    veridex {name} [options] {shape}");
+    }
+    println!();
+    println!("OPTIONS:");
+    for doc in option_docs()
+        .iter()
+        .filter(|d| d.always || command_honors(command, first_flag(&d.flags)))
+    {
+        print_option(doc, false);
+    }
+    println!();
+    println!("    `veridex --help` lists every command.");
+    println!();
+    println!("EXIT CODES: 0 pass · 10 pass-with-warnings · 20 fail · 2 tool-error");
+}
+
+/// The bare flag at the head of a documented signature (`--out <file>` -> `--out`).
+fn first_flag(flags: &str) -> &str {
+    flags.split_whitespace().next().unwrap_or(flags)
 }
 
 #[cfg(test)]
 mod tests {
     use super::describe_schema;
+
+    #[test]
+    fn the_help_never_claims_a_flag_the_command_rejects() {
+        // The one invariant that matters: every option a command's help lists must be one the
+        // parser accepts. Both read `COMMAND_FLAGS` now, and this is what holds them to it — in
+        // process, because asking the binary would mean launching it once per flag and `watch`
+        // would never come back.
+        for (command, _, _) in super::COMMAND_FLAGS {
+            let listed: Vec<String> = super::option_docs()
+                .iter()
+                .filter(|d| d.always || super::command_honors(command, super::first_flag(&d.flags)))
+                .map(|d| super::first_flag(&d.flags).to_string())
+                .collect();
+            for flag in &listed {
+                if flag == "--help" || flag == "--version" {
+                    continue;
+                }
+                assert!(
+                    super::command_honors(command, flag),
+                    "`{command} --help` lists {flag}, which {command} rejects"
+                );
+            }
+            // And the other direction: a flag the parser accepts must be documented, or a user has
+            // no way to learn it exists.
+            for group in super::supported_flags(command) {
+                for flag in *group {
+                    assert!(
+                        listed.iter().any(|l| l == flag),
+                        "{command} accepts {flag} and `{command} --help` does not list it"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_command_has_a_usage_shape_and_a_description() {
+        for (command, _, _) in super::COMMAND_FLAGS {
+            assert!(
+                super::COMMANDS.iter().any(|(n, _)| n == command),
+                "{command} has flags but no description in COMMANDS"
+            );
+        }
+        for (command, _) in super::COMMANDS {
+            assert!(
+                super::COMMAND_FLAGS.iter().any(|(n, _, _)| n == command),
+                "{command} is listed but has no flag table, so its help would be empty"
+            );
+        }
+    }
 
     #[test]
     fn schema_note_renders_dtype_and_shape() {

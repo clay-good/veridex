@@ -10,6 +10,20 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **`veridex verify --help` printed every flag for eight other commands.** Asking a subcommand how
+  to use it returned the whole tool's help — the previous fix for `--help` being rejected outright —
+  so a reader had to scan a wall of options for a hand-written `(verify)` suffix to find their own.
+  And that suffix was *prose*: nothing could read it, so the help could claim a flag the parser
+  rejected and nothing would catch it. `keygen --help` listed `--max-frames`; `verify --help`
+  listed the sampling flags; both are refused by name if you use them.
+
+  `veridex <command> --help` now prints that command alone: what it does, its real argument shape
+  (`veridex diff [options] <report-a.json> <report-b.json>`, `veridex keygen [options]
+  <output-path>` — not a generic `<dataset>` for everything), and only the options it honors. The
+  applicability is read from `COMMAND_FLAGS`, the same table `reject_flags_except` enforces, which
+  also removed a per-call-site allow-list array from every command. Two unit tests hold both
+  directions: nothing listed is rejected, and nothing accepted is undocumented.
+
 - **`veridex inspect` showed one sensor out of thirty-two.** The provenance summary picked a single
   element per key, so a bus log recording one ECU per transmitting node, a rig with several `##SI`
   acquisition devices, and a dataset merged from three parents each showed exactly one — with a

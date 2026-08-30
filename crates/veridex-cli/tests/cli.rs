@@ -2892,3 +2892,38 @@ fn a_compressed_mf4_checks_to_exactly_what_the_uncompressed_one_does() {
         "{stdout}"
     );
 }
+
+#[test]
+fn command_help_lists_only_that_commands_options() {
+    // `veridex <cmd> --help` printed the whole tool's help: every flag for eight other commands,
+    // with the reader left to scan for their own. And the applicability was prose — a hand-written
+    // "(check, inspect)" suffix nothing could read — so the help could claim a flag the parser
+    // rejected and nothing would catch it.
+    let (_, stdout, _) = run(&["verify", "--help"]);
+    assert!(stdout.contains("--certificate"), "{stdout}");
+    assert!(stdout.contains("--allow-any-issuer"), "{stdout}");
+    assert!(
+        !stdout.contains("--sample-fraction"),
+        "verify does not honor sampling: {stdout}"
+    );
+    assert!(
+        !stdout.contains("--fail-on-regression"),
+        "that is diff's: {stdout}"
+    );
+    // The usage line shows what this command actually takes, not a generic `<dataset>`.
+    assert!(stdout.contains("--certificate <cert.json>"), "{stdout}");
+
+    // keygen writes a keypair; it ingests nothing, so none of the ingest ceilings apply.
+    let (_, stdout, _) = run(&["keygen", "--help"]);
+    assert!(stdout.contains("--force"), "{stdout}");
+    assert!(!stdout.contains("--max-frames"), "{stdout}");
+    assert!(!stdout.contains("--format"), "{stdout}");
+    assert!(
+        stdout.contains("veridex keygen [options] <output-path>"),
+        "{stdout}"
+    );
+
+    // A name that is not a command still gets the list it needs.
+    let (_, stdout, _) = run(&["nonsense", "--help"]);
+    assert!(stdout.contains("COMMANDS:"), "{stdout}");
+}
