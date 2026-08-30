@@ -10,6 +10,14 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **Two spec entries rewritten, one of them into readability.** The MF4 task in
+  `add-autonomy-support` had been appended to five times this week and had become a wall of prose
+  with an orphaned sentence in the middle of it; it is now a short list of what the adapter does,
+  what it declines and why, and the follow-ups, pointing at the module doc rather than restating it.
+  Both it and the LeRobot/MCAP provenance task in `bootstrap-veridex-mvp` are marked complete —
+  neither is a partial implementation any more, and the provenance one now points at the per-format
+  table instead of describing two adapters out of eight.
+
 - **The autonomy quickstart's rig table understated three adapters.** It said MF4 applies "linear
   conversions" (it applies every numeric one now), said nothing about bit-packed channels or the
   `##SI` sources that became `provenance.sensor`, said nothing about the DBC transmitter that became

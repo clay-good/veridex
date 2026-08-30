@@ -127,14 +127,19 @@ the build plan.
 
 ## M5 — Provenance & Croissant
 - [x] Provenance model + known/asserted/unknown classification (in `cdm.rs`).
-- [~] Extract provenance from LeRobot v3 and MCAP sources. (MCAP now extracts source_format, the
-      header library/profile, producer-written Metadata records — with well-known keys mapped to
-      typed provenance — and Attachment summaries incl. calibration. LeRobot extracts robot_type as
-      a sensor element and, from the dataset card's (`README.md`) YAML frontmatter, the SPDX license,
-      `source_datasets` as `upstream` and `annotations_creators` as `annotator` — the Hub's two
-      "none" values (`original`, `no-annotation`) deliberately excluded, since they answer the
-      question the same way a missing element does. Still open on the LeRobot side: nothing in
-      `meta/` names a clock or a calibration, so those two stay honestly unknown.)
+- [x] Extract provenance from LeRobot v3 and MCAP sources — and, past this task's scope, from every
+      other adapter. Which element comes from where is one table:
+      [what each format can supply](../../../docs/checks.md#what-each-format-can-supply).
+
+      Two rules hold across all of them. A value is **extracted**, class `known`, or it is absent —
+      never inferred. And a source's own word for "nothing" is not coverage: the Hub's `original` and
+      `no-annotation`, the DBC's `Vector__XXX`, a node that never transmitted. Counting those would
+      raise the score of a dataset that named nothing, which is the one distinction this axis exists
+      to make.
+
+      What no source in the set records is a **clock source** (as opposed to timestamps), so that
+      element is unknown unless a producer writes one into free-form metadata, where the shared
+      well-known key table now recognises it. `veridex certify` inputs are the other way to fill it.
 - [x] Emit Croissant (JSON-LD) + minimal W3C PROV lineage from the CDM (honest classes, no
       fabrication). Wired to `veridex provenance --emit croissant|prov`.
 

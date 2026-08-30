@@ -58,40 +58,39 @@ No code until this change is approved; this is the build plan.
       manifest is not claimed (it could be unrelated recordings in one folder), and a manifest that
       disagrees with the shards beside it is refused rather than resolved either way. Follow-up: the rest of a QoS profile
       (reliability, history depth, deadline, lifespan, liveliness), which the CDM has no shape for.
-- [~] ASAM MDF/MF4 adapter → CDM; record unmapped channels. `adapter/mdf4.rs` walks the MDF 4.x block
-      graph (`##HD` → `##DG` → `##CG` → `##CN`), uses each channel group's time master as the
-      timeline, and emits one stream per measured channel, applying every numeric `##CC` conversion
-      (identity, linear, rational, both value-to-value tables, value-range-to-value); little-endian integer channels at any bit offset and width up to 64 bits (how bus
-      signals are actually stored), big-endian integers and floats in whole bytes; values fingerprinted into the
-      content hash; the identification block's program becomes `recorder` provenance and the `##SI`
-      acquisition sources (`cg_si_acq_source`, `cn_si_source`) become `sensor`, each qualified by its
-      bus or path — an MF4 scored 0/6 on provenance coverage until they were read. Every block read
-      is bounds-checked and every chain walk loop-guarded (truncation/corruption fuzz tests). All four
-      shapes a group's data arrives in are read: an uncompressed `##DT`, a deflated `##DZ` (plain or
-      byte-column transposed), a `##DL` data list splitting the records across several of those, and
-      an `##HL` header list wrapping such a list — which is what a real logger writes, so reading only
-      `##DT` read nothing off the files the format is actually used for. Decompression is charged to
-      the shared `DecompressionBudget` before a decompressor sees a stream and each read is capped at
-      the length the block declares, so a forged expansion is refused rather than allocated. Recorded
-      An **unsorted** data group — several rasters interleaved behind their `cg_record_id`s, the way a
-      bus logger writes them — is demultiplexed into one contiguous stream per channel group at that
-      group's own record length, and each group gets its own clock id, because two channel groups are
-      two independent timelines. Recorded as **unread** rather than decoded — data that is there and
-      nobody read it, so each raises `COVERAGE.SOURCE_UNREAD`: a `##DZ` holding something other than a
-      `DT` record stream or using an undefined zip type, a data list whose elements do not all resolve
-      (half a list is not a shorter measurement, it is a misaligned one), a record tagged with an id
-      no channel group claims (a record's length is known only from its id, so the rest of the stream
-      cannot be located), a variable-length signal-data group, a group with no usable time master, a
-      channel declaring per-sample invalidation, and a group declaring more cycles than its data block
-      holds. A `--metadata-only` run describes a measurement from its header tree without
-      opening or decompressing a data block. Genuinely
-      unmapped, because the CDM has no shape for them: non-numeric channels and the four text-valued
-      conversions, whose physical value is a string. A numeric conversion left unevaluated (the
-      algebraic-formula type) is *unread* instead — the physical value is defined in the file and the
-      raw count stood in for it. Those — plus `##SR` sample
-      reduction, attachments, and the `##FH`/`##MD` metadata comments — are the follow-ups.
-      Per-channel statistics are recomputed from the converted physical values through the shared
-      accumulator, so the statistical family grades a measurement rather than abstaining on it.
+- [x] ASAM MDF/MF4 adapter → CDM; record unmapped channels. `adapter/mdf4.rs` walks the MDF 4.x
+      block graph (`##HD` → `##DG` → `##CG` → `##CN`) with its own bounds-checked reader, takes each
+      channel group's time master as the timeline, and emits one stream per measured channel. Its
+      module doc states the scope in full; the shape of it:
+
+      - **Storage.** All four shapes a group's data arrives in: `##DT`, a deflated `##DZ` (plain or
+        byte-column transposed), a `##DL` data list, an `##HL` header list. A real logger writes the
+        last three, so reading only `##DT` read nothing off the files the format is used for.
+      - **Layout.** Sorted and **unsorted** data groups — the latter demultiplexed by `cg_record_id`
+        into one stream per channel group, each at its own record length and with its own clock id,
+        because two channel groups are two independent timelines.
+      - **Values.** Little-endian integers at any bit offset and width to 64 bits (how bus signals
+        are stored), big-endian integers and IEEE floats in whole bytes, with every numeric `##CC`
+        conversion applied: linear, rational, both value-to-value tables, value-range-to-value.
+        Statistics are recomputed from the converted values, so the statistical family grades a
+        measurement rather than abstaining on it.
+      - **Provenance.** The identification block's program becomes `recorder`; the `##SI` acquisition
+        sources become `sensor`. An MF4 scored 0/6 on provenance coverage until they were read.
+      - **Safety.** Decompression is charged to the shared `DecompressionBudget` before a
+        decompressor sees a stream, each read is capped at the declared length, and every chain walk
+        is loop-guarded. Nine block-graph shapes are swept byte by byte for panics.
+
+      What is declined is declined out loud. **Unread** (`COVERAGE.SOURCE_UNREAD` — the data is in
+      the file and nobody read it): a `##DZ` that is not a `DT` record stream or uses an undefined
+      zip type, a data list whose elements do not all resolve, a record id no channel group claims, a
+      variable-length signal-data group, a group with no usable time master, a channel declaring
+      per-sample invalidation, a group over-declaring its cycles, and a numeric conversion left
+      unevaluated (the algebraic-formula type — the physical value is defined in the file and a raw
+      count stood in for it). **Unmapped** (the CDM has no shape for it, costing the reader nothing):
+      non-numeric channels and the four text-valued conversions, whose physical value is a string.
+
+      Follow-ups: `##SR` sample reduction, attachments, and the `##FH`/`##MD` metadata comments.
+
 - [x] CAN + DBC decoding → named signal streams; surface DBC-coverage gaps and decode errors.
       `adapter/candbc.rs`: ingests a directory holding a `.dbc` + candump `.log`/`.asc`, parses the
       DBC (`BO_`/`SG_`), decodes each frame's signals in both byte orders — little-endian (Intel,
