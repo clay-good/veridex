@@ -245,15 +245,111 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(w: &mut mcap::Writer<W>, misc
                 // reported the profile as N/A.
                 let x = i as f64 * 10.0 * (*interval as f64 / 1e9);
                 write_msg(w, channel, i as u32, t, &odometry_body(x));
+            } else if *schema == "sensor_msgs/msg/NavSatFix" {
+                // A real CDR NavSatFix body, for the same reason the Odometry one is real: the
+                // adapter decodes latitude/longitude/altitude into measured values, and a dummy
+                // payload left the rig's GNSS stream fingerprinted — so every statistical check
+                // abstained on the one sensor whose failure mode (a frozen or unset fix) is the
+                // easiest to have and the hardest to see.
+                let drive = i as f64 * 10.0 * (*interval as f64 / 1e9);
+                write_msg(
+                    w,
+                    channel,
+                    i as u32,
+                    t,
+                    // ~37.4°N, 122.1°W, moving north at the odometry's 10 m/s (1 m ≈ 9e-6°).
+                    &nav_sat_fix_body(37.4 + drive * 9.0e-6, -122.1, 12.0),
+                );
+            } else if *schema == "sensor_msgs/msg/Imu" {
+                // Likewise real: the adapter decodes an Imu body in full, so a dummy payload left
+                // the rig's IMU fingerprinted and every statistical check abstaining on it — on the
+                // very sensor this demo exists to show drifting.
+                let phase = i as f64 * (*interval as f64 / 1e9);
+                write_msg(w, channel, i as u32, t, &imu_body(phase));
             } else {
                 // A real header-first CDR body, so the sensor's coordinate frame is genuinely
                 // decoded into the CDM (that is what the frame-resolution check reads). The trailing
-                // payload varies per (sensor, frame) so frames stay content-distinct.
+                // payload varies per (sensor, frame) so frames stay content-distinct. Enough for the
+                // `Image` and `PointCloud2` readers, which take the header and the field list and
+                // never the pixels or the points.
                 let payload = ((seq_base as u64) << 32) | i;
                 write_msg(w, channel, i as u32, t, &header_body(frame_id, payload));
             }
         }
     }
+}
+
+/// A real CDR `sensor_msgs/msg/Imu` body: `Header`, then orientation, angular velocity and linear
+/// acceleration, each followed by its nine-element covariance. A leading `-1` in a covariance is
+/// ROS's "not provided"; these are zero, so every value is measured.
+fn imu_body(phase: f64) -> Vec<u8> {
+    let mut buf: Vec<u8> = vec![0x00, 0x01, 0x00, 0x00]; // encapsulation: CDR_LE
+    let align = |buf: &mut Vec<u8>, n: usize| {
+        while (buf.len() - 4) % n != 0 {
+            buf.push(0)
+        }
+    };
+    let u32v = |buf: &mut Vec<u8>, v: u32| {
+        align(buf, 4);
+        buf.extend_from_slice(&v.to_le_bytes());
+    };
+    let f64v = |buf: &mut Vec<u8>, v: f64| {
+        align(buf, 8);
+        buf.extend_from_slice(&v.to_le_bytes());
+    };
+    u32v(&mut buf, 0);
+    u32v(&mut buf, 0);
+    u32v(&mut buf, 9);
+    buf.extend_from_slice(b"imu_link\0");
+    // Level and driving straight: identity orientation, no rotation, 1 g down with a little sway.
+    let group = |vs: &[f64], buf: &mut Vec<u8>| {
+        for v in vs {
+            f64v(buf, *v);
+        }
+        for _ in 0..9 {
+            f64v(buf, 0.0);
+        }
+    };
+    group(&[0.0, 0.0, 0.0, 1.0], &mut buf);
+    group(&[0.0, 0.0, 0.02 * phase.sin()], &mut buf);
+    group(&[0.1 * phase.cos(), 0.0, 9.81], &mut buf);
+    buf
+}
+
+/// A real CDR `sensor_msgs/msg/NavSatFix` body: `Header`, `NavSatStatus { int8, uint16 }`, then
+/// latitude, longitude and altitude as doubles, the covariance, and its type.
+fn nav_sat_fix_body(latitude: f64, longitude: f64, altitude: f64) -> Vec<u8> {
+    let mut buf: Vec<u8> = vec![0x00, 0x01, 0x00, 0x00]; // encapsulation: CDR_LE
+    let align = |buf: &mut Vec<u8>, n: usize| {
+        while (buf.len() - 4) % n != 0 {
+            buf.push(0)
+        }
+    };
+    let u32v = |buf: &mut Vec<u8>, v: u32| {
+        align(buf, 4);
+        buf.extend_from_slice(&v.to_le_bytes());
+    };
+    let f64v = |buf: &mut Vec<u8>, v: f64| {
+        align(buf, 8);
+        buf.extend_from_slice(&v.to_le_bytes());
+    };
+    // Header { stamp { sec, nanosec }, frame_id }
+    u32v(&mut buf, 0);
+    u32v(&mut buf, 0);
+    u32v(&mut buf, 5);
+    buf.extend_from_slice(b"gnss\0");
+    // NavSatStatus { int8 status = STATUS_FIX (0), uint16 service = SERVICE_GPS (1) }
+    buf.push(0);
+    align(&mut buf, 2);
+    buf.extend_from_slice(&1u16.to_le_bytes());
+    for v in [latitude, longitude, altitude] {
+        f64v(&mut buf, v);
+    }
+    for _ in 0..9 {
+        f64v(&mut buf, 0.0); // position_covariance
+    }
+    buf.push(0); // position_covariance_type = COVARIANCE_TYPE_UNKNOWN
+    buf
 }
 
 /// A minimal header-first CDR body: `Header { stamp, frame_id }` followed by a varying `u64` so each

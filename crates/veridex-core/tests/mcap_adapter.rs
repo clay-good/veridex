@@ -1377,10 +1377,35 @@ fn a_corrupt_chunk_stream_is_refused_rather_than_unpacked_forever() {
         .ingest(&Source::Local(good.clone()), &IngestOptions::default())
         .expect("a well-formed chunked MCAP still ingests");
 
-    // Byte 2044 sits inside the chunk's compressed payload, past the region the chunk CRC covers in
-    // a way the reader notices. Every byte here is decompressed under a bound or refused.
+    // A byte inside the first chunk's *compressed payload*, past the region the chunk CRC covers in
+    // a way the reader notices. Located by walking the record framing rather than hard-coded: the
+    // offset was, and a change to the demo's message bodies moved the chunk and left this test
+    // patching a byte that no longer meant anything.
+    //
+    // Framing past the 8-byte magic is `opcode: u8, len: u64le, payload`. A Chunk's payload is
+    // `start(8) end(8) uncompressed_size(8) uncompressed_crc(4) compression(4+n) records_len(8)`,
+    // then the compressed records themselves.
+    let compressed_byte = {
+        let mut at = 8usize;
+        let mut found = None;
+        while at + 9 <= bytes.len() {
+            let len = u64::from_le_bytes(bytes[at + 1..at + 9].try_into().unwrap()) as usize;
+            if bytes[at] == 0x06 {
+                let compression_len =
+                    u32::from_le_bytes(bytes[at + 9 + 28..at + 9 + 32].try_into().unwrap())
+                        as usize;
+                let records_at = at + 9 + 28 + 4 + compression_len + 8;
+                // Well inside the compressed stream, not at its first byte, so the damage is in the
+                // middle of a frame rather than in its header.
+                found = Some(records_at + 32);
+                break;
+            }
+            at += 9 + len;
+        }
+        found.expect("the demo log is chunked; this test needs that")
+    };
     let mut patched = bytes.clone();
-    patched[2044] = 0x76;
+    patched[compressed_byte] ^= 0x5A;
     let bad = dir.path().join("bad.mcap");
     std::fs::write(&bad, &patched).unwrap();
 
@@ -2322,5 +2347,62 @@ fn a_topic_that_reorders_its_joints_is_refused_rather_than_mismeasured() {
             .any(|f| f.code == "COVERAGE.SOURCE_UNREAD"),
         "{:?}",
         verdict.findings.iter().map(|f| &f.code).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn a_gnss_stream_is_measured_rather_than_only_fingerprinted() {
+    // `NavSatFix` was the one AV message body the CDR decoder did not read, so a rig's GNSS stream
+    // was fingerprinted and every statistical check abstained on it: a receiver frozen at one fix,
+    // publishing NaNs, or railed at a coordinate limit reported nothing at all, while the same
+    // faults on the IMU beside it were caught.
+    let dir = tempfile::tempdir().unwrap();
+    let rig = dir.path().join("av.mcap");
+    veridex_demo::mcap::write(&rig, "av").expect("write the demo rig");
+    let ingested = default_registry()
+        .ingest(&Source::Local(rig), &IngestOptions::default())
+        .expect("the rig ingests");
+
+    let gnss = ingested.dataset.episodes[0]
+        .streams
+        .iter()
+        .find(|s| s.name == "/gps/fix")
+        .expect("the GNSS stream");
+    let stats = gnss
+        .observed_stats
+        .expect("latitude/longitude/altitude are decoded and summarized");
+    // The demo drives north from ~37.4°N, so latitude is the moving one and the summary spans it.
+    assert!(
+        stats.min >= -180.0 && stats.max <= 180.0,
+        "coordinates are in range: {stats:?}"
+    );
+    assert!(
+        stats.max > stats.min,
+        "the fix moves, so a frozen receiver would look different: {stats:?}"
+    );
+    // Per dimension, so a fault in longitude alone is visible rather than averaged away.
+    let dims = gnss
+        .observed_dim_stats
+        .as_ref()
+        .expect("per-dimension statistics");
+    assert_eq!(dims.len(), 3, "latitude, longitude, altitude");
+
+    // And the check family no longer abstains on it.
+    let hash = veridex_core::content_hash(&ingested.dataset);
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let verdict = engine.run(&ingested.dataset, hash, &veridex_core::RunConfig::default());
+    let unmeasured = verdict
+        .findings
+        .iter()
+        .find(|f| f.code == "STATISTICAL.UNMEASURED_VALUES")
+        .map(|f| f.message.clone())
+        .unwrap_or_default();
+    assert!(
+        !unmeasured.contains("/gps/fix"),
+        "the GNSS stream is measured now: {unmeasured}"
+    );
+    assert!(
+        !unmeasured.contains("/imu/data"),
+        "and so is the IMU the demo exists to show drifting: {unmeasured}"
     );
 }

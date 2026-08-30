@@ -316,6 +316,45 @@ pub fn decode_imu_values(data: &[u8]) -> Option<Vec<Option<f64>>> {
     values.iter().any(Option::is_some).then_some(values)
 }
 
+/// The name of each scalar [`decode_nav_sat_fix_values`] returns, in the same order.
+pub const NAV_SAT_FIX_DIM_NAMES: [&str; 3] = ["latitude", "longitude", "altitude"];
+
+/// The `NavSatStatus.status` value a receiver publishes when it has no fix at all.
+///
+/// ROS defines `STATUS_NO_FIX = -1`. The message still carries latitude, longitude and altitude
+/// fields, and a driver with no fix leaves them at whatever it last had or at zero — so recording
+/// them as measurements reports a vehicle parked at Null Island, or frozen at its last known
+/// position, as a fact about the drive. It is not one.
+const NAV_SAT_STATUS_NO_FIX: i8 = -1;
+
+/// Decode a `sensor_msgs/msg/NavSatFix` body into `[latitude, longitude, altitude]`.
+///
+/// Layout: `Header`, `NavSatStatus { int8 status, uint16 service }`, `float64 latitude`,
+/// `float64 longitude`, `float64 altitude`, `float64[9] position_covariance`,
+/// `uint8 position_covariance_type`. Fixed size, no bulk payload to decline.
+///
+/// This is the one AV message body the decoder did not read, so a rig's GNSS stream was
+/// fingerprinted rather than measured: a receiver frozen at one fix, one publishing NaNs, or one
+/// railed at a coordinate limit reported nothing at all, while the same faults on the IMU beside it
+/// were caught. `None` when the message declares no fix, so the fields it leaves behind are not
+/// recorded as a position.
+pub fn decode_nav_sat_fix_values(data: &[u8]) -> Option<Vec<Option<f64>>> {
+    let mut r = Reader::new(data)?;
+    r.header()?;
+    // `NavSatStatus`: int8 then uint16. The uint16 is 2-aligned, and the f64 that follows is
+    // 8-aligned, both of which `Reader` handles when the field is read.
+    let status = r.u8()? as i8;
+    r.align(2);
+    let _service = r.take(2)?;
+    let latitude = r.f64()?;
+    let longitude = r.f64()?;
+    let altitude = r.f64()?;
+    if status == NAV_SAT_STATUS_NO_FIX {
+        return None;
+    }
+    Some(vec![Some(latitude), Some(longitude), Some(altitude)])
+}
+
 /// Decode a `tf2_msgs/msg/TFMessage` body: a sequence of `TransformStamped`
 /// `{ Header header (frame_id = parent), string child_frame_id, Transform { Vector3 translation,
 /// Quaternion rotation } }`. Returns each edge as a CDM [`Transform`] with open validity.
@@ -704,6 +743,7 @@ mod tests {
             let _ = decode_odometry_pose(b);
             let _ = decode_joint_state(b);
             let _ = decode_imu_values(b);
+            let _ = decode_nav_sat_fix_values(b);
             let _ = decode_tf_message(b);
         };
 
@@ -728,6 +768,53 @@ mod tests {
                 decode_all(&damaged);
             }
         }
+    }
+
+    #[test]
+    fn a_nav_sat_fix_decodes_to_its_three_coordinates() {
+        let mut w = W::new();
+        w.header("gnss");
+        w.u8(0); // NavSatStatus.status = STATUS_FIX
+        w.align(2);
+        w.buf.extend_from_slice(&1u16.to_le_bytes()); // service = SERVICE_GPS
+        for v in [37.4, -122.1, 12.5] {
+            w.f64(v);
+        }
+        for _ in 0..9 {
+            w.f64(0.0);
+        }
+        w.u8(0); // position_covariance_type
+        assert_eq!(
+            super::decode_nav_sat_fix_values(&w.buf),
+            Some(vec![Some(37.4), Some(-122.1), Some(12.5)])
+        );
+    }
+
+    #[test]
+    fn a_receiver_with_no_fix_contributes_no_position() {
+        // `STATUS_NO_FIX` means the coordinates are whatever the driver left behind — zeros, or the
+        // last known position. Recording them would report a vehicle parked at Null Island, or
+        // frozen where it last had signal, as a fact about the drive.
+        let mut w = W::new();
+        w.header("gnss");
+        w.u8(0xFF); // status = STATUS_NO_FIX (-1)
+        w.align(2);
+        w.buf.extend_from_slice(&0u16.to_le_bytes());
+        for v in [0.0, 0.0, 0.0] {
+            w.f64(v);
+        }
+        assert_eq!(super::decode_nav_sat_fix_values(&w.buf), None);
+    }
+
+    #[test]
+    fn a_truncated_nav_sat_fix_yields_nothing_rather_than_a_partial_position() {
+        let mut w = W::new();
+        w.header("gnss");
+        w.u8(0);
+        w.align(2);
+        w.buf.extend_from_slice(&1u16.to_le_bytes());
+        w.f64(37.4); // latitude only
+        assert_eq!(super::decode_nav_sat_fix_values(&w.buf), None);
     }
 
     #[test]

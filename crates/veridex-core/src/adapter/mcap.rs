@@ -564,6 +564,17 @@ impl Adapter for McapAdapter {
                         .values
                         .push_fixed(&values, &super::cdr::IMU_DIM_NAMES);
                 }
+            } else if schema_is(schema_name, "NavSatFix") {
+                // The last AV message body that went unread. A GNSS stream was fingerprinted rather
+                // than measured, so a receiver frozen at one fix, publishing NaNs, or railed at a
+                // coordinate limit reported nothing — while the same faults on the IMU beside it
+                // were caught. A message declaring no fix carries fields the driver left behind, not
+                // a position, and contributes none.
+                if let Some(values) = super::cdr::decode_nav_sat_fix_values(&message.data) {
+                    builder
+                        .values
+                        .push_fixed(&values, &super::cdr::NAV_SAT_FIX_DIM_NAMES);
+                }
             } else if schema_is(schema_name, "TFMessage") {
                 if let Some(edges) = super::cdr::decode_tf_message(&message.data) {
                     for t in edges {

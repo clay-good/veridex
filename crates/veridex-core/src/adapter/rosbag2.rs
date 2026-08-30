@@ -785,6 +785,16 @@ fn read_shard(
                     .values
                     .push_fixed(&values, &super::cdr::IMU_DIM_NAMES);
             }
+        } else if super::mcap::schema_is(ty, "NavSatFix") {
+            // The last AV message body that went unread. A GNSS stream was fingerprinted rather than
+            // measured, so a receiver frozen at one fix, publishing NaNs, or railed at a coordinate
+            // limit reported nothing — while the same faults on the IMU beside it were caught. A
+            // message declaring no fix carries fields the driver left behind, not a position.
+            if let Some(values) = super::cdr::decode_nav_sat_fix_values(data) {
+                builder
+                    .values
+                    .push_fixed(&values, &super::cdr::NAV_SAT_FIX_DIM_NAMES);
+            }
         } else if super::mcap::schema_is(ty, "TFMessage") {
             if let Some(edges) = super::cdr::decode_tf_message(data) {
                 for t in edges {
@@ -916,6 +926,16 @@ fn read_mcap_shard(
                 builder
                     .values
                     .push_fixed(&values, &super::cdr::IMU_DIM_NAMES);
+            }
+        } else if super::mcap::schema_is(&ros_type, "NavSatFix") {
+            // The last AV message body that went unread. A GNSS stream was fingerprinted rather than
+            // measured, so a receiver frozen at one fix, publishing NaNs, or railed at a coordinate
+            // limit reported nothing — while the same faults on the IMU beside it were caught. A
+            // message declaring no fix carries fields the driver left behind, not a position.
+            if let Some(values) = super::cdr::decode_nav_sat_fix_values(data) {
+                builder
+                    .values
+                    .push_fixed(&values, &super::cdr::NAV_SAT_FIX_DIM_NAMES);
             }
         } else if super::mcap::schema_is(&ros_type, "TFMessage") {
             if let Some(edges) = super::cdr::decode_tf_message(data) {

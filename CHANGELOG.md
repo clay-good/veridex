@@ -10,6 +10,28 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A rig's GNSS was the one sensor nothing measured.** `sensor_msgs/msg/NavSatFix` was the only AV
+  message body the CDR decoder did not read, so a GNSS stream was fingerprinted rather than measured
+  and every statistical check abstained on it — a receiver frozen at one fix, publishing NaNs, or
+  railed at a coordinate limit reported nothing at all, while the identical faults on the IMU beside
+  it were caught. It is the follow-up the autonomy spec named as "GNSS geospatial sanity", and the
+  half of it that needed the values decoded first.
+
+  Latitude, longitude and altitude are now decoded and measured per dimension, in MCAP and in both
+  rosbag2 storage plugins. A message declaring `STATUS_NO_FIX` contributes nothing: those fields hold
+  whatever the driver left behind — zeros, or the last position it had signal for — and recording
+  them would report a vehicle parked at Null Island as a fact about the drive.
+
+  The demo rig now writes real `NavSatFix` **and** `Imu` bodies rather than placeholder payloads. Both
+  readers decode a whole message, so the flagship demo was under-exercising them, and the IMU the
+  demo exists to show drifting was the one stream nothing could grade. The new decoder joins the
+  message-body panic sweep.
+
+  One test had to be un-brittled to allow it: the corrupt-chunk regression patched **byte 2044** of
+  the demo log by hand, and changing the message bodies moved the chunk out from under it. It walks
+  the record framing to the compressed payload now, so the next change to the demo does not silently
+  turn it into a test that damages nothing.
+
 - **Two spec entries rewritten, one of them into readability.** The MF4 task in
   `add-autonomy-support` had been appended to five times this week and had become a wall of prose
   with an orphaned sentence in the middle of it; it is now a short list of what the adapter does,
