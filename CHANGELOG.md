@@ -10,6 +10,36 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A real MF4 measurement ingested to zero frames.** The MF4 adapter read a data group's records
+  only from an uncompressed `##DT` block. Loggers do not write those. They deflate the records into
+  a `##DZ`, split them across a `##DL` data list as the drive runs, or both behind an `##HL` header
+  list — so on the files the format is actually used for, every channel came back with no frames,
+  and every temporal, statistical and structural check ran on nothing and passed. The verdict
+  disclosed it (`COVERAGE.SOURCE_UNREAD`), which is the reason it was survivable, but the disclosure
+  was all a fleet log got.
+
+  All four shapes now resolve into the one record stream they describe, and decode to a measurement
+  byte-identical to the uncompressed original — the same streams, timestamps, value fingerprints and
+  recomputed statistics, asserted against the `##DT` fixture rather than against a hand-written
+  expectation. That includes `dz_zip_type` 1, where the writer lays the bytes out column-major before
+  deflating: read without reversing that, a transposed block does not fail, it yields a full set of
+  confidently wrong values.
+
+  Every length in a compressed block is a claim by the file, so none is trusted. The declared
+  expansion is charged to the shared decompression budget *before* a decompressor is pointed at the
+  stream (a 60-byte block claiming 8 GiB is refused, not allocated), each read is hard-capped at that
+  declared length, and a stream that produces fewer bytes than it promised is reported rather than
+  decoded — a short buffer would silently drop the tail of the measurement. A data list whose
+  elements do not all resolve refuses the whole group for the same reason: half a list is not a
+  shorter measurement, it is a misaligned one, since every record after the missing chunk would be
+  read at the wrong offset.
+
+  What is still declined, and still disclosed as unread: a `##DZ` holding something other than a `DT`
+  record stream (`SD`/`RD` signal and reduction data, the column-oriented `DV`/`DI`/`RV`/`RI` blocks
+  of MDF 4.2), an undefined zip type, and — unchanged — unsorted data groups. `--metadata-only` still
+  describes a measurement from its header tree without opening a data block, which is now the
+  cheapest way to inventory a large one rather than the only way to see a compressed one at all.
+
 - **Upgrading Veridex made every `--fail-on-regression` gate blame the data.** A release that adds a
   check, adds a finding code, or rewords a message puts findings under `introduced` on a dataset that
   did not change by a byte — which is exactly what the three checks above do. The first gate run

@@ -218,7 +218,7 @@ What each format offers is different, because their manifests are:
 | Zarr | `.zarray` / `.zattrs` per array and the `meta/` group — the episode boundaries and their lengths, every array's dtype and per-row shape, and the store's own metadata |
 | MCAP | the summary section at the end of the file — the channel inventory with each topic's schema, the declared message totals and log-time span, the message encodings, the writing library, and (through the summary's own indexes) every Metadata record and attachment name, so the provenance matches a full read |
 | HDF5 | the group tree and array headers — every episode group, each array's datatype and per-row shape, each group's declared length attribute, and every object attribute |
-| MF4 | the `##HD`/`##DG`/`##CG`/`##CN` block tree — every channel's name and raster, and the cycle count each group declares; the only way to describe a compressed (`##DZ`) measurement at all |
+| MF4 | the `##HD`/`##DG`/`##CG`/`##CN` block tree — every channel's name and raster, and the cycle count each group declares, without opening or decompressing a data block |
 
 What still applies, because it is all manifest content:
 
@@ -313,7 +313,7 @@ produced the same `coverage: Full`, the same findings, the same score, and a cer
 naming the whole dataset over the half that was read; `diff` reported zero change between them.
 
 What counts as unread is a judgement each adapter makes, and the line is whether the data is *there*:
-a compressed MF4 data block this reader does not decode, an MF4 channel group with no time master, a
+an MF4 data block this reader does not decode into a record stream, an MF4 channel group with no time master, a
 Zarr array whose codec it cannot apply, a rosbag2 shard short of its manifest's message total, an
 MCAP short of the total in its own summary — all of it is data nobody looked at, so all of it lands
 here. A field the CDM has no shape for lands in `unmapped` instead and raises nothing, because it

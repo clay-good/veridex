@@ -339,8 +339,8 @@ Seven formats support `--metadata-only`, each reading the thing that describes t
 being it:
 LeRobot's `meta/`, a bag's `metadata.yaml`, a TFDS export's `dataset_info.json` + `features.json`,
 a Zarr store's `.zarray`/`.zattrs` and episode boundaries, the summary section an MCAP writes at the
-end of itself, an HDF5 file's group tree and array headers, and an MF4's block header tree — which is the
-only way to describe a *compressed* measurement, since a full read declines a `##DZ` block. One test
+end of itself, an HDF5 file's group tree and array headers, and an MF4's block header tree — which
+names every channel and its raster without opening or decompressing a data block. One test
 holds them to the invariant the mode rests on: the same episodes, streams, datatypes and shapes a
 full read finds, minus the frames. CAN+DBC is a stream of frames with nothing in front of it, and is
 refused by name.

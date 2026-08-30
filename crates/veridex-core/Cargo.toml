@@ -49,6 +49,8 @@ remote = ["dep:ureq", "dep:tempfile"]
 [dev-dependencies]
 proptest = "1"
 tempfile = "3"
+# The MF4 fixtures build real `##DZ` blocks, which means really deflating their records.
+flate2 = "1"
 arrow = "59"
 parquet = "59"
 serde_json.workspace = true

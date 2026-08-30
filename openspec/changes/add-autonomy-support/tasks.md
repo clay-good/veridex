@@ -63,12 +63,20 @@ No code until this change is approved; this is the build plan.
       timeline, and emits one stream per measured channel, applying identity/linear (`##CC` type 1)
       conversions; integer and float channels in both byte orders; values fingerprinted into the
       content hash; the identification block's program becomes `recorder` provenance. Every block read
-      is bounds-checked and every chain walk loop-guarded (truncation/corruption fuzz tests). Recorded
+      is bounds-checked and every chain walk loop-guarded (truncation/corruption fuzz tests). All four
+      shapes a group's data arrives in are read: an uncompressed `##DT`, a deflated `##DZ` (plain or
+      byte-column transposed), a `##DL` data list splitting the records across several of those, and
+      an `##HL` header list wrapping such a list — which is what a real logger writes, so reading only
+      `##DT` read nothing off the files the format is actually used for. Decompression is charged to
+      the shared `DecompressionBudget` before a decompressor sees a stream and each read is capped at
+      the length the block declares, so a forged expansion is refused rather than allocated. Recorded
       as **unread** rather than decoded — data that is there and nobody read it, so each raises
-      `COVERAGE.SOURCE_UNREAD`: compressed (`##DZ`) and listed (`##DL`) data, unsorted data groups, a
-      group with no usable time master, a channel declaring per-sample invalidation, and a group
-      declaring more cycles than its data block holds. A `--metadata-only` run describes a compressed
-      measurement from its header tree, which is the only way to describe one at all. Genuinely
+      `COVERAGE.SOURCE_UNREAD`: a `##DZ` holding something other than a `DT` record stream or using an
+      undefined zip type, a data list whose elements do not all resolve (half a list is not a shorter
+      measurement, it is a misaligned one), unsorted data groups, a group with no usable time master,
+      a channel declaring per-sample invalidation, and a group declaring more cycles than its data
+      block holds. A `--metadata-only` run describes a measurement from its header tree without
+      opening or decompressing a data block. Genuinely
       unmapped, because the CDM has no shape for them: bit-packed and non-numeric channels, other
       conversion types. Those — plus `##SR` sample
       reduction, attachments, and the `##FH`/`##MD` metadata comments — are the follow-ups.

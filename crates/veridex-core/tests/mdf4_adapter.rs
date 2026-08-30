@@ -171,6 +171,49 @@ impl Mf4Builder {
         self.block(b"##CG", &[0, 0, 0, 0, 0, 0], &data)
     }
 
+    /// A `##DZ` block holding `records` deflated. `zip_type` 0 is plain deflate; 1 transposes the
+    /// bytes into columns of `record_len` first, which is what a logger writes.
+    fn zipped_data(&mut self, records: &[u8], zip_type: u8, record_len: u32) -> u64 {
+        use std::io::Write;
+        let staged: Vec<u8> = if zip_type == 1 {
+            transpose(records, record_len as usize)
+        } else {
+            records.to_vec()
+        };
+        let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(&staged).expect("deflate");
+        let payload = enc.finish().expect("deflate");
+
+        let mut data = Vec::new();
+        data.extend_from_slice(b"DT");
+        data.push(zip_type);
+        data.push(0);
+        data.extend_from_slice(&record_len.to_le_bytes()); // dz_zip_parameter
+        data.extend_from_slice(&(records.len() as u64).to_le_bytes());
+        data.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+        data.extend_from_slice(&payload);
+        self.block(b"##DZ", &[], &data)
+    }
+
+    /// A `##DL` chaining `parts` (each a `##DT` or `##DZ`) as one record stream.
+    fn data_list(&mut self, parts: &[u64], equal_length: u64) -> u64 {
+        let mut links = vec![0u64]; // dl_dl_next
+        links.extend_from_slice(parts);
+        let mut data = vec![1u8, 0, 0, 0]; // dl_flags: equal length
+        data.extend_from_slice(&(parts.len() as u32).to_le_bytes());
+        data.extend_from_slice(&equal_length.to_le_bytes());
+        self.block(b"##DL", &links, &data)
+    }
+
+    /// An `##HL` header list wrapping a `##DL`.
+    fn header_list(&mut self, dl: u64) -> u64 {
+        let mut data = Vec::new();
+        data.extend_from_slice(&0u16.to_le_bytes()); // hl_flags
+        data.push(0); // hl_zip_type
+        data.extend_from_slice(&[0u8; 5]);
+        self.block(b"##HL", &[dl], &data)
+    }
+
     fn data_group(&mut self, rec_id_size: u8) -> u64 {
         let mut data = vec![rec_id_size];
         data.extend_from_slice(&[0u8; 7]);
@@ -201,17 +244,38 @@ impl Mf4Builder {
 /// Record layout: `[0..8) time f64 | [8..10) speed u16 | [12..16) temp i32` — 16 bytes.
 fn well_formed_file(records: usize) -> Vec<u8> {
     let mut b = Mf4Builder::new(b"veridex ");
+    let dt = b.block(b"##DT", &[], &well_formed_records(0..records));
+    finish_canonical_graph(b, dt, records)
+}
 
+/// The canonical fixture's record bytes for record indices `range`.
+fn well_formed_records(range: std::ops::Range<usize>) -> Vec<u8> {
     let mut data = Vec::new();
-    for i in 0..records {
+    for i in range {
         let t = i as f64 * 0.1;
         data.extend_from_slice(&t.to_le_bytes());
         data.extend_from_slice(&((i as u16) * 2).to_le_bytes());
         data.extend_from_slice(&[0u8; 2]); // padding to a 4-byte boundary
         data.extend_from_slice(&(20i32 - i as i32).to_le_bytes());
     }
-    let dt = b.block(b"##DT", &[], &data);
+    data
+}
 
+/// Transpose `records` into byte columns, the way an MDF writer stages data for `dz_zip_type` 1.
+fn transpose(records: &[u8], columns: usize) -> Vec<u8> {
+    let lines = records.len() / columns;
+    let mut out = Vec::with_capacity(records.len());
+    for column in 0..columns {
+        for line in 0..lines {
+            out.push(records[line * columns + column]);
+        }
+    }
+    out.extend_from_slice(&records[lines * columns..]);
+    out
+}
+
+/// The canonical fixture's channel graph around an already-written data block at `data_at`.
+fn finish_canonical_graph(mut b: Mf4Builder, data_at: u64, records: usize) -> Vec<u8> {
     let cc = b.linear_conversion(10.0, 0.5);
     let temp = b.channel("temperature", 0, 0, INT_LE, 0, 12, 32, None);
     let speed = b.channel("speed", 0, 0, UINT_LE, 0, 8, 16, Some(cc));
@@ -223,7 +287,7 @@ fn well_formed_file(records: usize) -> Vec<u8> {
     b.patch_link(cg, 1, time);
     let dg = b.data_group(0);
     b.patch_link(dg, 1, cg);
-    b.patch_link(dg, 2, dt);
+    b.patch_link(dg, 2, data_at);
 
     b.finish(dg, 1_700_000_000_000_000_000)
 }
@@ -398,14 +462,14 @@ fn an_unapplied_conversion_is_reported_rather_than_silently_ignored() {
 }
 
 #[test]
-fn a_compressed_measurement_reaches_the_verdict_as_data_that_went_unread() {
-    // The distinction this fixes: a `##DZ` data block is not a field the CDM cannot hold — it is
-    // the measurement, sitting in the file, that this reader did not decode. Filed as `unmapped` it
-    // cost the reader nothing and raised no finding, so a fleet log whose every data block is
-    // compressed came back with no frames, `Coverage::Full`, and a verdict that said nothing about
-    // it. It has to reach the verdict, which only `unread_sources` does.
+fn a_data_block_that_cannot_be_read_reaches_the_verdict_as_data_that_went_unread() {
+    // The distinction this fixes: a data block this reader declines is not a field the CDM cannot
+    // hold — it is the measurement, sitting in the file, that nobody decoded. Filed as `unmapped` it
+    // cost the reader nothing and raised no finding, so a fleet log came back with no frames,
+    // `Coverage::Full`, and a verdict that said nothing about it. It has to reach the verdict, which
+    // only `unread_sources` does. (`##SD` holds signal data, never a record stream.)
     let mut b = Mf4Builder::new(b"veridex ");
-    let dz = b.block(b"##DZ", &[], &[0u8; 32]);
+    let dz = b.block(b"##SD", &[], &[0u8; 32]);
     let time = b.channel("t", 2, 1, FLOAT_LE, 0, 0, 64, None);
     let cg = b.channel_group(3, 8);
     b.patch_link(cg, 1, time);
@@ -437,10 +501,14 @@ fn a_compressed_measurement_reaches_the_verdict_as_data_that_went_unread() {
 }
 
 #[test]
-fn a_compressed_data_block_is_reported_and_contributes_no_frames() {
+fn a_compressed_block_of_something_other_than_records_is_reported_not_mis_decoded() {
     let mut b = Mf4Builder::new(b"veridex ");
-    // A ##DZ block stands in for compressed data; the adapter must decline rather than mis-read it.
-    let dz = b.block(b"##DZ", &[], &[0u8; 32]);
+    // A `##DZ` states which block it was compressed from. `SD` is signal data, not the record stream
+    // a channel group is decoded against, so decoding it would produce plausible-but-wrong values.
+    let mut data = Vec::new();
+    data.extend_from_slice(b"SD");
+    data.extend_from_slice(&[0u8; 30]);
+    let dz = b.block(b"##DZ", &[], &data);
     let time = b.channel("t", 2, 1, FLOAT_LE, 0, 0, 64, None);
     let cg = b.channel_group(3, 8);
     b.patch_link(cg, 1, time);
@@ -455,7 +523,9 @@ fn a_compressed_data_block_is_reported_and_contributes_no_frames() {
             .report
             .unread_sources
             .iter()
-            .any(|u| u.note.contains("##DZ") && u.note.contains("not decoded")),
+            .any(|u| u.note.contains("##DZ")
+                && u.note.contains("not decoded")
+                && u.note.contains("`SD`")),
         "{:?}",
         ingested.report.unread_sources
     );
@@ -787,12 +857,12 @@ fn the_header_tree_alone_names_the_channels_the_measurement_declares() {
 }
 
 #[test]
-fn a_compressed_measurement_is_describable_only_this_way() {
-    // The reason the mode earns its place here. A logger writes `##DZ`, a full read declines to
-    // decode it and the file yields nothing but a coverage warning. The header tree is not
-    // compressed, so it still says which signals the measurement holds.
+fn a_measurement_whose_data_block_is_declined_is_describable_only_this_way() {
+    // The reason the mode earns its place here. A full read declines a data block it cannot decode
+    // into a record stream and the file yields nothing but a coverage warning. The header tree is
+    // never in that block, so it still says which signals the measurement holds.
     let mut b = Mf4Builder::new(b"veridex ");
-    let dz = b.block(b"##DZ", &[], &[0u8; 32]);
+    let dz = b.block(b"##SD", &[], &[0u8; 32]);
     let time = b.channel("t", 2, 1, FLOAT_LE, 0, 0, 64, None);
     let speed = b.channel("speed", 0, 0, UINT_LE, 0, 64, 32, None);
     b.patch_link(time, 0, speed);
@@ -805,7 +875,7 @@ fn a_compressed_measurement_is_describable_only_this_way() {
 
     assert!(
         ingest(&bytes).dataset.episodes[0].streams.is_empty(),
-        "a full read declines a compressed data block, which is the point"
+        "a full read declines a data block that is not a record stream, which is the point"
     );
     let summary = metadata_only(&bytes);
     assert_eq!(
@@ -821,7 +891,7 @@ fn a_compressed_measurement_is_describable_only_this_way() {
         .report
         .omitted_fields
         .iter()
-        .any(|o| o.contains("##DZ")));
+        .any(|o| o.contains("##DT")));
 }
 
 /// An MF4 channel is decoded — the `##CC` conversion is applied and the result is a number — so the
@@ -903,5 +973,177 @@ fn a_channel_pinned_at_its_rail_is_flagged() {
             .iter()
             .any(|f| f.code == "STATISTICAL.UNMEASURED_VALUES"),
         "an MF4's channel values are read, so the family does not abstain on it"
+    );
+}
+
+// --- Compressed and listed data blocks: the shapes a real logger actually writes -----------------
+
+/// Everything the canonical fixture decodes: each stream's name, its frame timestamps, the value
+/// fingerprints those frames carry, and the statistics recomputed from the values. Two files that
+/// agree on all four decoded to the same measurement.
+type DecodedShape = Vec<(
+    String,
+    Vec<i64>,
+    Vec<Option<[u8; 32]>>,
+    Option<veridex_core::cdm::StreamStats>,
+)>;
+
+fn decoded_shape(bytes: &[u8]) -> DecodedShape {
+    ingest(bytes).dataset.episodes[0]
+        .streams
+        .iter()
+        .map(|s| {
+            (
+                s.name.clone(),
+                s.frames.iter().map(|f| f.ts).collect(),
+                s.frames.iter().map(|f| f.value_ref.content_hash).collect(),
+                s.observed_stats,
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_deflated_data_block_decodes_to_the_same_measurement_as_an_uncompressed_one() {
+    // The shape a real logger writes. Until `##DZ` was decompressed, a fleet measurement ingested to
+    // zero frames: every temporal, statistical and structural check ran on nothing and passed.
+    let mut b = Mf4Builder::new(b"veridex ");
+    let dz = b.zipped_data(&well_formed_records(0..5), 0, 16);
+    let compressed = finish_canonical_graph(b, dz, 5);
+
+    assert_eq!(
+        decoded_shape(&compressed),
+        decoded_shape(&well_formed_file(5)),
+        "a compressed measurement must decode to exactly the uncompressed one"
+    );
+    let ingested = ingest(&compressed);
+    assert!(
+        ingested.report.unread_sources.is_empty(),
+        "nothing went unread: {:?}",
+        ingested.report.unread_sources
+    );
+}
+
+#[test]
+fn a_transposed_deflated_block_is_untransposed_before_it_is_decoded() {
+    // `dz_zip_type` 1 lays the records out byte-column-major before deflating, because like-typed
+    // bytes compress far better adjacently. Reading it without reversing that does not fail — it
+    // yields a full set of confidently wrong values, which is worse.
+    let mut b = Mf4Builder::new(b"veridex ");
+    let dz = b.zipped_data(&well_formed_records(0..5), 1, 16);
+    let transposed = finish_canonical_graph(b, dz, 5);
+
+    assert_eq!(
+        decoded_shape(&transposed),
+        decoded_shape(&well_formed_file(5)),
+        "a transposed block must decode to the same measurement as a plain one"
+    );
+}
+
+#[test]
+fn a_data_list_is_stitched_back_into_one_record_stream() {
+    // A logger writes its data out in chunks as the drive runs, and a `##DL` chains them. Read one
+    // chunk and the measurement silently ends early; read them out of order and every record after
+    // the first chunk is misaligned.
+    let mut b = Mf4Builder::new(b"veridex ");
+    let first = b.block(b"##DT", &[], &well_formed_records(0..3));
+    let second = b.block(b"##DT", &[], &well_formed_records(3..5));
+    let dl = b.data_list(&[first, second], 3 * 16);
+    let listed = finish_canonical_graph(b, dl, 5);
+
+    assert_eq!(
+        decoded_shape(&listed),
+        decoded_shape(&well_formed_file(5)),
+        "the list's chunks must rejoin into the single record stream they were split from"
+    );
+}
+
+#[test]
+fn a_header_list_of_compressed_chunks_is_read_through_to_its_records() {
+    // The combination a real MF4 arrives in: `##HL` → `##DL` → several `##DZ`.
+    let mut b = Mf4Builder::new(b"veridex ");
+    let first = b.zipped_data(&well_formed_records(0..2), 1, 16);
+    let second = b.zipped_data(&well_formed_records(2..5), 0, 16);
+    let dl = b.data_list(&[first, second], 2 * 16);
+    let hl = b.header_list(dl);
+    let file = finish_canonical_graph(b, hl, 5);
+
+    assert_eq!(
+        decoded_shape(&file),
+        decoded_shape(&well_formed_file(5)),
+        "a header list must resolve through its data list to the records"
+    );
+}
+
+#[test]
+fn a_data_list_with_an_unreadable_element_refuses_the_whole_group() {
+    // Half a list is not a shorter measurement, it is a misaligned one: every record after the
+    // missing chunk would be read at the wrong offset. So the group contributes nothing and says so.
+    let mut b = Mf4Builder::new(b"veridex ");
+    let good = b.block(b"##DT", &[], &well_formed_records(0..3));
+    let bad = b.block(b"##SD", &[], &[0u8; 32]);
+    let dl = b.data_list(&[good, bad], 3 * 16);
+    let file = finish_canonical_graph(b, dl, 5);
+
+    let ingested = ingest(&file);
+    assert!(
+        ingested.dataset.episodes[0].streams.is_empty(),
+        "a partially readable list must not be decoded as if it were whole"
+    );
+    assert!(
+        ingested
+            .report
+            .unread_sources
+            .iter()
+            .any(|u| u.note.contains("not decoded")),
+        "{:?}",
+        ingested.report.unread_sources
+    );
+}
+
+#[test]
+fn a_compressed_block_that_lies_about_its_expansion_is_refused_not_allocated() {
+    // `dz_org_data_length` is a claim by the file. Believed, a 60-byte block asks for 8 GiB.
+    let mut b = Mf4Builder::new(b"veridex ");
+    let dz = b.zipped_data(&well_formed_records(0..5), 0, 16);
+    // Overwrite the declared original length in place: header (24) + 0 links + 8 bytes of prologue.
+    let at = dz as usize + 24 + 8;
+    b.bytes[at..at + 8].copy_from_slice(&(8u64 << 30).to_le_bytes());
+    let file = finish_canonical_graph(b, dz, 5);
+    let path = write_temp(&file, ".mf4");
+
+    let err = Mdf4Adapter
+        .ingest(
+            &Source::Local(path.to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect_err("a forged expansion must be refused");
+    assert!(
+        matches!(err, IngestError::DecompressionBudgetExceeded { .. }),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn a_compressed_block_whose_stream_is_corrupt_is_reported_rather_than_half_read() {
+    // A truncated deflate stream decompresses to fewer bytes than declared. Taking that as the whole
+    // measurement drops its tail in silence, and the shortened run still reads as complete.
+    let mut b = Mf4Builder::new(b"veridex ");
+    let dz = b.zipped_data(&well_formed_records(0..5), 0, 16);
+    // Corrupt the last byte of the deflate payload.
+    let end = b.bytes.len();
+    b.bytes[end - 1] ^= 0xff;
+    let file = finish_canonical_graph(b, dz, 5);
+
+    let ingested = ingest(&file);
+    assert!(ingested.dataset.episodes[0].streams.is_empty());
+    assert!(
+        ingested
+            .report
+            .unread_sources
+            .iter()
+            .any(|u| u.note.contains("##DZ")),
+        "{:?}",
+        ingested.report.unread_sources
     );
 }

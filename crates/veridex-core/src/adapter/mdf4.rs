@@ -2,29 +2,43 @@
 //!
 //! An MF4 file is a linked graph of typed blocks: the identification block, then a header (`##HD`)
 //! that chains data groups (`##DG`), each holding channel groups (`##CG`) whose channels (`##CN`)
-//! describe fixed-offset fields inside every record of the group's data block (`##DT`). This adapter
+//! describe fixed-offset fields inside every record of the group's data block. This adapter
 //! walks that graph, takes each group's **time master** channel as the timeline, and emits one CDM
 //! [`Stream`] per measured channel with a frame per record.
 //!
+//! A group's data reaches the file in one of four shapes, and all four are read: an uncompressed
+//! `##DT`, a deflated `##DZ` (plain or byte-column transposed), a `##DL` data list splitting the
+//! records across several of those, and an `##HL` header list wrapping such a list. Real loggers
+//! write the compressed and listed shapes, not the bare `##DT`, so reading only `##DT` meant reading
+//! nothing off the files the format is actually used for.
+//!
 //! Scope, stated honestly rather than guessed at (design D2 — never silently drop what could affect a
-//! verdict). Decoded: byte-aligned integer and float channels (little- and big-endian) in an
-//! uncompressed `##DT` block of a sorted data group, with identity or linear (`##CC` type 1)
-//! conversion applied. Everything else contributes no frames and is reported, so a reader always
-//! knows what the verdict did and did not cover — split two ways, because the two mean different
-//! things. **Unread** (a `COVERAGE.SOURCE_UNREAD` warning in the verdict): compressed (`##DZ`) or
-//! listed (`##DL`) data, an unsorted group carrying record ids, a group with no usable time master,
-//! a channel declaring per-sample invalidation, a group declaring more cycles than its block holds —
-//! samples that are in the file and nobody read them, so every result is over less of the
-//! measurement than it appears to be. **Unmapped** (a note about shape, costing the reader nothing):
-//! non-byte-aligned and non-numeric channels, other conversion types.
+//! verdict). Decoded: byte-aligned integer and float channels (little- and big-endian) in a sorted
+//! data group, with identity or linear (`##CC` type 1) conversion applied. Everything else
+//! contributes no frames and is reported, so a reader always knows what the verdict did and did not
+//! cover — split two ways, because the two mean different things. **Unread** (a
+//! `COVERAGE.SOURCE_UNREAD` warning in the verdict): a `##DZ` holding something other than a `DT`
+//! record stream or using an undefined zip type, a data list whose elements do not all resolve, an
+//! unsorted group carrying record ids, a group with no usable time master, a channel declaring
+//! per-sample invalidation, a group declaring more cycles than its block holds — samples that are in
+//! the file and nobody read them, so every result is over less of the measurement than it appears to
+//! be. **Unmapped** (a note about shape, costing the reader nothing): non-byte-aligned and
+//! non-numeric channels, other conversion types.
+//!
+//! Decompression is charged to the shared [`DecompressionBudget`] before a decompressor is pointed
+//! at a stream, and each block's read is capped at the length it declares, so a forged expansion is
+//! refused rather than allocated.
 //!
 //! A `--metadata-only` run describes a measurement from its `##HD`/`##DG`/`##CG`/`##CN` header tree
-//! without opening a data block, which is the only way to describe a *compressed* one at all.
+//! without opening a data block at all — the fastest way to inventory a large measurement, and the
+//! only way to describe one whose data block this reader declines.
 //!
 //! Values are fingerprinted into `frame.value_ref.content_hash` (never stored), so the CDM content
 //! hash is sensitive to actual measured content, exactly as in the other adapters.
 
+use std::borrow::Cow;
 use std::collections::BTreeSet;
+use std::io::Read;
 
 use sha2::{Digest, Sha256};
 
@@ -34,8 +48,8 @@ use crate::cdm::{
 };
 
 use super::{
-    Adapter, Coverage, Detection, IngestError, IngestOptions, IngestReport, Ingested, Source,
-    UnmappedField,
+    Adapter, Coverage, DecompressionBudget, Detection, IngestError, IngestOptions, IngestReport,
+    Ingested, Source, UnmappedField,
 };
 
 const FORMAT_ID: &str = "mf4";
@@ -416,8 +430,8 @@ impl Adapter for Mdf4Adapter {
         let mut streams: Vec<Stream> = Vec::new();
         let mut unmapped: Vec<UnmappedField> = Vec::new();
         // Measurement data this reader did not read, kept apart from the fields the CDM cannot
-        // hold: only this list raises `COVERAGE.SOURCE_UNREAD`, and a file whose every data block
-        // is compressed used to come back with no frames and nothing in the verdict saying why.
+        // hold: only this list raises `COVERAGE.SOURCE_UNREAD`, so a group whose records could not
+        // be resolved never comes back as no frames and a clean verdict.
         let mut unread: Vec<UnmappedField> = Vec::new();
         let mut names_used: BTreeSet<String> = BTreeSet::new();
         // Next disambiguation suffix to try per colliding base name, so each collision is one probe.
@@ -431,7 +445,11 @@ impl Adapter for Mdf4Adapter {
         // groups each re-walking the same n channels is O(n³) streams, and a 33 KB file measured
         // 1.35 GB of allocation. Visiting each block once makes the whole walk linear in file size.
         let mut seen: BTreeSet<u64> = BTreeSet::new();
-        let mut budget = super::FrameBudget::new(options);
+        let mut frames = super::FrameBudget::new(options);
+        // Decompressed bytes are charged against the source's own size, exactly as on the MCAP and
+        // Parquet paths: a `##DZ` may declare any expansion it likes, and the claim is refused
+        // before a decompressor is pointed at it.
+        let mut budget = DecompressionBudget::new(options, bytes.len() as u64);
         while let Some(at) = dg_at {
             if !seen.insert(at) {
                 unmapped.push(UnmappedField {
@@ -464,6 +482,7 @@ impl Adapter for Mdf4Adapter {
                 group_index,
                 options.metadata_only,
                 &mut seen,
+                &mut frames,
                 &mut budget,
             )?;
             for mut stream in result.streams {
@@ -610,7 +629,8 @@ fn ingest_data_group(
     group_index: u64,
     metadata_only: bool,
     seen: &mut BTreeSet<u64>,
-    budget: &mut super::FrameBudget,
+    frames: &mut super::FrameBudget,
+    budget: &mut DecompressionBudget,
 ) -> Result<GroupResult, IngestError> {
     let mut out = GroupResult {
         streams: Vec::new(),
@@ -633,25 +653,19 @@ fn ingest_data_group(
         return Ok(out);
     }
 
-    // The group's data block. Only an uncompressed ##DT is read; compressed/listed data is reported.
-    // A metadata-only run reads no record at all, so it never resolves the block — which is what
-    // lets it describe a measurement whose data is compressed, the shape a real logger writes.
+    // The group's data block: `##DT` verbatim, `##DZ` decompressed, `##DL`/`##HL` stitched back into
+    // one record stream. A metadata-only run reads no record at all, so it never resolves the block.
     let data_link = opt_link(bytes, dg_at, dg, 2);
-    let records: &[u8] = if metadata_only {
-        &[]
+    let resolved: Cow<'_, [u8]> = if metadata_only {
+        Cow::Borrowed(&[][..])
     } else {
-        match data_link.and_then(|at| block_header(bytes, at).map(|h| (at, h))) {
-            Some((at, h)) if &h.id == b"##DT" => data_section(bytes, at, &h).unwrap_or(&[]),
-            Some((_, h)) => {
-                out.unread.push(UnmappedField {
-                source_path: locator("data"),
-                note: format!(
-                    "`{}` data block is not decoded (only uncompressed ##DT is); its channels contribute no frames",
-                    String::from_utf8_lossy(&h.id)
-                ),
-            });
-                return Ok(out);
-            }
+        match data_link {
+            Some(at) => match resolve_records(bytes, at, &locator, seen, budget, &mut out)? {
+                Some(records) => records,
+                // The reason is already filed in `out.unread`; a group whose records could not be
+                // resolved contributes no frames rather than a partial, misaligned decode.
+                None => return Ok(out),
+            },
             None => {
                 out.unmapped.push(UnmappedField {
                     source_path: locator("data"),
@@ -661,6 +675,7 @@ fn ingest_data_group(
             }
         }
     };
+    let records: &[u8] = &resolved;
 
     let mut cg_at = opt_link(bytes, dg_at, dg, 1);
     let mut cg_index = 0u64;
@@ -737,7 +752,7 @@ fn ingest_data_group(
 
         let locate = |name: &str| format!("##DG[{group_index}].##CG[{cg_index}].{name}");
         if metadata_only {
-            declare_channel_group(cycle_count, &channels, group_index, budget, &mut out)?;
+            declare_channel_group(cycle_count, &channels, group_index, frames, &mut out)?;
             cg_index += 1;
             cg_at = opt_link(bytes, at, &cg, 0);
             continue;
@@ -751,7 +766,7 @@ fn ingest_data_group(
         } else {
             available.min(cycle_count)
         };
-        budget.take(FORMAT_ID, decodable.saturating_mul(planned))?;
+        frames.take(FORMAT_ID, decodable.saturating_mul(planned))?;
         // Whatever this group could not contribute is recorded as an unmapped field inside.
         decode_channel_group(
             records,
@@ -770,13 +785,310 @@ fn ingest_data_group(
     Ok(out)
 }
 
+/// The only original block type this reader reconstructs from a `##DZ`. A `##DZ` records which
+/// block it was compressed from; `SD`/`RD` hold signal or reduction data and `DV`/`DI`/`RV`/`RI` are
+/// column-oriented (MDF 4.2), none of which is the record stream a channel group is decoded against.
+/// Decoding one as if it were would produce plausible-but-wrong values, so it is reported instead.
+const DZ_RECORD_ORIGIN: &[u8] = b"DT";
+
+/// Deflate, optionally preceded by a byte-column transposition — the two `dz_zip_type` values ASAM
+/// defines. Anything else is a future encoding this reader must not guess at.
+const ZIP_DEFLATE: u8 = 0;
+const ZIP_TRANSPOSED_DEFLATE: u8 = 1;
+
+/// Resolve a data group's record stream from whatever block its `dg_data` link points at.
+///
+/// Real loggers do not write a bare `##DT`. They compress it (`##DZ`), split it across a data list
+/// (`##DL`), or both behind a header list (`##HL`) — so a reader that handles only `##DT` reads
+/// nothing off the files the format is actually used for. This resolves all four into one contiguous
+/// record stream, borrowed when the data is already uncompressed and contiguous.
+///
+/// `None` means the records could not be resolved and the reason has been filed in
+/// `out.unread`: whatever the caller does next, it must not be to decode part of a stream, because a
+/// missing list element shifts every record after it.
+fn resolve_records<'a>(
+    bytes: &'a [u8],
+    at: u64,
+    locator: &dyn Fn(&str) -> String,
+    seen: &mut BTreeSet<u64>,
+    budget: &mut DecompressionBudget,
+    out: &mut GroupResult,
+) -> Result<Option<Cow<'a, [u8]>>, IngestError> {
+    let Some(header) = block_header(bytes, at) else {
+        out.unread.push(UnmappedField {
+            source_path: locator("data"),
+            note: format!(
+                "truncated or malformed data block at offset {at}; its channels contribute no frames"
+            ),
+        });
+        return Ok(None);
+    };
+    match &header.id {
+        b"##DT" | b"##DZ" => resolve_leaf(bytes, at, &header, locator, budget, out),
+        b"##HL" | b"##DL" => {
+            // A header list is a one-block wrapper naming the list's zip type; the list itself is
+            // what holds the data links.
+            let first = if &header.id == b"##HL" {
+                match opt_link(bytes, at, &header, 0) {
+                    Some(dl) => Some(dl),
+                    // An empty list resolves to an empty record stream, which reads as a group that
+                    // simply held no samples. Naming the cause keeps it from looking that way.
+                    None => {
+                        out.unread.push(UnmappedField {
+                            source_path: locator("data"),
+                            note: "##HL header list links to no data list; this data group's \
+                                   channels contribute no frames"
+                                .into(),
+                        });
+                        return Ok(None);
+                    }
+                }
+            } else {
+                Some(at)
+            };
+            let mut joined: Vec<u8> = Vec::new();
+            let mut list_at = first;
+            while let Some(dl_at) = list_at {
+                // The shared visited set: a list that links back to itself must not spin.
+                if !seen.insert(dl_at) {
+                    out.unread.push(UnmappedField {
+                        source_path: locator("data"),
+                        note: "data list loops back on itself; this data group's channels \
+                               contribute no frames"
+                            .into(),
+                    });
+                    return Ok(None);
+                }
+                let Some(dl) = block_header(bytes, dl_at) else {
+                    out.unread.push(UnmappedField {
+                        source_path: locator("data"),
+                        note: format!(
+                            "truncated or malformed ##DL block at offset {dl_at}; this data \
+                             group's channels contribute no frames"
+                        ),
+                    });
+                    return Ok(None);
+                };
+                if &dl.id != b"##DL" {
+                    out.unread.push(UnmappedField {
+                        source_path: locator("data"),
+                        note: format!(
+                            "expected a ##DL block at offset {dl_at}, found `{}`; this data \
+                             group's channels contribute no frames",
+                            String::from_utf8_lossy(&dl.id)
+                        ),
+                    });
+                    return Ok(None);
+                }
+                let dl_data = data_section(bytes, dl_at, &dl).unwrap_or(&[]);
+                // `dl_count` is bounded by the links the block actually carries, so a forged count
+                // cannot make this loop longer than the file.
+                let declared = le_u32(dl_data, 4).unwrap_or(0) as u64;
+                let count = declared.min(dl.link_count.saturating_sub(1));
+                for i in 0..count {
+                    let Some(leaf_at) = opt_link(bytes, dl_at, &dl, 1 + i) else {
+                        continue;
+                    };
+                    let Some(leaf_header) = block_header(bytes, leaf_at) else {
+                        out.unread.push(UnmappedField {
+                            source_path: locator("data"),
+                            note: format!(
+                                "data-list element {i} is truncated or malformed; this data \
+                                 group's channels contribute no frames"
+                            ),
+                        });
+                        return Ok(None);
+                    };
+                    match resolve_leaf(bytes, leaf_at, &leaf_header, locator, budget, out)? {
+                        Some(part) => joined.extend_from_slice(&part),
+                        None => return Ok(None),
+                    }
+                }
+                list_at = opt_link(bytes, dl_at, &dl, 0);
+            }
+            Ok(Some(Cow::Owned(joined)))
+        }
+        other => {
+            out.unread.push(UnmappedField {
+                source_path: locator("data"),
+                note: format!(
+                    "`{}` data block is not decoded (##DT, ##DZ, ##DL and ##HL are); its channels \
+                     contribute no frames",
+                    String::from_utf8_lossy(other)
+                ),
+            });
+            Ok(None)
+        }
+    }
+}
+
+/// One data-list element or one whole data block: `##DT` verbatim, `##DZ` decompressed.
+fn resolve_leaf<'a>(
+    bytes: &'a [u8],
+    at: u64,
+    header: &BlockHeader,
+    locator: &dyn Fn(&str) -> String,
+    budget: &mut DecompressionBudget,
+    out: &mut GroupResult,
+) -> Result<Option<Cow<'a, [u8]>>, IngestError> {
+    match &header.id {
+        b"##DT" => Ok(Some(Cow::Borrowed(
+            data_section(bytes, at, header).unwrap_or(&[]),
+        ))),
+        b"##DZ" => Ok(inflate_dz(bytes, at, header, locator, budget, out)?.map(Cow::Owned)),
+        other => {
+            out.unread.push(UnmappedField {
+                source_path: locator("data"),
+                note: format!(
+                    "`{}` data block is not decoded (##DT and ##DZ are); its channels contribute \
+                     no frames",
+                    String::from_utf8_lossy(other)
+                ),
+            });
+            Ok(None)
+        }
+    }
+}
+
+/// Decompress one `##DZ` block into the record bytes it was made from.
+///
+/// The block states what it was compressed from, how, and how long it was both ways. Every one of
+/// those is a claim by the file, so each is checked rather than trusted: the expansion is charged to
+/// the decompression budget *before* a decompressor sees the stream, the read is hard-capped at the
+/// declared original length so a corrupt stream cannot expand past it, and a result that does not
+/// match the declared length is reported rather than decoded — a short buffer would silently drop
+/// the tail of the measurement.
+fn inflate_dz(
+    bytes: &[u8],
+    at: u64,
+    header: &BlockHeader,
+    locator: &dyn Fn(&str) -> String,
+    budget: &mut DecompressionBudget,
+    out: &mut GroupResult,
+) -> Result<Option<Vec<u8>>, IngestError> {
+    let decline = |out: &mut GroupResult, note: String| {
+        out.unread.push(UnmappedField {
+            source_path: locator("data"),
+            note,
+        });
+    };
+    let data = data_section(bytes, at, header).unwrap_or(&[]);
+    let origin = data.get(0..2).unwrap_or(&[]);
+    if origin != DZ_RECORD_ORIGIN {
+        decline(
+            out,
+            format!(
+                "##DZ data block holds `{}` data, not the `DT` record stream, and is not decoded; \
+                 its channels contribute no frames",
+                String::from_utf8_lossy(origin).trim_end_matches('\0')
+            ),
+        );
+        return Ok(None);
+    }
+    let zip_type = data.get(2).copied().unwrap_or(u8::MAX);
+    if zip_type != ZIP_DEFLATE && zip_type != ZIP_TRANSPOSED_DEFLATE {
+        decline(
+            out,
+            format!(
+                "##DZ data block uses zip type {zip_type}, which is not decoded; its channels \
+                 contribute no frames"
+            ),
+        );
+        return Ok(None);
+    }
+    let zip_parameter = le_u32(data, 4).unwrap_or(0) as usize;
+    let org_len = le_u64(data, 8).unwrap_or(0);
+    let comp_len = le_u64(data, 16).unwrap_or(0);
+    let Some(payload) = usize::try_from(comp_len)
+        .ok()
+        .and_then(|n| data.get(24..24usize.checked_add(n)?))
+    else {
+        decline(
+            out,
+            format!(
+                "##DZ data block declares {comp_len} compressed bytes it does not hold; its \
+                 channels contribute no frames"
+            ),
+        );
+        return Ok(None);
+    };
+    // Charged first: the file's own claim about how far it expands is refused before the time and
+    // memory of decompressing it is spent.
+    budget.take(FORMAT_ID, org_len)?;
+    let Ok(cap) = usize::try_from(org_len) else {
+        decline(
+            out,
+            format!("##DZ data block declares {org_len} bytes, more than this machine can hold"),
+        );
+        return Ok(None);
+    };
+    let mut inflated = Vec::new();
+    if let Err(e) = flate2::read::ZlibDecoder::new(payload)
+        .take(org_len)
+        .read_to_end(&mut inflated)
+    {
+        decline(
+            out,
+            format!("##DZ data block did not decompress ({e}); its channels contribute no frames"),
+        );
+        return Ok(None);
+    }
+    if inflated.len() != cap {
+        decline(
+            out,
+            format!(
+                "##DZ data block declares {org_len} decompressed bytes but produced {}; its \
+                 channels contribute no frames",
+                inflated.len()
+            ),
+        );
+        return Ok(None);
+    }
+    if zip_type == ZIP_TRANSPOSED_DEFLATE {
+        match untranspose(&inflated, zip_parameter) {
+            Some(v) => inflated = v,
+            None => {
+                decline(
+                    out,
+                    "##DZ data block is transposed by a zero-width column, which cannot be \
+                     reversed; its channels contribute no frames"
+                        .into(),
+                );
+                return Ok(None);
+            }
+        }
+    }
+    Ok(Some(inflated))
+}
+
+/// Reverse the byte-column transposition a `dz_zip_type` of 1 applies before deflating.
+///
+/// The writer lays the records out column-major — every record's first byte, then every record's
+/// second — because like-typed bytes compress far better adjacently. `columns` is the record length,
+/// so the buffer is `columns` rows of `lines` bytes and this reads it back row-major. A tail shorter
+/// than one full row is left where it is, exactly as the writer left it.
+fn untranspose(data: &[u8], columns: usize) -> Option<Vec<u8>> {
+    if columns == 0 {
+        return None;
+    }
+    let lines = data.len() / columns;
+    let mut out = Vec::with_capacity(data.len());
+    for line in 0..lines {
+        for column in 0..columns {
+            out.push(data[column * lines + line]);
+        }
+    }
+    out.extend_from_slice(&data[lines * columns..]);
+    Some(out)
+}
+
 /// Describe one channel group's channels as streams with no frames, from its block headers alone.
 ///
 /// The `--metadata-only` counterpart to [`decode_channel_group`]: a `##CG` states how many cycles it
 /// holds and each `##CN` states its name, so the recording's shape — which signals, on which raster,
-/// how many samples each declares — is readable without touching a data block. That is what lets
-/// this mode describe a measurement whose data is compressed, which is how loggers write them and
-/// which a full read declines to decode.
+/// how many samples each declares — is readable without touching a data block at all. That is what
+/// inventories a large measurement without decompressing it, and what still describes one whose data
+/// block a full read declines.
 fn declare_channel_group(
     cycle_count: u64,
     channels: &[Channel],
