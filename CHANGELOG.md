@@ -10,6 +10,24 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **An MF4 full of bus traffic produced almost no streams.** The adapter decoded only whole-byte
+  channels on a byte boundary, and that is not how an automotive measurement stores signals: a
+  12-bit pedal position starting three bits into a byte, a 4-bit gear packed above it in the same
+  word, a 24-bit sensor count — all ordinary, all refused. The refusal was disclosed, which is why
+  it was survivable, but the measurement was in the file and nothing read it.
+
+  Little-endian integer channels are now decoded at **any bit offset and any width up to 64 bits**,
+  sign-extended from the *field's* own width — a 10-bit signed steering angle reads as `-512` and
+  not as a large positive spike. A field spans at most nine bytes (seven bits of offset plus
+  sixty-four of value), and one that runs past the end of its record yields no stream rather than
+  being assembled out of the bytes that follow it, which would read the next record's data as this
+  one's for every sample.
+
+  Bit-packed **big-endian** fields remain declined, by name: MDF's bit numbering for a straddling
+  Motorola field is not the DBC sawtooth, and a wrong reading there is a plausible number rather
+  than a failure. Big-endian integers and IEEE floats in whole bytes on a byte boundary are decoded
+  as before.
+
 - **An MF4 scored 0/6 on provenance while naming its hardware in every channel group.** An `##SI`
   acquisition-source block states which ECU, bus, I/O device or tool produced a channel group's
   samples, and a channel may name a finer one of its own. That is exactly the question

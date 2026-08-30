@@ -1402,3 +1402,157 @@ fn a_source_block_that_names_nothing_is_not_a_source() {
         "the measurement still reads"
     );
 }
+
+// --- Bit-packed channels: how an automotive measurement actually stores bus signals -------------
+
+#[test]
+fn a_bit_packed_little_endian_channel_is_decoded_at_its_offset_and_width() {
+    // A 12-bit pedal position starting three bits into a byte is ordinary in an MF4 carrying bus
+    // traffic, not exotic. Refusing every non-byte-aligned channel meant such a file produced almost
+    // no streams at all: the measurement was there, and every check ran on what was left of it.
+    //
+    // Record layout, 8 bytes: `[0..8) t f64` is the master, then a second record byte block holding
+    // `pedal` at bit 3 for 12 bits and `gear` at bit 15 for 4 bits — a straddling field and one
+    // packed above it, both inside the same little-endian word.
+    let mut b = Mf4Builder::new(b"veridex ");
+    let pedals: [u16; 4] = [0, 1365, 2730, 4095];
+    let gears: [u16; 4] = [1, 3, 5, 7];
+    let mut data = Vec::new();
+    for i in 0..4 {
+        let t = i as f64 * 0.1;
+        data.extend_from_slice(&t.to_le_bytes());
+        // bits 3..15 = pedal, bits 15..19 = gear, inside a 32-bit little-endian word.
+        let packed: u32 = (u32::from(pedals[i]) << 3) | (u32::from(gears[i]) << 15);
+        data.extend_from_slice(&packed.to_le_bytes());
+    }
+    let dt = b.block(b"##DT", &[], &data);
+
+    let gear = b.channel("gear", 0, 0, UINT_LE, 7, 9, 4, None);
+    let pedal = b.channel("pedal", 0, 0, UINT_LE, 3, 8, 12, None);
+    let time = b.channel("t", 2, 1, FLOAT_LE, 0, 0, 64, None);
+    b.patch_link(time, 0, pedal);
+    b.patch_link(pedal, 0, gear);
+
+    let cg = b.channel_group(4, 12);
+    b.patch_link(cg, 1, time);
+    let dg = b.data_group(0);
+    b.patch_link(dg, 1, cg);
+    b.patch_link(dg, 2, dt);
+
+    let ingested = ingest(&b.finish(dg, 0));
+    let ep = &ingested.dataset.episodes[0];
+    let stats = |name: &str| {
+        ep.streams
+            .iter()
+            .find(|s| s.name == name)
+            .unwrap_or_else(|| panic!("stream `{name}`"))
+            .observed_stats
+            .expect("statistics")
+    };
+    // 12 bits three bits in: the full 0..4095 range comes back, not a byte-sliced fragment of it.
+    let pedal_stats = stats("pedal");
+    assert_eq!((pedal_stats.min, pedal_stats.max), (0.0, 4095.0));
+    // 4 bits starting one bit into the second byte — the field is masked, not the whole byte.
+    let gear_stats = stats("gear");
+    assert_eq!((gear_stats.min, gear_stats.max), (1.0, 7.0));
+    assert!(
+        ingested.report.unread_sources.is_empty(),
+        "{:?}",
+        ingested.report.unread_sources
+    );
+}
+
+#[test]
+fn a_signed_bit_packed_channel_is_sign_extended_from_its_own_width() {
+    // A 10-bit signed steering angle is negative above 511, not a large positive number. Masking
+    // without sign-extending from the *field's* width turns every negative sample into a spike.
+    let mut b = Mf4Builder::new(b"veridex ");
+    let raws: [i16; 3] = [-512, -1, 511];
+    let mut data = Vec::new();
+    for (i, raw) in raws.iter().enumerate() {
+        data.extend_from_slice(&(i as f64 * 0.1).to_le_bytes());
+        let field = (*raw as u16) & 0x03FF;
+        data.extend_from_slice(&(u32::from(field) << 2).to_le_bytes());
+    }
+    let dt = b.block(b"##DT", &[], &data);
+
+    let angle = b.channel("angle", 0, 0, INT_LE, 2, 8, 10, None);
+    let time = b.channel("t", 2, 1, FLOAT_LE, 0, 0, 64, None);
+    b.patch_link(time, 0, angle);
+    let cg = b.channel_group(3, 12);
+    b.patch_link(cg, 1, time);
+    let dg = b.data_group(0);
+    b.patch_link(dg, 1, cg);
+    b.patch_link(dg, 2, dt);
+
+    let ingested = ingest(&b.finish(dg, 0));
+    let stats = ingested.dataset.episodes[0].streams[0]
+        .observed_stats
+        .expect("statistics");
+    assert_eq!((stats.min, stats.max), (-512.0, 511.0));
+}
+
+#[test]
+fn a_bit_packed_big_endian_channel_is_reported_rather_than_read_the_wrong_way_round() {
+    // MDF's bit numbering for a straddling Motorola field is not the DBC sawtooth, and a wrong
+    // reading here is a plausible number rather than a failure. So it is declined out loud.
+    let mut b = Mf4Builder::new(b"veridex ");
+    let mut data = Vec::new();
+    for i in 0..3 {
+        data.extend_from_slice(&(i as f64 * 0.1).to_le_bytes());
+        data.extend_from_slice(&[0u8; 4]);
+    }
+    let dt = b.block(b"##DT", &[], &data);
+
+    const UINT_BE: u8 = 1;
+    let packed = b.channel("packed_be", 0, 0, UINT_BE, 3, 8, 12, None);
+    let time = b.channel("t", 2, 1, FLOAT_LE, 0, 0, 64, None);
+    b.patch_link(time, 0, packed);
+    let cg = b.channel_group(3, 12);
+    b.patch_link(cg, 1, time);
+    let dg = b.data_group(0);
+    b.patch_link(dg, 1, cg);
+    b.patch_link(dg, 2, dt);
+
+    let ingested = ingest(&b.finish(dg, 0));
+    assert!(ingested.dataset.episodes[0].streams.is_empty());
+    assert!(
+        ingested
+            .report
+            .unread_sources
+            .iter()
+            .any(|u| u.note.contains("big-endian") && u.note.contains("whole bytes")),
+        "{:?}",
+        ingested.report.unread_sources
+    );
+}
+
+#[test]
+fn a_field_that_runs_past_the_record_is_declined_rather_than_read_from_the_next_one() {
+    // `cn_byte_offset` and `cn_bit_count` are the file's claims. A field the record is too short to
+    // hold must not be assembled from whatever bytes follow it — that reads the next record's data
+    // as this one's, for every sample.
+    let mut b = Mf4Builder::new(b"veridex ");
+    let mut data = Vec::new();
+    for i in 0..3 {
+        data.extend_from_slice(&(i as f64 * 0.1).to_le_bytes());
+        data.extend_from_slice(&[0xffu8; 2]);
+    }
+    let dt = b.block(b"##DT", &[], &data);
+
+    // 32 bits starting at byte 8 of a 10-byte record: two bytes short.
+    let over = b.channel("over_the_end", 0, 0, UINT_LE, 0, 8, 32, None);
+    let time = b.channel("t", 2, 1, FLOAT_LE, 0, 0, 64, None);
+    b.patch_link(time, 0, over);
+    let cg = b.channel_group(3, 10);
+    b.patch_link(cg, 1, time);
+    let dg = b.data_group(0);
+    b.patch_link(dg, 1, cg);
+    b.patch_link(dg, 2, dt);
+
+    let ingested = ingest(&b.finish(dg, 0));
+    assert!(
+        ingested.dataset.episodes[0].streams.is_empty(),
+        "a field that does not fit its record yields no stream"
+    );
+}

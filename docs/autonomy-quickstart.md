@@ -142,9 +142,16 @@ little to check.
   other than a `DT` record stream, a data list whose elements do not all resolve, a record tagged
   with an id no channel group claims, and a variable-length signal-data group. Because those samples
   *are* in the file, they are disclosed as **unread**: a `COVERAGE.SOURCE_UNREAD` warning in the
-  verdict, not a note only `inspect` prints. Bit-packed channels and lookup-table conversions are unmapped
-  instead: the CDM has no shape for them. A `--metadata-only` run describes a measurement from its
-  header tree without decompressing anything, which is the cheapest way to inventory a large one.
+  verdict, not a note only `inspect` prints. Bit-packed *little-endian* signals are decoded at any
+  offset and any width up to 64 bits, which is how bus traffic is stored; the big-endian equivalent is
+  declined, since MDF's bit numbering for a straddling Motorola field is not the DBC sawtooth.
+  Lookup-table conversions stay unmapped: the CDM has no shape for them. A `--metadata-only` run
+  describes a measurement from its header tree without decompressing anything, which is the cheapest
+  way to inventory a large one.
+- **An MF4 names its own hardware.** The `##SI` acquisition source on a channel group or channel —
+  the ECU, bus, I/O device or tool the samples came from — becomes `provenance.sensor`, qualified by
+  its bus or path. It is the one provenance element the format carries natively; the other five come
+  from `veridex certify` inputs or a richer source.
 - **Per-sensor trigger/latency offsets** aren't modeled yet, so a rig with known constant offsets
   will report that drift as sync spread.
 - **A latched topic is exempt only where the source says it is latched.** `AUTONOMY.RIG_SYNC`

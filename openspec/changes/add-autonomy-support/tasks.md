@@ -61,7 +61,8 @@ No code until this change is approved; this is the build plan.
 - [~] ASAM MDF/MF4 adapter → CDM; record unmapped channels. `adapter/mdf4.rs` walks the MDF 4.x block
       graph (`##HD` → `##DG` → `##CG` → `##CN`), uses each channel group's time master as the
       timeline, and emits one stream per measured channel, applying identity/linear (`##CC` type 1)
-      conversions; integer and float channels in both byte orders; values fingerprinted into the
+      conversions; little-endian integer channels at any bit offset and width up to 64 bits (how bus
+      signals are actually stored), big-endian integers and floats in whole bytes; values fingerprinted into the
       content hash; the identification block's program becomes `recorder` provenance and the `##SI`
       acquisition sources (`cg_si_acq_source`, `cn_si_source`) become `sensor`, each qualified by its
       bus or path — an MF4 scored 0/6 on provenance coverage until they were read. Every block read
@@ -84,8 +85,7 @@ No code until this change is approved; this is the build plan.
       channel declaring per-sample invalidation, and a group declaring more cycles than its data block
       holds. A `--metadata-only` run describes a measurement from its header tree without
       opening or decompressing a data block. Genuinely
-      unmapped, because the CDM has no shape for them: bit-packed and non-numeric channels, other
-      conversion types. Those — plus `##SR` sample
+      unmapped, because the CDM has no shape for them: non-numeric channels, other conversion types. Those — plus `##SR` sample
       reduction, attachments, and the `##FH`/`##MD` metadata comments — are the follow-ups.
       Per-channel statistics are recomputed from the converted physical values through the shared
       accumulator, so the statistical family grades a measurement rather than abstaining on it.

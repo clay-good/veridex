@@ -416,8 +416,17 @@ it, so it raises `COVERAGE.SOURCE_UNREAD` rather than sitting in a note only `in
 channel group claims, a variable-length signal-data group (its records are length-prefixed, not
 fixed-stride, so slicing them at a fixed width would read every one at the wrong offset), a group
 with no usable time master, a channel declaring per-sample invalidation, a group declaring more
-cycles than its block holds. Bit-packed and non-numeric channels and the conversions that need a
-lookup table are **unmapped** instead, and cost the reader nothing: the CDM has no shape for them.
+cycles than its block holds, a bit-packed big-endian field, a channel that runs past the end of its
+record. Non-numeric channels and the conversions that need a lookup table are **unmapped** instead,
+and cost the reader nothing: the CDM has no shape for them.
+
+**Bit-packed signals are read.** An MF4 carrying bus traffic does not store one signal per byte: a
+12-bit pedal position starting three bits into a byte, a 4-bit gear packed above it in the same word,
+a 10-bit signed steering angle — that is the ordinary case, not the exotic one. Little-endian integer
+channels are decoded at any bit offset and any width up to 64 bits, sign-extended from the *field's*
+own width so a negative sample is negative rather than a spike. Big-endian bit-packed fields are the
+one exception, and are declined out loud: MDF's bit numbering for a straddling Motorola field is not
+the DBC sawtooth, and a wrong reading there is a plausible number rather than a failure.
 
 **The file already names its hardware.** An `##SI` acquisition-source block says which ECU, bus, I/O
 device or tool produced a channel group's samples, and a channel may name a finer one of its own.

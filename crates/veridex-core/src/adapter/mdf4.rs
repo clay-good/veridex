@@ -234,17 +234,23 @@ impl Channel {
         self.flags & 0b11 != 0
     }
 
-    /// Whether this adapter can decode the channel's raw value: a byte-aligned, whole-byte integer or
-    /// float. Anything else is reported rather than guessed at.
+    /// Whether this adapter can decode the channel's raw value. Anything else is reported rather
+    /// than guessed at.
+    ///
+    /// A **little-endian (Intel) integer** is decoded at any bit offset and any width up to 64 bits.
+    /// That is how an automotive measurement stores bus signals — a 12-bit pedal position starting
+    /// three bits into a byte is ordinary, not exotic — and refusing them meant an MF4 full of CAN
+    /// traffic produced almost no streams. A **big-endian (Motorola) integer** is decoded only in
+    /// whole bytes on a byte boundary: MDF's bit numbering for a straddling Motorola field is not
+    /// the DBC sawtooth, and a wrong reading here is a plausible number, not a failure.
     fn is_decodable(&self) -> bool {
-        if self.bit_offset != 0 {
-            return false;
-        }
         match self.data_type {
-            // Integers, either byte order, in whole bytes.
-            0..=3 => matches!(self.bit_count, 8 | 16 | 32 | 64),
-            // IEEE 754 floats are only 32- or 64-bit.
-            4 | 5 => matches!(self.bit_count, 32 | 64),
+            // Little-endian integers, any width, any bit offset within the record.
+            0 | 2 => (1..=64).contains(&self.bit_count) && self.bit_offset < 8,
+            // Big-endian integers, whole bytes only.
+            1 | 3 => self.bit_offset == 0 && matches!(self.bit_count, 8 | 16 | 32 | 64),
+            // IEEE 754 floats are only 32- or 64-bit, and are never bit-packed.
+            4 | 5 => self.bit_offset == 0 && matches!(self.bit_count, 32 | 64),
             // Strings, byte arrays, MIME and CANopen types are not measurements.
             _ => false,
         }
@@ -253,30 +259,53 @@ impl Channel {
     /// Decode this channel's physical value out of one record.
     fn value(&self, record: &[u8]) -> Option<f64> {
         let start = usize::try_from(self.byte_offset).ok()?;
-        let len = usize::try_from(self.bit_count).ok()? / 8;
-        let raw = record.get(start..start.checked_add(len)?)?;
-        let value = match (self.data_type, len) {
-            // Unsigned, little- then big-endian.
-            (0, _) => uint_le(raw) as f64,
-            (1, _) => uint_be(raw) as f64,
-            // Signed, sign-extended from the field width.
-            (2, _) => sign_extend(uint_le(raw), len * 8) as f64,
-            (3, _) => sign_extend(uint_be(raw), len * 8) as f64,
-            // IEEE 754 floats.
-            (4, 4) => f32::from_le_bytes(raw.try_into().ok()?) as f64,
-            (4, 8) => f64::from_le_bytes(raw.try_into().ok()?),
-            (5, 4) => f32::from_be_bytes(raw.try_into().ok()?) as f64,
-            (5, 8) => f64::from_be_bytes(raw.try_into().ok()?),
-            _ => return None,
+        let bits = usize::try_from(self.bit_count).ok()?;
+        let value = match self.data_type {
+            // Little-endian: the field's least significant bit sits `bit_offset` bits into the byte
+            // at `byte_offset` and runs upward, so the bytes it touches are read little-endian, the
+            // offset shifted away, and the width masked off. It spans at most nine bytes (seven bits
+            // of offset plus sixty-four of value), which is why the accumulator is a `u128`.
+            0 | 2 => {
+                let offset = usize::from(self.bit_offset);
+                let span = offset.checked_add(bits)?.div_ceil(8);
+                let raw = record.get(start..start.checked_add(span)?)?;
+                let mut acc: u128 = 0;
+                for (i, &byte) in raw.iter().enumerate() {
+                    acc |= u128::from(byte) << (8 * i);
+                }
+                let field = ((acc >> offset) & mask(bits)) as u64;
+                if self.data_type == 0 {
+                    field as f64
+                } else {
+                    sign_extend(field, bits) as f64
+                }
+            }
+            // Big-endian and floats: whole bytes on a byte boundary, guarded by `is_decodable`.
+            _ => {
+                let len = bits / 8;
+                let raw = record.get(start..start.checked_add(len)?)?;
+                match (self.data_type, len) {
+                    (1, _) => uint_be(raw) as f64,
+                    (3, _) => sign_extend(uint_be(raw), len * 8) as f64,
+                    (4, 4) => f32::from_le_bytes(raw.try_into().ok()?) as f64,
+                    (4, 8) => f64::from_le_bytes(raw.try_into().ok()?),
+                    (5, 4) => f32::from_be_bytes(raw.try_into().ok()?) as f64,
+                    (5, 8) => f64::from_be_bytes(raw.try_into().ok()?),
+                    _ => return None,
+                }
+            }
         };
         Some(self.conversion.apply(value))
     }
 }
 
-fn uint_le(raw: &[u8]) -> u64 {
-    raw.iter()
-        .rev()
-        .fold(0u64, |acc, &b| (acc << 8) | u64::from(b))
+/// A mask of the low `bits` bits. `bits` is never above 64 here, so the shift cannot overflow.
+fn mask(bits: usize) -> u128 {
+    if bits >= 128 {
+        u128::MAX
+    } else {
+        (1u128 << bits) - 1
+    }
 }
 
 fn uint_be(raw: &[u8]) -> u64 {
@@ -1549,7 +1578,9 @@ fn decode_channel_group(
             out.unread.push(UnmappedField {
                 source_path: locate(&channel.name),
                 note: format!(
-                    "channel is data type {} at bit offset {} × {} bits, which is not decoded",
+                    "channel is data type {} at bit offset {} × {} bits, which is not decoded \
+                     (little-endian integers are decoded at any bit offset and width; big-endian \
+                     ones and floats only in whole bytes on a byte boundary)",
                     channel.data_type, channel.bit_offset, channel.bit_count
                 ),
             });
@@ -1693,9 +1724,32 @@ mod tests {
 
     #[test]
     fn integers_decode_in_both_byte_orders() {
-        assert_eq!(uint_le(&[0x01, 0x02]), 0x0201);
         assert_eq!(uint_be(&[0x01, 0x02]), 0x0102);
-        assert_eq!(uint_le(&[]), 0);
+        assert_eq!(uint_be(&[]), 0);
+        // The little-endian path is the bit-field one: a whole-byte channel is the case where the
+        // offset is zero and the width is a multiple of eight.
+        let le = |data_type: u8, bit_offset: u8, bit_count: u32, record: &[u8]| {
+            Channel {
+                name: "x".into(),
+                channel_type: 0,
+                sync_type: 0,
+                data_type,
+                bit_offset,
+                byte_offset: 0,
+                bit_count,
+                flags: 0,
+                conversion: Conversion::Identity,
+                unapplied_conversion: None,
+            }
+            .value(record)
+        };
+        assert_eq!(le(0, 0, 16, &[0x01, 0x02]), Some(0x0201 as f64));
+        // A 12-bit field three bits into the word.
+        assert_eq!(le(0, 3, 12, &[0xF8, 0xFF, 0x00]), Some(4095.0));
+        // The same field read as signed is -1, not 4095.
+        assert_eq!(le(2, 3, 12, &[0xF8, 0xFF, 0x00]), Some(-1.0));
+        // A field the record is too short to hold yields nothing rather than a partial read.
+        assert_eq!(le(0, 0, 32, &[0x01, 0x02]), None);
     }
 
     #[test]
@@ -1731,7 +1785,7 @@ mod tests {
     }
 
     #[test]
-    fn only_byte_aligned_numeric_channels_are_decodable() {
+    fn which_channels_this_reader_can_slice() {
         let channel = |data_type: u8, bit_offset: u8, bit_count: u32| Channel {
             name: "c".into(),
             channel_type: 0,
@@ -1747,11 +1801,22 @@ mod tests {
         assert!(channel(0, 0, 16).is_decodable());
         assert!(channel(4, 0, 32).is_decodable());
         assert!(channel(5, 0, 64).is_decodable());
-        // Bit-packed, odd-width, non-numeric, and a float that isn't 32/64 bits are all declined.
-        assert!(!channel(0, 3, 16).is_decodable());
-        assert!(!channel(0, 0, 12).is_decodable());
+        // Little-endian integers at any offset and any width up to 64 bits: how bus signals are
+        // stored, and the whole reason this reader sees an automotive measurement at all.
+        assert!(channel(0, 3, 16).is_decodable());
+        assert!(channel(0, 0, 12).is_decodable());
+        assert!(channel(2, 7, 1).is_decodable());
+        assert!(channel(0, 0, 64).is_decodable());
+        assert!(!channel(0, 0, 65).is_decodable());
+        assert!(!channel(0, 0, 0).is_decodable());
+        // A bit-packed big-endian field is declined: MDF's numbering for a straddling Motorola
+        // field is not the DBC sawtooth, and guessing yields a plausible wrong number.
+        assert!(!channel(1, 3, 12).is_decodable());
+        assert!(channel(1, 0, 16).is_decodable());
+        // Non-numeric, and a float that isn't 32/64 bits or isn't byte-aligned.
         assert!(!channel(6, 0, 32).is_decodable());
         assert!(!channel(4, 0, 16).is_decodable());
+        assert!(!channel(4, 1, 32).is_decodable());
     }
 
     #[test]
