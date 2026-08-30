@@ -48,6 +48,14 @@ pub const REDACTION_CODE: &str = "REPORT.REDACTED";
 const MIN_IDENTIFIER: usize = 3;
 
 /// A stable identifier → placeholder substitution built from one dataset.
+///
+/// **Order-independence, which two front-ends now rely on.** The enumerated `replacements` are fixed
+/// at construction and applied first; only what survives them reaches `paths`, whose placeholders are
+/// numbered in the order paths are met. So anything the replacement table covers — every stream name,
+/// task string, provenance value, and the dataset id itself — redacts the same whatever the redactor
+/// saw before it, while a path met for the first time does not. The CLI redacts the dataset id with
+/// the redactor that already processed the verdict and the Python binding with a fresh one; they
+/// agree because the id is in the table. `tests/redact.rs` pins that.
 pub struct Redactor {
     /// Longest first, so a stream named `arm` cannot chew a hole in `arm/gripper`.
     replacements: Vec<(String, String)>,

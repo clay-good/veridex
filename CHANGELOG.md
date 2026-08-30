@@ -10,6 +10,15 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **Pinned the redaction property the two front-ends now depend on.** The report's new `dataset.id`
+  is redacted by the CLI with the redactor that already processed the whole verdict, and by the
+  Python binding with a fresh one. That is only safe because the id resolves through the redactor's
+  *deterministic* replacement table rather than its path-placeholder map, which is numbered in the
+  order paths are met — otherwise the same dataset would redact to `path#1` from one front-end and
+  `path#7` from the other, and the CI parity job would only catch it for an id that happens to
+  contain a slash. The property is now asserted directly, across five id shapes, and stated on
+  `Redactor` where the next person to add a field will read it.
+
 - **Only one page was guarded against naming a finding code that no longer exists.** A test already
   held `docs/checks.md` and the catalog to each other in both directions — but the catalog page is
   not the only one that quotes codes. The README's headline list, the eight format walkthroughs, the

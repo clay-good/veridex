@@ -381,3 +381,54 @@ fn a_joint_name_a_finding_quotes_is_redacted_like_any_other_identifier() {
         "{message}"
     );
 }
+
+#[test]
+fn the_redacted_dataset_id_does_not_depend_on_what_the_redactor_saw_first() {
+    // Two front-ends now redact the dataset id for the report's `dataset.id` field, and they build
+    // their redactors differently: the CLI reuses the one that already redacted the whole verdict,
+    // the Python binding builds a fresh one. That is only safe because the id resolves through the
+    // *deterministic* replacement table, which is fixed at construction — never through the
+    // path-placeholder map, which is numbered in the order paths are met.
+    //
+    // If it ever fell through to the path map, the same dataset would redact to `path#1` from one
+    // front-end and `path#7` from the other, and the CI parity job would catch it only for a
+    // dataset whose id happens to contain a slash. This says so directly instead.
+    use veridex_core::cdm::{Dataset, Episode};
+    for id in [
+        "acme/warehouse/pick",
+        "a/b",
+        "plain-name",
+        "hf://org/name",
+        "x",
+    ] {
+        let d = Dataset {
+            id: id.into(),
+            calibration: None,
+            metadata: vec![],
+            provenance: vec![],
+            episodes: vec![Episode {
+                index: 0,
+                start_ts: None,
+                end_ts: None,
+                streams: vec![],
+                task: None,
+                labels: vec![],
+                ego_poses: None,
+                declared_frame_count: None,
+            }],
+        };
+        let fresh = veridex_core::Redactor::for_dataset(&d).redact_text(&d.id);
+        let mut used = veridex_core::Redactor::for_dataset(&d);
+        // Anything path-shaped, so the stateful map is non-empty before the id is redacted.
+        let _ = used.redact_text("read /var/lib/other/thing and /tmp/second");
+        assert_eq!(
+            fresh,
+            used.redact_text(&d.id),
+            "the redacted id for `{id}` changed with the redactor's state"
+        );
+        assert!(
+            !fresh.contains(id) || id.chars().count() < 3,
+            "and it is redacted at all: `{id}` -> `{fresh}`"
+        );
+    }
+}
