@@ -397,7 +397,8 @@ pub enum Coverage {
 /// HDF5 store that named its `device` or its `source_dataset` had them read as free-form metadata
 /// while the identical key in an MCAP became typed provenance.
 ///
-/// Covers the core keys (license/sensor/calibration/operator/upstream) plus the autonomy sensor-rig
+/// Covers all six expected keys (license/sensor/clock/calibration/annotator/upstream) plus the
+/// autonomy sensor-rig
 /// lineage (design A3): sensor firmware, the calibration session, the platform/vehicle and drive/run
 /// identity, the capture region, the HD-map version, and the redaction/consent status — the last two
 /// being acute for public-road capture (design A7).
@@ -412,6 +413,13 @@ pub fn provenance_key_for(meta_key: &str) -> Option<&'static str> {
         "upstream" | "derived_from" | "source_dataset" | "parent_dataset" | "upstream_dataset" => {
             Some("upstream")
         }
+        // The sixth expected element, and the one the table had no row for: a producer that wrote
+        // `time_source: GPS` or `clock: PTP grandmaster` had it read as free-form metadata, so the
+        // one question a *timing* verifier most wants answered was the one key it could not
+        // recognise. Only spellings that unambiguously name a clock *source* — never a timestamp
+        // field, never a rate.
+        "clock" | "clock_source" | "time_source" | "timebase" | "time_base" | "time_sync"
+        | "sync_source" => Some("clock"),
         // --- autonomy rig lineage (A3) ---
         "firmware" | "firmware_version" | "fw" | "fw_version" => Some("firmware"),
         "calibration_session" | "calib_session" | "calibration_session_id" => {

@@ -1811,3 +1811,41 @@ fn a_store_attribute_means_what_the_same_key_means_in_a_recording() {
     assert!(keys.contains(&"author"), "{keys:?}");
     assert!(!keys.contains(&"annotator"), "{keys:?}");
 }
+
+#[test]
+fn the_well_known_table_covers_every_expected_provenance_key() {
+    // The table recognised five of the six elements the coverage score is measured against. A
+    // producer that wrote `time_source: GPS` had it read as free-form metadata, so the one question
+    // a *timing* verifier most wants answered was the one key it could not recognise.
+    use veridex_core::adapter::provenance_key_for;
+    for (spelling, expected) in [
+        ("clock", "clock"),
+        ("clock_source", "clock"),
+        ("time_source", "clock"),
+        ("timebase", "clock"),
+        ("sync_source", "clock"),
+        ("license", "license"),
+        ("device", "sensor"),
+        ("calibration_id", "calibration"),
+        ("operator", "annotator"),
+        ("derived_from", "upstream"),
+    ] {
+        assert_eq!(provenance_key_for(spelling), Some(expected), "{spelling}");
+    }
+    // Every expected element is reachable, so no producer can name one and have it ignored.
+    let reachable: std::collections::BTreeSet<&str> = [
+        "license",
+        "sensor",
+        "clock",
+        "calibration",
+        "annotator",
+        "upstream",
+    ]
+    .into_iter()
+    .filter(|k| provenance_key_for(k) == Some(k))
+    .collect();
+    assert_eq!(reachable.len(), 6, "{reachable:?}");
+    // A timestamp field is not a clock source, and must not be promoted to one.
+    assert_eq!(provenance_key_for("timestamp"), None);
+    assert_eq!(provenance_key_for("fps"), None);
+}

@@ -134,6 +134,42 @@ layout, in any of `.mp4` / `.m4v` / `.mov`.
 Provenance findings do not lower the data-quality sub-score; provenance coverage is a separate 30%
 axis of the [trust score](rubric-v1.md).
 
+### What each format can supply
+
+Coverage depends on what the format records about itself, and the honest answer differs per format.
+Everything below is **extracted** — read out of the source bytes, class `known`, never asserted —
+and anything a source does not carry stays missing rather than being invented. The six expected
+elements are `license`, `sensor`, `clock`, `calibration`, `annotator`, `upstream`; `recorder` and the
+autonomy rig-lineage keys are recorded too but sit outside the coverage denominator.
+
+| Format | What it supplies, and from where |
+|---|---|
+| LeRobot | `sensor` from `meta/info.json`'s `robot_type`; `license`, `upstream` (`source_datasets`) and `annotator` (`annotations_creators`) from the dataset card's YAML frontmatter. The Hub's "none" values — `original`, `no-annotation` — name nothing and are deliberately not counted |
+| RLDS/TFDS | `license` from `dataset_info.json`'s `redistributionInfo`; `upstream` per episode, from the raw file each record was converted from (plus the TFDS split, which keeps eval data from being sampled as training data) |
+| HDF5 | `sensor` from a `robomimic` `env_args`' `env_kwargs.robots`; `license` and any [well-known key](#well-known-metadata-keys) among the root attributes; `upstream` per episode, from the group it came from. `author` stays its own element — who wrote the file is not who labelled the data |
+| Zarr | the same well-known keys from `.zattrs`, and `upstream` per episode from the group path |
+| MCAP | the richest: every well-known key a producer wrote into a `Metadata` record, `recorder` from the header's library/profile, an attachment summary including calibration — and `calibration` **in-band** from a recorded transform tree and `CameraInfo`, which is stronger than a reference to a file nobody can check |
+| ROS 2 rosbag2 | `recorder` and storage identity from `metadata.yaml`, plus the same in-band `calibration` as MCAP |
+| CAN+DBC | `sensor` from the `BO_` transmitter of every message the log actually carried. A node the database declares but that never transmitted is not claimed, and `Vector__XXX` names nobody |
+| ASAM MF4 | `sensor` from the `##SI` acquisition sources a channel group or channel points at, qualified by bus or path; `recorder` from the identification block's writing program |
+
+No format in this set records a clock *source* (as opposed to timestamps) as part of its own layout,
+so `clock` is unknown unless a producer wrote it: a `clock`, `clock_source`, `time_source` or
+`timebase` key in an MCAP `Metadata` record, an HDF5 attribute or a Zarr `.zattrs` entry is
+recognised and read. Otherwise `veridex certify` inputs are the way to fill it.
+
+### Well-known metadata keys
+
+Several formats carry free-form key/value metadata: an MCAP `Metadata` record, an HDF5 root
+attribute, a Zarr `.zattrs` entry. One curated table maps the well-known spellings onto typed
+provenance for all of them, so a key called `sensor` means the same thing whichever container it was
+written in — `device` / `camera_model` / `lidar_model` / `hardware` are `sensor`, `derived_from` /
+`source_dataset` / `parent_dataset` are `upstream`, `spdx` / `license_id` are `license`,
+`time_source` / `clock_source` / `timebase` are `clock`, and so on,
+plus the autonomy rig-lineage keys (firmware, platform, drive, region, map version, redaction,
+consent). A producer's arbitrary key is preserved as metadata and never promoted to provenance:
+guessing at what an unknown key means is how a verifier starts inventing lineage.
+
 ## Autonomy — is the sensor rig internally consistent?
 
 These checks run only on an **autonomy sensor rig** — an episode carrying at least three AV-native

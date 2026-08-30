@@ -10,6 +10,21 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **The well-known key table recognised five of the six elements it is scored against.** `license`,
+  `sensor`, `calibration`, `annotator` and `upstream` all had rows; `clock` had none. A producer who
+  wrote `time_source: GPS` or `clock: PTP grandmaster` into an MCAP `Metadata` record, an HDF5
+  attribute or a Zarr `.zattrs` entry had it read as free-form metadata — so the one question a
+  *timing* verifier most wants answered was the one key it could not recognise. `clock`,
+  `clock_source`, `time_source`, `timebase`, `time_base`, `time_sync` and `sync_source` now map to
+  it. A timestamp field or a frame rate still does not: naming a clock is not the same as carrying
+  one.
+
+  `docs/checks.md` gains a **what each format can supply** table — where every provenance element
+  comes from, per format, and what deliberately is not counted (the Hub's `original` and
+  `no-annotation`, the DBC's `Vector__XXX`, a node that never transmitted). Five adapters gained
+  extraction this week and nothing said, in one place, what a reader could now expect from their
+  own format.
+
 - **A key called `sensor` meant one thing in an MCAP and nothing in an HDF5.** Veridex has a curated
   table of well-known metadata keys — `device`, `lidar_model`, `source_dataset`, `calibration_version`
   and two dozen more — that map a producer's free-form key onto a typed provenance element. It lived
