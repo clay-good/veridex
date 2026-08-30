@@ -10,6 +10,18 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **Only one page was guarded against naming a finding code that no longer exists.** A test already
+  held `docs/checks.md` and the catalog to each other in both directions — but the catalog page is
+  not the only one that quotes codes. The README's headline list, the eight format walkthroughs, the
+  autonomy quickstart and the profile reference all name them, all as the thing a reader should
+  expect to see, and a renamed code would have left every one of those pointing at something that
+  can never fire while only the catalog page said so.
+
+  The guard now sweeps the README and every page under `docs/`, and looks for codes unquoted as well
+  as in backticks, because those pages paste real terminal output where a code appears bare. Over a
+  hundred mentions are checked. (Renaming one in the README makes the test name the page and the
+  token.)
+
 - **The autonomy quickstart printed output the tool no longer produces.** Its `certify` block showed
   `grade C (70)` and a criterion line from an older build; the real run says `fail, grade C (73)` and
   names the arithmetic check the criterion gained. A page whose whole value is "run this and see the

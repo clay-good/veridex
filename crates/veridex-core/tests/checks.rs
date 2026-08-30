@@ -2183,6 +2183,43 @@ fn docs_checks_md_lists_no_unknown_finding_codes() {
             );
         }
     }
+
+    // Every *other* page too. The guard covered `docs/checks.md` alone, and it is not the only page
+    // that names finding codes: the README's headline list, the format walkthroughs, the quickstart
+    // and the profile reference all quote them, all as the thing a reader should expect to see. A
+    // renamed code would leave those pages pointing at something that can never fire, and only the
+    // catalog page would have said so.
+    //
+    // Here a code is looked for unquoted as well, because these pages paste real terminal output,
+    // where a code appears bare: `  [error] AUTONOMY.RIG_SYNC  episode 0`.
+    let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
+    let mut pages: Vec<std::path::PathBuf> = vec![root.join("README.md")];
+    for entry in std::fs::read_dir(root.join("docs")).expect("docs/ is readable") {
+        let path = entry.expect("a directory entry").path();
+        if path.extension().is_some_and(|e| e == "md") {
+            pages.push(path);
+        }
+    }
+    pages.sort();
+    let mut checked = 0usize;
+    for page in &pages {
+        let text = std::fs::read_to_string(page).expect("the page is readable");
+        let name = page.file_name().unwrap().to_string_lossy();
+        for token in text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '.' || c == '_')) {
+            if !is_finding_code(token) {
+                continue;
+            }
+            checked += 1;
+            assert!(
+                registered.contains(token) || engine_emitted.contains(token),
+                "{name} names `{token}`, which no registered check emits"
+            );
+        }
+    }
+    assert!(
+        checked > 100,
+        "the sweep must actually find codes to check: {checked}"
+    );
 }
 
 #[test]
