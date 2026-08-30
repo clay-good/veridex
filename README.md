@@ -42,9 +42,15 @@ Veridex Trust Report
   episode whose arrays disagree about their own length, a camera whose calibration is present and
   arithmetically impossible — each reported with the *training risk* it creates and a *remedy*.
 - **Proves where data came from.** Which sensor, clock, calibration, annotator, license, and
-  upstream dataset produced each segment — surfaced, scored, and emitted two ways: as a signed
-  trust certificate, and as Croissant + W3C PROV documents (`veridex provenance --emit`) for tools
-  that speak them. The Croissant carries what Veridex actually extracted — name, license, creator,
+  upstream dataset produced each segment — read out of the dataset itself wherever it says so, and
+  it usually does: a `robomimic` file's `env_args` names its robot, a DBC's `BO_` line names the ECU
+  that transmitted, an MF4's `##SI` block names the acquisition device, a Hugging Face card names
+  its source datasets and annotation creators, and `ros2 bag record --custom-data` puts whatever
+  else a team wants on the record. Every one is `known` — extracted, never claimed — and what a
+  source does not say stays missing rather than being invented
+  ([what each format supplies](docs/checks.md#what-each-format-can-supply)). Then surfaced, scored,
+  and emitted two ways: as a signed trust certificate, and as Croissant + W3C PROV documents
+  (`veridex provenance --emit`) for tools that speak them. The Croissant carries what Veridex actually extracted — name, license, creator,
   the CDM hash, and every provenance element with its class — and deliberately omits `datePublished`,
   `url` and `version`, which it has no honest value for. A Croissant validator warns about exactly
   those three; it will not warn about anything Veridex made up.
@@ -319,7 +325,7 @@ is in and tested:
 | **Trust score** | The v1 rubric, the `standard` / `strict` threshold profiles, and the `world-model-ready` readiness profile |
 | **Reporting** | Terminal, JSON, SARIF 2.1.0 and self-contained HTML, each with rollups by category, episode and stream, and each shareable through `--redact` |
 | **Adapters** | LeRobot v2.0/2.1/3.0, RLDS/TFDS, HDF5, Zarr, MCAP, ROS 2 rosbag2, CAN+DBC, ASAM MDF/MF4 — with a passing cross-format neutrality gate (the same logical dataset yields equivalent CDMs as LeRobot v3 and as MCAP, and as rosbag2 and as MCAP) |
-| **Provenance** | Scenario-dimension coverage and scenario/map/sim reference extraction (OpenSCENARIO / OpenDRIVE / OSI / simulator, version read from the referenced sidecar's own ASAM header), emitted as Croissant + W3C PROV |
+| **Provenance** | Per-format extraction into the six scored elements — see [what each format can supply](docs/checks.md#what-each-format-can-supply) — with one curated key table shared by every source that carries free-form metadata, so `sensor` means the same thing in an MCAP record, a rosbag2 `custom_data` entry, an HDF5 attribute and a Zarr `.zattrs`. Plus scenario-dimension coverage and scenario/map/sim reference extraction (OpenSCENARIO / OpenDRIVE / OSI / simulator, version read from the referenced sidecar's own ASAM header), emitted as Croissant + W3C PROV |
 | **Certificates** | Ed25519 signing with offline verification (tamper and transplant rejection), and **producer attestation** — provenance a producer signs for, bound to the dataset's content hash and disclosed by the key that signed it |
 | **CLI** | `check`, `inspect`, `checks`, `certify`, `verify`, `provenance`, `keygen`, `diff`, `watch`, `label`, `attest`, plus `check --print-config` and `check --redact` — see the [Quickstart](#quickstart) |
 | **Python bindings** | `import veridex`, exposing `check`/`check_sarif`/`check_html`/`inspect`/`content_hash`/`catalog`/`provenance`/`diff`/`keygen`/`certify`/`verify`/`effective_config`/`label`/`attest`/`version` over the same core pipeline, with a CLI⇄Python parity test run in CI |

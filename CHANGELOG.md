@@ -10,6 +10,13 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **The README's provenance claim was two weeks behind the code.** Its "What's built" row named
+  only the scenario/map/sim reference extraction and the Croissant + PROV emission, and the headline
+  bullet described provenance as something surfaced and scored without saying where any of it comes
+  from — while five adapters gained extraction and every free-form key now routes through one shared
+  table. Both now say what a reader can expect from their own format, and link to the
+  [per-format table](docs/checks.md#what-each-format-can-supply).
+
 - **`ros2 bag record --custom-data` wrote provenance into every bag and Veridex read none of it.**
   `custom_data` is the supported way for a ROS 2 producer to record what a bag is *of*, and it lands
   in `metadata.yaml` as a free-form key/value map. The adapter parsed the scalars around it and
