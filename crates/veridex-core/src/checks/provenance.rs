@@ -98,7 +98,7 @@ impl Check for ProvenanceCompleteness {
         "1"
     }
     fn run(&self, dataset: &Dataset) -> Vec<Finding> {
-        self.evaluate(dataset, true)
+        self.evaluate(dataset, true, &[])
     }
 
     /// A run that opened no stream payload cannot tell a dataset with no calibration or lineage from
@@ -110,12 +110,17 @@ impl Check for ProvenanceCompleteness {
     /// so the ingest's own answer is the one that decides. The narrowing itself is disclosed by
     /// `COVERAGE.METADATA_ONLY`, so this silence is not the reader's only signal.
     fn run_in(&self, dataset: &Dataset, context: &CheckContext) -> Vec<Finding> {
-        self.evaluate(dataset, !context.frames_read)
+        self.evaluate(dataset, !context.frames_read, &context.attested_keys)
     }
 }
 
 impl ProvenanceCompleteness {
-    fn evaluate(&self, dataset: &Dataset, skip_payload_derived: bool) -> Vec<Finding> {
+    fn evaluate(
+        &self,
+        dataset: &Dataset,
+        skip_payload_derived: bool,
+        attested_keys: &[String],
+    ) -> Vec<Finding> {
         let mut findings = Vec::new();
 
         // Collect the best-known class per provenance key across all records, and check each
@@ -199,7 +204,13 @@ impl ProvenanceCompleteness {
             // An element only a stream payload could have supplied is not *missing* on a run that
             // opened no payload; it was not looked for. See `PAYLOAD_DERIVED` and `run_in`.
             let unjudgeable = skip_payload_derived && PAYLOAD_DERIVED.contains(&exp.key);
-            if !present && !unjudgeable {
+            // An element a verified producer attestation supplied is not missing: it is claimed by
+            // a signed producer rather than extracted from the data. The trust score counts it as
+            // covered, so reporting it missing had the same report say both — and `remedy: attest
+            // this element` was advice the reader had already taken. What it *is* stays disclosed
+            // by `PROVENANCE.ATTESTED`, which names both the element and the key that signed it.
+            let attested = attested_keys.iter().any(|k| k == exp.key);
+            if !present && !unjudgeable && !attested {
                 findings.push(
                     Finding::new(
                         self.id(),

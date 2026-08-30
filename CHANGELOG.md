@@ -10,6 +10,18 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **One report said an element was both attested and missing.** Applying a producer attestation
+  raised provenance coverage from 33% to 50% — the attested `clock` counted, and
+  `PROVENANCE.ATTESTED` named it and the key that signed it — while `PROVENANCE.MISSING_CLOCK` fired
+  in the same run, with the remedy "attest this element", which the reader had just done. The score
+  was computed from the attestation and the checks were not: they ran against the raw dataset and
+  never saw it.
+
+  The verified attestation's keys now reach the checks through `CheckContext`, the same channel that
+  already tells them what the ingest was allowed to read, and `provenance.completeness` stays silent
+  on an element a signed producer supplied. Every element nobody attested is reported exactly as
+  before, so the silence is scoped to what was actually claimed.
+
 - **`veridex diff` could not tell you that you compared two different datasets.** The guard exists
   and is documented — "a diff assumes the two reports describe the same dataset; nothing about the
   comparison holds otherwise" — and it was dead. It reads the dataset id out of a report, and the

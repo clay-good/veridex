@@ -131,6 +131,13 @@ layout, in any of `.mp4` / `.m4v` / `.mov`.
 | `provenance.completeness` | `PROVENANCE.MISSING_ANNOTATOR` | info | No annotator/operator is known. |
 | `provenance.completeness` | `PROVENANCE.MISSING_UPSTREAM` | info | No upstream lineage is known. |
 
+An element a verified producer attestation supplies is **not** reported missing. The trust score
+counts it as covered — that is what an attestation is for — so reporting it missing would have the
+same report say both, and its remedy ("attest this element") would be advice the reader had already
+followed. What it is stays disclosed: `PROVENANCE.ATTESTED` names every attested element and the key
+that signed it, and `PROVENANCE.ATTESTATION_CONFLICT` names any whose value contradicts what the
+dataset records.
+
 Provenance findings do not lower the data-quality sub-score; provenance coverage is a separate 30%
 axis of the [trust score](rubric-v1.md).
 

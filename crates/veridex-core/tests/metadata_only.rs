@@ -751,13 +751,19 @@ fn a_payload_derived_provenance_element_is_not_called_missing_when_no_payload_wa
     let findings = veridex_core::check::Check::run_in(
         &veridex_core::checks::provenance::ProvenanceCompleteness,
         &empty,
-        &veridex_core::check::CheckContext { frames_read: true },
+        &veridex_core::check::CheckContext {
+            frames_read: true,
+            ..Default::default()
+        },
     );
     assert!(findings.iter().any(|f| f.code == code));
     let narrowed = veridex_core::check::Check::run_in(
         &veridex_core::checks::provenance::ProvenanceCompleteness,
         &empty,
-        &veridex_core::check::CheckContext { frames_read: false },
+        &veridex_core::check::CheckContext {
+            frames_read: false,
+            ..Default::default()
+        },
     );
     assert!(
         !narrowed.iter().any(|f| f.code == code),

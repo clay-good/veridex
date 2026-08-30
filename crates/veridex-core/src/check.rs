@@ -292,15 +292,26 @@ pub trait Check: Send + Sync {
 /// Deliberately minimal: a check reads the dataset, not the environment. The one thing the CDM
 /// cannot express is the difference between "this stream has no frames" and "this run did not read
 /// any frames," and those must not produce the same findings.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct CheckContext {
     /// Whether the ingest read stream payloads at all. `false` under a metadata-only ingest.
     pub frames_read: bool,
+    /// Provenance keys a verified producer attestation supplied, in the order the attestation lists
+    /// them.
+    ///
+    /// The trust score already counts these as covered — that is what an attestation is for — so a
+    /// check that reports one *missing* contradicts the score computed from the same document, in
+    /// the same report. The element is not missing; it is claimed by a signed producer rather than
+    /// extracted, which `PROVENANCE.ATTESTED` discloses along with the key that signed it.
+    pub attested_keys: Vec<String>,
 }
 
 impl Default for CheckContext {
-    /// A full ingest: frames were read.
+    /// A full ingest: frames were read, and nothing was attested.
     fn default() -> Self {
-        CheckContext { frames_read: true }
+        CheckContext {
+            frames_read: true,
+            attested_keys: Vec::new(),
+        }
     }
 }

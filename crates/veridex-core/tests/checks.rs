@@ -4731,3 +4731,50 @@ fn only_impossible_calibration_is_flagged_never_merely_unusual() {
         .run(&rig_with_calibration(Some(cal)))
         .is_empty());
 }
+
+#[test]
+fn an_attested_element_is_not_also_reported_missing() {
+    // The same report said both. The trust score counts an attested element as covered — that is
+    // what an attestation is for, and `PROVENANCE.ATTESTED` names the key that signed it — while
+    // `provenance.completeness` ran against the raw dataset and reported it missing, with a remedy
+    // ("attest this element") the reader had already followed.
+    use veridex_core::check::{Check, CheckContext};
+    let d = dataset(vec![episode(0, vec![])]);
+    let context = CheckContext {
+        frames_read: true,
+        attested_keys: vec!["clock".to_string(), "license".to_string()],
+    };
+    let codes: Vec<String> = provenance::ProvenanceCompleteness
+        .run_in(&d, &context)
+        .into_iter()
+        .map(|f| f.code)
+        .collect();
+    assert!(
+        !codes.iter().any(|c| c == "PROVENANCE.MISSING_CLOCK"),
+        "an attested clock is not missing: {codes:?}"
+    );
+    assert!(
+        !codes.iter().any(|c| c == "PROVENANCE.MISSING_LICENSE"),
+        "{codes:?}"
+    );
+    // Everything nobody attested is still reported, so the silence is scoped to what was claimed.
+    assert!(
+        codes.iter().any(|c| c == "PROVENANCE.MISSING_SENSOR"),
+        "{codes:?}"
+    );
+    assert!(
+        codes.iter().any(|c| c == "PROVENANCE.MISSING_UPSTREAM"),
+        "{codes:?}"
+    );
+
+    // With nothing attested, every element is reported as before.
+    let codes: Vec<String> = provenance::ProvenanceCompleteness
+        .run_in(&d, &CheckContext::default())
+        .into_iter()
+        .map(|f| f.code)
+        .collect();
+    assert!(
+        codes.iter().any(|c| c == "PROVENANCE.MISSING_CLOCK"),
+        "{codes:?}"
+    );
+}
