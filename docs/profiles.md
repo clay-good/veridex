@@ -97,6 +97,7 @@ Three rules keep that honest:
 | Ego-pose continuity | `autonomy.ego-pose-continuity` | ego trajectory continuous (no step above 100 m/s implied speed) |
 | Calibration completeness | `autonomy.calibration-completeness` | connected transform (TF) tree and camera intrinsics present, and arithmetically usable |
 | Sensor frame resolution | `autonomy.sensor-frame-resolution` | every sensor's own frame resolves through the tree to a camera |
+| GNSS plausibility | `autonomy.gnss-plausibility` | every satellite fix is a possible place, and the receiver actually had one — a drive whose fix is impossible or never acquired cannot be aligned to a map or to another drive |
 
 The `readiness` block on the certificate records the profile name, whether it was `applicable`, the
 overall `ready` flag, and each criterion's `check_id`, `threshold`, `passed`, and finding count — plus
@@ -127,6 +128,7 @@ veridex verify my-rig.mcap --certificate my-rig.veridex.json --key issuer.pub
     ✓ autonomy.ego-pose-continuity — ego trajectory continuous (no step above 100 m/s implied speed)
     ✓ autonomy.calibration-completeness — connected transform (TF) tree and camera intrinsics present, and arithmetically usable
     ✓ autonomy.sensor-frame-resolution — every sensor's own frame resolves through the tree to a camera
+    ✓ autonomy.gnss-plausibility — every satellite fix is a possible place, and the receiver actually had one
 ```
 
 Add `--json` for the machine-readable summary (the same fields, plus the `readiness` block verbatim)

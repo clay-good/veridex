@@ -10,6 +10,24 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **`AUTONOMY.GNSS_IMPLAUSIBLE` / `AUTONOMY.GNSS_UNSET`** — the second half of the "GNSS geospatial
+  sanity" follow-up, now that the coordinates are decoded. A satellite fix is the one rig measurement
+  whose validity has an absolute physical answer: a latitude outside ±90° or a longitude outside
+  ±180° is **not a place**, and when one appears the receiver, the unit conversion or the field order
+  is wrong — silently, because the numbers still look like coordinates. Error severity.
+
+  The second code is a fix at exactly `(0, 0)` for every frame: a receiver that never acquired one.
+  Null Island is a real point in the Gulf of Guinea, so it is judged by exact equality across the
+  whole stream — a vehicle that genuinely drove there would not hold six decimal places of zero for
+  an entire recording. The same reasoning `STATISTICAL.SATURATED` rests on, and what keeps it free
+  of false positives. Warning severity, because the data is real; what is wrong is where it says it
+  is.
+
+  Check #43, and a sixth `world-model-ready` criterion — a drive whose fix is impossible or never
+  acquired cannot be aligned to a map or to another drive, which is what a world model built from
+  more than one of them requires. Silent where the GNSS was never decoded: a check that cannot see
+  the values must not report them plausible, and `STATISTICAL.UNMEASURED_VALUES` says so instead.
+
 - **A rig's GNSS was the one sensor nothing measured.** `sensor_msgs/msg/NavSatFix` was the only AV
   message body the CDR decoder did not read, so a GNSS stream was fingerprinted rather than measured
   and every statistical check abstained on it — a receiver frozen at one fix, publishing NaNs, or

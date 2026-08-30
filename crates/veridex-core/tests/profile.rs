@@ -146,7 +146,7 @@ fn a_healthy_rig_is_world_model_ready() {
     let r = ReadinessReport::evaluate(&p, &v, &d);
     assert!(r.applicable, "a rig is applicable");
     assert!(r.ready, "a healthy rig should be ready: {:?}", r.criteria);
-    assert_eq!(r.criteria.len(), 5);
+    assert_eq!(r.criteria.len(), 6);
     assert!(r.criteria.iter().all(|c| c.passed));
 }
 
@@ -244,7 +244,7 @@ fn a_readiness_certificate_verifies_offline_and_reports_every_criterion() {
     assert_eq!(doc["verified"], true);
     assert_eq!(doc["readiness"]["ready"], true);
     assert_eq!(doc["readiness"]["profile"], "world-model-ready");
-    assert_eq!(doc["readiness"]["criteria"].as_array().unwrap().len(), 5);
+    assert_eq!(doc["readiness"]["criteria"].as_array().unwrap().len(), 6);
     assert_eq!(doc["cdm_content_hash"], signed.certificate.cdm_content_hash);
 }
 
@@ -707,7 +707,7 @@ fn a_loosened_threshold_cannot_buy_a_ready_verdict() {
 /// missing from this list is a check the profile does not judge, so a defect that moves from a
 /// listed check to an unlisted one becomes invisible to `ready` while still failing the verdict."
 ///
-/// The existing tests assert `criteria.len() == 5`, which catches *removing* a criterion and not
+/// The existing tests assert `criteria.len() == 6`, which catches *removing* a criterion and not
 /// adding a sixth autonomy check without one — the count still reads 5 and the profile silently
 /// stops judging the new check. Asserting against the live catalog closes that direction.
 #[test]

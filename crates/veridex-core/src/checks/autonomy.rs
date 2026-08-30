@@ -170,6 +170,150 @@ impl Check for RigSync {
     }
 }
 
+/// **GNSS plausibility (design A2 follow-up).** A satellite fix is the one rig measurement whose
+/// validity has an absolute, physical answer: a latitude outside ±90° or a longitude outside ±180°
+/// is not a place. When one appears, the receiver, the unit conversion, or the field order is wrong
+/// — and every downstream use of the trajectory is wrong with it, silently, because the numbers look
+/// like coordinates.
+///
+/// The second case is a fix at exactly `(0, 0)` for the whole recording. Null Island is a real point
+/// in the Gulf of Guinea, so this is judged by **exact equality across every frame**: a receiver that
+/// never acquired a fix reports precisely zero, and a vehicle that genuinely drove there would not
+/// hold six decimal places of zero for an entire log. That is the same reasoning
+/// `STATISTICAL.SATURATED` rests on, and it is what keeps this free of false positives.
+///
+/// Reads the per-dimension statistics the `NavSatFix` decode produces, so it needs no per-frame
+/// join. Silent on a rig whose GNSS was never decoded — `STATISTICAL.UNMEASURED_VALUES` says that,
+/// and a check that cannot see the values must not report them plausible.
+pub struct GnssPlausibility;
+
+/// Where the `NavSatFix` decode puts each coordinate. Matched by name, not by position, so a future
+/// decoder that adds a dimension cannot silently shift which one is checked against which bound.
+const GNSS_BOUNDS: &[(&str, f64, f64)] = &[("latitude", -90.0, 90.0), ("longitude", -180.0, 180.0)];
+
+impl Check for GnssPlausibility {
+    fn id(&self) -> &'static str {
+        "autonomy.gnss-plausibility"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["AUTONOMY.GNSS_IMPLAUSIBLE", "AUTONOMY.GNSS_UNSET"]
+    }
+    fn title(&self) -> &'static str {
+        "GNSS coordinate plausibility"
+    }
+    fn category(&self) -> Category {
+        Category::Autonomy
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Error
+    }
+    fn scope(&self) -> Scope {
+        Scope::Stream
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        for ep in &dataset.episodes {
+            for stream in ep.streams.iter().filter(|s| s.modality == Modality::Gnss) {
+                let (Some(names), Some(dims)) = (&stream.dim_names, &stream.observed_dim_stats)
+                else {
+                    continue;
+                };
+                let stat_for = |wanted: &str| {
+                    names
+                        .iter()
+                        .position(|n| n == wanted)
+                        .and_then(|i| dims.iter().find(|d| d.dim as usize == i))
+                        .map(|d| d.stats)
+                };
+
+                for (name, low, high) in GNSS_BOUNDS {
+                    let Some(stats) = stat_for(name) else {
+                        continue;
+                    };
+                    // Either bound broken is enough: the extreme is a real recorded value.
+                    let (out, value) = if stats.min < *low {
+                        (true, stats.min)
+                    } else if stats.max > *high {
+                        (true, stats.max)
+                    } else {
+                        (false, 0.0)
+                    };
+                    if out {
+                        findings.push(
+                            Finding::new(
+                                self.id(),
+                                Category::Autonomy,
+                                Severity::Error,
+                                Location::Stream {
+                                    episode: ep.index,
+                                    stream: stream.name.clone(),
+                                },
+                                "AUTONOMY.GNSS_IMPLAUSIBLE",
+                                format!(
+                                    "episode {}: stream `{}` records a {name} of {value}, outside \
+                                     the possible range [{low}, {high}] — that is not a place",
+                                    ep.index, stream.name
+                                ),
+                            )
+                            .with_risk(
+                                "A coordinate outside the possible range means the receiver, the \
+                                 unit conversion, or the field order is wrong. Every use of the \
+                                 trajectory — geo-referencing, map association, cross-drive \
+                                 alignment — is wrong with it, and silently, because the numbers \
+                                 still look like coordinates.",
+                            )
+                            .with_remedy(
+                                "Check the receiver's output units and the message field order \
+                                 (degrees, not radians or scaled integers), then re-record or \
+                                 re-convert the affected segment.",
+                            ),
+                        );
+                    }
+                }
+
+                // Every fix at exactly (0, 0): a receiver that never acquired one.
+                let unset = ["latitude", "longitude"]
+                    .iter()
+                    .all(|n| stat_for(n).is_some_and(|s| s.min == 0.0 && s.max == 0.0));
+                if unset {
+                    findings.push(
+                        Finding::new(
+                            self.id(),
+                            Category::Autonomy,
+                            Severity::Warning,
+                            Location::Stream {
+                                episode: ep.index,
+                                stream: stream.name.clone(),
+                            },
+                            "AUTONOMY.GNSS_UNSET",
+                            format!(
+                                "episode {}: stream `{}` reports latitude and longitude of exactly \
+                                 0 for every frame — a receiver that never acquired a fix, not a \
+                                 drive through the Gulf of Guinea",
+                                ep.index, stream.name
+                            ),
+                        )
+                        .with_risk(
+                            "A trajectory anchored at Null Island places the whole recording \
+                             somewhere the vehicle never was. Anything that fuses the drive with a \
+                             map, or compares it against another drive, is aligned to the wrong \
+                             point on Earth.",
+                        )
+                        .with_remedy(
+                            "Confirm the receiver had a fix for the recording (its `status` field \
+                             says so) and drop or re-record the segment that did not.",
+                        ),
+                    );
+                }
+            }
+        }
+        findings
+    }
+}
+
 /// **Rig sequence completeness (design A2).** Over an episode, each rig sensor should deliver frames
 /// steadily at its own cadence; a sensor that quietly drops a fraction of its frames leaves the rig
 /// with incomplete per-tick snapshots — holes a world model trains straight through. This measures the

@@ -146,11 +146,17 @@ const WORLD_MODEL_READY_CRITERIA: &[(&str, &str)] = &[
         "autonomy.sensor-frame-resolution",
         "every sensor's own frame resolves through the tree to a camera",
     ),
+    (
+        "autonomy.gnss-plausibility",
+        "every satellite fix is a possible place, and the receiver actually had one",
+    ),
 ];
 
 /// The `world-model-ready` profile: tightens cross-sensor sync to 20 ms and bundles the autonomy
 /// criteria a world-model training set needs (rig sync, sequence completeness, ego-pose continuity,
-/// calibration completeness, and per-sensor frame resolution).
+/// calibration completeness, per-sensor frame resolution, and GNSS plausibility — a drive whose fix
+/// is impossible or never acquired cannot be aligned to a map or to another drive, which is what a
+/// world model built from more than one of them requires).
 pub fn world_model_ready() -> Profile {
     Profile {
         name: "world-model-ready",

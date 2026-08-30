@@ -74,6 +74,7 @@ pub fn standard_checks_with(t: &Tolerances) -> Vec<Box<dyn Check>> {
         Box::new(autonomy::EgoPoseContinuity {
             max_speed_mps: t.ego_max_speed_mps,
         }),
+        Box::new(autonomy::GnssPlausibility),
         Box::new(autonomy::CalibrationCompleteness),
         Box::new(autonomy::SensorFrameResolution),
         Box::new(statistical::ValueMeasurability),

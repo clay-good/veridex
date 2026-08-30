@@ -1409,7 +1409,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 42);
+    assert_eq!(verdict.executed_checks.len(), 43);
 }
 
 #[test]
@@ -4814,4 +4814,99 @@ fn an_attested_element_is_not_also_reported_missing() {
         codes.iter().any(|c| c == "PROVENANCE.MISSING_CLOCK"),
         "{codes:?}"
     );
+}
+
+#[test]
+fn a_gnss_coordinate_outside_the_possible_range_is_flagged() {
+    // A satellite fix is the one rig measurement whose validity has an absolute physical answer: a
+    // latitude outside ±90° is not a place. When one appears the receiver, the unit conversion or
+    // the field order is wrong — and every use of the trajectory is wrong with it, silently,
+    // because the numbers still look like coordinates.
+    let span = |min: f64, max: f64| stats(min, max, (min + max) / 2.0, 0.0);
+    let gnss = |lat: (f64, f64), lon: (f64, f64)| {
+        let mut s = rig_stream("/gps/fix", Modality::Gnss, 1_000_000_000);
+        s.dim_names = Some(vec![
+            "latitude".into(),
+            "longitude".into(),
+            "altitude".into(),
+        ]);
+        s.observed_dim_stats = Some(vec![
+            veridex_core::cdm::DimStats {
+                dim: 0,
+                stats: span(lat.0, lat.1),
+            },
+            veridex_core::cdm::DimStats {
+                dim: 1,
+                stats: span(lon.0, lon.1),
+            },
+        ]);
+        s
+    };
+    let run = |s| {
+        autonomy::GnssPlausibility
+            .run(&dataset(vec![episode(0, vec![s])]))
+            .into_iter()
+            .map(|f| (f.code, f.message))
+            .collect::<Vec<_>>()
+    };
+
+    // Radians mistaken for degrees, or a scaled integer read raw: latitude past the pole.
+    let out = run(gnss((37.4, 214.0), (-122.1, -122.0)));
+    assert_eq!(out.len(), 1, "{out:?}");
+    assert_eq!(out[0].0, "AUTONOMY.GNSS_IMPLAUSIBLE");
+    assert!(out[0].1.contains("latitude of 214"), "{}", out[0].1);
+
+    // And the other bound, on the other field.
+    let out = run(gnss((37.4, 37.5), (-200.0, -122.0)));
+    assert_eq!(out.len(), 1, "{out:?}");
+    assert!(out[0].1.contains("longitude of -200"), "{}", out[0].1);
+
+    // An ordinary fix says nothing.
+    assert!(run(gnss((37.4, 37.5), (-122.2, -122.1))).is_empty());
+}
+
+#[test]
+fn a_receiver_that_never_acquired_a_fix_is_flagged_but_a_real_place_is_not() {
+    // Null Island is a real point in the Gulf of Guinea, so this is judged by exact equality across
+    // every frame: a receiver that never got a fix reports precisely zero, and a vehicle that
+    // genuinely drove there would not hold six decimal places of zero for a whole recording.
+    let span = |min: f64, max: f64| stats(min, max, (min + max) / 2.0, 0.0);
+    let with = |lat: (f64, f64), lon: (f64, f64)| {
+        let mut s = rig_stream("/gps/fix", Modality::Gnss, 1_000_000_000);
+        s.dim_names = Some(vec!["latitude".into(), "longitude".into()]);
+        s.observed_dim_stats = Some(vec![
+            veridex_core::cdm::DimStats {
+                dim: 0,
+                stats: span(lat.0, lat.1),
+            },
+            veridex_core::cdm::DimStats {
+                dim: 1,
+                stats: span(lon.0, lon.1),
+            },
+        ]);
+        autonomy::GnssPlausibility
+            .run(&dataset(vec![episode(0, vec![s])]))
+            .into_iter()
+            .map(|f| f.code)
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(
+        with((0.0, 0.0), (0.0, 0.0)),
+        vec!["AUTONOMY.GNSS_UNSET".to_string()]
+    );
+    // A drive that actually passes through 0,0 moves, so it is not every frame.
+    assert!(with((-0.001, 0.001), (-0.001, 0.001)).is_empty());
+    // And one coordinate pinned at zero while the other moves is not the unset case.
+    assert!(with((0.0, 0.0), (-122.2, -122.1)).is_empty());
+}
+
+#[test]
+fn a_gnss_stream_nobody_measured_is_not_reported_plausible() {
+    // A check that cannot see the values must not report them sound. The absence is
+    // `STATISTICAL.UNMEASURED_VALUES`'s to report, and it does.
+    let s = rig_stream("/gps/fix", Modality::Gnss, 1_000_000_000);
+    assert!(autonomy::GnssPlausibility
+        .run(&dataset(vec![episode(0, vec![s])]))
+        .is_empty());
 }
