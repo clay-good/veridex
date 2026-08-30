@@ -10,6 +10,23 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **The "every adapter" corruption sweep reached four of the eight.** `corrupted_inputs.rs` opens by
+  calling itself every adapter over damaged versions of its own fixtures, and it damaged HDF5, MCAP,
+  Zarr and rosbag2 — the four formats with a committed binary fixture. MF4, CAN+DBC, LeRobot and
+  RLDS/TFDS had none, so they were never swept, which left the two readers rewritten this week (an
+  MF4 block graph of file-stated offsets and lengths, a DBC signal database that declares arbitrary
+  bit positions and widths) as the ones nothing had tried to crash.
+
+  CAN+DBC is now swept there — its dataset is two text files, so it is written on the spot rather
+  than committed — and MF4 has the broader sweep of its own described below. Each pristine source is
+  asserted to ingest to real frames before it is mutated: a sweep over a fixture the adapter
+  silently declines survives every mutation and proves nothing. Nothing panicked.
+
+  LeRobot and RLDS/TFDS stay uncovered, and the file now says so instead of claiming otherwise. A
+  test cannot build a demo *example* without spawning `cargo`, which contends with the rest of the
+  suite and made it flaky; closing that gap means lifting the generators out of `examples/` into
+  something a test can call, which is a change to make deliberately.
+
 - **The MF4 corruption sweep only ever ran over one file shape.** It mutated an uncompressed `##DT`
   fixture, so it never reached the decompressor, the data-list walker, the record demultiplexer, the
   bit-field slicer or the conversion tables — every one of which reads lengths, counts, record ids

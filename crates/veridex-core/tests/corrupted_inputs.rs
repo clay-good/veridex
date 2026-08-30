@@ -7,11 +7,20 @@
 //! reading them, a vacuous `all()` over an empty collection), each a real file away from a real
 //! crash.
 //!
-//! So this sweep truncates and flips bytes in every committed binary fixture — files, Zarr stores,
-//! and rosbag2 bags under either storage plugin — and asserts one thing
-//! per mutation: ingestion returns `Ok` or `Err`, and does not unwind. A mutation that produces a
-//! readable dataset is checked as well, because a check can be handed a shape no honest adapter
-//! would produce.
+//! So this sweep truncates and flips bytes in a valid source, and asserts one thing per mutation:
+//! ingestion returns `Ok` or `Err`, and does not unwind. A mutation that produces a readable dataset
+//! is checked as well, because a check can be handed a shape no honest adapter would produce. Each
+//! pristine source is asserted to ingest to real frames before it is mutated, because a sweep over a
+//! fixture the adapter silently declines survives every mutation and proves nothing.
+//!
+//! **What is covered, and where.** Here: HDF5 files, an MCAP, Zarr stores, rosbag2 bags under either
+//! storage plugin, and a CAN+DBC dataset — written on the spot, since it is two text files. ASAM MF4
+//! has a sweep of its own in `mdf4_adapter.rs`, broader than this one: nine block-graph shapes,
+//! every byte position, three mutations each, and the header-only path as well. Left uncovered:
+//! **LeRobot and RLDS/TFDS**, whose fixtures only exist as demo *examples*, and a test cannot build
+//! an example without spawning `cargo` — which contends with the rest of the suite and makes it
+//! flaky. Closing that means lifting the generators out of `examples/` into something a test can
+//! call, which is a change to make deliberately rather than as a side effect of this sweep.
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
@@ -411,4 +420,100 @@ fn write_mcap_bag(bag: &Path) {
          compression_format: \"\"\n  compression_mode: \"\"\n  ros_distro: jazzy\n",
     )
     .expect("write manifest");
+}
+
+/// Assert that the *undamaged* source ingests to a dataset with frames, under the format this sweep
+/// then forces. Without it a fixture the adapter silently declines would pass every mutation.
+fn assert_reads(path: &Path, format: &str) {
+    let registry = default_registry();
+    let ingested = registry
+        .ingest_as(
+            format,
+            &Source::Local(path.to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .unwrap_or_else(|e| panic!("the pristine {format} source must ingest: {e}"));
+    let frames: usize = ingested.dataset.episodes[0]
+        .streams
+        .iter()
+        .map(|s| s.frames.len())
+        .sum();
+    assert!(
+        frames > 0,
+        "the pristine {format} source must yield frames, or the sweep proves nothing"
+    );
+}
+
+/// A CAN+DBC dataset directory: one signal database and one candump log, both plain text.
+fn write_can_dbc(dir: &Path) {
+    std::fs::create_dir_all(dir).expect("mkdir");
+    std::fs::write(
+        dir.join("vehicle.dbc"),
+        "VERSION \"\"\n\nBO_ 291 EngineData: 8 ECU\n \
+         SG_ EngineRPM : 0|16@1+ (0.25,0) [0|16383.75] \"rpm\" Vector__XXX\n \
+         SG_ VehicleSpeed : 16|16@1+ (0.01,0) [0|655.35] \"km/h\" Vector__XXX\n \
+         SG_ Gear : 32|4@1- (1,0) [-8|7] \"\" Vector__XXX\n",
+    )
+    .expect("write dbc");
+    let mut log = String::new();
+    for i in 0..40u32 {
+        let t = 1_709_294_400.0 + f64::from(i) * 0.01;
+        let rpm = (6000 + i * 4) as u16;
+        let speed = (3000 + i * 2) as u16;
+        log.push_str(&format!(
+            "({t:.6}) can0 123#{:04X}{:04X}0{}000000\n",
+            rpm.swap_bytes(),
+            speed.swap_bytes(),
+            i % 8,
+        ));
+    }
+    std::fs::write(dir.join("drive.log"), log).expect("write log");
+}
+
+/// The CAN+DBC adapter, which this sweep's own doc comment promised and did not cover.
+///
+/// A `.dbc` is a signal database that declares arbitrary bit positions, widths and byte orders, and
+/// a candump log is arbitrary text — both hand-parsed, and neither had a committed fixture, so
+/// neither had ever been damaged. The dataset is two text files, so it is written here rather than
+/// committed, and the sweep tracks the parser as it changes.
+#[test]
+fn no_damaged_bus_log_takes_the_process_down() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let bus = dir.path().join("bus");
+    write_can_dbc(&bus);
+    assert_reads(&bus, "candbc");
+
+    let members = walk(&bus);
+    assert_eq!(members.len(), 2, "one database and one log");
+    let mut checked = 0usize;
+    let mut failures: Vec<String> = Vec::new();
+    for member in &members {
+        let relative = member.strip_prefix(&bus).expect("inside the dataset");
+        let bytes = std::fs::read(member).expect("read member");
+        for (label, damaged) in mutations(&bytes) {
+            let store = dir.path().join("damaged-bus");
+            let _ = std::fs::remove_dir_all(&store);
+            copy_tree(&bus, &store);
+            std::fs::write(store.join(relative), &damaged).expect("write damaged member");
+            checked += 1;
+            for forced in [None, Some("candbc")] {
+                for metadata_only in [false, true] {
+                    if let Err(message) = survives_with(&store, forced, metadata_only) {
+                        failures.push(format!(
+                            "candbc {}: {label} → panic: {message}",
+                            relative.display()
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(checked > 20, "the sweep must actually run: {checked}");
+    assert!(
+        failures.is_empty(),
+        "{} of {checked} damaged bus logs took the process down:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
 }
