@@ -397,3 +397,78 @@ fn an_explicitly_empty_selection_reads_as_none_not_as_a_blank() {
         assert_eq!(value, "none", "`{key}` reads as `{value}`");
     }
 }
+
+#[test]
+fn every_configurable_key_is_documented_in_the_example() {
+    // `docs/veridex.toml.example` is where a reader learns a key exists — the README points at it
+    // for the environment twins too, and `--print-config` names keys without saying they can be set.
+    // A tolerance added to the parser and not to the example is a knob nobody can find, and nothing
+    // held the two together. The source is walked rather than reflected over, the way this repo's
+    // other source-walking guards do, because Rust has no field reflection.
+    let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/config.rs"))
+        .expect("config.rs is readable");
+    let example = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/veridex.toml.example"
+    ))
+    .expect("the example is readable");
+
+    // The `pub <name>:` fields of one struct.
+    let fields_of = |struct_name: &str| -> Vec<String> {
+        let start = source
+            .find(&format!("pub struct {struct_name} {{"))
+            .unwrap_or_else(|| panic!("`{struct_name}` is declared in config.rs"));
+        let body = &source[start..];
+        let end = body.find("\n}").expect("the struct closes");
+        body[..end]
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("pub "))
+            .filter_map(|l| l.split_once(": "))
+            .map(|(name, _)| name.to_string())
+            .collect()
+    };
+
+    let tolerances = fields_of("TolerancesConfig");
+    assert!(tolerances.len() >= 13, "found {tolerances:?}");
+    for key in &tolerances {
+        assert!(
+            example.contains(key.as_str()),
+            "`tolerances.{key}` is settable and docs/veridex.toml.example never names it"
+        );
+        // And its environment twin, which is the key upper-cased.
+        let twin = format!("VERIDEX_TOLERANCE_{}", key.to_uppercase());
+        assert!(
+            example.contains("VERIDEX_TOLERANCE_"),
+            "the example must document the tolerance environment pattern ({twin})"
+        );
+    }
+
+    // The top-level keys, minus the one that is not a setting.
+    let top: Vec<String> = fields_of("CheckConfig")
+        .into_iter()
+        .filter(|k| k != "keys_present")
+        .collect();
+    assert!(top.len() >= 6, "found {top:?}");
+    for key in &top {
+        assert!(
+            example.contains(key.as_str()),
+            "`{key}` is settable and docs/veridex.toml.example never names it"
+        );
+    }
+
+    // Every environment variable the merge layer honors.
+    for line in source.lines() {
+        let trimmed = line.trim();
+        let Some(rest) = trimmed.strip_prefix("(\"VERIDEX_") else {
+            continue;
+        };
+        let Some(name) = rest.split('"').next() else {
+            continue;
+        };
+        let var = format!("VERIDEX_{name}");
+        assert!(
+            example.contains(&var),
+            "`{var}` changes a run and docs/veridex.toml.example never names it"
+        );
+    }
+}

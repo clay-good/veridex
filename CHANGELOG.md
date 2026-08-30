@@ -10,6 +10,15 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **Nothing held the config reference to the config parser.** `docs/veridex.toml.example` is where a
+  reader learns a key exists — the README points at it for the `VERIDEX_*` environment twins too —
+  and a tolerance added to the parser but not to the example is a knob nobody can find. The two
+  happened to agree today; nothing kept them that way.
+
+  A test now walks `config.rs` and asserts every settable key — all thirteen tolerances, every
+  top-level setting, and every environment variable the merge layer honors — is named in the
+  example. Renaming one in the example makes it fail by name.
+
 - **Every SARIF rule sent a reader to the top of a four-hundred-line page.** `helpUri` is the one
   link a code-scanning system shows someone who has never used Veridex, and all of them pointed at
   `docs/checks.md` with no fragment — so the reader landed on the whole catalog and had to find
