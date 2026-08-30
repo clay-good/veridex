@@ -1400,3 +1400,135 @@ fn a_pinned_joint_is_caught_in_a_bag_whichever_plugin_stored_it() {
         "sqlite: {sqlite_message}\nmcap:   {mcap_message}"
     );
 }
+
+// --- `custom_data`: what the producer chose to record about the bag -----------------------------
+
+/// Copy the clean rig bag into a temp directory with `extra` spliced into its `metadata.yaml`,
+/// directly under `rosbag2_bagfile_information`.
+fn bag_with_manifest_extra(extra: &str) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let source = fixtures().join("clean_rig");
+    let bag = dir.path().join("clean_rig");
+    std::fs::create_dir_all(&bag).expect("mkdir");
+    for entry in std::fs::read_dir(&source).expect("read fixture").flatten() {
+        let name = entry.file_name();
+        if name == "metadata.yaml" {
+            let text = std::fs::read_to_string(entry.path()).expect("read manifest");
+            let patched = text.replacen(
+                "rosbag2_bagfile_information:\n",
+                &format!("rosbag2_bagfile_information:\n{extra}"),
+                1,
+            );
+            std::fs::write(bag.join("metadata.yaml"), patched).expect("write manifest");
+        } else {
+            std::fs::copy(entry.path(), bag.join(name)).expect("copy");
+        }
+    }
+    dir
+}
+
+fn ingest_bag(dir: &tempfile::TempDir) -> Ingested {
+    default_registry()
+        .ingest(
+            &Source::Local(dir.path().join("clean_rig")),
+            &IngestOptions::default(),
+        )
+        .expect("the bag ingests")
+}
+
+fn provenance_of(ingested: &Ingested, key: &str) -> Option<String> {
+    ingested
+        .dataset
+        .provenance
+        .iter()
+        .flat_map(|r| &r.elements)
+        .find(|e| e.key == key)
+        .and_then(|e| e.value.clone())
+}
+
+#[test]
+fn custom_data_becomes_typed_provenance_and_metadata() {
+    // `ros2 bag record --custom-data k=v` is the supported way for a ROS 2 producer to record what a
+    // bag is *of*, and Veridex read none of it: a team that recorded their sensor and their license
+    // into every bag still scored both unknown. Keys resolve through the same well-known table an
+    // MCAP `Metadata` record uses — one key, one meaning, whichever container it was written in.
+    let dir = bag_with_manifest_extra(
+        "  custom_data:\n    sensor: ZED2i stereo camera\n    license: CC-BY-4.0\n    \
+         time_source: PTP grandmaster\n    campaign: winter-2026\n",
+    );
+    let ingested = ingest_bag(&dir);
+
+    assert_eq!(
+        provenance_of(&ingested, "sensor").as_deref(),
+        Some("ZED2i stereo camera")
+    );
+    assert_eq!(
+        provenance_of(&ingested, "license").as_deref(),
+        Some("CC-BY-4.0")
+    );
+    assert_eq!(
+        provenance_of(&ingested, "clock").as_deref(),
+        Some("PTP grandmaster"),
+        "`time_source` names a clock source, which is what the element asks"
+    );
+    // A key the table does not know is preserved as metadata, never promoted: guessing at what an
+    // unknown key means is how a verifier starts inventing lineage.
+    assert!(provenance_of(&ingested, "campaign").is_none());
+    assert!(
+        ingested
+            .dataset
+            .metadata
+            .iter()
+            .any(|(k, v)| k == "rosbag2:campaign" && v == "winter-2026"),
+        "{:?}",
+        ingested.dataset.metadata
+    );
+    assert!(
+        ingested
+            .report
+            .mapped_fields
+            .iter()
+            .any(|f| f.contains("custom_data")),
+        "{:?}",
+        ingested.report.mapped_fields
+    );
+}
+
+#[test]
+fn a_bag_without_custom_data_claims_none() {
+    // The fixture manifests carry no `custom_data`, and the report must not say the run read one.
+    let ingested = ingest("clean_rig");
+    assert!(
+        !ingested
+            .report
+            .mapped_fields
+            .iter()
+            .any(|f| f.contains("custom_data")),
+        "{:?}",
+        ingested.report.mapped_fields
+    );
+    assert!(!ingested
+        .dataset
+        .metadata
+        .iter()
+        .any(|(k, _)| k.starts_with("rosbag2:")));
+}
+
+#[test]
+fn the_custom_data_block_does_not_swallow_the_keys_after_it() {
+    // The block ends at the next line that is not one of its entries. A reader that kept consuming
+    // would eat `message_count` — the manifest's own assertion about the recording, which the
+    // coverage reconciliation compares against what was read.
+    let dir = bag_with_manifest_extra("  custom_data:\n    sensor: ZED2i\n");
+    let ingested = ingest_bag(&dir);
+    assert_eq!(provenance_of(&ingested, "sensor").as_deref(), Some("ZED2i"));
+    assert!(
+        ingested.report.unread_sources.is_empty(),
+        "the declared message count still reconciles, so the keys after the block were read: {:?}",
+        ingested.report.unread_sources
+    );
+    assert!(
+        !ingested.dataset.episodes[0].streams.is_empty(),
+        "and the topic inventory after it too"
+    );
+}

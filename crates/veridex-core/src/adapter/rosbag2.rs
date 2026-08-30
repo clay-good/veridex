@@ -119,7 +119,21 @@ struct BagManifest {
     /// `FILE` (the whole `.db3` compressed after writing) or `MESSAGE` (each message body compressed
     /// individually). Only the first is read; the second is refused by name.
     compression_mode: Option<String>,
+    /// `custom_data` — the free-form key/value map `ros2 bag record --custom-data k=v` writes.
+    ///
+    /// It is the supported way for a ROS 2 producer to record what a bag is *of*, and Veridex read
+    /// none of it: a team that recorded `sensor: ZED2i` and `license: CC-BY-4.0` into their bags
+    /// scored both unknown. Keys resolve through the shared well-known table, so one written here
+    /// means what the same one means in an MCAP `Metadata` record.
+    custom_data: std::collections::BTreeMap<String, String>,
 }
+
+/// How many `custom_data` entries are carried, and how much of each value.
+///
+/// The manifest is untrusted input and the map has no declared bound, so both are capped: without
+/// them one file decides how much of the CDM, the content hash and every report it occupies.
+const MAX_CUSTOM_DATA_ENTRIES: usize = 64;
+const MAX_CUSTOM_DATA_VALUE: usize = 1024;
 
 /// One topic as `metadata.yaml` declares it, with the message count the manifest attributes to it.
 #[derive(Debug, Clone, PartialEq)]
@@ -139,6 +153,9 @@ struct ManifestTopic {
 fn parse_manifest(text: &str) -> BagManifest {
     let mut m = BagManifest::default();
     let mut in_paths = false;
+    // Inside the `custom_data:` block: its entries are one level deeper than the keys around them,
+    // and the block ends at the next line that is not.
+    let mut in_custom = false;
     for line in text.lines() {
         let indent = line.len() - line.trim_start().len();
         let trimmed = line.trim();
@@ -157,6 +174,30 @@ fn parse_manifest(text: &str) -> BagManifest {
             continue;
         };
         let value = unquote(rest.trim());
+        // `custom_data` entries sit at indent 4; anything shallower closes the block. Handled before
+        // the indent filter below, which exists to keep the deeply nested topic inventory out.
+        if in_custom {
+            if indent >= 4 {
+                if !key.is_empty()
+                    && !value.is_empty()
+                    && m.custom_data.len() < MAX_CUSTOM_DATA_ENTRIES
+                {
+                    let mut v = value.to_string();
+                    if v.len() > MAX_CUSTOM_DATA_VALUE {
+                        v.truncate(
+                            (0..=MAX_CUSTOM_DATA_VALUE)
+                                .rev()
+                                .find(|i| v.is_char_boundary(*i))
+                                .unwrap_or(0),
+                        );
+                        v.push_str("… (truncated)");
+                    }
+                    m.custom_data.insert(key.to_string(), v);
+                }
+                continue;
+            }
+            in_custom = false;
+        }
         // Only the keys directly under `rosbag2_bagfile_information` (one level of nesting) are
         // taken. `topics_with_message_count` also contains a `message_count:` per topic, four levels
         // deep; taking that as the bag's total would compare one topic's count against the whole
@@ -177,6 +218,7 @@ fn parse_manifest(text: &str) -> BagManifest {
             "message_count" => m.message_count = value.parse().ok(),
             "relative_file_paths" => in_paths = true,
             "topics_with_message_count" => m.topics = parse_topic_inventory(text),
+            "custom_data" => in_custom = true,
             _ => {}
         }
     }
@@ -1003,6 +1045,20 @@ fn ingest_metadata_only(
             class: ProvenanceClass::Known,
         });
     }
+    // `custom_data`: what the producer chose to record about the bag. Well-known keys become typed
+    // provenance through the shared table — one key, one meaning, whichever container it was written
+    // in — and every entry is carried as metadata, so a key this reader does not recognise is
+    // preserved rather than promoted or dropped.
+    for (key, value) in &manifest.custom_data {
+        if let Some(pk) = crate::adapter::provenance_key_for(key) {
+            elements.push(ProvenanceElement {
+                key: pk.into(),
+                value: Some(value.clone()),
+                class: ProvenanceClass::Known,
+            });
+        }
+        metadata.push((format!("rosbag2:{key}"), value.clone()));
+    }
 
     let dataset = Dataset {
         id: dataset_id.to_string(),
@@ -1034,10 +1090,18 @@ fn ingest_metadata_only(
         coverage: Coverage::MetadataOnly {
             episodes_declared: 1,
         },
-        mapped_fields: vec![
-            "metadata.yaml topics_with_message_count.name -> stream.name".into(),
-            "metadata.yaml topics_with_message_count.type -> stream.modality".into(),
-        ],
+        mapped_fields: {
+            let mut m = vec![
+                "metadata.yaml topics_with_message_count.name -> stream.name".into(),
+                "metadata.yaml topics_with_message_count.type -> stream.modality".into(),
+            ];
+            // Claimed only when the manifest carried one: a mapped field is a statement that this
+            // run read something.
+            if !manifest.custom_data.is_empty() {
+                m.push("metadata.yaml custom_data -> dataset metadata + provenance".into());
+            }
+            m
+        },
         unmapped_fields: vec![UnmappedField {
             source_path: format!("*{}", storage.extension()),
             note: format!(
@@ -1442,6 +1506,19 @@ impl Adapter for Rosbag2Adapter {
                 class: ProvenanceClass::Known,
             });
         }
+        // `custom_data`: what the producer chose to record about the bag. See the note on the other
+        // ingest path — well-known keys become typed provenance through the shared table, and every
+        // entry is carried as metadata whether or not it is one.
+        for (key, value) in &manifest.custom_data {
+            if let Some(pk) = crate::adapter::provenance_key_for(key) {
+                elements.push(ProvenanceElement {
+                    key: pk.into(),
+                    value: Some(value.clone()),
+                    class: ProvenanceClass::Known,
+                });
+            }
+            metadata.push((format!("rosbag2:{key}"), value.clone()));
+        }
         // A bag that carries its own transform tree and camera intrinsics identifies the calibration
         // that produced it — the calibration is in the recording, bound into the CDM content hash,
         // and graded by the autonomy checks. See `mcap`'s note: the element's stated risk is exactly
@@ -1507,6 +1584,9 @@ impl Adapter for Rosbag2Adapter {
         }
         if dataset.calibration.is_some() {
             mapped_fields.push("CameraInfo.k/d + TFMessage -> dataset.calibration".into());
+        }
+        if !manifest.custom_data.is_empty() {
+            mapped_fields.push("metadata.yaml custom_data -> dataset metadata + provenance".into());
         }
         if dataset.episodes.iter().any(|e| e.ego_poses.is_some()) {
             mapped_fields.push("Odometry.pose -> episode.ego_poses".into());

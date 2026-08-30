@@ -149,7 +149,7 @@ autonomy rig-lineage keys are recorded too but sit outside the coverage denomina
 | HDF5 | `sensor` from a `robomimic` `env_args`' `env_kwargs.robots`; `license` and any [well-known key](#well-known-metadata-keys) among the root attributes; `upstream` per episode, from the group it came from. `author` stays its own element — who wrote the file is not who labelled the data |
 | Zarr | the same well-known keys from `.zattrs`, and `upstream` per episode from the group path |
 | MCAP | the richest: every well-known key a producer wrote into a `Metadata` record, `recorder` from the header's library/profile, an attachment summary including calibration — and `calibration` **in-band** from a recorded transform tree and `CameraInfo`, which is stronger than a reference to a file nobody can check |
-| ROS 2 rosbag2 | `recorder` and storage identity from `metadata.yaml`, plus the same in-band `calibration` as MCAP |
+| ROS 2 rosbag2 | `recorder` and storage identity from `metadata.yaml`, every well-known key from its `custom_data` map (what `ros2 bag record --custom-data k=v` writes), plus the same in-band `calibration` as MCAP |
 | CAN+DBC | `sensor` from the `BO_` transmitter of every message the log actually carried. A node the database declares but that never transmitted is not claimed, and `Vector__XXX` names nobody |
 | ASAM MF4 | `sensor` from the `##SI` acquisition sources a channel group or channel points at, qualified by bus or path; `recorder` from the identification block's writing program |
 
@@ -160,8 +160,8 @@ recognised and read. Otherwise `veridex certify` inputs are the way to fill it.
 
 ### Well-known metadata keys
 
-Several formats carry free-form key/value metadata: an MCAP `Metadata` record, an HDF5 root
-attribute, a Zarr `.zattrs` entry. One curated table maps the well-known spellings onto typed
+Several formats carry free-form key/value metadata: an MCAP `Metadata` record, a rosbag2
+`metadata.yaml` `custom_data` entry, an HDF5 root attribute, a Zarr `.zattrs` entry. One curated table maps the well-known spellings onto typed
 provenance for all of them, so a key called `sensor` means the same thing whichever container it was
 written in — `device` / `camera_model` / `lidar_model` / `hardware` are `sensor`, `derived_from` /
 `source_dataset` / `parent_dataset` are `upstream`, `spdx` / `license_id` are `license`,

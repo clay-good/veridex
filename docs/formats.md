@@ -224,6 +224,12 @@ content, so it is never followed out of the bag**: the `.db3` files read are the
 directory, and a manifest entry naming a path with a directory component, or naming a shard that is
 not there, is recorded as unread.
 
+`ros2 bag record --custom-data k=v` writes a `custom_data` map into `metadata.yaml`, and that is
+where a ROS 2 team records what a bag is *of*. Veridex reads it: well-known keys (`sensor`,
+`license`, `time_source`, `calibration_id`, the rig-lineage ones) become typed provenance through the
+same table an MCAP `Metadata` record uses, and everything else is carried as metadata rather than
+promoted — guessing at what an unknown key means is how a verifier starts inventing lineage.
+
 The manifest's `message_count` is reconciled against what the recording actually yielded. A recorder
 killed mid-flush leaves a `.db3` short of the total `metadata.yaml` closed with, and the shortfall is
 reported as unread coverage rather than read as a complete bag:

@@ -10,6 +10,23 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **`ros2 bag record --custom-data` wrote provenance into every bag and Veridex read none of it.**
+  `custom_data` is the supported way for a ROS 2 producer to record what a bag is *of*, and it lands
+  in `metadata.yaml` as a free-form key/value map. The adapter parsed the scalars around it and
+  skipped the block entirely, so a team that recorded their sensor and their license into every bag
+  still scored both unknown.
+
+  It is now read, with well-known keys resolving through the same table an MCAP `Metadata` record
+  uses — one key, one meaning, whichever container it was written in — and every entry carried as
+  `rosbag2:<key>` metadata whether or not it is one. A key the table does not know is preserved, not
+  promoted.
+
+  The manifest is untrusted input and the map has no declared bound, so both the entry count and each
+  value's length are capped; without them one file decides how much of the CDM, the content hash and
+  every report it occupies. And the block ends at the next line that is not one of its entries — a
+  reader that kept consuming would eat `message_count`, the manifest's own assertion about the
+  recording that the coverage reconciliation is built on.
+
 - **The well-known key table recognised five of the six elements it is scored against.** `license`,
   `sensor`, `calibration`, `annotator` and `upstream` all had rows; `clock` had none. A producer who
   wrote `time_source: GPS` or `clock: PTP grandmaster` into an MCAP `Metadata` record, an HDF5
