@@ -10,6 +10,23 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **An MF4 scored 0/6 on provenance while naming its hardware in every channel group.** An `##SI`
+  acquisition-source block states which ECU, bus, I/O device or tool produced a channel group's
+  samples, and a channel may name a finer one of its own. That is exactly the question
+  `provenance.sensor` asks, and the answer was in the file the whole time — Veridex read the writing
+  program out of the identification block and nothing else.
+
+  Both `cg_si_acq_source` and `cn_si_source` are now read into `provenance.sensor`, each source
+  named once however many channels point at it, and qualified by its bus or path — two ECUs called
+  `Gateway` on different buses are two sources. `known`, never asserted: it came out of the
+  measurement, not from whoever handed it over. Past eight sources the remainder is counted rather
+  than listed, so a gateway log naming hundreds of ECUs still reads as a sentence.
+
+  A file that names no source claims none, and its report does not list the `##SI` mapping either —
+  a mapped field is a statement that the run read something, and claiming one it never saw is the
+  same defect in miniature. An `##SI` with a missing or empty name is not a source: it would put an
+  empty string into `provenance.sensor`, which reads as extracted knowledge and is not any.
+
 - **An unsorted MF4 data group ingested to zero frames.** A bus logger does not write one raster at a
   time — it writes records as the samples arrive, several channel groups interleaved in one data
   block, each record prefixed with the `cg_record_id` of the group it belongs to. Veridex declined

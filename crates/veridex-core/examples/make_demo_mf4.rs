@@ -68,6 +68,10 @@ fn main() {
         b.header_list(dl)
     };
 
+    // What the file says about where its samples came from: an ECU on the powertrain CAN bus. This
+    // is the one provenance element an MF4 carries natively, so the demo carries it.
+    let si = b.source("Powertrain ECU", "chassis-can", 1, 2);
+
     // `phys = 0 + 0.1 x raw` on the speed channel: a raw count of tenths of a km/h.
     let speed_cc = b.linear_conversion(0.0, 0.1);
     let rpm = b.channel("engine_rpm", false, UINT_LE, 12, 16, None);
@@ -80,6 +84,7 @@ fn main() {
 
     let cg = b.channel_group(count as u64, RECORD_LEN as u32);
     b.patch_link(cg, 1, time);
+    b.patch_link(cg, 3, si); // cg_si_acq_source
     let dg = b.data_group();
     b.patch_link(dg, 1, cg);
     b.patch_link(dg, 2, data_at);
@@ -220,6 +225,16 @@ impl Mf4Builder {
         data.push(1); // hl_zip_type, matching the blocks it lists
         data.extend_from_slice(&[0u8; 5]);
         self.block(b"##HL", &[dl], &data)
+    }
+
+    /// A `##SI` source-information block: which device acquired these samples, and on which bus.
+    /// `si_type` 1 is an ECU; `si_bus_type` 2 is CAN.
+    fn source(&mut self, name: &str, path: &str, si_type: u8, bus_type: u8) -> u64 {
+        let name_at = self.text(name);
+        let path_at = self.text(path);
+        let mut data = vec![si_type, bus_type, 0];
+        data.extend_from_slice(&[0u8; 5]);
+        self.block(b"##SI", &[name_at, path_at, 0], &data)
     }
 
     /// A `##CC` linear conversion: `phys = p1 + p2 x raw`.

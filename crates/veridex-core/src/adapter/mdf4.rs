@@ -38,6 +38,11 @@
 //! without opening a data block at all — the fastest way to inventory a large measurement, and the
 //! only way to describe one whose data block this reader declines.
 //!
+//! Provenance comes from what the file states about itself: the identification block's writing
+//! program becomes `recorder`, and the `##SI` acquisition sources a channel group or channel points
+//! at — the ECU, bus, I/O device or tool the samples came from — become `sensor`, each qualified by
+//! its bus or path. Both are extracted from the source bytes, so both are `known`, never asserted.
+//!
 //! Values are fingerprinted into `frame.value_ref.content_hash` (never stored), so the CDM content
 //! hash is sensitive to actual measured content, exactly as in the other adapters.
 
@@ -332,10 +337,87 @@ fn seconds_to_ns(seconds: f64) -> Option<i64> {
     Some(ns as i64)
 }
 
+/// One acquisition source named by an `##SI` block: the device, ECU, bus or tool that produced the
+/// samples of a channel group or a channel.
+///
+/// This is the one thing an MF4 says about *where its data came from*. Until it was read, an MF4
+/// scored 0/6 on provenance coverage while the file itself named the ECU and the bus it sat on.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct AcquisitionSource {
+    /// `si_tx_name` — what the source calls itself.
+    name: String,
+    /// `si_tx_path` — where it sits (a bus name, a device path). Empty when the block omits it.
+    path: String,
+    /// `si_type`: 0 other, 1 ECU, 2 bus, 3 I/O, 4 tool, 5 user.
+    kind: u8,
+    /// `si_bus_type`: 0 none, 1 other, 2 CAN, 3 LIN, 4 MOST, 5 FlexRay, 6 K-line, 7 Ethernet, 8 USB.
+    bus: u8,
+}
+
+impl AcquisitionSource {
+    /// How the source is written into provenance: its name, qualified by its bus or path when the
+    /// file gives one, because two ECUs called `Gateway` on different buses are two sources.
+    fn label(&self) -> String {
+        let qualifier = match (SI_BUS_TYPES.get(self.bus as usize), self.path.as_str()) {
+            (Some(&bus), _) if self.bus != 0 => bus.to_string(),
+            (_, path) if !path.is_empty() => path.to_string(),
+            _ => return self.name.clone(),
+        };
+        format!("{} ({qualifier})", self.name)
+    }
+}
+
+/// `si_type` names, indexed by the code. Anything past the end is a value MDF does not define.
+const SI_TYPES: &[&str] = &["other", "ECU", "bus", "I/O", "tool", "user"];
+/// How many acquisition sources are named individually in `provenance.sensor`. A gateway log can
+/// name hundreds; past this the remainder is counted, so the value stays a readable sentence.
+const MAX_NAMED_SOURCES: usize = 8;
+/// `si_bus_type` names, indexed by the code.
+const SI_BUS_TYPES: &[&str] = &[
+    "none", "other", "CAN", "LIN", "MOST", "FlexRay", "K-line", "Ethernet", "USB",
+];
+
+/// Read the `##SI` block at `at`, or `None` when it is absent, malformed, or names nothing.
+///
+/// A source with no name is not a source: it would put an empty string into `provenance.sensor`,
+/// which reads as extracted knowledge and is not any.
+fn source_at(bytes: &[u8], at: u64) -> Option<AcquisitionSource> {
+    let header = block_header(bytes, at)?;
+    if &header.id != b"##SI" {
+        return None;
+    }
+    let name = opt_link(bytes, at, &header, 0)
+        .and_then(|tx| text_block(bytes, tx))
+        .filter(|n| !n.is_empty())?;
+    let path = opt_link(bytes, at, &header, 1)
+        .and_then(|tx| text_block(bytes, tx))
+        .unwrap_or_default();
+    let data = data_section(bytes, at, &header).unwrap_or(&[]);
+    Some(AcquisitionSource {
+        name,
+        path,
+        kind: data.first().copied().unwrap_or(0),
+        bus: data.get(1).copied().unwrap_or(0),
+    })
+}
+
+/// Record `source` against this group if it is not already known. Sources repeat — every channel of
+/// an ECU's raster points at the same `##SI` — and provenance should name each one once.
+fn note_source(out: &mut GroupResult, source: Option<AcquisitionSource>) {
+    if let Some(source) = source {
+        if !out.sources.contains(&source) {
+            out.sources.push(source);
+        }
+    }
+}
+
 /// What a single channel group contributed.
 struct GroupResult {
     streams: Vec<Stream>,
     unmapped: Vec<UnmappedField>,
+    /// Acquisition sources named by the `##SI` blocks this group's channel groups and channels
+    /// point at, in the order first seen.
+    sources: Vec<AcquisitionSource>,
     /// Records this reader did not read — a compressed data block, an unsorted group, a channel
     /// group behind a malformed link.
     ///
@@ -441,6 +523,9 @@ impl Adapter for Mdf4Adapter {
         // hold: only this list raises `COVERAGE.SOURCE_UNREAD`, so a group whose records could not
         // be resolved never comes back as no frames and a clean verdict.
         let mut unread: Vec<UnmappedField> = Vec::new();
+        // Every distinct `##SI` acquisition source named anywhere in the file, in the order first
+        // seen — the file's own account of which device produced its samples.
+        let mut sources: Vec<AcquisitionSource> = Vec::new();
         let mut names_used: BTreeSet<String> = BTreeSet::new();
         // Next disambiguation suffix to try per colliding base name, so each collision is one probe.
         let mut next_suffix: std::collections::BTreeMap<String, u64> =
@@ -517,6 +602,11 @@ impl Adapter for Mdf4Adapter {
             }
             unmapped.extend(result.unmapped);
             unread.extend(result.unread);
+            for source in result.sources {
+                if !sources.contains(&source) {
+                    sources.push(source);
+                }
+            }
             group_index += 1;
             dg_at = opt_link(&bytes, at, &dg, 0);
         }
@@ -544,6 +634,38 @@ impl Adapter for Mdf4Adapter {
             elements.push(ProvenanceElement {
                 key: "recorder".into(),
                 value: Some(program),
+                class: ProvenanceClass::Known,
+            });
+        }
+        // The `##SI` acquisition sources: the file's own statement of which ECU, bus, tool or I/O
+        // device produced its samples — extracted from the source bytes, so `known`. Without it an
+        // MF4 scored 0/6 on provenance while naming its hardware in every channel group.
+        if !sources.is_empty() {
+            let named: Vec<String> = sources
+                .iter()
+                .take(MAX_NAMED_SOURCES)
+                .map(|s| s.label())
+                .collect();
+            let mut value = named.join(", ");
+            if sources.len() > MAX_NAMED_SOURCES {
+                // A gateway log can name hundreds of ECUs. The count still reaches the reader; the
+                // list stays a sentence a person can read.
+                value.push_str(&format!(" (+{} more)", sources.len() - MAX_NAMED_SOURCES));
+            }
+            metadata.push(("mdf_acquisition_sources".into(), value.clone()));
+            metadata.push((
+                "mdf_acquisition_source_kinds".into(),
+                sources
+                    .iter()
+                    .map(|s| SI_TYPES.get(s.kind as usize).copied().unwrap_or("unknown"))
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ));
+            elements.push(ProvenanceElement {
+                key: "sensor".into(),
+                value: Some(value),
                 class: ProvenanceClass::Known,
             });
         }
@@ -589,19 +711,28 @@ impl Adapter for Mdf4Adapter {
                 } else {
                     Coverage::Full
                 },
-                mapped_fields: if options.metadata_only {
-                    vec![
-                        "##CN channel -> stream (name from its ##TX)".into(),
-                        "identification block program -> provenance.recorder".into(),
-                    ]
-                } else {
-                    vec![
-                        "##CN channel -> stream (name from its ##TX)".into(),
-                        "time master channel -> frame.ts".into(),
-                        "##CC linear/identity conversion -> physical value".into(),
-                        "physical value -> frame.value_ref.content_hash (SHA-256)".into(),
-                        "identification block program -> provenance.recorder".into(),
-                    ]
+                mapped_fields: {
+                    let mut m = if options.metadata_only {
+                        vec![
+                            "##CN channel -> stream (name from its ##TX)".into(),
+                            "identification block program -> provenance.recorder".into(),
+                        ]
+                    } else {
+                        vec![
+                            "##CN channel -> stream (name from its ##TX)".into(),
+                            "time master channel -> frame.ts".into(),
+                            "##CC linear/identity conversion -> physical value".into(),
+                            "physical value -> frame.value_ref.content_hash (SHA-256)".into(),
+                            "identification block program -> provenance.recorder".into(),
+                        ]
+                    };
+                    // Claimed only when the file actually named one. A mapped field is a statement
+                    // that this run read something, and a measurement with no `##SI` block anywhere
+                    // would otherwise have the report say it read a source it never saw.
+                    if !sources.is_empty() {
+                        m.push("##SI acquisition source -> provenance.sensor".into());
+                    }
+                    m
                 },
                 unmapped_fields: unmapped,
                 omitted_fields: {
@@ -660,6 +791,7 @@ fn ingest_data_group(
         streams: Vec::new(),
         unmapped: Vec::new(),
         unread: Vec::new(),
+        sources: Vec::new(),
     };
     let locator = |what: &str| format!("##DG[{group_index}].{what}");
 
@@ -738,6 +870,9 @@ fn ingest_data_group(
             });
             break;
         }
+        // `cg_si_acq_source`: the device or bus this raster was acquired from.
+        let acq = opt_link(bytes, at, &cg, 3).and_then(|si| source_at(bytes, si));
+        note_source(&mut out, acq);
         let cg_data = data_section(bytes, at, &cg);
         let record_id = cg_data.and_then(|d| le_u64(d, 0)).unwrap_or(0);
         let cycle_count = cg_data.and_then(|d| le_u64(d, 8)).unwrap_or(0);
@@ -755,6 +890,9 @@ fn ingest_data_group(
             let Some(header) = block_header(bytes, cn) else {
                 break;
             };
+            // `cn_si_source`: a channel may name a source of its own, finer than its group's.
+            let cn_source = opt_link(bytes, cn, &header, 3).and_then(|si| source_at(bytes, si));
+            note_source(&mut out, cn_source);
             match channel_at(bytes, cn) {
                 Some(channel) => channels.push(channel),
                 // A channel whose `##TX` name block is missing, empty, or unreadable, or whose

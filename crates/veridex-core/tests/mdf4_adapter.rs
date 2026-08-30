@@ -154,6 +154,15 @@ impl Mf4Builder {
         self.channel_group_with_inval(cycle_count, data_bytes, 0)
     }
 
+    /// A `##SI` source-information block: `si_tx_name`, `si_tx_path`, then `si_type` / `si_bus_type`.
+    fn source(&mut self, name: &str, path: &str, si_type: u8, bus_type: u8) -> u64 {
+        let name_at = self.text(name);
+        let path_at = if path.is_empty() { 0 } else { self.text(path) };
+        let mut data = vec![si_type, bus_type, 0];
+        data.extend_from_slice(&[0u8; 5]);
+        self.block(b"##SI", &[name_at, path_at, 0], &data)
+    }
+
     /// A channel group tagged with the `cg_record_id` its records carry in an unsorted data group.
     fn channel_group_with_id(&mut self, record_id: u64, cycle_count: u64, data_bytes: u32) -> u64 {
         let at = self.channel_group_with_inval(cycle_count, data_bytes, 0);
@@ -1270,5 +1279,126 @@ fn a_compressed_block_whose_stream_is_corrupt_is_reported_rather_than_half_read(
             .any(|u| u.note.contains("##DZ")),
         "{:?}",
         ingested.report.unread_sources
+    );
+}
+
+// --- `##SI`: what the measurement says about where its samples came from ------------------------
+
+/// The canonical fixture with a `##SI` acquisition source on its channel group, and optionally a
+/// finer one on the `speed` channel.
+fn file_with_sources(per_channel: bool) -> Vec<u8> {
+    let mut b = Mf4Builder::new(b"veridex ");
+    let dt = b.block(b"##DT", &[], &well_formed_records(0..5));
+
+    let cg_si = b.source("Powertrain ECU", "chassis", 1, 2); // ECU on CAN
+    let cn_si = b.source("Wheel speed sensor", "", 3, 0); // I/O, no bus
+
+    let cc = b.linear_conversion(10.0, 0.5);
+    let temp = b.channel("temperature", 0, 0, INT_LE, 0, 12, 32, None);
+    let speed = b.channel("speed", 0, 0, UINT_LE, 0, 8, 16, Some(cc));
+    if per_channel {
+        b.patch_link(speed, 3, cn_si);
+    }
+    let time = b.channel("t", 2, 1, FLOAT_LE, 0, 0, 64, None);
+    b.patch_link(time, 0, speed);
+    b.patch_link(speed, 0, temp);
+
+    let cg = b.channel_group(5, 16);
+    b.patch_link(cg, 1, time);
+    b.patch_link(cg, 3, cg_si);
+    let dg = b.data_group(0);
+    b.patch_link(dg, 1, cg);
+    b.patch_link(dg, 2, dt);
+    b.finish(dg, 1_700_000_000_000_000_000)
+}
+
+fn sensor_provenance(ingested: &veridex_core::adapter::Ingested) -> Option<String> {
+    ingested.dataset.provenance[0]
+        .elements
+        .iter()
+        .find(|e| e.key == "sensor")
+        .and_then(|e| e.value.clone())
+}
+
+#[test]
+fn an_acquisition_source_becomes_the_sensor_provenance_the_file_already_named() {
+    // An MF4 scored 0/6 on provenance coverage while naming, in every channel group, the ECU that
+    // produced its samples and the bus it sat on. `provenance.sensor` is exactly that question, and
+    // the answer was in the file the whole time.
+    let ingested = ingest(&file_with_sources(false));
+    assert_eq!(
+        sensor_provenance(&ingested).as_deref(),
+        Some("Powertrain ECU (CAN)"),
+        "the source is qualified by its bus: two ECUs of the same name on different buses are two \
+         sources"
+    );
+    // Extracted from the file's own bytes, never asserted by a producer.
+    let sensor = ingested.dataset.provenance[0]
+        .elements
+        .iter()
+        .find(|e| e.key == "sensor")
+        .expect("a sensor element");
+    assert_eq!(sensor.class, veridex_core::cdm::ProvenanceClass::Known);
+    assert!(
+        ingested
+            .report
+            .mapped_fields
+            .iter()
+            .any(|f| f.contains("##SI") && f.contains("provenance.sensor")),
+        "{:?}",
+        ingested.report.mapped_fields
+    );
+}
+
+#[test]
+fn a_channels_own_source_is_named_beside_its_groups() {
+    // A channel may name a source finer than its group's — a sensor on an ECU's raster. Both are in
+    // the file, so both reach provenance, each once however many channels point at them.
+    let ingested = ingest(&file_with_sources(true));
+    assert_eq!(
+        sensor_provenance(&ingested).as_deref(),
+        Some("Powertrain ECU (CAN), Wheel speed sensor")
+    );
+}
+
+#[test]
+fn a_measurement_that_names_no_source_claims_none() {
+    // The mapped-field list is a statement that this run read something. A file with no `##SI`
+    // anywhere must not have the report say the run read one.
+    let ingested = ingest(&well_formed_file(5));
+    assert_eq!(sensor_provenance(&ingested), None);
+    assert!(
+        !ingested
+            .report
+            .mapped_fields
+            .iter()
+            .any(|f| f.contains("##SI")),
+        "{:?}",
+        ingested.report.mapped_fields
+    );
+}
+
+#[test]
+fn a_source_block_that_names_nothing_is_not_a_source() {
+    // An `##SI` whose name block is missing or empty would put an empty string into
+    // `provenance.sensor` — which reads as extracted knowledge and is not any.
+    let mut b = Mf4Builder::new(b"veridex ");
+    let dt = b.block(b"##DT", &[], &well_formed_records(0..3));
+    let empty_si = b.block(b"##SI", &[0, 0, 0], &[1, 2, 0, 0, 0, 0, 0, 0]);
+    let time = b.channel("t", 2, 1, FLOAT_LE, 0, 0, 64, None);
+    let speed = b.channel("speed", 0, 0, UINT_LE, 0, 8, 16, None);
+    b.patch_link(time, 0, speed);
+    let cg = b.channel_group(3, 16);
+    b.patch_link(cg, 1, time);
+    b.patch_link(cg, 3, empty_si);
+    let dg = b.data_group(0);
+    b.patch_link(dg, 1, cg);
+    b.patch_link(dg, 2, dt);
+
+    let ingested = ingest(&b.finish(dg, 0));
+    assert_eq!(sensor_provenance(&ingested), None);
+    assert!(
+        !ingested.dataset.episodes[0].streams.is_empty(),
+        "the measurement still reads"
     );
 }

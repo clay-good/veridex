@@ -62,7 +62,9 @@ No code until this change is approved; this is the build plan.
       graph (`##HD` → `##DG` → `##CG` → `##CN`), uses each channel group's time master as the
       timeline, and emits one stream per measured channel, applying identity/linear (`##CC` type 1)
       conversions; integer and float channels in both byte orders; values fingerprinted into the
-      content hash; the identification block's program becomes `recorder` provenance. Every block read
+      content hash; the identification block's program becomes `recorder` provenance and the `##SI`
+      acquisition sources (`cg_si_acq_source`, `cn_si_source`) become `sensor`, each qualified by its
+      bus or path — an MF4 scored 0/6 on provenance coverage until they were read. Every block read
       is bounds-checked and every chain walk loop-guarded (truncation/corruption fuzz tests). All four
       shapes a group's data arrives in are read: an uncompressed `##DT`, a deflated `##DZ` (plain or
       byte-column transposed), a `##DL` data list splitting the records across several of those, and

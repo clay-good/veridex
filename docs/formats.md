@@ -419,6 +419,20 @@ with no usable time master, a channel declaring per-sample invalidation, a group
 cycles than its block holds. Bit-packed and non-numeric channels and the conversions that need a
 lookup table are **unmapped** instead, and cost the reader nothing: the CDM has no shape for them.
 
+**The file already names its hardware.** An `##SI` acquisition-source block says which ECU, bus, I/O
+device or tool produced a channel group's samples, and a channel may name a finer one of its own.
+That is exactly the question `provenance.sensor` asks, so Veridex extracts it — qualified by the bus
+or path the file gives, because two ECUs called `Gateway` on different buses are two sources:
+
+```
+#   provenance: 1/6 covered (16% — known 1, asserted 0, unknown 5)
+#       sensor: Powertrain ECU (CAN) [known]
+```
+
+`known`, never asserted: it was read out of the measurement, not claimed by whoever handed it over.
+A file that names no source claims none — and the report does not list the `##SI` mapping either,
+because a mapped field is a statement that this run read something.
+
 MF4 records one continuous measurement rather than episodes, and its channels declare no nominal
 sample rate — so `inspect` says both out loud rather than letting the checks that need them come back
 clean:
