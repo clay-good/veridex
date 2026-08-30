@@ -70,12 +70,17 @@ No code until this change is approved; this is the build plan.
       `##DT` read nothing off the files the format is actually used for. Decompression is charged to
       the shared `DecompressionBudget` before a decompressor sees a stream and each read is capped at
       the length the block declares, so a forged expansion is refused rather than allocated. Recorded
-      as **unread** rather than decoded — data that is there and nobody read it, so each raises
-      `COVERAGE.SOURCE_UNREAD`: a `##DZ` holding something other than a `DT` record stream or using an
-      undefined zip type, a data list whose elements do not all resolve (half a list is not a shorter
-      measurement, it is a misaligned one), unsorted data groups, a group with no usable time master,
-      a channel declaring per-sample invalidation, and a group declaring more cycles than its data
-      block holds. A `--metadata-only` run describes a measurement from its header tree without
+      An **unsorted** data group — several rasters interleaved behind their `cg_record_id`s, the way a
+      bus logger writes them — is demultiplexed into one contiguous stream per channel group at that
+      group's own record length, and each group gets its own clock id, because two channel groups are
+      two independent timelines. Recorded as **unread** rather than decoded — data that is there and
+      nobody read it, so each raises `COVERAGE.SOURCE_UNREAD`: a `##DZ` holding something other than a
+      `DT` record stream or using an undefined zip type, a data list whose elements do not all resolve
+      (half a list is not a shorter measurement, it is a misaligned one), a record tagged with an id
+      no channel group claims (a record's length is known only from its id, so the rest of the stream
+      cannot be located), a variable-length signal-data group, a group with no usable time master, a
+      channel declaring per-sample invalidation, and a group declaring more cycles than its data block
+      holds. A `--metadata-only` run describes a measurement from its header tree without
       opening or decompressing a data block. Genuinely
       unmapped, because the CDM has no shape for them: bit-packed and non-numeric channels, other
       conversion types. Those — plus `##SR` sample

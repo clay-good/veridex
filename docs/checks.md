@@ -313,7 +313,7 @@ produced the same `coverage: Full`, the same findings, the same score, and a cer
 naming the whole dataset over the half that was read; `diff` reported zero change between them.
 
 What counts as unread is a judgement each adapter makes, and the line is whether the data is *there*:
-an MF4 data block this reader does not decode into a record stream, an MF4 channel group with no time master, a
+an MF4 data block this reader does not decode into a record stream, an MF4 channel group with no time master or a record id nothing claims, a
 Zarr array whose codec it cannot apply, a rosbag2 shard short of its manifest's message total, an
 MCAP short of the total in its own summary — all of it is data nobody looked at, so all of it lands
 here. A field the CDM has no shape for lands in `unmapped` instead and raises nothing, because it

@@ -10,6 +10,27 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **An unsorted MF4 data group ingested to zero frames.** A bus logger does not write one raster at a
+  time — it writes records as the samples arrive, several channel groups interleaved in one data
+  block, each record prefixed with the `cg_record_id` of the group it belongs to. Veridex declined
+  the whole group, so such a file produced no frames at all and every check passed on nothing.
+
+  The stream is now demultiplexed into one contiguous stream per channel group, each sliced at that
+  group's own record length — the differing strides are the point, since a splitter that assumed one
+  length would misalign everything after the first record of the other group.
+
+  Two consequences fell out of it. **Each channel group now gets its own clock id**
+  (`mf4-master#<data-group>.<channel-group>`, previously named after the data group alone). Every
+  `##CG` carries its own time master, so two channel groups are two independent timelines; sharing an
+  id would have made the cross-stream temporal checks compare one raster's span and rate against
+  another's and report the difference as a defect. And a **variable-length signal-data group** is now
+  declined by name: its records are length-prefixed rather than fixed-stride, so slicing them at
+  `cg_data_bytes` read every one at the wrong offset — a full set of confidently wrong values.
+
+  A record's length is known only from its id, so an id no channel group claims leaves every later
+  record at an unknown offset. That refuses the whole group rather than returning what came before
+  it: a partial decode would silently truncate the measurement while the run still read as complete.
+
 - **`docs/formats.md` claimed to demonstrate eight formats and showed six.** CAN+DBC and ASAM
   MDF/MF4 had no section on the page README sends readers to for exactly those two. Both are there
   now, each with a runnable demo and its real output: the CAN one is two heredocs (a four-line

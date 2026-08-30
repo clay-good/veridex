@@ -154,6 +154,23 @@ impl Mf4Builder {
         self.channel_group_with_inval(cycle_count, data_bytes, 0)
     }
 
+    /// A channel group tagged with the `cg_record_id` its records carry in an unsorted data group.
+    fn channel_group_with_id(&mut self, record_id: u64, cycle_count: u64, data_bytes: u32) -> u64 {
+        let at = self.channel_group_with_inval(cycle_count, data_bytes, 0);
+        let off = at as usize + 24 + 6 * 8;
+        self.bytes[off..off + 8].copy_from_slice(&record_id.to_le_bytes());
+        at
+    }
+
+    /// A channel group with explicit `cg_flags` (e.g. the variable-length signal-data bit).
+    fn channel_group_with_flags(&mut self, cycle_count: u64, data_bytes: u32, flags: u16) -> u64 {
+        let at = self.channel_group_with_inval(cycle_count, data_bytes, 0);
+        // cg_flags sits at data offset 16: after the header, 6 links, record_id and cycle_count.
+        let off = at as usize + 24 + 6 * 8 + 16;
+        self.bytes[off..off + 2].copy_from_slice(&flags.to_le_bytes());
+        at
+    }
+
     fn channel_group_with_inval(
         &mut self,
         cycle_count: u64,
@@ -346,7 +363,7 @@ fn channels_become_streams_with_the_time_master_as_the_timeline() {
     for s in &ep.streams {
         assert_eq!(s.modality, Modality::CanSignal);
         assert_eq!(
-            s.clock_id, "mf4-master#0",
+            s.clock_id, "mf4-master#0.0",
             "each raster is its own timeline"
         );
         assert_eq!(s.frames.len(), 5, "one frame per record");
@@ -531,15 +548,123 @@ fn a_compressed_block_of_something_other_than_records_is_reported_not_mis_decode
     );
 }
 
-#[test]
-fn an_unsorted_data_group_is_reported_rather_than_mis_decoded() {
+/// An unsorted data group: two rasters interleaved in one record stream behind their `cg_record_id`s.
+/// Group 1 is a 16-byte record (`t` f64, `speed` u16); group 2 is a 12-byte one (`t` f64, `temp`
+/// i32). The differing strides are the point — a demultiplexer that assumed one length would
+/// misalign everything after the first record of the other group.
+///
+/// `bad_id` interleaves one record tagged with an id no channel group claims.
+fn unsorted_file(records: usize, bad_id: bool) -> Vec<u8> {
     let mut b = Mf4Builder::new(b"veridex ");
-    let dt = b.block(b"##DT", &[], &[0u8; 32]);
-    let time = b.channel("t", 2, 1, FLOAT_LE, 0, 0, 64, None);
-    let cg = b.channel_group(2, 8);
-    b.patch_link(cg, 1, time);
+
+    let mut data = Vec::new();
+    for i in 0..records {
+        let t = i as f64 * 0.1;
+        data.push(1); // record id: the 16-byte raster
+        data.extend_from_slice(&t.to_le_bytes());
+        data.extend_from_slice(&((i as u16) * 2).to_le_bytes());
+        data.extend_from_slice(&[0u8; 6]);
+
+        data.push(2); // record id: the 12-byte raster
+        data.extend_from_slice(&t.to_le_bytes());
+        data.extend_from_slice(&(20i32 - i as i32).to_le_bytes());
+
+        if bad_id && i == 1 {
+            data.push(9);
+            data.extend_from_slice(&[0u8; 12]);
+        }
+    }
+    let dt = b.block(b"##DT", &[], &data);
+
+    let speed = b.channel("speed", 0, 0, UINT_LE, 0, 8, 16, None);
+    let time_a = b.channel("t", 2, 1, FLOAT_LE, 0, 0, 64, None);
+    b.patch_link(time_a, 0, speed);
+    let cg_a = b.channel_group_with_id(1, records as u64, 16);
+    b.patch_link(cg_a, 1, time_a);
+
+    let temp = b.channel("temperature", 0, 0, INT_LE, 0, 8, 32, None);
+    let time_b = b.channel("t", 2, 1, FLOAT_LE, 0, 0, 64, None);
+    b.patch_link(time_b, 0, temp);
+    let cg_b = b.channel_group_with_id(2, records as u64, 12);
+    b.patch_link(cg_b, 1, time_b);
+    b.patch_link(cg_a, 0, cg_b);
+
     // Record id size 1 → records from several groups are interleaved behind ids.
     let dg = b.data_group(1);
+    b.patch_link(dg, 1, cg_a);
+    b.patch_link(dg, 2, dt);
+    b.finish(dg, 0)
+}
+
+#[test]
+fn an_unsorted_data_group_is_demultiplexed_into_its_channel_groups() {
+    // How a bus logger writes several rasters into one data block as the samples arrive. The whole
+    // group used to be declined, so a file written this way ingested to no frames at all — every
+    // check ran on nothing and passed, and only the coverage warning said otherwise.
+    let ingested = ingest(&unsorted_file(5, false));
+    let ep = &ingested.dataset.episodes[0];
+    let names: Vec<&str> = ep.streams.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, vec!["speed", "temperature"]);
+    for s in &ep.streams {
+        assert_eq!(s.frames.len(), 5, "every record of each raster is decoded");
+        let ts: Vec<i64> = s.frames.iter().map(|f| f.ts).collect();
+        assert_eq!(
+            ts,
+            vec![0, 100_000_000, 200_000_000, 300_000_000, 400_000_000]
+        );
+    }
+    // Each raster carries its own time master, so they are two clocks, not one — otherwise the
+    // cross-stream temporal checks would compare one raster's span against the other's.
+    assert_eq!(ep.streams[0].clock_id, "mf4-master#0.0");
+    assert_eq!(ep.streams[1].clock_id, "mf4-master#0.1");
+    // The values really were sliced at each group's own stride.
+    let speed = ep.streams[0].observed_stats.expect("speed statistics");
+    assert_eq!((speed.min, speed.max), (0.0, 8.0));
+    let temp = ep.streams[1]
+        .observed_stats
+        .expect("temperature statistics");
+    assert_eq!((temp.min, temp.max), (16.0, 20.0));
+    assert!(
+        ingested.report.unread_sources.is_empty(),
+        "{:?}",
+        ingested.report.unread_sources
+    );
+}
+
+#[test]
+fn an_unsorted_record_with_an_unknown_id_refuses_the_group() {
+    // A record's length is known only from its id, so an id no channel group claims leaves every
+    // later record at an unknown offset. There is no partial answer: decoding what came before it
+    // would silently truncate the measurement while the run still read as complete.
+    let ingested = ingest(&unsorted_file(5, true));
+    assert!(
+        ingested.dataset.episodes[0].streams.is_empty(),
+        "the stream cannot be resynchronized, so nothing may be decoded from it"
+    );
+    assert!(
+        ingested
+            .report
+            .unread_sources
+            .iter()
+            .any(|u| u.note.contains("record id 9") && u.note.contains("unknown offset")),
+        "{:?}",
+        ingested.report.unread_sources
+    );
+}
+
+#[test]
+fn a_variable_length_signal_data_group_is_reported_not_sliced_at_a_fixed_stride() {
+    // A VLSD group's records are length-prefixed rather than fixed-stride, so reading them at
+    // `cg_data_bytes` would read every one of them at the wrong offset — a full set of confidently
+    // wrong values, which is worse than none.
+    let mut b = Mf4Builder::new(b"veridex ");
+    let dt = b.block(b"##DT", &[], &[0u8; 64]);
+    let speed = b.channel("speed", 0, 0, UINT_LE, 0, 8, 16, None);
+    let time = b.channel("t", 2, 1, FLOAT_LE, 0, 0, 64, None);
+    b.patch_link(time, 0, speed);
+    let cg = b.channel_group_with_flags(4, 16, 0x01);
+    b.patch_link(cg, 1, time);
+    let dg = b.data_group(0);
     b.patch_link(dg, 1, cg);
     b.patch_link(dg, 2, dt);
     let ingested = ingest(&b.finish(dg, 0));
@@ -550,7 +675,7 @@ fn an_unsorted_data_group_is_reported_rather_than_mis_decoded() {
             .report
             .unread_sources
             .iter()
-            .any(|u| u.note.contains("unsorted data group")),
+            .any(|u| u.note.contains("variable-length signal-data")),
         "{:?}",
         ingested.report.unread_sources
     );

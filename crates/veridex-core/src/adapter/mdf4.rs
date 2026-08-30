@@ -12,18 +12,23 @@
 //! write the compressed and listed shapes, not the bare `##DT`, so reading only `##DT` meant reading
 //! nothing off the files the format is actually used for.
 //!
+//! A data group is read whether it is **sorted** — one channel group whose records fill the block —
+//! or **unsorted**, where several rasters' records are interleaved behind their `cg_record_id`s, the
+//! way a bus logger writes them as the samples arrive. An unsorted group is demultiplexed into one
+//! contiguous stream per channel group first, each at that group's own record length.
+//!
 //! Scope, stated honestly rather than guessed at (design D2 — never silently drop what could affect a
-//! verdict). Decoded: byte-aligned integer and float channels (little- and big-endian) in a sorted
-//! data group, with identity or linear (`##CC` type 1) conversion applied. Everything else
-//! contributes no frames and is reported, so a reader always knows what the verdict did and did not
-//! cover — split two ways, because the two mean different things. **Unread** (a
-//! `COVERAGE.SOURCE_UNREAD` warning in the verdict): a `##DZ` holding something other than a `DT`
-//! record stream or using an undefined zip type, a data list whose elements do not all resolve, an
-//! unsorted group carrying record ids, a group with no usable time master, a channel declaring
-//! per-sample invalidation, a group declaring more cycles than its block holds — samples that are in
-//! the file and nobody read them, so every result is over less of the measurement than it appears to
-//! be. **Unmapped** (a note about shape, costing the reader nothing): non-byte-aligned and
-//! non-numeric channels, other conversion types.
+//! verdict). Decoded: byte-aligned integer and float channels (little- and big-endian), with identity
+//! or linear (`##CC` type 1) conversion applied. Everything else contributes no frames and is
+//! reported, so a reader always knows what the verdict did and did not cover — split two ways,
+//! because the two mean different things. **Unread** (a `COVERAGE.SOURCE_UNREAD` warning in the
+//! verdict): a `##DZ` holding something other than a `DT` record stream or using an undefined zip
+//! type, a data list whose elements do not all resolve, an unsorted record tagged with an id no
+//! channel group claims, a variable-length signal-data group, a group with no usable time master, a
+//! channel declaring per-sample invalidation, a group declaring more cycles than its block holds —
+//! samples that are in the file and nobody read them, so every result is over less of the
+//! measurement than it appears to be. **Unmapped** (a note about shape, costing the reader nothing):
+//! non-byte-aligned and non-numeric channels, other conversion types.
 //!
 //! Decompression is charged to the shared [`DecompressionBudget`] before a decompressor is pointed
 //! at a stream, and each block's read is capped at the length it declares, so a forged expansion is
@@ -120,6 +125,9 @@ fn data_section<'a>(bytes: &'a [u8], at: u64, header: &BlockHeader) -> Option<&'
     bytes.get(start..end)
 }
 
+fn le_u16(b: &[u8], at: usize) -> Option<u16> {
+    Some(u16::from_le_bytes(b.get(at..at + 2)?.try_into().ok()?))
+}
 fn le_u32(b: &[u8], at: usize) -> Option<u32> {
     Some(u32::from_le_bytes(b.get(at..at + 4)?.try_into().ok()?))
 }
@@ -620,6 +628,22 @@ impl Adapter for Mdf4Adapter {
     }
 }
 
+/// One `##CG` resolved from the header tree: which records belong to it, how long each one is, and
+/// the channels that slice it.
+struct ChannelGroupInfo {
+    /// Position in the data group's `##CG` chain, for locators.
+    index: u64,
+    /// `cg_record_id` — the tag an unsorted group's records carry to say they are this group's.
+    record_id: u64,
+    cycle_count: u64,
+    /// Data bytes plus invalidation bytes: the stride from one record to the next.
+    record_len: usize,
+    inval_bytes: usize,
+    /// A variable-length signal-data group, whose records are length-prefixed rather than fixed.
+    vlsd: bool,
+    channels: Vec<Channel>,
+}
+
 /// Ingest one `##DG`: resolve its channel groups, decode records, and emit a stream per channel.
 #[allow(clippy::too_many_arguments)]
 fn ingest_data_group(
@@ -642,12 +666,14 @@ fn ingest_data_group(
     let rec_id_size = data_section(bytes, dg_at, dg)
         .and_then(|d| d.first().copied())
         .unwrap_or(0);
-    if rec_id_size != 0 && !metadata_only {
-        // An unsorted group interleaves records from several channel groups behind record ids.
+    // ASAM defines exactly these widths. A record id of any other size cannot be read, and reading
+    // records at a guessed stride would yield a full set of confidently wrong values.
+    if !matches!(rec_id_size, 0 | 1 | 2 | 4 | 8) && !metadata_only {
         out.unread.push(UnmappedField {
             source_path: locator("records"),
             note: format!(
-                "unsorted data group (record id size {rec_id_size}) is not decoded; its channels contribute no frames"
+                "data group declares a {rec_id_size}-byte record id, which is not a size MDF \
+                 defines; its channels contribute no frames"
             ),
         });
         return Ok(out);
@@ -677,21 +703,14 @@ fn ingest_data_group(
     };
     let records: &[u8] = &resolved;
 
+    // Every channel group in the chain is resolved before any is decoded: an unsorted group's
+    // records are tagged with the id of whichever group they belong to, so none of them can be
+    // located until all the groups are known.
+    let mut groups: Vec<ChannelGroupInfo> = Vec::new();
     let mut cg_at = opt_link(bytes, dg_at, dg, 1);
     let mut cg_index = 0u64;
     while let Some(at) = cg_at {
         if !seen.insert(at) {
-            break;
-        }
-        // A sorted data group holds exactly one channel group. Decoding a second against the same
-        // records from offset 0 would produce plausible-but-wrong values, so report and stop.
-        if cg_index > 0 {
-            out.unread.push(UnmappedField {
-                source_path: locator("channel-groups"),
-                note:
-                    "sorted data group holds more than one channel group; only the first is decoded"
-                        .into(),
-            });
             break;
         }
         // This module's own doc promises that everything not decoded "is reported as an `unmapped`
@@ -720,10 +739,11 @@ fn ingest_data_group(
             break;
         }
         let cg_data = data_section(bytes, at, &cg);
+        let record_id = cg_data.and_then(|d| le_u64(d, 0)).unwrap_or(0);
         let cycle_count = cg_data.and_then(|d| le_u64(d, 8)).unwrap_or(0);
+        let cg_flags = cg_data.and_then(|d| le_u16(d, 16)).unwrap_or(0);
         let data_bytes = cg_data.and_then(|d| le_u32(d, 24)).unwrap_or(0) as usize;
         let inval_bytes = cg_data.and_then(|d| le_u32(d, 28)).unwrap_or(0) as usize;
-        let record_len = data_bytes + inval_bytes;
 
         // Collect the group's channels.
         let mut channels: Vec<Channel> = Vec::new();
@@ -750,39 +770,193 @@ fn ingest_data_group(
             cn_at = opt_link(bytes, cn, &header, 0);
         }
 
-        let locate = |name: &str| format!("##DG[{group_index}].##CG[{cg_index}].{name}");
-        if metadata_only {
-            declare_channel_group(cycle_count, &channels, group_index, frames, &mut out)?;
-            cg_index += 1;
-            cg_at = opt_link(bytes, at, &cg, 0);
-            continue;
+        groups.push(ChannelGroupInfo {
+            index: cg_index,
+            record_id,
+            cycle_count,
+            record_len: data_bytes + inval_bytes,
+            inval_bytes,
+            vlsd: cg_flags & CG_FLAG_VLSD != 0,
+            channels,
+        });
+        cg_index += 1;
+        cg_at = opt_link(bytes, at, &cg, 0);
+    }
+
+    if metadata_only {
+        for group in &groups {
+            declare_channel_group(
+                group.cycle_count,
+                &group.channels,
+                &clock_id_for(group_index, group.index),
+                frames,
+                &mut out,
+            )?;
         }
+        return Ok(out);
+    }
+
+    // A variable-length signal-data group's records are length-prefixed, not fixed-stride, so
+    // slicing them at `cg_data_bytes` would read every one of them at the wrong offset.
+    for group in &groups {
+        if group.vlsd {
+            out.unread.push(UnmappedField {
+                source_path: format!("##DG[{group_index}].##CG[{}]", group.index),
+                note: "variable-length signal-data channel group is not decoded; its channels \
+                       contribute no frames"
+                    .into(),
+            });
+        }
+    }
+    groups.retain(|g| !g.vlsd);
+
+    // Which records belong to which channel group. A sorted group is the whole stream; an unsorted
+    // one interleaves several groups' records behind their ids and has to be demultiplexed first.
+    let per_group: Vec<Cow<'_, [u8]>> = if rec_id_size == 0 {
+        // A sorted data group holds exactly one channel group. Decoding a second against the same
+        // records from offset 0 would produce plausible-but-wrong values, so report and drop it.
+        if groups.len() > 1 {
+            out.unread.push(UnmappedField {
+                source_path: locator("channel-groups"),
+                note:
+                    "sorted data group holds more than one channel group; only the first is decoded"
+                        .into(),
+            });
+            groups.truncate(1);
+        }
+        vec![Cow::Borrowed(records)]
+    } else {
+        match demultiplex(records, rec_id_size as usize, &groups, &locator, &mut out) {
+            Some(split) => split.into_iter().map(Cow::Owned).collect(),
+            None => return Ok(out),
+        }
+    };
+
+    for (group, group_records) in groups.iter().zip(per_group) {
+        let cg_index = group.index;
+        let locate = |name: &str| format!("##DG[{group_index}].##CG[{cg_index}].{name}");
         // A group materializes channels × records frames; charge that before decoding.
-        let decodable = channels.iter().filter(|c| c.is_decodable()).count() as u64;
+        let decodable = group.channels.iter().filter(|c| c.is_decodable()).count() as u64;
         // A zero-length record divides into no frames at all (and must not divide by zero).
-        let available = records.len().checked_div(record_len).unwrap_or(0) as u64;
-        let planned = if cycle_count == 0 {
+        let available = group_records
+            .len()
+            .checked_div(group.record_len)
+            .unwrap_or(0) as u64;
+        let planned = if group.cycle_count == 0 {
             available
         } else {
-            available.min(cycle_count)
+            available.min(group.cycle_count)
         };
         frames.take(FORMAT_ID, decodable.saturating_mul(planned))?;
         // Whatever this group could not contribute is recorded as an unmapped field inside.
         decode_channel_group(
-            records,
-            record_len,
-            cycle_count,
-            inval_bytes,
-            &channels,
-            group_index,
+            &group_records,
+            group.record_len,
+            group.cycle_count,
+            group.inval_bytes,
+            &group.channels,
+            &clock_id_for(group_index, cg_index),
             &locate,
             &mut out,
         );
-
-        cg_index += 1;
-        cg_at = opt_link(bytes, at, &cg, 0);
     }
     Ok(out)
+}
+
+/// The clock id of one channel group's raster.
+///
+/// Every `##CG` carries its own time master, so two channel groups are two independent timelines
+/// even inside one `##DG` — which an unsorted data group routinely holds. Naming the clock after the
+/// data group alone made them share one id, and the cross-stream temporal checks would then compare
+/// one raster's span and rate against another's and report the difference as a defect.
+fn clock_id_for(group_index: u64, cg_index: u64) -> String {
+    format!("{CLOCK_ID}#{group_index}.{cg_index}")
+}
+
+/// `cg_flags` bit 0: a variable-length signal-data channel group.
+const CG_FLAG_VLSD: u16 = 0x01;
+
+/// Split an unsorted data group's interleaved record stream into one contiguous stream per channel
+/// group, in the same order as `groups`.
+///
+/// An unsorted group is how a bus logger writes several rasters into one data block as they arrive:
+/// each record is prefixed with the `cg_record_id` of the group it belongs to, and the groups'
+/// records are interleaved in time order. Until this existed the whole group was declined, so a file
+/// written that way ingested to no frames at all.
+///
+/// `None` means the stream could not be split and the reason is filed in `out.unread`. There is no
+/// partial answer to give: a record's length is known only from its id, so the first id that matches
+/// no channel group leaves every later record at an unknown offset — the stream cannot be
+/// resynchronized, and decoding what came before it would silently truncate the measurement.
+fn demultiplex(
+    records: &[u8],
+    rec_id_size: usize,
+    groups: &[ChannelGroupInfo],
+    locator: &dyn Fn(&str) -> String,
+    out: &mut GroupResult,
+) -> Option<Vec<Vec<u8>>> {
+    let mut split: Vec<Vec<u8>> = vec![Vec::new(); groups.len()];
+    let mut at = 0usize;
+    while at < records.len() {
+        let Some(id) = record_id(records, at, rec_id_size) else {
+            // A tail too short to hold even an id. Disclosed, because those bytes are records that
+            // did not reach a stream.
+            out.unread.push(UnmappedField {
+                source_path: locator("records"),
+                note: format!(
+                    "record stream ends with {} byte(s) too few to hold a record id; they \
+                     contribute no frames",
+                    records.len() - at
+                ),
+            });
+            break;
+        };
+        at += rec_id_size;
+        let Some(index) = groups.iter().position(|g| g.record_id == id) else {
+            out.unread.push(UnmappedField {
+                source_path: locator("records"),
+                note: format!(
+                    "record id {id} matches no channel group in this data group, so every later \
+                     record is at an unknown offset; its channels contribute no frames"
+                ),
+            });
+            return None;
+        };
+        let len = groups[index].record_len;
+        if len == 0 {
+            // A zero-stride record never advances, so the walk would not terminate.
+            out.unread.push(UnmappedField {
+                source_path: locator("records"),
+                note: format!(
+                    "channel group with record id {id} declares a zero-length record, so the \
+                     stream cannot be walked; this data group's channels contribute no frames"
+                ),
+            });
+            return None;
+        }
+        let Some(record) = records.get(at..at.checked_add(len)?) else {
+            out.unread.push(UnmappedField {
+                source_path: locator("records"),
+                note: format!(
+                    "record stream ends mid-record ({} byte(s) of a {len}-byte record); they \
+                     contribute no frames",
+                    records.len() - at
+                ),
+            });
+            break;
+        };
+        split[index].extend_from_slice(record);
+        at += len;
+    }
+    Some(split)
+}
+
+/// Read a record id of `size` bytes (1, 2, 4 or 8) at `at`.
+fn record_id(records: &[u8], at: usize, size: usize) -> Option<u64> {
+    let raw = records.get(at..at.checked_add(size)?)?;
+    let mut buf = [0u8; 8];
+    buf[..size].copy_from_slice(raw);
+    Some(u64::from_le_bytes(buf))
 }
 
 /// The only original block type this reader reconstructs from a `##DZ`. A `##DZ` records which
@@ -1092,7 +1266,7 @@ fn untranspose(data: &[u8], columns: usize) -> Option<Vec<u8>> {
 fn declare_channel_group(
     cycle_count: u64,
     channels: &[Channel],
-    group_index: u64,
+    clock_id: &str,
     budget: &mut super::FrameBudget,
     out: &mut GroupResult,
 ) -> Result<(), IngestError> {
@@ -1107,7 +1281,7 @@ fn declare_channel_group(
             name: channel.name.clone(),
             modality: Modality::CanSignal,
             declared_rate_hz: None,
-            clock_id: format!("{CLOCK_ID}#{group_index}"),
+            clock_id: clock_id.to_string(),
             // The clock describes the measurement — every MF4 raster has a recorded time master —
             // not this ingest. The temporal checks abstain here for want of frames, which the
             // coverage note states, rather than for want of a clock.
@@ -1142,7 +1316,7 @@ fn decode_channel_group(
     cycle_count: u64,
     inval_bytes: usize,
     channels: &[Channel],
-    group_index: u64,
+    clock_id: &str,
     locate: &dyn Fn(&str) -> String,
     out: &mut GroupResult,
 ) -> bool {
@@ -1295,7 +1469,7 @@ fn decode_channel_group(
             declared_rate_hz: None,
             // Each channel group is its own raster with its own master; they are not a shared clock,
             // so cross-stream timing checks must not compare one raster's span against another's.
-            clock_id: format!("{CLOCK_ID}#{group_index}"),
+            clock_id: clock_id.to_string(),
             // Real recorded timestamps: every temporal check applies.
             clock_kind: ClockKind::Measured,
             dtype: Some("float64".into()),

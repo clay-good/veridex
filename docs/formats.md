@@ -348,9 +348,11 @@ episode and `--metadata-only` is refused by name rather than answered with a gue
 And on an **ASAM MDF/MF4** measurement — the format every automotive fleet logger and CAN/vehicle-bus
 recorder writes, and the one an autonomy team's vehicle-dynamics data arrives in. An MF4 is not a
 directory of files but a linked graph of typed blocks: a header chains data groups, each holding a
-channel group whose channels describe fixed-offset fields inside every record of one data block.
-Veridex walks that graph with its own bounds-checked reader, takes each group's **time master** as
-the timeline, applies each channel's `##CC` conversion, and emits one stream per measured channel.
+channel group — sometimes several — whose channels describe fixed-offset fields inside every record
+of one data block.
+Veridex walks that graph with its own bounds-checked reader, takes each channel group's **time
+master** as the timeline, applies each channel's `##CC` conversion, and emits one stream per measured
+channel.
 
 ```sh
 # a demo measurement: ~4 s at 100 Hz, records deflated into ##DZ chunks behind an ##HL header
@@ -396,13 +398,26 @@ measurement in silence. A data list whose elements do not all resolve refuses th
 the same reason: half a list is not a shorter measurement, it is a misaligned one, because every
 record after the missing chunk would be read at the wrong offset.
 
+**An unsorted data group is read too.** A bus logger does not write one raster at a time; it writes
+records as the samples arrive, several channel groups interleaved in one block, each record prefixed
+with the `cg_record_id` of the group it belongs to. Veridex splits that stream back into one
+contiguous stream per group, each at that group's own record length — and gives each its own clock,
+because two channel groups are two independent timelines, and sharing one would make the cross-stream
+temporal checks report the difference between two rasters as a defect.
+
+A record's length is known only from its id, so an id no channel group claims leaves every later
+record at an unknown offset. There is no partial answer to give: the whole group is refused and said
+so, because decoding what came before it would silently truncate the measurement while the run still
+read as complete.
+
 What is still declined is declined out loud, as **unread** — the data is in the file and nobody read
 it, so it raises `COVERAGE.SOURCE_UNREAD` rather than sitting in a note only `inspect` prints: a
-`##DZ` holding something other than a `DT` record stream, an undefined zip type, an unsorted data
-group that interleaves records behind record ids, a group with no usable time master, a channel
-declaring per-sample invalidation, a group declaring more cycles than its block holds. Bit-packed and
-non-numeric channels and the conversions that need a lookup table are **unmapped** instead, and cost
-the reader nothing: the CDM has no shape for them.
+`##DZ` holding something other than a `DT` record stream, an undefined zip type, a record id no
+channel group claims, a variable-length signal-data group (its records are length-prefixed, not
+fixed-stride, so slicing them at a fixed width would read every one at the wrong offset), a group
+with no usable time master, a channel declaring per-sample invalidation, a group declaring more
+cycles than its block holds. Bit-packed and non-numeric channels and the conversions that need a
+lookup table are **unmapped** instead, and cost the reader nothing: the CDM has no shape for them.
 
 MF4 records one continuous measurement rather than episodes, and its channels declare no nominal
 sample rate — so `inspect` says both out loud rather than letting the checks that need them come back

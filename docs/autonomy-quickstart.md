@@ -134,13 +134,15 @@ little to check.
 
 ## Limits worth knowing
 
-- **MF4 coverage is the sorted record stream.** All four shapes a group's data arrives in are read:
+- **MF4 coverage is the record stream, sorted or not.** All four shapes a group's data arrives in are read:
   an uncompressed `##DT`, a deflated `##DZ` (plain or byte-column transposed), a `##DL` data list
   splitting the records across several of those, and an `##HL` header list wrapping such a list.
-  Unsorted data groups are still not decoded, nor is a `##DZ` holding something other than a `DT`
-  record stream or a data list whose elements do not all resolve — and because those samples *are*
-  in the file, they are disclosed as **unread**: a `COVERAGE.SOURCE_UNREAD` warning in the verdict,
-  not a note only `inspect` prints. Bit-packed channels and lookup-table conversions are unmapped
+  Unsorted data groups — several rasters interleaved behind their record ids, the way a bus logger
+  writes them — are demultiplexed and decoded too. What is still declined: a `##DZ` holding something
+  other than a `DT` record stream, a data list whose elements do not all resolve, a record tagged
+  with an id no channel group claims, and a variable-length signal-data group. Because those samples
+  *are* in the file, they are disclosed as **unread**: a `COVERAGE.SOURCE_UNREAD` warning in the
+  verdict, not a note only `inspect` prints. Bit-packed channels and lookup-table conversions are unmapped
   instead: the CDM has no shape for them. A `--metadata-only` run describes a measurement from its
   header tree without decompressing anything, which is the cheapest way to inventory a large one.
 - **Per-sensor trigger/latency offsets** aren't modeled yet, so a rig with known constant offsets
