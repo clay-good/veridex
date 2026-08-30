@@ -328,3 +328,72 @@ fn severity_override_downgrades_clock_skew() {
     // With the error downgraded and no other errors, the run no longer fails.
     assert_ne!(v.status, veridex_core::Status::Fail);
 }
+
+/// The effective settings a parsed config resolves to, with no flags, environment or profile.
+fn settings_for(file: &veridex_core::CheckConfig) -> Vec<veridex_core::effective::Setting> {
+    let empty = std::collections::BTreeSet::new();
+    veridex_core::effective::settings(&veridex_core::effective::Inputs {
+        config_path: None,
+        file,
+        from_env: &empty,
+        profile: None,
+        tolerances: veridex_core::Tolerances::default(),
+        fail_on: veridex_core::FailOn::Error,
+        fail_on_from_flag: false,
+        min_score: None,
+        min_score_from_flag: false,
+    })
+}
+
+#[test]
+fn a_setting_written_in_the_file_is_attributed_to_the_file_even_at_its_default() {
+    // The effective configuration answers "was this run configured, and by whom" — and it is signed
+    // into every certificate. Three settings have no "unset" value to test for (`fail_on` defaults
+    // to `error`, `disabled_checks` and `severity_overrides` to empty), so asking "does this differ
+    // from the default?" answered a different question, and a file that wrote `fail_on = "error"`
+    // had its own setting reported as `(default)`. An auditor could not tell a producer who chose
+    // the default from one who never opened the file.
+    let text = "fail_on = \"error\"\ndisabled_checks = []\ncategories = [\"structural\"]\n\n\
+                [severity_overrides]\n";
+    let file = veridex_core::CheckConfig::from_toml(text).expect("parses");
+    let settings = settings_for(&file);
+    let origin = |key: &str| {
+        settings
+            .iter()
+            .find(|s| s.key == key)
+            .map(|s| format!("{:?}", s.origin))
+            .unwrap_or_else(|| panic!("no `{key}` setting"))
+    };
+    for key in [
+        "fail_on",
+        "disabled_checks",
+        "severity_overrides",
+        "categories",
+    ] {
+        assert_eq!(
+            origin(key),
+            "ConfigFile",
+            "`{key}` was written in the file and must be attributed to it"
+        );
+    }
+    // And a key the file did not carry is still a default, so the attribution is a signal.
+    assert_eq!(origin("min_score"), "Default");
+    assert_eq!(origin("only_checks"), "Default");
+}
+
+#[test]
+fn an_explicitly_empty_selection_reads_as_none_not_as_a_blank() {
+    // `only_checks = []` runs *no* checks — a very different run from "all" — and it rendered as an
+    // empty cell, which says neither.
+    let file = veridex_core::CheckConfig::from_toml("only_checks = []\ncategories = []\n")
+        .expect("parses");
+    let settings = settings_for(&file);
+    for key in ["only_checks", "categories"] {
+        let value = settings
+            .iter()
+            .find(|s| s.key == key)
+            .map(|s| s.value.clone())
+            .unwrap_or_default();
+        assert_eq!(value, "none", "`{key}` reads as `{value}`");
+    }
+}

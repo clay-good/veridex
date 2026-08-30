@@ -10,6 +10,22 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A setting written in the config file was reported as a default.** The effective configuration
+  answers "was this run configured, and by whom", and it is signed into every certificate. Three
+  settings have no "unset" value to test for — `fail_on` defaults to `error`, `disabled_checks` and
+  `severity_overrides` to empty — so it asked "does this differ from the default?", which is a
+  different question. A file that wrote `fail_on = "error"` had its own setting attributed to
+  `(default)`, and an auditor reading the certificate could not tell a producer who chose the
+  default from one who never opened the file. Two keys in the same file disagreed: an explicit
+  tolerance of `50` read as `(config file)` while an explicit `fail_on` read as `(default)`.
+
+  The parsed config now records which top-level keys the document actually carried, read from the
+  document rather than inferred from the values, and every setting is attributed from that.
+
+  While there: an explicitly empty `only_checks = []` or `categories = []` selects *nothing* — a
+  very different run from "all", and one the scope disclosure already reports — and it rendered as a
+  blank cell, which says neither. It reads `none` now.
+
 - **Pinned the redaction property the two front-ends now depend on.** The report's new `dataset.id`
   is redacted by the CLI with the redactor that already processed the whole verdict, and by the
   Python binding with a fresh one. That is only safe because the id resolves through the redactor's

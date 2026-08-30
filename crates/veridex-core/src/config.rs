@@ -87,13 +87,28 @@ pub struct CheckConfig {
     pub min_score: Option<u8>,
     /// Per-check numeric tolerances. Unset entries use the check's default.
     pub tolerances: TolerancesConfig,
+    /// The top-level keys the file actually carried.
+    ///
+    /// Three settings have no "unset" value to test for: `fail_on` defaults to `error`,
+    /// `disabled_checks` and `severity_overrides` to empty. So asking "does this differ from the
+    /// default?" answered a different question from "did the file set it?", and a file that wrote
+    /// `fail_on = "error"` had its own setting reported as `(default)` in the effective
+    /// configuration — the one place that answers "was this run configured, and by whom", and which
+    /// is signed into every certificate.
+    #[serde(skip)]
+    pub keys_present: std::collections::BTreeSet<String>,
 }
 
 impl CheckConfig {
     /// Parse a config from TOML text.
     pub fn from_toml(text: &str) -> Result<Self, ConfigError> {
-        let config: CheckConfig =
+        let mut config: CheckConfig =
             toml::from_str(text).map_err(|e| ConfigError::Parse(e.to_string()))?;
+        // Which keys the document carried, read from the document rather than inferred from the
+        // parsed values — see `keys_present`.
+        if let Ok(toml::Value::Table(table)) = toml::from_str::<toml::Value>(text) {
+            config.keys_present = table.keys().cloned().collect();
+        }
         config.validate()?;
         Ok(config)
     }

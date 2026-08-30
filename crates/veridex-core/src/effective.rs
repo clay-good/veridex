@@ -92,7 +92,10 @@ pub fn settings(inputs: &Inputs<'_>) -> Vec<Setting> {
     // from a later layer.
     let from_file = file.to_run_config().tolerances;
 
-    // Which layer set `key`, given whether the merged config departs from the default. The
+    // Which layer set `key`, given whether the file carried it. Asking that, rather than whether the
+    // value departs from the default, is the difference between "you did not configure this" and
+    // "you configured it to the default" — which is exactly the question an auditor reading a
+    // certificate's effective configuration is asking. The
     // environment is merged into the parsed config before this runs, so a key the environment set
     // must be attributed to it rather than to the file it was merged onto.
     let layer = |key: &str, set_in_config: bool| -> Origin {
@@ -120,22 +123,26 @@ pub fn settings(inputs: &Inputs<'_>) -> Vec<Setting> {
         "categories",
         match &file.categories {
             None => "all".to_string(),
+            // An explicit empty list selects nothing, which is a very different run from "all" —
+            // and it rendered as a blank cell, which says neither.
+            Some(c) if c.is_empty() => "none".to_string(),
             Some(c) => c
                 .iter()
                 .map(|c| format!("{c:?}").to_lowercase())
                 .collect::<Vec<_>>()
                 .join(", "),
         },
-        layer("categories", file.categories.is_some()),
+        layer("categories", file.keys_present.contains("categories")),
     );
     selection(
         &mut out,
         "only_checks",
         match &file.only_checks {
             None => "all".to_string(),
+            Some(c) if c.is_empty() => "none".to_string(),
             Some(c) => c.join(", "),
         },
-        layer("only_checks", file.only_checks.is_some()),
+        layer("only_checks", file.keys_present.contains("only_checks")),
     );
     selection(
         &mut out,
@@ -145,7 +152,10 @@ pub fn settings(inputs: &Inputs<'_>) -> Vec<Setting> {
         } else {
             file.disabled_checks.join(", ")
         },
-        layer("disabled_checks", !file.disabled_checks.is_empty()),
+        layer(
+            "disabled_checks",
+            file.keys_present.contains("disabled_checks"),
+        ),
     );
     selection(
         &mut out,
@@ -159,7 +169,10 @@ pub fn settings(inputs: &Inputs<'_>) -> Vec<Setting> {
                 .collect::<Vec<_>>()
                 .join(", ")
         },
-        layer("severity_overrides", !file.severity_overrides.is_empty()),
+        layer(
+            "severity_overrides",
+            file.keys_present.contains("severity_overrides"),
+        ),
     );
 
     // The exit threshold and the score gate: a flag beats the file, which beats the default.
@@ -172,7 +185,7 @@ pub fn settings(inputs: &Inputs<'_>) -> Vec<Setting> {
         origin: if inputs.fail_on_from_flag {
             Origin::Flag
         } else {
-            layer("fail_on", file.fail_on != FailOn::default())
+            layer("fail_on", file.keys_present.contains("fail_on"))
         },
         note: (inputs.fail_on_from_flag && file.fail_on != inputs.fail_on)
             .then(|| format!("--fail-on overrides the config file's `{:?}`", file.fail_on)),
@@ -186,7 +199,7 @@ pub fn settings(inputs: &Inputs<'_>) -> Vec<Setting> {
         origin: if inputs.min_score_from_flag {
             Origin::Flag
         } else {
-            layer("min_score", file.min_score.is_some())
+            layer("min_score", file.keys_present.contains("min_score"))
         },
         note: match (inputs.min_score_from_flag, file.min_score) {
             (true, Some(configured)) if Some(configured) != inputs.min_score => Some(format!(
