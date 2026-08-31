@@ -140,6 +140,16 @@ No code until this change is approved; this is the build plan.
       catches what counting the tree's components cannot: a connected tree recorded for a frame name
       the sensor does not publish, and a sensor in a subtree nothing joins to the camera. Proven
       end-to-end through the adapter and by the `av-miscalibrated` demo variant.
+- [x] `AUTONOMY.CALIBRATION_AMBIGUOUS` — the third miscalibration class, and the one the other two
+      structurally cannot see: every frame-graph question above walks the graph **undirected**, so a
+      tree in which some frame has two parents at once, or which closes into a loop, is connected,
+      has every sensor in it, and reaches the camera. It is still not a tree, and the sensor's pose
+      depends on which chain a consumer resolves. Proven end-to-end through the MCAP adapter and by
+      the `av-ambiguous-tf` demo variant, which differs from the healthy rig by exactly this one
+      finding. A re-parenting across disjoint validity windows is a recalibration and is not
+      reported. Also: a rig with fewer `CameraInfo`s than cameras now reports
+      `AUTONOMY.CALIBRATION_INCOMPLETE` — the presence rule asked only whether the intrinsics list
+      was empty, so one configured driver satisfied a six-camera rig.
 - [~] `AUTONOMY.EGO_POSE_CONTINUITY` — implemented: flags an ego trajectory step whose implied speed
       (distance/elapsed) exceeds a plausible max (default 100 m/s), reading the CDR-decoded
       `Episode.ego_poses`. Runs end-to-end on a teleporting Odometry MCAP + unit tests. GNSS/IMU/odometry
