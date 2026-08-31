@@ -4848,9 +4848,60 @@ fn a_file_naming_a_hundred_thousand_parents_for_one_frame_still_answers() {
         started.elapsed() < std::time::Duration::from_secs(10),
         "the sweep must not be quadratic in the edge count a file chooses"
     );
+    let ambiguous = f
+        .iter()
+        .find(|x| x.code == "AUTONOMY.CALIBRATION_AMBIGUOUS")
+        .expect("it still reports the defect");
+    // The count stays exact; only the enumeration is trimmed, so the message cannot grow with a
+    // number the file chooses.
     assert!(
-        f.iter().any(|x| x.code == "AUTONOMY.CALIBRATION_AMBIGUOUS"),
-        "and it still reports the defect: {f:?}"
+        ambiguous.message.len() < 500,
+        "{} bytes",
+        ambiguous.message.len()
+    );
+    assert!(
+        ambiguous.message.contains("100000 different parents")
+            && ambiguous.message.contains("more"),
+        "{}",
+        ambiguous.message
+    );
+}
+
+#[test]
+fn a_hundred_thousand_frame_loop_still_answers() {
+    // A file chooses the loop's length as freely as it chooses the parent count: a chain of mount
+    // frames closing on itself is a legal input. Asking whether every edge of the loop is valid at
+    // once by comparing each pair would spend 5e9 comparisons here; the intervals share a common
+    // point iff `max(start) <= min(end)`, which is one pass.
+    let mut transforms: Vec<veridex_core::cdm::Transform> = (0..100_000u32)
+        .map(|i| xf(&format!("m{i}"), &format!("m{}", (i + 1) % 100_000)))
+        .collect();
+    transforms.push(xf("base_link", "cam"));
+    let cal = veridex_core::cdm::Calibration {
+        transforms,
+        intrinsics: vec![intr("cam")],
+    };
+    let started = std::time::Instant::now();
+    let f = autonomy::CalibrationCompleteness.run(&rig_with_calibration(Some(cal)));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "the loop's own length must not be a cost the file controls"
+    );
+    let cycle = f
+        .iter()
+        .find(|x| x.code == "AUTONOMY.CALIBRATION_AMBIGUOUS")
+        .expect("the loop is still reported");
+    // Naming all 100k frames would put a megabyte into one message, and every renderer downstream —
+    // terminal, JSON, SARIF, the signed certificate — would carry it.
+    assert!(
+        cycle.message.len() < 500,
+        "the rendering is bounded: {} bytes",
+        cycle.message.len()
+    );
+    assert!(
+        cycle.message.contains("100000 frames in the loop)"),
+        "and says what it elided: {}",
+        cycle.message
     );
 }
 

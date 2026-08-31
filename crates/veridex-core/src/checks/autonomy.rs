@@ -1257,17 +1257,6 @@ fn unusable_calibration(dataset: &Dataset) -> Vec<String> {
     out
 }
 
-/// Whether two transforms' validity ranges overlap. `None` bounds are open-ended, so two
-/// open-ended transforms always overlap — which is what every adapter produces today (ROS `/tf`
-/// carries no validity range, so `decode_tf_message` leaves both bounds `None`).
-fn validity_overlaps(a: &Transform, b: &Transform) -> bool {
-    let starts_after_other_ends = |x: &Transform, y: &Transform| match (x.valid_from, y.valid_to) {
-        (Some(from), Some(to)) => from > to,
-        _ => false,
-    };
-    !starts_after_other_ends(a, b) && !starts_after_other_ends(b, a)
-}
-
 /// Every way a dataset's transform tree is present, connected, and still not a tree — as sentences
 /// naming the frames.
 ///
@@ -1316,20 +1305,50 @@ fn ambiguous_calibration(dataset: &Dataset) -> Vec<String> {
     }
     multi_parent.sort();
     for (child, parents) in multi_parent {
-        out.push(format!(
-            "frame `{child}` is given {} different parents at the same time ({}) — its place on \
-             the rig depends on which chain a consumer happens to resolve",
-            parents.len(),
+        // Bounded for the same reason the cycle rendering is: two or three claimants is the real
+        // defect and naming them is the remedy, but the number of parents a file may name for one
+        // frame is the file's choice, and an unbounded list would reach every renderer and the
+        // signed certificate. The count is always exact; only the enumeration is trimmed.
+        const MAX_NAMED: usize = 8;
+        let named = if parents.len() > MAX_NAMED {
+            format!(
+                "{}, and {} more",
+                parents[..MAX_NAMED].join(", "),
+                parents.len() - MAX_NAMED
+            )
+        } else {
             parents.join(", ")
+        };
+        out.push(format!(
+            "frame `{child}` is given {} different parents at the same time ({named}) — its place \
+             on the rig depends on which chain a consumer happens to resolve",
+            parents.len(),
         ));
     }
 
     // A directed cycle, all of whose edges are valid at once.
     if let Some(cycle) = tf_directed_cycle(transforms) {
-        out.push(format!(
-            "the transform tree contains a cycle ({}) — it has no root frame, so there is nothing \
-             the rig is expressed in",
+        // A real rig's loop is three or four frames and naming all of them is the whole remedy. The
+        // loop's length is the file's choice, though, so the rendering is bounded: a 100k-frame
+        // chain closing on itself would otherwise put a megabyte of frame names into one finding
+        // message, which every downstream renderer — terminal, JSON, SARIF, the certificate — then
+        // carries. The elision says what it dropped rather than trailing off.
+        const MAX_NAMED: usize = 8;
+        let rendered = if cycle.len() > MAX_NAMED {
+            format!(
+                "{} → … → {} ({} frames in the loop)",
+                cycle[..MAX_NAMED - 1].join(" → "),
+                cycle[cycle.len() - 1],
+                // The entry frame is repeated at the end to close the loop, so the number of
+                // distinct frames is one fewer than the names rendered.
+                cycle.len() - 1
+            )
+        } else {
             cycle.join(" → ")
+        };
+        out.push(format!(
+            "the transform tree contains a cycle ({rendered}) — it has no root frame, so there is \
+             nothing the rig is expressed in"
         ));
     }
     out
@@ -1380,10 +1399,23 @@ fn tf_directed_cycle(transforms: &[Transform]) -> Option<Vec<String>> {
                         .unwrap_or(0);
                     let mut loop_edges: Vec<&Transform> = path[start..].to_vec();
                     loop_edges.push(edge);
-                    let simultaneous = loop_edges
+                    // Intervals on a line that overlap pairwise share a common point, so "every
+                    // edge of this loop is valid at once" is exactly `max(start) <= min(end)` — one
+                    // linear pass rather than a comparison of every pair. The distinction matters
+                    // because a file chooses the loop's length: a chain of 100k mount frames closing
+                    // on itself is a legal input, and the pairwise form would spend 5e9 comparisons
+                    // on it.
+                    let latest_start = loop_edges
                         .iter()
-                        .enumerate()
-                        .all(|(i, a)| loop_edges[i + 1..].iter().all(|b| validity_overlaps(a, b)));
+                        .map(|e| e.valid_from.unwrap_or(i64::MIN))
+                        .max()
+                        .unwrap_or(i64::MIN);
+                    let earliest_end = loop_edges
+                        .iter()
+                        .map(|e| e.valid_to.unwrap_or(i64::MAX))
+                        .min()
+                        .unwrap_or(i64::MAX);
+                    let simultaneous = latest_start <= earliest_end;
                     if simultaneous {
                         let mut names: Vec<String> =
                             loop_edges.iter().map(|e| e.parent_frame.clone()).collect();

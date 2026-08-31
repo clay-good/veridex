@@ -22,6 +22,15 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   when any camera declares no frame the count would be a guess and the rule abstains, that stream
   being already reported by `AUTONOMY.SENSOR_FRAME_UNDECLARED`.
 
+- **The cycle rule is linear, and both ambiguity messages are bounded.** Asking whether every edge
+  of a loop is valid at once compared each pair; intervals on a line that overlap pairwise share a
+  common point, so it is exactly `max(start) <= min(end)` — one pass. The loop's own length is a
+  number the file chooses (a chain of 100k mount frames closing on itself is a legal input), and so
+  is the count of parents naming one frame, so neither is rendered in full any more: both messages
+  name up to eight and then say what they elided, with the count always exact. Without that, one
+  finding carried a megabyte of frame names into the terminal, the JSON, the SARIF and the signed
+  certificate.
+
 - **The multiple-parent rule is a sweep, not a pairing.** Nothing caps how many transforms a log may
   carry, and the adapters key them by `(parent, child)`, so every distinct parent a file names for
   one frame survives ingest. Comparing every pair is quadratic in that file-chosen number — 100k
