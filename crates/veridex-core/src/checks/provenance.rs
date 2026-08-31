@@ -1,9 +1,9 @@
 //! Provenance-completeness checks: surface missing or internally inconsistent provenance rather
 //! than accepting gaps by default. These gaps flow into the certificate's `unknown` section.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
-use crate::cdm::{Dataset, ProvenanceClass};
+use crate::cdm::{Dataset, ProvenanceClass, ProvenanceScope};
 use crate::check::{Category, Check, CheckContext, Finding, Location, Scope, Severity};
 
 /// A provenance element Veridex expects a trustworthy dataset to carry, with the severity of its
@@ -74,6 +74,7 @@ impl Check for ProvenanceCompleteness {
         &[
             "PROVENANCE.INCONSISTENT",
             "PROVENANCE.PLACEHOLDER_VALUE",
+            "PROVENANCE.PARTIAL",
             "PROVENANCE.MISSING_LICENSE",
             "PROVENANCE.MISSING_SENSOR",
             "PROVENANCE.MISSING_CLOCK",
@@ -127,6 +128,10 @@ impl ProvenanceCompleteness {
         // element's internal consistency as we go.
         let mut known_value: HashMap<&str, bool> = HashMap::new();
         let mut placeholder_seen: HashMap<&str, bool> = HashMap::new();
+        // Which expected keys a dataset-scoped record supplies, and for the rest, which episodes
+        // each key is actually recorded for.
+        let mut dataset_scoped: BTreeSet<&str> = BTreeSet::new();
+        let mut episodes_covering: HashMap<&str, BTreeSet<u64>> = HashMap::new();
         for record in &dataset.provenance {
             for el in &record.elements {
                 let has_value = el.value.is_some();
@@ -195,7 +200,83 @@ impl ProvenanceCompleteness {
                 let is_present = has_value && el.class != ProvenanceClass::Unknown && !placeholder;
                 let entry = known_value.entry(el.key.as_str()).or_insert(false);
                 *entry = *entry || is_present;
+
+                // Where the element is present *from* — a dataset-scoped record speaks for the whole
+                // dataset, an episode- or stream-scoped one speaks for that episode only.
+                if is_present {
+                    match &record.scope {
+                        ProvenanceScope::Dataset => {
+                            dataset_scoped.insert(el.key.as_str());
+                        }
+                        ProvenanceScope::Episode(index) => {
+                            episodes_covering
+                                .entry(el.key.as_str())
+                                .or_default()
+                                .insert(*index);
+                        }
+                        ProvenanceScope::Stream { episode, .. } => {
+                            episodes_covering
+                                .entry(el.key.as_str())
+                                .or_default()
+                                .insert(*episode);
+                        }
+                    }
+                }
             }
+        }
+
+        // An element recorded for *some* episodes and no others is present for the dataset and
+        // absent for most of it. `PROVENANCE.MISSING_*` cannot say so — the element is not missing —
+        // and neither can the coverage percentage, which counts the strongest class found anywhere
+        // and so reads a lineage recorded on one episode of a thousand as lineage for the dataset.
+        // An OXE conversion where only part of the shards carried `episode_metadata/file_path`
+        // produces exactly that: `upstream` known, 999 episodes with no origin, and nothing saying
+        // which is which.
+        //
+        // The denominator is the episodes **in this run**. A sampled run holds only the episodes it
+        // read, so this says nothing about the ones it did not — that narrowing is disclosed by the
+        // run's own coverage note, and folding it in here would report a partiality created by the
+        // request rather than found in the data.
+        let total_episodes = dataset.episodes.len();
+        for exp in EXPECTED {
+            if dataset_scoped.contains(exp.key) || total_episodes == 0 {
+                continue;
+            }
+            let Some(covered) = episodes_covering.get(exp.key) else {
+                continue; // absent everywhere: that is `PROVENANCE.MISSING_*`, reported below
+            };
+            if covered.len() >= total_episodes {
+                continue; // every episode carries it
+            }
+            if skip_payload_derived && PAYLOAD_DERIVED.contains(&exp.key) {
+                continue;
+            }
+            findings.push(
+                Finding::new(
+                    self.id(),
+                    Category::Provenance,
+                    Severity::Info,
+                    Location::Dataset,
+                    "PROVENANCE.PARTIAL",
+                    format!(
+                        "provenance element `{}` is recorded for {} of {} episode(s); the rest \
+                         carry none",
+                        exp.key,
+                        covered.len(),
+                        total_episodes
+                    ),
+                )
+                .with_risk(
+                    "The element counts as present for the dataset — in the coverage percentage \
+                     and in the certificate — while most episodes have no such record. Any \
+                     decision made per episode (which data to pool, what to filter, what a \
+                     license permits) is then made on provenance the episode does not have.",
+                )
+                .with_remedy(
+                    "Record the element for every episode, or record it once at dataset scope if \
+                     it genuinely describes the whole dataset.",
+                ),
+            );
         }
 
         // Surface each expected element that is absent or only ever `unknown`.

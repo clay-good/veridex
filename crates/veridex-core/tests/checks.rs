@@ -1381,6 +1381,108 @@ fn real_value_is_not_flagged_as_placeholder() {
     assert!(f.iter().all(|x| x.code != "PROVENANCE.PLACEHOLDER_VALUE"));
 }
 
+/// `provenance.completeness` over a run that read frame payloads. `upstream` and `calibration` are
+/// payload-derived, so the bare `run` deliberately abstains on them; the partiality of a per-episode
+/// lineage is only reachable on a run that actually opened the payloads it lives in.
+fn provenance_findings_after_full_read(d: &Dataset) -> Vec<veridex_core::check::Finding> {
+    use veridex_core::check::{Check, CheckContext};
+    provenance::ProvenanceCompleteness.run_in(
+        d,
+        &CheckContext {
+            frames_read: true,
+            attested_keys: Vec::new(),
+        },
+    )
+}
+
+/// A dataset of `episodes` episodes, with `upstream` recorded at episode scope for the first
+/// `covered` of them.
+fn dataset_with_episode_scoped_upstream(episodes: u64, covered: u64) -> Dataset {
+    let mut d = dataset(
+        (0..episodes)
+            .map(|i| episode(i, vec![stream("s", "c", None, &[0, 1])]))
+            .collect(),
+    );
+    d.provenance = (0..covered)
+        .map(|i| Provenance {
+            scope: ProvenanceScope::Episode(i),
+            elements: vec![el(
+                "upstream",
+                Some(&format!("raw/session-{i}.bag")),
+                ProvenanceClass::Known,
+            )],
+        })
+        .collect();
+    d
+}
+
+#[test]
+fn lineage_on_one_episode_is_not_lineage_for_a_thousand() {
+    // What an Open X-Embodiment conversion looks like when only part of the shards carried
+    // `episode_metadata/file_path`. The element is *present*, so `PROVENANCE.MISSING_UPSTREAM` is
+    // correctly silent — and the coverage percentage counts the strongest class found anywhere, so
+    // the certificate reads `upstream: known` over 999 episodes with no origin at all. Nothing said
+    // which was which.
+    let d = dataset_with_episode_scoped_upstream(1000, 1);
+    let f = provenance_findings_after_full_read(&d);
+    let partial = f
+        .iter()
+        .find(|x| x.code == "PROVENANCE.PARTIAL")
+        .unwrap_or_else(|| panic!("{f:?}"));
+    assert_eq!(partial.severity, Severity::Info);
+    assert!(
+        partial.message.contains("`upstream`") && partial.message.contains("1 of 1000"),
+        "{}",
+        partial.message
+    );
+    assert!(
+        f.iter().all(|x| x.code != "PROVENANCE.MISSING_UPSTREAM"),
+        "it is present, so it is not missing — the two must never both fire: {f:?}"
+    );
+}
+
+#[test]
+fn an_element_every_episode_records_is_not_partial() {
+    let d = dataset_with_episode_scoped_upstream(4, 4);
+    let f = provenance_findings_after_full_read(&d);
+    assert!(f.iter().all(|x| x.code != "PROVENANCE.PARTIAL"), "{f:?}");
+}
+
+#[test]
+fn a_dataset_scoped_element_covers_every_episode() {
+    // A record at dataset scope speaks for the whole dataset by construction. Demanding a per-episode
+    // record too would report every honest manifest-derived license as partial.
+    let mut d = dataset_with_episode_scoped_upstream(1000, 0);
+    d.provenance.push(Provenance {
+        scope: ProvenanceScope::Dataset,
+        elements: vec![el("license", Some("apache-2.0"), ProvenanceClass::Known)],
+    });
+    let f = provenance_findings_after_full_read(&d);
+    assert!(f.iter().all(|x| x.code != "PROVENANCE.PARTIAL"), "{f:?}");
+    assert!(f.iter().all(|x| x.code != "PROVENANCE.MISSING_LICENSE"));
+}
+
+#[test]
+fn an_element_no_episode_records_is_missing_not_partial() {
+    // Absent everywhere is the existing `MISSING_*` case, and must stay exactly one finding.
+    let d = dataset_with_episode_scoped_upstream(4, 0);
+    let f = provenance_findings_after_full_read(&d);
+    assert!(f.iter().all(|x| x.code != "PROVENANCE.PARTIAL"), "{f:?}");
+    assert!(f.iter().any(|x| x.code == "PROVENANCE.MISSING_UPSTREAM"));
+}
+
+#[test]
+fn a_placeholder_on_one_episode_does_not_make_the_element_partially_present() {
+    // A value of "unknown" is present in form and empty in substance, so it must not count as an
+    // episode that carries the element — which would turn an absent element into a partial one and
+    // silence `PROVENANCE.MISSING_UPSTREAM`.
+    let mut d = dataset_with_episode_scoped_upstream(4, 1);
+    d.provenance[0].elements[0].value = Some("n/a".into());
+    let f = provenance_findings_after_full_read(&d);
+    assert!(f.iter().all(|x| x.code != "PROVENANCE.PARTIAL"), "{f:?}");
+    assert!(f.iter().any(|x| x.code == "PROVENANCE.MISSING_UPSTREAM"));
+}
+
 #[test]
 fn internally_inconsistent_element_is_flagged() {
     // known but no value.

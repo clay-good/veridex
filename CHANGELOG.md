@@ -22,6 +22,20 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   when any camera declares no frame the count would be a guess and the rule abstains, that stream
   being already reported by `AUTONOMY.SENSOR_FRAME_UNDECLARED`.
 
+- **`PROVENANCE.PARTIAL`** — an expected provenance element recorded for *some* episodes and no
+  others. It is not missing, so none of the `MISSING_…` codes fires; and the provenance coverage
+  percentage counts the strongest class found in any record, so lineage recorded on one episode of a
+  thousand reads as lineage for the dataset — in the report and in the signed certificate. An Open
+  X-Embodiment conversion where only part of the shards carried `episode_metadata/file_path` is
+  exactly that: `upstream: known`, 999 episodes with no origin, and nothing saying which is which.
+
+  The denominator is the episodes **in this run**, so a sampled run never reports a partiality its
+  own request created — that narrowing is disclosed by the run's coverage note. A dataset-scoped
+  record covers every episode and is silent here, and a placeholder value (`unknown`, `n/a`) does not
+  count as an episode that carries the element, so an absent element stays `MISSING_…` rather than
+  becoming partial. This reports the fact; it does not change the coverage arithmetic, which is
+  rubric-defined.
+
 - **The cycle rule is linear, and both ambiguity messages are bounded.** Asking whether every edge
   of a loop is valid at once compared each pair; intervals on a line that overlap pairwise share a
   common point, so it is exactly `max(start) <= min(end)` — one pass. The loop's own length is a
