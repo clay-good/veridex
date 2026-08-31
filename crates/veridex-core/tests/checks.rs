@@ -4853,6 +4853,94 @@ fn a_recalibration_is_not_an_ambiguous_tree() {
     );
 }
 
+/// A rig whose cameras declare frames: `cams` names each camera stream's `frame_id`, so the same
+/// camera can be published twice the way a bag republishes `image_raw` beside `compressed`.
+fn rig_with_cameras(cams: &[(&str, &str)], cal: veridex_core::cdm::Calibration) -> Dataset {
+    let mut streams = vec![
+        rig_stream("lidar", Modality::PointCloud, 1_000_000_000),
+        rig_stream("gnss", Modality::Gnss, 1_000_000_000),
+        rig_stream("imu", Modality::Imu, 1_000_000_000),
+    ];
+    for (name, frame) in cams {
+        let mut s = rig_stream(name, Modality::Video, 1_000_000_000);
+        s.frame_id = Some((*frame).to_string());
+        streams.push(s);
+    }
+    let mut d = dataset(vec![episode(0, streams)]);
+    d.calibration = Some(cal);
+    d
+}
+
+#[test]
+fn one_camera_info_does_not_calibrate_six_cameras() {
+    // A surround rig with one driver configured and five not. The intrinsics list is non-empty, so
+    // the presence rule was satisfied and the `world-model-ready` calibration criterion reported
+    // green over five cameras nothing can project into. Present for one camera is not present for
+    // the rig.
+    let cams: Vec<(String, String)> = (0..6)
+        .map(|i| (format!("cam{i}"), format!("cam{i}_link")))
+        .collect();
+    let cams: Vec<(&str, &str)> = cams.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+    let mut transforms = vec![xf("base_link", "lidar")];
+    for (_, frame) in &cams {
+        transforms.push(xf("base_link", frame));
+    }
+    let cal = veridex_core::cdm::Calibration {
+        transforms,
+        intrinsics: vec![intr("cam0")],
+    };
+    let f = autonomy::CalibrationCompleteness.run(&rig_with_cameras(&cams, cal));
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "AUTONOMY.CALIBRATION_INCOMPLETE");
+    assert!(
+        f[0].message.contains("6 camera(s)") && f[0].message.contains("1 set(s)"),
+        "the finding must say how far short the rig is: {}",
+        f[0].message
+    );
+}
+
+#[test]
+fn a_camera_published_twice_is_still_one_camera() {
+    // A bag routinely carries `image_raw` beside a `compressed` republication of the same camera.
+    // Counting topics would report this rig as short of intrinsics for publishing its camera twice
+    // — a wrong accusation about a fully calibrated rig. A camera is a device, and the coordinate
+    // frame is what identifies it.
+    let cal = veridex_core::cdm::Calibration {
+        transforms: vec![xf("base_link", "lidar"), xf("base_link", "cam_link")],
+        intrinsics: vec![intr("cam")],
+    };
+    assert!(autonomy::CalibrationCompleteness
+        .run(&rig_with_cameras(
+            &[
+                ("cam/image_raw", "cam_link"),
+                ("cam/compressed", "cam_link")
+            ],
+            cal
+        ))
+        .is_empty());
+}
+
+#[test]
+fn a_camera_with_no_frame_is_not_counted_as_uncalibrated() {
+    // With one camera declaring no frame the rig's camera count is a guess, and guessing high is
+    // exactly the wrong accusation. The undeclared frame is already reported on its own, by
+    // `AUTONOMY.SENSOR_FRAME_UNDECLARED`.
+    let cal = veridex_core::cdm::Calibration {
+        transforms: vec![xf("base_link", "lidar"), xf("base_link", "cam_link")],
+        intrinsics: vec![intr("cam_a")],
+    };
+    let mut d = rig_with_cameras(&[("cam_a", "cam_link"), ("cam_b", "cam_link_b")], cal);
+    for s in d.episodes[0].streams.iter_mut() {
+        if s.name == "cam_b" {
+            s.frame_id = None;
+        }
+    }
+    assert!(!autonomy::CalibrationCompleteness
+        .run(&d)
+        .iter()
+        .any(|f| f.message.contains("camera(s) but only")));
+}
+
 #[test]
 fn a_well_formed_tree_carries_no_ambiguity_finding() {
     // The control: one root, one parent per frame, no loop. A republished identical edge is what

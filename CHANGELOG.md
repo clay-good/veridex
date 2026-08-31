@@ -10,6 +10,18 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A rig with fewer `CameraInfo`s than cameras** now reports `AUTONOMY.CALIBRATION_INCOMPLETE`.
+  The rule asked only whether the intrinsics list was *empty*, so a six-camera surround rig that
+  published a single `CameraInfo` — one driver configured, five not — satisfied it, and the
+  `world-model-ready` calibration criterion reported green over five cameras nothing can project
+  into. The shortfall is **counted, never name-matched**: a `CameraInfo` names its own topic
+  (`/camera_front/camera_info`), never the image stream it calibrates, so pairing them would mean
+  guessing at the ROS namespace convention and accusing whichever camera the guess missed.
+  Arithmetic cannot make that mistake. Cameras are counted by distinct **coordinate frame** rather
+  than by topic, so a bag republishing one camera as `image_raw` plus `compressed` stays one camera;
+  when any camera declares no frame the count would be a guess and the rule abstains, that stream
+  being already reported by `AUTONOMY.SENSOR_FRAME_UNDECLARED`.
+
 - **`AUTONOMY.CALIBRATION_AMBIGUOUS`** — a rig transform tree that is present, connected, valid edge
   by edge, and **not a tree**. Every calibration check Veridex had walked the coordinate-frame graph
   *undirected*: `AUTONOMY.CALIBRATION_INCOMPLETE` counts connected components, and

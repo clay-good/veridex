@@ -830,6 +830,11 @@ impl Check for CalibrationCompleteness {
                 }
             }
 
+            let intrinsics_count = dataset
+                .calibration
+                .as_ref()
+                .map(|c| c.intrinsics.len())
+                .unwrap_or(0);
             if has_camera && intrinsics_empty {
                 findings.push(flag(
                     ep.index,
@@ -839,6 +844,30 @@ impl Check for CalibrationCompleteness {
                         ep.index
                     ),
                 ));
+            } else if let Some(cameras) = distinct_cameras(ep) {
+                // Present for *one* camera is not present for the rig. The rule above asks only
+                // whether the intrinsics list is empty, so a six-camera surround rig that published
+                // a single `CameraInfo` — one driver configured, five not — satisfied it, and the
+                // `world-model-ready` calibration criterion reported green over five cameras
+                // nothing can project into.
+                //
+                // Counted, not name-matched: a `CameraInfo` names its own topic
+                // (`/camera_front/camera_info`), never the image stream it calibrates, so pairing
+                // them means guessing at the ROS namespace convention and accusing whichever camera
+                // the guess missed. Arithmetic cannot make that mistake — n cameras and fewer than
+                // n intrinsics means at least one camera has none, whichever it is.
+                if cameras > intrinsics_count {
+                    findings.push(flag(
+                        ep.index,
+                        format!(
+                            "episode {}: the rig carries {cameras} camera(s) but only \
+                             {intrinsics_count} set(s) of camera intrinsics (CameraInfo) — at least \
+                             {} camera cannot be projected into",
+                            ep.index,
+                            cameras - intrinsics_count
+                        ),
+                    ));
+                }
             }
 
             // Present is not the same as usable. An uncalibrated ROS camera driver publishes a
@@ -1380,4 +1409,23 @@ fn tf_directed_cycle(transforms: &[Transform]) -> Option<Vec<String>> {
         }
     }
     None
+}
+
+/// How many distinct physical cameras an episode carries, or `None` when that cannot be counted.
+///
+/// A camera is a device, not a topic. One camera is routinely published more than once in a single
+/// bag — `image_raw` beside a `compressed` republication, or a rectified stream beside the raw one —
+/// and counting topics would report a rig as short of intrinsics because it published its cameras
+/// twice. The coordinate frame is what identifies the device: every encoding of one camera's output
+/// carries that camera's `frame_id`.
+///
+/// Returns `None` when any camera stream declares no frame. The count would then be a guess, and
+/// guessing high is what produces the accusation this exists to avoid — the undeclared frame is
+/// itself already reported, by `AUTONOMY.SENSOR_FRAME_UNDECLARED`.
+fn distinct_cameras(ep: &Episode) -> Option<usize> {
+    let mut frames: BTreeSet<&str> = BTreeSet::new();
+    for stream in ep.streams.iter().filter(|s| s.modality == Modality::Video) {
+        frames.insert(stream.frame_id.as_deref()?);
+    }
+    Some(frames.len())
 }
