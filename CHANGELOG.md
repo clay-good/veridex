@@ -22,6 +22,15 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   when any camera declares no frame the count would be a guess and the rule abstains, that stream
   being already reported by `AUTONOMY.SENSOR_FRAME_UNDECLARED`.
 
+- **The multiple-parent rule is a sweep, not a pairing.** Nothing caps how many transforms a log may
+  carry, and the adapters key them by `(parent, child)`, so every distinct parent a file names for
+  one frame survives ingest. Comparing every pair is quadratic in that file-chosen number — 100k
+  parents is 5e9 comparisons, a hang rather than a finding, reached by exactly the malformed rigs
+  the check exists for. An `O(k log k)` endpoint sweep answers the same question exactly: no
+  sampling, no cap, nothing skipped. Two validity windows that **touch** at one instant overlap (the
+  frame really does have two parents there) while two that **abut** do not (that is a
+  recalibration); both boundaries are pinned by tests.
+
 - **`make_demo_mcap -- <out> av-ambiguous-tf`** — a runnable rig for the ambiguity above, and the
   proof it is invisible without it. The `av` five-sensor rig with a second broadcaster claiming
   `lidar_top` from a `lidar_mount` that is itself parented to `base_link`: the frame graph stays one

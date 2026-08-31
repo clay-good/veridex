@@ -1309,17 +1309,9 @@ fn ambiguous_calibration(dataset: &Dataset) -> Vec<String> {
     }
     let mut multi_parent: Vec<(&str, Vec<&str>)> = Vec::new();
     for (child, edges) in &by_child {
-        let mut conflicting: BTreeSet<&str> = BTreeSet::new();
-        for (i, a) in edges.iter().enumerate() {
-            for b in &edges[i + 1..] {
-                if a.parent_frame != b.parent_frame && validity_overlaps(a, b) {
-                    conflicting.insert(&a.parent_frame);
-                    conflicting.insert(&b.parent_frame);
-                }
-            }
-        }
+        let conflicting = parents_claiming_at_once(edges);
         if !conflicting.is_empty() {
-            multi_parent.push((child, conflicting.into_iter().collect()));
+            multi_parent.push((child, conflicting));
         }
     }
     multi_parent.sort();
@@ -1428,4 +1420,65 @@ fn distinct_cameras(ep: &Episode) -> Option<usize> {
         frames.insert(stream.frame_id.as_deref()?);
     }
     Some(frames.len())
+}
+
+/// The distinct parent frames that claim one child over a *shared* instant, sorted; empty when no
+/// two of `edges` name different parents at the same time.
+///
+/// A sweep over interval endpoints rather than a comparison of every pair. The pairwise form is the
+/// obvious one and is quadratic in the number of edges naming a single child — a number the input
+/// file chooses, since nothing caps how many transforms a log may carry and an adapter keys them by
+/// `(parent, child)`, so a million distinct parents for one frame all survive ingest. That is a
+/// hang, not a finding, and on a check meant to protect against a malformed rig it would be reached
+/// by exactly the malformed rigs it exists for. This is `O(k log k)` and answers the same question
+/// exactly — no sampling, no cap, nothing skipped.
+fn parents_claiming_at_once<'a>(edges: &[&'a Transform]) -> Vec<&'a str> {
+    // Fast path: one parent can never conflict with itself, whatever its validity ranges.
+    let distinct: BTreeSet<&str> = edges.iter().map(|t| t.parent_frame.as_str()).collect();
+    if distinct.len() < 2 {
+        return Vec::new();
+    }
+    // Endpoint events: `+1` at the start of a validity range, `-1` just past its end. An open bound
+    // is the whole timeline. Ends are ordered before starts at the same instant only if they do not
+    // touch — a range ending at `t` and one starting at `t` *do* overlap (both are valid at `t`), so
+    // the close event is placed at `t + 1` and starts sort first at equal keys.
+    let mut events: Vec<(i64, i8, &str)> = Vec::with_capacity(edges.len() * 2);
+    for t in edges {
+        let from = t.valid_from.unwrap_or(i64::MIN);
+        let to = t.valid_to.unwrap_or(i64::MAX);
+        if from > to {
+            continue; // an empty range claims nothing
+        }
+        events.push((from, 1, t.parent_frame.as_str()));
+        events.push((to.saturating_add(1), -1, t.parent_frame.as_str()));
+    }
+    // Closes sort *before* opens at the same key. The close was already pushed one tick past the
+    // range's last valid instant, so a close landing on key `t` means the range ended at `t - 1` and
+    // genuinely does not meet a range opening at `t`. Ordering it the other way round reports every
+    // honest recalibration — two windows that abut — as a frame with two parents.
+    events.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)).then(a.2.cmp(b.2)));
+
+    let mut active: HashMap<&str, usize> = HashMap::new();
+    let mut distinct_active = 0usize;
+    for (_, delta, parent) in events {
+        if delta > 0 {
+            let n = active.entry(parent).or_insert(0);
+            *n += 1;
+            if *n == 1 {
+                distinct_active += 1;
+            }
+            if distinct_active >= 2 {
+                // Report every parent that ever claims this child, not only the two that happened to
+                // collide first: a reader reconciling the frame needs the full list of claimants.
+                return distinct.into_iter().collect();
+            }
+        } else if let Some(n) = active.get_mut(parent) {
+            *n -= 1;
+            if *n == 0 {
+                active.remove(parent);
+                distinct_active -= 1;
+            }
+        }
+    }
+    Vec::new()
 }

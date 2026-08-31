@@ -4827,6 +4827,54 @@ fn a_transform_tree_that_closes_into_a_loop_has_no_root() {
 }
 
 #[test]
+fn a_file_naming_a_hundred_thousand_parents_for_one_frame_still_answers() {
+    // Nothing caps how many transforms a log may carry, and the adapters key them by
+    // `(parent, child)` — so every distinct parent a file names for one frame survives ingest. The
+    // obvious pairwise form of the multiple-parent rule is quadratic in that number, which a
+    // malformed rig chooses: 100k parents is 5e9 comparisons, a hang rather than a finding, reached
+    // by exactly the malformed rigs the check exists for. The sweep answers the same question in
+    // `O(k log k)` — and still answers it, rather than capping the input and going quiet.
+    let mut transforms: Vec<veridex_core::cdm::Transform> = (0..100_000)
+        .map(|i| xf(&format!("mount{i}"), "lidar"))
+        .collect();
+    transforms.push(xf("base_link", "cam"));
+    let cal = veridex_core::cdm::Calibration {
+        transforms,
+        intrinsics: vec![intr("cam")],
+    };
+    let started = std::time::Instant::now();
+    let f = autonomy::CalibrationCompleteness.run(&rig_with_calibration(Some(cal)));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "the sweep must not be quadratic in the edge count a file chooses"
+    );
+    assert!(
+        f.iter().any(|x| x.code == "AUTONOMY.CALIBRATION_AMBIGUOUS"),
+        "and it still reports the defect: {f:?}"
+    );
+}
+
+#[test]
+fn two_windows_that_touch_at_one_instant_do_overlap() {
+    // A range ending at `t` and one starting at `t` are both valid at `t`, so the frame does have
+    // two parents — at exactly one instant, but the transform there has two answers all the same.
+    // Off-by-one at the boundary is how a sweep silently becomes a rule that misses its own case.
+    let mut early = xf("base_link", "lidar");
+    early.valid_to = Some(1_000);
+    let mut late = xf("velodyne_base", "lidar");
+    late.valid_from = Some(1_000);
+    let cal = veridex_core::cdm::Calibration {
+        transforms: vec![early, late, xf("base_link", "cam")],
+        intrinsics: vec![intr("cam")],
+    };
+    let f = autonomy::CalibrationCompleteness.run(&rig_with_calibration(Some(cal)));
+    assert!(
+        f.iter().any(|x| x.code == "AUTONOMY.CALIBRATION_AMBIGUOUS"),
+        "{f:?}"
+    );
+}
+
+#[test]
 fn a_recalibration_is_not_an_ambiguous_tree() {
     // The rig is re-parented partway through the log: `lidar` hangs off `base_link` for the first
     // half and off `velodyne_base` for the second. At no instant does it have two parents, so
