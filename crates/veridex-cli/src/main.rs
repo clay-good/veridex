@@ -1526,21 +1526,59 @@ fn provenance_summary(d: &veridex_core::cdm::Dataset) -> String {
             ProvenanceClass::Asserted => 1,
             ProvenanceClass::Unknown => 0,
         };
-        let covering: Vec<&veridex_core::cdm::ProvenanceElement> = d
+        // Paired with the scope of the record each element came from. An element is only a fact
+        // about the whole dataset when a dataset-scoped record supplies it; an episode- or
+        // stream-scoped one speaks for that episode alone, and printing it unqualified says the
+        // dataset carries lineage when one episode of a thousand does.
+        let covering: Vec<(
+            &veridex_core::cdm::ProvenanceScope,
+            &veridex_core::cdm::ProvenanceElement,
+        )> = d
             .provenance
             .iter()
-            .flat_map(|r| &r.elements)
-            .filter(|e| e.key == *key && e.class != ProvenanceClass::Unknown && e.has_real_value())
+            .flat_map(|r| r.elements.iter().map(move |e| (&r.scope, e)))
+            .filter(|(_, e)| {
+                e.key == *key && e.class != ProvenanceClass::Unknown && e.has_real_value()
+            })
             .collect();
-        let Some(strongest) = covering.iter().map(|e| class_rank(e.class)).max() else {
+        let Some(strongest) = covering.iter().map(|(_, e)| class_rank(e.class)).max() else {
             let _ = writeln!(out, "      {key}: missing");
             continue;
         };
+        // How much of the dataset this key actually describes. Silent when a dataset-scoped record
+        // supplies it (that covers everything by construction) or when every episode carries one —
+        // the qualifier exists for the gap, not as decoration on a complete answer.
+        let mut episodes_covered: std::collections::BTreeSet<u64> = Default::default();
+        let mut dataset_scoped = false;
+        for (scope, _) in &covering {
+            match scope {
+                veridex_core::cdm::ProvenanceScope::Dataset => dataset_scoped = true,
+                veridex_core::cdm::ProvenanceScope::Episode(i) => {
+                    episodes_covered.insert(*i);
+                }
+                veridex_core::cdm::ProvenanceScope::Stream { episode, .. } => {
+                    episodes_covered.insert(*episode);
+                }
+            }
+        }
+        let total_episodes = d.episodes.len();
+        let partial =
+            if !dataset_scoped && total_episodes > 0 && episodes_covered.len() < total_episodes {
+                format!(
+                    " (recorded for {} of {total_episodes} episode(s))",
+                    episodes_covered.len()
+                )
+            } else {
+                String::new()
+            };
         // Every value the dataset carries for this key, not the first one. A rig acquired from four
         // devices and a dataset merged from three parents each record several elements, and showing
         // one of them looks like the whole answer.
         let mut values: Vec<&str> = Vec::new();
-        for e in covering.iter().filter(|e| class_rank(e.class) == strongest) {
+        for (_, e) in covering
+            .iter()
+            .filter(|(_, e)| class_rank(e.class) == strongest)
+        {
             let value = e.value.as_deref().unwrap_or_default();
             if !values.contains(&value) {
                 values.push(value);
@@ -1548,8 +1586,8 @@ fn provenance_summary(d: &veridex_core::cdm::Dataset) -> String {
         }
         let class = covering
             .iter()
-            .find(|e| class_rank(e.class) == strongest)
-            .map(|e| e.class.tag())
+            .find(|(_, e)| class_rank(e.class) == strongest)
+            .map(|(_, e)| e.class.tag())
             .unwrap_or_default();
         let shown = values
             .iter()
@@ -1559,9 +1597,12 @@ fn provenance_summary(d: &veridex_core::cdm::Dataset) -> String {
             .join(", ");
         let rest = values.len().saturating_sub(MAX_LISTED_VALUES);
         if rest > 0 {
-            let _ = writeln!(out, "      {key}: {shown} (+{rest} more) [{class}]");
+            let _ = writeln!(
+                out,
+                "      {key}: {shown} (+{rest} more) [{class}]{partial}"
+            );
         } else {
-            let _ = writeln!(out, "      {key}: {shown} [{class}]");
+            let _ = writeln!(out, "      {key}: {shown} [{class}]{partial}");
         }
     }
     out
@@ -3244,6 +3285,59 @@ mod tests {
         assert!(s.contains("license: apache-2.0 [known]"));
         // The placeholder sensor is shown as missing, matching the coverage score.
         assert!(s.contains("sensor: missing"), "unexpected: {s}");
+    }
+
+    #[test]
+    fn a_key_recorded_for_one_episode_says_so() {
+        // The same defect `inspect` was fixed for when it showed one sensor out of thirty-two,
+        // arriving through scope instead of through count. Provenance is scoped in the CDM, and an
+        // episode-scoped record speaks for that episode alone — so printing a lineage value
+        // unqualified tells the reader the dataset carries lineage when one episode of four does.
+        // The coverage line above says `1/6` either way.
+        use veridex_core::cdm::{
+            Dataset, Episode, Provenance, ProvenanceClass, ProvenanceElement, ProvenanceScope,
+        };
+        let ep = |i: u64| Episode {
+            index: i,
+            start_ts: None,
+            end_ts: None,
+            streams: vec![],
+            task: None,
+            labels: vec![],
+            ego_poses: None,
+            declared_frame_count: None,
+        };
+        let upstream = |scope: ProvenanceScope| Provenance {
+            scope,
+            elements: vec![ProvenanceElement {
+                key: "upstream".into(),
+                value: Some("raw/session.bag".into()),
+                class: ProvenanceClass::Known,
+            }],
+        };
+        let d = |provenance: Vec<Provenance>| Dataset {
+            id: "d".into(),
+            calibration: None,
+            metadata: vec![],
+            provenance,
+            episodes: (0..4).map(ep).collect(),
+        };
+
+        let one = super::provenance_summary(&d(vec![upstream(ProvenanceScope::Episode(0))]));
+        assert!(
+            one.contains("recorded for 1 of 4 episode(s)"),
+            "the qualifier is the whole point: {one}"
+        );
+
+        // Every episode carries it: complete, and the qualifier would be noise.
+        let all = super::provenance_summary(&d((0..4)
+            .map(|i| upstream(ProvenanceScope::Episode(i)))
+            .collect()));
+        assert!(!all.contains("recorded for"), "{all}");
+
+        // A dataset-scoped record covers every episode by construction.
+        let whole = super::provenance_summary(&d(vec![upstream(ProvenanceScope::Dataset)]));
+        assert!(!whole.contains("recorded for"), "{whole}");
     }
 
     #[test]

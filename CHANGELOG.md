@@ -22,6 +22,14 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   when any camera declares no frame the count would be a guess and the rule abstains, that stream
   being already reported by `AUTONOMY.SENSOR_FRAME_UNDECLARED`.
 
+- **`veridex inspect` now qualifies a partially-recorded provenance element.** It printed the value
+  and class of every expected key with no indication of *scope*, so an episode-scoped lineage
+  recorded for one episode of four read exactly like a dataset-scoped one recorded for all of them.
+  The line now ends `(recorded for 1 of 4 episode(s))` where that is true, and says nothing extra
+  where a dataset-scoped record supplies the key or every episode carries one. The same defect
+  `inspect` was fixed for when it showed one sensor out of thirty-two, arriving through scope rather
+  than through count.
+
 - **`PROVENANCE.PARTIAL`** — an expected provenance element recorded for *some* episodes and no
   others. It is not missing, so none of the `MISSING_…` codes fires; and the provenance coverage
   percentage counts the strongest class found in any record, so lineage recorded on one episode of a
