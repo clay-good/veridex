@@ -144,7 +144,7 @@ CLI, an import never picks one up from the working directory.
 cargo build
 
 # generate a demo MCAP with a synthetic cross-stream clock skew (append `clean`, `late-start`,
-# `stuck`, `av`, or `av-miscalibrated`; an unknown variant is refused, never silently substituted)
+# `stuck`, `av`, `av-miscalibrated`, or `av-ambiguous-tf`; an unknown variant is refused, never silently substituted)
 cargo run -p veridex-demo --example make_demo_mcap -- /tmp/demo.mcap
 
 # validate it — prints a report and exits non-zero on failure

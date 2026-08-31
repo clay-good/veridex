@@ -22,6 +22,14 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   when any camera declares no frame the count would be a guess and the rule abstains, that stream
   being already reported by `AUTONOMY.SENSOR_FRAME_UNDECLARED`.
 
+- **`make_demo_mcap -- <out> av-ambiguous-tf`** — a runnable rig for the ambiguity above, and the
+  proof it is invisible without it. The `av` five-sensor rig with a second broadcaster claiming
+  `lidar_top` from a `lidar_mount` that is itself parented to `base_link`: the frame graph stays one
+  connected component and the LiDAR still reaches the camera, so `AUTONOMY.CALIBRATION_INCOMPLETE`
+  and every `AUTONOMY.SENSOR_FRAME_*` code stay silent. An integration test asserts the healthy and
+  ambiguous rigs differ by exactly `AUTONOMY.CALIBRATION_AMBIGUOUS` and nothing else, and the
+  [autonomy quickstart](docs/autonomy-quickstart.md) shows the run.
+
 - **`AUTONOMY.CALIBRATION_AMBIGUOUS`** — a rig transform tree that is present, connected, valid edge
   by edge, and **not a tree**. Every calibration check Veridex had walked the coordinate-frame graph
   *undirected*: `AUTONOMY.CALIBRATION_INCOMPLETE` counts connected components, and

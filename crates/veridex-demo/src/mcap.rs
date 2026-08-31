@@ -22,8 +22,14 @@
 //!   nothing joins to `base_link`. The transform tree is well-formed and the LiDAR is in it, yet no
 //!   chain of transforms reaches the camera → `AUTONOMY.SENSOR_FRAME_UNRELATED`: the LiDAR-camera
 //!   reprojection is undefined, which no check on the tree's own shape can see.
+//! - `av-ambiguous-tf` — the same rig with **two** nodes publishing a transform for `lidar_top`,
+//!   one from `base_link` and one from a `lidar_mount` that is itself parented to `base_link`. Every
+//!   frame graph question already asked comes back clean: the tree is one connected component, the
+//!   LiDAR is in it, and a chain reaches the camera — because all of those walk the graph
+//!   *undirected*. It is still not a tree, and the LiDAR's pose depends on which of the two chains a
+//!   consumer resolves → `AUTONOMY.CALIBRATION_AMBIGUOUS`, and nothing else moves.
 //!
-//! Usage: `cargo run -p veridex-demo --example make_demo_mcap -- <output.mcap> [clean|late-start|stuck|av|av-miscalibrated]`
+//! Usage: `cargo run -p veridex-demo --example make_demo_mcap -- <output.mcap> [clean|late-start|stuck|av|av-miscalibrated|av-ambiguous-tf]`
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
@@ -39,6 +45,7 @@ pub const VARIANTS: &[&str] = &[
     "late-start",
     "av",
     "av-miscalibrated",
+    "av-ambiguous-tf",
 ];
 
 /// Write the demo MCAP recording to `path`, replacing anything already there.
@@ -53,14 +60,17 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
     // `av-miscalibrated` is the same rig with the LiDAR stranded outside the camera's transform
     // subtree, so the LiDAR-camera reprojection is undefined.
     let miscalibrated = variant == "av-miscalibrated";
-    let av = variant == "av" || miscalibrated;
+    // `av-ambiguous-tf` is the same rig with `lidar_top` claimed by two parents at once, so its
+    // pose depends on which chain a consumer walks.
+    let ambiguous_tf = variant == "av-ambiguous-tf";
+    let av = variant == "av" || miscalibrated || ambiguous_tf;
 
     let mut buf = Vec::new();
     {
         let mut w = mcap::Writer::new(Cursor::new(&mut buf)).expect("writer");
 
         if av {
-            write_av_rig(&mut w, miscalibrated);
+            write_av_rig(&mut w, miscalibrated, ambiguous_tf);
         } else {
             write_manipulation(&mut w, stuck, clean, late_start);
         }
@@ -166,7 +176,11 @@ fn write_manipulation<W: std::io::Write + std::io::Seek>(
 /// Write a five-sensor autonomy rig (camera, LiDAR, IMU, GNSS, ego-odometry) over ~1.0 s. Every
 /// sensor spans ~1.0 s from a shared start except the IMU, whose span is deliberately cut to ~0.70 s
 /// — a single-sensor sync drift of ~0.30 s that the duration-based `TEMPORAL.CLOCK_SKEW` flags.
-fn write_av_rig<W: std::io::Write + std::io::Seek>(w: &mut mcap::Writer<W>, miscalibrated: bool) {
+fn write_av_rig<W: std::io::Write + std::io::Seek>(
+    w: &mut mcap::Writer<W>,
+    miscalibrated: bool,
+    ambiguous_tf: bool,
+) {
     // (schema, topic, message count, inter-message interval ns, coordinate frame). The IMU runs the
     // same 100 msg count as a healthy 100 Hz sensor but at a compressed 7 ms interval, so it finishes
     // ~0.30 s early.
@@ -211,13 +225,21 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(w: &mut mcap::Writer<W>, misc
     } else {
         "base_link"
     };
-    let tf_edges: &[(&str, &str)] = &[
+    let mut tf_edges: Vec<(&str, &str)> = vec![
         ("base_link", "camera_front"),
         (lidar_parent, "lidar_top"),
         ("base_link", "gnss"),
         ("base_link", "imu_link"),
         ("odom", "base_link"),
     ];
+    if ambiguous_tf {
+        // A second broadcaster claims the LiDAR, from a mount frame that is itself on `base_link`.
+        // The mount edge keeps the graph connected and keeps the LiDAR reachable from the camera, so
+        // every existing frame-graph check still passes — which is the point. What breaks is
+        // uniqueness: `lidar_top` now has two parents at the same time.
+        tf_edges.push(("base_link", "lidar_mount"));
+        tf_edges.push(("lidar_mount", "lidar_top"));
+    }
     let tf_schema = w
         .add_schema("tf2_msgs/msg/TFMessage", "ros2msg", b"")
         .unwrap();
@@ -228,7 +250,7 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(w: &mut mcap::Writer<W>, misc
     let tf_channel = w
         .add_channel(tf_schema, "/tf_static", "cdr", &latched_qos())
         .unwrap();
-    write_msg(w, tf_channel, 0, 0, &tf_message_body(tf_edges));
+    write_msg(w, tf_channel, 0, 0, &tf_message_body(&tf_edges));
 
     for (seq_base, (schema, topic, count, interval, frame_id)) in sensors.iter().enumerate() {
         let schema_id = w.add_schema(schema, "ros2msg", b"").unwrap();

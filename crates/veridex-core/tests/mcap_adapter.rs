@@ -1494,6 +1494,52 @@ fn a_corrupt_chunk_stream_is_refused_rather_than_unpacked_forever() {
 /// Measured at 16 GB over two seconds from a single flipped byte; the expansion is linear in a
 /// number the file chooses, so a 500 MB input buys roughly half an hour of CPU.
 #[test]
+fn the_ambiguous_tf_demo_rig_differs_from_the_healthy_one_by_exactly_the_ambiguity() {
+    // The demo variant the quickstart documents, through the real adapter. `av-ambiguous-tf` is the
+    // `av` rig with a second broadcaster claiming `lidar_top` from a `lidar_mount` that is itself on
+    // `base_link` — so the frame graph stays one connected component and the LiDAR still reaches the
+    // camera, and every check that reads the graph undirected still passes. The two rigs must differ
+    // by `AUTONOMY.CALIBRATION_AMBIGUOUS` and by nothing else, or the demo is not showing what the
+    // documentation says it shows.
+    let dir = tempfile::tempdir().unwrap();
+    let codes = |variant: &str| -> Vec<String> {
+        let path = dir.path().join(format!("{variant}.mcap"));
+        veridex_demo::mcap::write(&path, variant).expect("write the demo rig recording");
+        let d = ingest_rig(&path);
+        let engine = veridex_core::checks::default_engine().unwrap();
+        let hash = veridex_core::content_hash(&d);
+        let mut out: Vec<String> = engine
+            .run(&d, hash, &veridex_core::RunConfig::default())
+            .findings
+            .iter()
+            .map(|f| f.code.clone())
+            .collect();
+        out.sort();
+        out
+    };
+    let healthy = codes("av");
+    let ambiguous = codes("av-ambiguous-tf");
+    assert!(
+        !healthy.contains(&"AUTONOMY.CALIBRATION_AMBIGUOUS".to_string()),
+        "the healthy rig must not raise it: {healthy:?}"
+    );
+    let only_in_ambiguous: Vec<&String> =
+        ambiguous.iter().filter(|c| !healthy.contains(c)).collect();
+    assert_eq!(
+        only_in_ambiguous,
+        vec![&"AUTONOMY.CALIBRATION_AMBIGUOUS".to_string()],
+        "the second parent is the only difference: {ambiguous:?}"
+    );
+    assert!(
+        !ambiguous
+            .iter()
+            .any(|c| c.starts_with("AUTONOMY.SENSOR_FRAME")),
+        "and the per-sensor frame check still passes — undirected reachability is unchanged: \
+         {ambiguous:?}"
+    );
+}
+
+#[test]
 fn a_chunk_behind_a_malformed_record_is_still_charged_to_the_budget() {
     let dir = tempfile::tempdir().unwrap();
     let good = dir.path().join("good.mcap");

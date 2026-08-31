@@ -89,6 +89,33 @@ name the tree never mentions at all — the calibration was recorded for `lidar_
 publishes `lidar_top_v2`. Veridex never decodes point coordinates or pixels, so it does not compute a
 reprojection *error*; it verifies the reprojection is defined at all.
 
+### The tree that is connected and still not a tree
+
+Every question above — is the tree in one piece, is the LiDAR in it, does a chain reach the camera —
+walks the frame graph **undirected**. All three answer whether two sensors *can* be related, and none
+says whether the answer is **unique**. The `av-ambiguous-tf` variant is a rig where it is not: two
+nodes each publish a transform for `lidar_top`, one from `base_link` and one from a `lidar_mount`
+that is itself on `base_link`.
+
+```sh
+cargo run -p veridex-demo --example make_demo_mcap -- /tmp/av-amb.mcap av-ambiguous-tf
+cargo run -p veridex-cli -- check /tmp/av-amb.mcap
+```
+
+```
+  [error] AUTONOMY.CALIBRATION_AMBIGUOUS  episode 0
+      episode 0: frame `lidar_top` is given 2 different parents at the same time (base_link,
+      lidar_mount) — its place on the rig depends on which chain a consumer happens to resolve
+      remedy: Publish exactly one parent per frame: remove the duplicate broadcaster, or re-parent
+              the sensor under the mount it is actually measured against.
+```
+
+Nothing else moves: the tree is one connected component and every sensor still reaches the camera, so
+`CALIBRATION_INCOMPLETE` and every `SENSOR_FRAME_*` code stay silent — which is exactly why this
+needed its own rule. The same code covers a **cycle** (`base_link` → `lidar` → `radar` →
+`base_link`), where every frame has one parent and the rig has no root. A re-parenting across
+*disjoint* validity windows is a recalibration, not an ambiguity, and is not reported.
+
 ## 4. Certify readiness
 
 ```sh
