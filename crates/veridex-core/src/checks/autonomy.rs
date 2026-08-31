@@ -694,6 +694,7 @@ impl Check for CalibrationCompleteness {
         &[
             "AUTONOMY.CALIBRATION_INCOMPLETE",
             "AUTONOMY.CALIBRATION_IMPLAUSIBLE",
+            "AUTONOMY.CALIBRATION_AMBIGUOUS",
         ]
     }
     fn title(&self) -> &'static str {
@@ -752,6 +753,30 @@ impl Check for CalibrationCompleteness {
             .with_remedy(
                 "Calibrate the camera and re-record, or re-publish the `CameraInfo` and static \
                  transforms from the calibration file the rig actually uses.",
+            )
+        };
+        // And for calibration that is present, well-formed edge by edge, and not a tree. Error for
+        // the same reason: which of two chains places the sensor is not a judgment call, it is a
+        // question the log does not answer.
+        let ambiguous = |episode: u64, msg: String| {
+            Finding::new(
+                "autonomy.calibration-completeness",
+                Category::Autonomy,
+                Severity::Error,
+                Location::Episode { episode },
+                "AUTONOMY.CALIBRATION_AMBIGUOUS",
+                msg,
+            )
+            .with_risk(
+                "Every consumer resolves the sensor's pose through whichever chain it happens to \
+                 walk, so two tools fusing the same log place the same sensor differently and \
+                 neither is flagged. The tree is connected and every edge is individually valid, \
+                 which is why the completeness and per-sensor frame checks pass on it.",
+            )
+            .with_remedy(
+                "Publish exactly one parent per frame: remove the duplicate broadcaster, or \
+                 re-parent the sensor under the mount it is actually measured against. For a \
+                 cycle, drop the edge that closes the loop so the tree has a single root.",
             )
         };
         for ep in &dataset.episodes {
@@ -824,6 +849,17 @@ impl Check for CalibrationCompleteness {
             // non-negative and finite, a rotation quaternion an actual rotation.
             for reason in unusable_calibration(dataset) {
                 findings.push(unusable(
+                    ep.index,
+                    format!("episode {}: {reason}", ep.index),
+                ));
+            }
+
+            // Connected is not the same as unique. Both checks above — and the per-sensor frame
+            // resolution that succeeds this one — walk the frame graph undirected, so a tree in
+            // which some frame has two parents, or which closes into a loop, satisfies every one of
+            // them while the transform between two sensors has more than one answer.
+            for reason in ambiguous_calibration(dataset) {
+                findings.push(ambiguous(
                     ep.index,
                     format!("episode {}: {reason}", ep.index),
                 ));
@@ -1190,4 +1226,158 @@ fn unusable_calibration(dataset: &Dataset) -> Vec<String> {
         }
     }
     out
+}
+
+/// Whether two transforms' validity ranges overlap. `None` bounds are open-ended, so two
+/// open-ended transforms always overlap — which is what every adapter produces today (ROS `/tf`
+/// carries no validity range, so `decode_tf_message` leaves both bounds `None`).
+fn validity_overlaps(a: &Transform, b: &Transform) -> bool {
+    let starts_after_other_ends = |x: &Transform, y: &Transform| match (x.valid_from, y.valid_to) {
+        (Some(from), Some(to)) => from > to,
+        _ => false,
+    };
+    !starts_after_other_ends(a, b) && !starts_after_other_ends(b, a)
+}
+
+/// Every way a dataset's transform tree is present, connected, and still not a tree — as sentences
+/// naming the frames.
+///
+/// [`tf_component_count`] and [`tf_reachable_from`] both walk the frame graph **undirected**, which
+/// answers "can these two sensors be related at all" and nothing about whether the relation is
+/// *unique*. A transform tree is a tree: every frame has exactly one parent, and there are no
+/// cycles. Two shapes break that while leaving the graph connected, so every existing calibration
+/// check passes on them:
+///
+/// - **A frame with two parents.** Two nodes both publish a transform for `lidar_top` — one from
+///   `base_link`, one from a `velodyne_base` mount — over overlapping time. tf2 warns
+///   (`TF_MULTIPLE_PARENT`) and then resolves the chain through whichever edge it latched, so the
+///   LiDAR is placed by one of two different poses and neither the log nor the fused output says
+///   which.
+/// - **A cycle.** `base_link` → `lidar` → `radar` → `base_link` has no root, so there is no frame
+///   the rig is expressed in and the composed transform around the loop is not the identity it must
+///   be. A cycle is only reported when its edges are all valid at once; a rig that legitimately
+///   reverses a parent/child relation in a *later* time window is not a loop, and reporting it as
+///   one would flag honest data.
+///
+/// Only ambiguity, never disagreement in the numbers: two frames related by two chains whose poses
+/// differ by a millimetre is a calibration-quality judgment this does not make. The defect here is
+/// that the question has more than one answer at all.
+fn ambiguous_calibration(dataset: &Dataset) -> Vec<String> {
+    let Some(calibration) = &dataset.calibration else {
+        return Vec::new();
+    };
+    let transforms = calibration.transforms.as_slice();
+    if transforms.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+
+    // A frame with two parents over overlapping validity. Grouped by child so one mis-parented
+    // frame is one sentence however many parents claim it.
+    let mut by_child: HashMap<&str, Vec<&Transform>> = HashMap::new();
+    for t in transforms {
+        by_child.entry(&t.child_frame).or_default().push(t);
+    }
+    let mut multi_parent: Vec<(&str, Vec<&str>)> = Vec::new();
+    for (child, edges) in &by_child {
+        let mut conflicting: BTreeSet<&str> = BTreeSet::new();
+        for (i, a) in edges.iter().enumerate() {
+            for b in &edges[i + 1..] {
+                if a.parent_frame != b.parent_frame && validity_overlaps(a, b) {
+                    conflicting.insert(&a.parent_frame);
+                    conflicting.insert(&b.parent_frame);
+                }
+            }
+        }
+        if !conflicting.is_empty() {
+            multi_parent.push((child, conflicting.into_iter().collect()));
+        }
+    }
+    multi_parent.sort();
+    for (child, parents) in multi_parent {
+        out.push(format!(
+            "frame `{child}` is given {} different parents at the same time ({}) — its place on \
+             the rig depends on which chain a consumer happens to resolve",
+            parents.len(),
+            parents.join(", ")
+        ));
+    }
+
+    // A directed cycle, all of whose edges are valid at once.
+    if let Some(cycle) = tf_directed_cycle(transforms) {
+        out.push(format!(
+            "the transform tree contains a cycle ({}) — it has no root frame, so there is nothing \
+             the rig is expressed in",
+            cycle.join(" → ")
+        ));
+    }
+    out
+}
+
+/// The frames of one directed cycle in the transform tree (repeating the entry frame at the end), or
+/// `None` when the tree is acyclic. Only cycles whose edges are **pairwise valid at the same time**
+/// are returned; a parent/child relation that reverses between disjoint validity windows is a
+/// recalibration, not a loop.
+fn tf_directed_cycle(transforms: &[Transform]) -> Option<Vec<String>> {
+    let mut edges: HashMap<&str, Vec<&Transform>> = HashMap::new();
+    let mut frames: BTreeSet<&str> = BTreeSet::new();
+    for t in transforms {
+        edges.entry(&t.parent_frame).or_default().push(t);
+        frames.insert(&t.parent_frame);
+        frames.insert(&t.child_frame);
+    }
+
+    // Iterative DFS carrying the edge path, so a found cycle can be checked for simultaneity and
+    // named. `state`: absent = unvisited, false = on the current path, true = finished.
+    let mut state: HashMap<&str, bool> = HashMap::new();
+    for &root in &frames {
+        if state.contains_key(root) {
+            continue;
+        }
+        let mut path: Vec<&Transform> = Vec::new();
+        // (frame, index of the next outgoing edge to try)
+        let mut stack: Vec<(&str, usize)> = vec![(root, 0)];
+        state.insert(root, false);
+        while let Some((frame, next)) = stack.last_mut() {
+            let frame = *frame;
+            let outgoing = edges.get(frame).map(|v| v.as_slice()).unwrap_or(&[]);
+            if *next >= outgoing.len() {
+                state.insert(frame, true);
+                stack.pop();
+                path.pop();
+                continue;
+            }
+            let edge = outgoing[*next];
+            *next += 1;
+            let child = edge.child_frame.as_str();
+            match state.get(child) {
+                Some(false) => {
+                    // Back edge: the cycle is the path from `child` onward, plus this edge.
+                    let start = path
+                        .iter()
+                        .position(|e| e.parent_frame == child)
+                        .unwrap_or(0);
+                    let mut loop_edges: Vec<&Transform> = path[start..].to_vec();
+                    loop_edges.push(edge);
+                    let simultaneous = loop_edges
+                        .iter()
+                        .enumerate()
+                        .all(|(i, a)| loop_edges[i + 1..].iter().all(|b| validity_overlaps(a, b)));
+                    if simultaneous {
+                        let mut names: Vec<String> =
+                            loop_edges.iter().map(|e| e.parent_frame.clone()).collect();
+                        names.push(child.to_string());
+                        return Some(names);
+                    }
+                }
+                Some(true) => {}
+                None => {
+                    state.insert(child, false);
+                    path.push(edge);
+                    stack.push((child, 0));
+                }
+            }
+        }
+    }
+    None
 }

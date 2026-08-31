@@ -10,6 +10,30 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **`AUTONOMY.CALIBRATION_AMBIGUOUS`** — a rig transform tree that is present, connected, valid edge
+  by edge, and **not a tree**. Every calibration check Veridex had walked the coordinate-frame graph
+  *undirected*: `AUTONOMY.CALIBRATION_INCOMPLETE` counts connected components, and
+  `autonomy.sensor-frame-resolution` asks whether a sensor's frame reaches a camera. Both answer
+  whether two sensors *can* be related, and neither says anything about whether the answer is
+  **unique**.
+
+  Two shapes slip through. A frame given **two different parents** over overlapping validity — two
+  nodes both broadcasting a transform for `lidar_top`, one from `base_link` and one from a mount
+  frame, which is tf2's `TF_MULTIPLE_PARENT` warning — leaves the graph connected and every edge
+  individually valid, so a consumer places the LiDAR by whichever chain it happens to resolve and
+  two tools fusing the same log disagree with nothing flagged. And a **cycle** (`base_link` →
+  `lidar` → `radar` → `base_link`) gives every frame exactly one parent while leaving the rig with
+  no root frame at all.
+
+  A new code on the existing `autonomy.calibration-completeness` check, so the `world-model-ready`
+  calibration criterion judges it already. Error severity: which of two chains places the sensor is
+  not a judgment call, it is a question the log does not answer. Deliberately narrow — a re-parenting
+  across **disjoint** validity windows is a recalibration and is not reported, and a disagreement in
+  the *numbers* between two chains is a calibration-quality judgment this does not make. Proven
+  end-to-end through the MCAP adapter, which keys transforms by `(parent, child)` so both
+  conflicting edges survive ingest: the doubled rig differs from the correctly-wired one by exactly
+  this one finding.
+
 - **`AUTONOMY.GNSS_IMPLAUSIBLE` / `AUTONOMY.GNSS_UNSET`** — the second half of the "GNSS geospatial
   sanity" follow-up, now that the coordinates are decoded. A satellite fix is the one rig measurement
   whose validity has an absolute physical answer: a latitude outside ±90° or a longitude outside

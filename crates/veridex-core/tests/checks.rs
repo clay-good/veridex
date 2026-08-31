@@ -4769,6 +4769,109 @@ fn only_impossible_calibration_is_flagged_never_merely_unusual() {
         .is_empty());
 }
 
+// ---- AUTONOMY.CALIBRATION_AMBIGUOUS ----
+
+#[test]
+fn a_frame_with_two_parents_is_not_a_calibrated_rig() {
+    // Two nodes each broadcast a transform for `lidar` — one from `base_link`, one from the
+    // `velodyne_base` mount. The graph stays connected and every edge is individually valid, so
+    // the completeness check counted one component and passed, and the per-sensor frame check found
+    // the LiDAR reachable from the camera and passed. Both walk the graph undirected, which answers
+    // whether the sensors *can* be related and nothing about whether the answer is unique. tf2
+    // resolves the chain through whichever edge it latched, so the LiDAR sits at one of two poses
+    // and the log does not say which.
+    let cal = veridex_core::cdm::Calibration {
+        transforms: vec![
+            xf("base_link", "lidar"),
+            xf("velodyne_base", "lidar"),
+            xf("base_link", "velodyne_base"),
+            xf("base_link", "cam"),
+        ],
+        intrinsics: vec![intr("cam")],
+    };
+    let f = autonomy::CalibrationCompleteness.run(&rig_with_calibration(Some(cal)));
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "AUTONOMY.CALIBRATION_AMBIGUOUS");
+    assert_eq!(
+        f[0].severity,
+        Severity::Error,
+        "which of two chains places the sensor is not a judgment call"
+    );
+    assert!(f[0].message.contains("`lidar`"), "{}", f[0].message);
+    assert!(
+        f[0].message.contains("base_link") && f[0].message.contains("velodyne_base"),
+        "the finding must name both claimants, or there is nothing to reconcile: {}",
+        f[0].message
+    );
+}
+
+#[test]
+fn a_transform_tree_that_closes_into_a_loop_has_no_root() {
+    // `base_link` → `lidar` → `radar` → `base_link`. Every frame has exactly one parent, so the
+    // multiple-parent rule says nothing, and the graph is one connected component. It is still not
+    // a tree: there is no frame the rig is expressed in, and composing the transforms around the
+    // loop does not return the identity it must.
+    let cal = veridex_core::cdm::Calibration {
+        transforms: vec![
+            xf("base_link", "lidar"),
+            xf("lidar", "radar"),
+            xf("radar", "base_link"),
+            xf("base_link", "cam"),
+        ],
+        intrinsics: vec![intr("cam")],
+    };
+    let f = autonomy::CalibrationCompleteness.run(&rig_with_calibration(Some(cal)));
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "AUTONOMY.CALIBRATION_AMBIGUOUS");
+    assert!(f[0].message.contains("cycle"), "{}", f[0].message);
+}
+
+#[test]
+fn a_recalibration_is_not_an_ambiguous_tree() {
+    // The rig is re-parented partway through the log: `lidar` hangs off `base_link` for the first
+    // half and off `velodyne_base` for the second. At no instant does it have two parents, so
+    // nothing is ambiguous — flagging it would accuse a rig that recorded its recalibration
+    // honestly, which is exactly what the validity ranges exist to express.
+    let mut early = xf("base_link", "lidar");
+    early.valid_to = Some(1_000);
+    let mut late = xf("velodyne_base", "lidar");
+    late.valid_from = Some(1_001);
+    let cal = veridex_core::cdm::Calibration {
+        transforms: vec![
+            early,
+            late,
+            xf("base_link", "velodyne_base"),
+            xf("base_link", "cam"),
+        ],
+        intrinsics: vec![intr("cam")],
+    };
+    assert!(
+        autonomy::CalibrationCompleteness
+            .run(&rig_with_calibration(Some(cal)))
+            .is_empty(),
+        "a re-parenting across disjoint validity windows is a recalibration, not a loop"
+    );
+}
+
+#[test]
+fn a_well_formed_tree_carries_no_ambiguity_finding() {
+    // The control: one root, one parent per frame, no loop. A republished identical edge is what
+    // `/tf` emits every tick and what the adapters collapse by `(parent, child)`; it must not read
+    // as a second parent.
+    let cal = veridex_core::cdm::Calibration {
+        transforms: vec![
+            xf("base_link", "lidar"),
+            xf("base_link", "lidar"),
+            xf("base_link", "cam"),
+            xf("lidar", "radar"),
+        ],
+        intrinsics: vec![intr("cam")],
+    };
+    assert!(autonomy::CalibrationCompleteness
+        .run(&rig_with_calibration(Some(cal)))
+        .is_empty());
+}
+
 #[test]
 fn an_attested_element_is_not_also_reported_missing() {
     // The same report said both. The trust score counts an attested element as covered — that is

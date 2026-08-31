@@ -57,7 +57,8 @@ exactly as a real ROS 2 stack does — so the checks that ask whether a stream c
 window leave it alone.
 
 The rig checks emit `AUTONOMY.RIG_SYNC`, `SEQUENCE_COMPLETE`, `EGO_POSE_CONTINUITY`,
-`EGO_POSE_NON_FINITE`, `CALIBRATION_INCOMPLETE`, `GNSS_IMPLAUSIBLE` / `GNSS_UNSET`, and
+`EGO_POSE_NON_FINITE`, `CALIBRATION_INCOMPLETE` / `CALIBRATION_AMBIGUOUS`,
+`GNSS_IMPLAUSIBLE` / `GNSS_UNSET`, and
 `SENSOR_FRAME_UNKNOWN` /
 `SENSOR_FRAME_UNRELATED` / `SENSOR_FRAME_UNDECLARED` — see
 [checks.md](checks.md) for what each one catches and why it matters. On a rig, `RIG_SYNC` supersedes
@@ -102,7 +103,7 @@ certified av — fail, grade C (73), bound to 845c0ac76fbc80f0
     ✗ autonomy.rig-sync — rig sensors within a 20 ms cross-sensor span drift
     ✓ autonomy.sequence-complete — no rig sensor dropping more than 5% of its frames
     ✓ autonomy.ego-pose-continuity — ego trajectory continuous (no step above 100 m/s implied speed)
-    ✗ autonomy.calibration-completeness — connected transform (TF) tree and camera intrinsics present, and arithmetically usable
+    ✗ autonomy.calibration-completeness — a connected, unambiguous transform (TF) tree and camera intrinsics present, and arithmetically usable
     ✓ autonomy.sensor-frame-resolution — every sensor's own frame resolves through the tree to a camera
     ✓ autonomy.gnss-plausibility — every satellite fix is a possible place, and the receiver actually had one
 ```

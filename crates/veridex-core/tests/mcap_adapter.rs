@@ -1289,6 +1289,68 @@ fn a_lidar_stranded_from_the_camera_is_caught_end_to_end() {
 }
 
 #[test]
+fn a_frame_with_two_parents_is_caught_end_to_end() {
+    // Through the real adapter: two nodes each publish a transform for `lidar_top`, one from
+    // `base_link` and one from a `lidar_mount` that is itself parented to `base_link`. The bag is
+    // otherwise perfect — the tree is one connected component, every sensor declares a frame the
+    // tree knows, and every sensor reaches the camera — so `AUTONOMY.CALIBRATION_INCOMPLETE` and
+    // every `AUTONOMY.SENSOR_FRAME_*` code stay silent, which is exactly what makes the defect
+    // invisible without this check. The adapter keys transforms by `(parent, child)`, so the two
+    // conflicting edges both survive ingest as distinct parents for one frame.
+    let dir = tempfile::tempdir().unwrap();
+    let codes = |p: &std::path::Path| -> Vec<String> {
+        let d = ingest_rig(p);
+        let engine = veridex_core::checks::default_engine().unwrap();
+        let hash = veridex_core::content_hash(&d);
+        engine
+            .run(&d, hash, &veridex_core::RunConfig::default())
+            .findings
+            .iter()
+            .map(|f| f.code.clone())
+            .collect()
+    };
+
+    let wired = &[
+        ("base_link", "camera_front"),
+        ("base_link", "lidar_mount"),
+        ("lidar_mount", "lidar_top"),
+        ("base_link", "gnss"),
+        ("base_link", "imu_link"),
+    ];
+    let good = dir.path().join("one-parent.mcap");
+    write_framed_rig(&good, RIG_SENSORS, wired);
+    assert!(
+        !codes(&good).contains(&"AUTONOMY.CALIBRATION_AMBIGUOUS".to_string()),
+        "one parent per frame raises nothing: {:?}",
+        codes(&good)
+    );
+
+    let mut doubled = wired.to_vec();
+    doubled.push(("base_link", "lidar_top"));
+    let bad = dir.path().join("two-parents.mcap");
+    write_framed_rig(&bad, RIG_SENSORS, &doubled);
+    let bad_codes = codes(&bad);
+    assert!(
+        bad_codes.contains(&"AUTONOMY.CALIBRATION_AMBIGUOUS".to_string()),
+        "the doubly-parented LiDAR is flagged: {bad_codes:?}"
+    );
+    // And nothing else moved: the second parent is invisible to every other check, because they
+    // all read the frame graph undirected and it is the same graph. (Both rigs also report
+    // `AUTONOMY.CALIBRATION_INCOMPLETE` — this fixture writes no `CameraInfo` — which is precisely
+    // why "some calibration finding fired" is not evidence the ambiguity was seen.)
+    let mut only_in_bad: Vec<&String> = bad_codes
+        .iter()
+        .filter(|c| !codes(&good).contains(c))
+        .collect();
+    only_in_bad.sort();
+    assert_eq!(
+        only_in_bad,
+        vec![&"AUTONOMY.CALIBRATION_AMBIGUOUS".to_string()],
+        "the two rigs differ by exactly this finding: {bad_codes:?}"
+    );
+}
+
+#[test]
 fn an_absurdly_long_frame_name_is_declined_rather_than_retained() {
     // The CDR reader's slice is bounded by the message body, but invalid UTF-8 expands 3x on the way
     // out (each bad byte becomes a 3-byte U+FFFD) and the decoded string is *retained* in the CDM,

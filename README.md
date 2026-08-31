@@ -40,7 +40,9 @@ Veridex Trust Report
   boundaries, timeline gaps, duplicate frames, a video whose frame count no longer matches the
   actions it is paired with, the teleoperation session that dropped so the robot never moved, an
   episode whose arrays disagree about their own length, a camera whose calibration is present and
-  arithmetically impossible — each reported with the *training risk* it creates and a *remedy*.
+  arithmetically impossible, a sensor rig whose transform tree is connected but gives one frame two
+  different parents so nothing says where that sensor sits — each reported with the *training risk*
+  it creates and a *remedy*.
 - **Proves where data came from.** Which sensor, clock, calibration, annotator, license, and
   upstream dataset produced each segment — read out of the dataset itself wherever it says so, and
   it usually does: a `robomimic` file's `env_args` names its robot, a DBC's `BO_` line names the ECU
@@ -321,7 +323,7 @@ is in and tested:
 |---|---|
 | **Canonical Dataset Model** | One neutral shape for every format, with deterministic content hashing |
 | **Validation engine + check catalog** | Structural, temporal, statistical, semantic, **video**, provenance and **autonomy** families — including the headline `TEMPORAL.CLOCK_SKEW`, cross-episode dtype/shape consistency, the teleoperation session that dropped so the robot never moved, and — for the formats that index frames by step rather than by time — whether an episode's arrays even agree on its length. Every check and finding: [docs/checks.md](docs/checks.md) |
-| **Sensor-rig checks** | `AUTONOMY.RIG_SYNC` / `SEQUENCE_COMPLETE` / `EGO_POSE_CONTINUITY` / `CALIBRATION_INCOMPLETE` / `SENSOR_FRAME_UNKNOWN` / `SENSOR_FRAME_UNRELATED`. The last two catch the LiDAR-camera miscalibration a well-formed transform tree hides: a sensor whose own frame is absent from the tree, or has no chain of transforms to the camera. Calibration that is *present but unusable* — the all-zero `CameraInfo` an uncalibrated driver publishes — is an error rather than a pass |
+| **Sensor-rig checks** | `AUTONOMY.RIG_SYNC` / `SEQUENCE_COMPLETE` / `EGO_POSE_CONTINUITY` / `CALIBRATION_INCOMPLETE` / `SENSOR_FRAME_UNKNOWN` / `SENSOR_FRAME_UNRELATED`. The last two catch the LiDAR-camera miscalibration a well-formed transform tree hides: a sensor whose own frame is absent from the tree, or has no chain of transforms to the camera. Calibration that is *present but unusable* — the all-zero `CameraInfo` an uncalibrated driver publishes — is an error rather than a pass, and so is `CALIBRATION_AMBIGUOUS`: a tree that is connected and still not a tree, because some frame has two parents at once or the tree closes into a loop, so the sensor's place depends on which chain a consumer walks |
 | **Video/media checks** | Read an `.mp4`'s container headers — never a pixel — and catch the missing, unparseable, desynced, or re-encoded video behind a camera stream |
 | **Trust score** | The v1 rubric, the `standard` / `strict` threshold profiles, and the `world-model-ready` readiness profile |
 | **Reporting** | Terminal, JSON, SARIF 2.1.0 and self-contained HTML, each with rollups by category, episode and stream, and each shareable through `--redact` |
