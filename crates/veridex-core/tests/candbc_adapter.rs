@@ -32,6 +32,54 @@ fn write_dataset() -> tempfile::TempDir {
 }
 
 #[test]
+fn two_buses_in_one_log_are_two_buses() {
+    // `candump -l can0 can1` writes a vehicle's powertrain and chassis buses to one file, and CAN
+    // ids are per-bus: id 0x100 is one message on one and something else entirely on the other.
+    // Merged by id, the two buses' frames landed in a single `EngineData.RPM` stream whose values
+    // and statistics blend two unrelated physical quantities — a summary of nothing, and
+    // indistinguishable in the report from a clean single-bus read. Kept apart, and the fact that
+    // one database was applied to both is disclosed rather than assumed away.
+    let log = "(1000.000000) can0 100#4001000012343412\n\
+               (1000.100000) can1 100#80020000ABCDCDAB\n\
+               (1000.200000) can0 100#4001000012343412\n";
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("vehicle.dbc"), DBC).unwrap();
+    fs::write(dir.path().join("drive.log"), log).unwrap();
+    let out = CanDbcAdapter
+        .ingest(
+            &Source::Local(dir.path().to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest");
+
+    let names: Vec<&str> = out.dataset.episodes[0]
+        .streams
+        .iter()
+        .map(|s| s.name.as_str())
+        .collect();
+    assert!(
+        names.iter().any(|n| n.starts_with("can0:"))
+            && names.iter().any(|n| n.starts_with("can1:")),
+        "each bus keeps its own streams: {names:?}"
+    );
+    assert!(
+        !names.iter().any(|n| !n.contains(':')),
+        "no stream may blend the two: {names:?}"
+    );
+
+    // ...and the limit is stated. Veridex cannot tell which bus the DBC describes, so it says so
+    // instead of picking one.
+    assert!(
+        out.report
+            .unread_sources
+            .iter()
+            .any(|u| u.note.contains("one DBC was applied to all of them")),
+        "{:?}",
+        out.report.unread_sources
+    );
+}
+
+#[test]
 fn detects_a_directory_with_a_dbc() {
     let dir = write_dataset();
     assert_eq!(

@@ -217,6 +217,10 @@ fn parse_sg(rest: &str) -> Option<DbcSignal> {
 /// One raw CAN frame from the log.
 struct CanFrame {
     ts_ns: i64,
+    /// The interface the frame was captured on (`can0`, `vcan1`). A vehicle has several CAN buses
+    /// and `candump -l can0 can1` writes them to one file, so this is what says which bus a frame
+    /// was on — and a CAN id means a different message on a different bus.
+    iface: String,
     id: u32,
     data: Vec<u8>,
 }
@@ -234,12 +238,17 @@ fn parse_candump_line(line: &str) -> Option<CanFrame> {
     let ts_ns = candump_ts_ns(ts_part.trim())?;
     // `<iface> <hexid>#<hexdata>`
     let mut it = rest.split_whitespace();
-    let _iface = it.next()?;
+    let iface = it.next()?;
     let frame = it.next()?;
     let (id_hex, data_hex) = frame.split_once('#')?;
     let id = u32::from_str_radix(id_hex.trim(), 16).ok()? & 0x1FFF_FFFF;
     let data = parse_hex_bytes(data_hex.trim())?;
-    Some(CanFrame { ts_ns, id, data })
+    Some(CanFrame {
+        ts_ns,
+        iface: iface.to_string(),
+        id,
+        data,
+    })
 }
 
 /// A candump `<seconds>.<fraction>` timestamp in nanoseconds, composed from integer parts.
@@ -472,6 +481,18 @@ impl Adapter for CanDbcAdapter {
             std::collections::BTreeSet::new();
         let mut min_ts: Option<i64> = None;
         let mut max_ts: Option<i64> = None;
+        // Every interface the log carries. A vehicle has several CAN buses and `candump -l can0
+        // can1` writes them to one file, and the same CAN id is a different message on each. Keyed
+        // on, rather than merged: two buses' frames on id 0x100 decoded into one stream blend two
+        // unrelated physical quantities into one set of statistics, and neither the values nor the
+        // summary of them is a measurement of anything.
+        let mut interfaces: std::collections::BTreeSet<&str> = Default::default();
+        for frame in &frames {
+            interfaces.insert(frame.iface.as_str());
+        }
+        // Only when there is something to disambiguate: a single-bus log — which is nearly every
+        // log — keeps the stream names it has always had, so its CDM hash is unchanged.
+        let multi_bus = interfaces.len() > 1;
 
         for frame in &frames {
             min_ts = Some(min_ts.map_or(frame.ts_ns, |m| m.min(frame.ts_ns)));
@@ -501,7 +522,11 @@ impl Adapter for CanDbcAdapter {
                         continue;
                     }
                 }
-                let stream_name = format!("{}.{}", message.name, sig.name);
+                let stream_name = if multi_bus {
+                    format!("{}:{}.{}", frame.iface, message.name, sig.name)
+                } else {
+                    format!("{}.{}", message.name, sig.name)
+                };
                 let Some(value) = decode_signal(sig, &frame.data) else {
                     continue; // frame too short for this signal — skip this sample
                 };
@@ -644,6 +669,26 @@ impl Adapter for CanDbcAdapter {
                     "{frames} more frame(s) on ids with no DBC message definition; `veridex \
                      inspect` is not a bus dump, so only the {MAX_NAMED_UNKNOWN_IDS} busiest are \
                      named"
+                ),
+            });
+        }
+        // One database, more than one bus. A DBC describes *a* network, and a CAN id means a
+        // different message on a different one — so every frame from a bus this database does not
+        // describe was decoded from the wrong definitions and produced a plausible number that is
+        // not a measurement of anything. Veridex cannot tell which bus the database is for, so it
+        // keeps the buses in separate streams and says what it did rather than picking one.
+        if multi_bus {
+            let named: Vec<&str> = interfaces.iter().copied().collect();
+            unread_sources.push(UnmappedField {
+                source_path: named.join(", "),
+                note: format!(
+                    "the log carries frames from {} interfaces and one DBC was applied to all of \
+                     them; a CAN id is a different message on a different bus, so signals decoded \
+                     from a bus this database does not describe are plausible numbers rather than \
+                     measurements. Streams are named `<interface>:<Message>.<Signal>` so the buses \
+                     are not blended, but which bus the database describes is not something the \
+                     log says",
+                    named.len()
                 ),
             });
         }

@@ -358,6 +358,16 @@ out of the database, not claimed by whoever handed the log over. Only nodes that
 transmitted: a message the database declares but that never appears on the wire attributes nothing,
 and `Vector__XXX`, the DBC's way of writing "no node specified", names nobody.
 
+**One log, more than one bus.** A vehicle has several CAN buses and `candump -l can0 can1` writes
+them all to one file — and a CAN id is per-bus: id `0x100` is one message on the powertrain bus and
+something else entirely on the chassis bus. Decoded by id alone, two buses' frames land in the same
+signal stream and its values and statistics blend two unrelated physical quantities. So when a log
+carries more than one interface, streams are named `<interface>:<Message>.<Signal>` and the buses
+stay apart; a single-bus log — which is nearly every log — keeps the names it has always had. Which
+bus the `.dbc` describes is not something the log says, so that is disclosed rather than guessed:
+every frame from a bus the database does not describe was decoded from the wrong definitions and is a
+plausible number rather than a measurement.
+
 **A partial DBC is the failure mode worth naming.** Bus traffic on an id the database never defines
 decodes into nothing, and so does a log line that is not a candump frame — and a run that passed over
 that silently would read as a clean, certifiable verdict over whichever fraction of the bus the `.dbc`

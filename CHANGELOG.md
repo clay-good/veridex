@@ -10,6 +10,19 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **Two CAN buses in one log were decoded as one.** `parse_candump_line` read the interface column
+  into a `_`-prefixed binding and dropped it. A vehicle has several CAN buses and `candump -l can0
+  can1` writes them all to one file — and a CAN id is per-bus: `0x100` is one message on the
+  powertrain bus and something else entirely on the chassis bus. Decoded by id alone, both buses'
+  frames landed in the same signal stream, whose values and statistics blend two unrelated physical
+  quantities into a summary of nothing, indistinguishable in the report from a clean single-bus read.
+
+  Streams are now named `<interface>:<Message>.<Signal>` when a log carries more than one interface,
+  so the buses stay apart; a single-bus log — nearly every log — keeps the names it has always had,
+  so no existing CDM hash moves. Which bus the `.dbc` describes is not something the log says, so
+  that is disclosed as an unread source rather than guessed: every frame from a bus the database does
+  not describe was decoded from the wrong definitions.
+
 - **The README's picture of the engine named three of seven check families.** The flowchart read
   "structural · temporal · provenance checks" and the sequence diagram said the same, so the front
   page understated the catalog by four families — including `autonomy`, which is most of what a rig
