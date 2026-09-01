@@ -22,6 +22,19 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   when any camera declares no frame the count would be a guess and the rule abstains, that stream
   being already reported by `AUTONOMY.SENSOR_FRAME_UNDECLARED`.
 
+- **`autonomy.sensor-frame-resolution` was quadratic three ways over counts a bag chooses.** Nothing
+  caps how many channels a recording may declare, so the number of cameras and the number of spatial
+  sensors on one episode are both file-controlled, and a log of 5,000 image topics beside 5,000 LiDAR
+  topics is legal. The check tested each sensor's frame against a `Vec` of camera frames (their
+  product), built the camera-reachable set by walking the whole transform tree once per camera, and —
+  the dominant cost — called `tf_reachable_from` once per spatial sensor, rebuilding the tree's
+  entire adjacency map and traversing its component each time, only to ask whether the result was
+  empty. That last question is membership in the set of frames the tree names, and needs no walk at
+  all. A set for the camera frames, one multi-source walk instead of one per camera, and a
+  precomputed frame set take that rig from **147 seconds to 0.11**. The camera list in
+  `AUTONOMY.SENSOR_FRAME_UNRELATED` is now sorted, deduplicated and bounded like the other frame
+  lists, so one finding cannot carry thousands of names into the signed certificate.
+
 - **`veridex diff` no longer takes minutes on a large report.** Its three partitions — introduced,
   resolved, unchanged — each scanned the other report's whole finding list per finding, so the work
   grew as the *product* of two counts that come from the files the caller hands in, with each

@@ -3753,6 +3753,54 @@ fn a_rig_with_no_camera_at_all_still_reports_a_broken_tree() {
 }
 
 #[test]
+fn a_rig_of_ten_thousand_sensors_still_resolves_its_frames() {
+    // Nothing caps how many channels a bag may declare, so the number of cameras and the number of
+    // point-cloud sensors on one episode are both counts the input file chooses. The check tested
+    // each spatial sensor's frame against a `Vec` of camera frames — their product — and built the
+    // reachable set by walking the whole transform tree once per camera. A log of 5,000 image topics
+    // beside 5,000 LiDAR topics is legal and made both quadratic.
+    let mut gnss = rig_stream("gnss", Modality::Gnss, 1_000_000_000);
+    gnss.frame_id = Some("gnss_link".to_string());
+    let mut imu = rig_stream("imu", Modality::Imu, 1_000_000_000);
+    imu.frame_id = Some("imu_link".to_string());
+    let mut streams = vec![gnss, imu];
+    let mut transforms = vec![
+        xf("base_link", "lidar_mount"),
+        xf("base_link", "gnss_link"),
+        xf("base_link", "imu_link"),
+    ];
+    for i in 0..5_000u32 {
+        let mut cam = rig_stream(&format!("cam{i}"), Modality::Video, 1_000_000_000);
+        cam.frame_id = Some(format!("cam{i}_link"));
+        streams.push(cam);
+        transforms.push(xf("base_link", &format!("cam{i}_link")));
+        // The LiDARs hang off a mount that *is* joined to `base_link`, so every one of them
+        // resolves — the expensive path, where no early exit hides the cost.
+        let mut lidar = rig_stream(&format!("lidar{i}"), Modality::PointCloud, 1_000_000_000);
+        lidar.frame_id = Some("lidar_mount".to_string());
+        streams.push(lidar);
+    }
+    let mut d = dataset(vec![episode(0, streams)]);
+    d.calibration = Some(veridex_core::cdm::Calibration {
+        transforms,
+        intrinsics: vec![intr("cam0")],
+    });
+
+    let started = std::time::Instant::now();
+    let f = autonomy::SensorFrameResolution.run(&d);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(20),
+        "neither the frame test nor the reachability walk may scale with the product of two counts \
+         the file chooses"
+    );
+    assert!(
+        f.is_empty(),
+        "and the rig is correctly wired, so nothing is reported: {:?}",
+        f.iter().take(3).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn one_mis_stamped_sensor_is_one_finding_however_many_episodes_it_spans() {
     // The calibration is dataset-level and stream names repeat per episode, so a 50-episode drive log
     // with one mis-stamped LiDAR is one defect — not fifty error-severity copies of it.

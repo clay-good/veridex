@@ -922,35 +922,6 @@ impl Check for CalibrationCompleteness {
     }
 }
 
-/// The set of frame names reachable from `start` in the transform tree, `start` included. Returns an
-/// empty set when `start` is not a node of the tree at all.
-fn tf_reachable_from<'a>(transforms: &'a [Transform], start: &str) -> HashSet<&'a str> {
-    let mut adj: HashMap<&str, Vec<&str>> = HashMap::new();
-    let mut known: HashSet<&str> = HashSet::new();
-    for t in transforms {
-        adj.entry(&t.parent_frame).or_default().push(&t.child_frame);
-        adj.entry(&t.child_frame).or_default().push(&t.parent_frame);
-        known.insert(&t.parent_frame);
-        known.insert(&t.child_frame);
-    }
-    let Some(&start) = known.get(start) else {
-        return HashSet::new();
-    };
-    let mut seen: HashSet<&str> = HashSet::new();
-    seen.insert(start);
-    let mut stack = vec![start];
-    while let Some(f) = stack.pop() {
-        if let Some(neighbors) = adj.get(f) {
-            for &n in neighbors {
-                if seen.insert(n) {
-                    stack.push(n);
-                }
-            }
-        }
-    }
-    seen
-}
-
 /// The sensors whose observations are placed in space, and so must resolve through the transform
 /// tree: the perception sensors plus the inertial/positioning units that carry a mount pose.
 ///
@@ -1049,6 +1020,13 @@ impl Check for SensorFrameResolution {
             return Vec::new();
         }
 
+        // Every frame the tree names. Built once for the whole dataset: it depends only on the
+        // dataset-level calibration, and the per-sensor question below is membership in it.
+        let tree_frames: HashSet<&str> = transforms
+            .iter()
+            .flat_map(|t| [t.parent_frame.as_str(), t.child_frame.as_str()])
+            .collect();
+
         let mut findings = Vec::new();
         // The calibration is dataset-level and stream names repeat in every episode, so the same
         // mis-stamped sensor is the same single defect however many episodes it appears in. Claim each
@@ -1063,16 +1041,22 @@ impl Check for SensorFrameResolution {
             // The camera frames the other sensors have to reach. Only cameras that name a frame the
             // tree knows can serve as a reference; without one there is nothing to measure against and
             // the connectivity half abstains.
-            let camera_frames: Vec<&str> = ep
+            // A set, and deduplicated: a rig routinely publishes one camera on several topics
+            // (`image_raw` beside `compressed`), and the frame is tested per spatial sensor below.
+            // A `Vec` made that test a scan of every camera per sensor — the product of two counts
+            // an input file chooses, since nothing caps how many channels a bag may declare and a
+            // log of 50k image topics beside 50k point-cloud topics is a legal one.
+            let camera_frames: BTreeSet<&str> = ep
                 .streams
                 .iter()
                 .filter(|s| s.modality == Modality::Video)
                 .filter_map(|s| s.frame_id.as_deref())
                 .collect();
-            let reachable_from_a_camera: HashSet<&str> = camera_frames
-                .iter()
-                .flat_map(|c| tf_reachable_from(transforms, c))
-                .collect();
+            // One multi-source walk, not one walk per camera. `tf_reachable_from` visits the whole
+            // component each time it is called, so calling it per camera re-walked the same tree
+            // once for every camera on the rig.
+            let reachable_from_a_camera: HashSet<&str> =
+                tf_reachable_from_any(transforms, &camera_frames);
 
             for stream in &ep.streams {
                 if !is_spatial_sensor(stream.modality) {
@@ -1128,8 +1112,12 @@ impl Check for SensorFrameResolution {
                     );
                     continue;
                 };
-                let located = tf_reachable_from(transforms, frame);
-                if located.is_empty() {
+                // Membership, not reachability. The result was only ever asked whether it was
+                // empty — that is "does the tree mention this frame at all", which needs no walk —
+                // while `tf_reachable_from` rebuilt the tree's whole adjacency map and traversed its
+                // component, once for every spatial sensor on the rig. Both counts come from the
+                // input file, so a bag declaring thousands of sensor topics paid their product.
+                if !tree_frames.contains(frame) {
                     if !reported.insert((stream.name.as_str(), "AUTONOMY.SENSOR_FRAME_UNKNOWN")) {
                         continue;
                     }
@@ -1165,7 +1153,7 @@ impl Check for SensorFrameResolution {
                     continue;
                 }
                 // The sensor is in the tree. Is it connected to a camera?
-                if reachable_from_a_camera.is_empty() || camera_frames.contains(&frame) {
+                if reachable_from_a_camera.is_empty() || camera_frames.contains(frame) {
                     continue; // no usable camera reference, or this stream is the camera
                 }
                 if !reachable_from_a_camera.contains(frame) {
@@ -1188,7 +1176,7 @@ impl Check for SensorFrameResolution {
                                  cannot be projected into the image",
                                 ep.index,
                                 stream.name,
-                                camera_frames.join(", ")
+                                render_frame_list(&camera_frames)
                             ),
                         )
                         .with_risk(
@@ -1519,4 +1507,67 @@ fn parents_claiming_at_once<'a>(edges: &[&'a Transform]) -> Vec<&'a str> {
         }
     }
     Vec::new()
+}
+
+/// The frames reachable from *any* of `starts`, in one walk.
+///
+/// [`tf_reachable_from`] visits a whole connected component per call, so asking it once per camera
+/// re-walks the same tree for every camera on the rig — the product of two counts the input file
+/// chooses. A multi-source breadth-first walk answers the same question in one pass over the tree.
+fn tf_reachable_from_any<'a>(
+    transforms: &'a [Transform],
+    starts: &BTreeSet<&'a str>,
+) -> HashSet<&'a str> {
+    let mut adj: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut known: HashSet<&str> = HashSet::new();
+    for t in transforms {
+        adj.entry(&t.parent_frame).or_default().push(&t.child_frame);
+        adj.entry(&t.child_frame).or_default().push(&t.parent_frame);
+        known.insert(&t.parent_frame);
+        known.insert(&t.child_frame);
+    }
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut stack: Vec<&str> = Vec::new();
+    for start in starts {
+        // Only frames the tree actually mentions are starting points; a camera stamping a frame the
+        // tree never names anchors nothing, exactly as the per-camera form behaved.
+        if let Some(&start) = known.get(start) {
+            if seen.insert(start) {
+                stack.push(start);
+            }
+        }
+    }
+    while let Some(frame) = stack.pop() {
+        if let Some(neighbors) = adj.get(frame) {
+            for &n in neighbors {
+                if seen.insert(n) {
+                    stack.push(n);
+                }
+            }
+        }
+    }
+    seen
+}
+
+/// A sorted, bounded rendering of a frame list for a finding message.
+///
+/// A rig has a handful of cameras and naming them is the whole point of the message. How many an
+/// input file may declare is not bounded, though, and an unbounded list reaches the terminal, the
+/// JSON, the SARIF and the signed certificate — the same reason the ambiguity findings bound theirs.
+/// The count stays exact; only the enumeration is trimmed.
+fn render_frame_list(frames: &BTreeSet<&str>) -> String {
+    const MAX_NAMED: usize = 8;
+    if frames.len() <= MAX_NAMED {
+        return frames.iter().copied().collect::<Vec<_>>().join(", ");
+    }
+    format!(
+        "{}, and {} more",
+        frames
+            .iter()
+            .copied()
+            .take(MAX_NAMED)
+            .collect::<Vec<_>>()
+            .join(", "),
+        frames.len() - MAX_NAMED
+    )
 }
