@@ -312,7 +312,7 @@ the terminal report, the JSON, the SARIF, the HTML, and the certificate's own su
 |---|---|
 | `temporal.clock-measurability` | the source records no wall clock, so the timing checks graded a step index or nothing at all — and, separately, that no two streams shared a clock with a measurable span, so the three cross-stream checks had nothing to compare |
 | `statistical.value-measurability` | the adapter never read values (any MCAP or rosbag2 topic other than a `JointState` or an `Imu`, and any `bytes_list` leaf of an RLDS record), or read them but had no stored statistics to compare against (HDF5, Zarr, CAN+DBC, MF4, RLDS numeric leaves, bag `JointState` / `Imu` topics) |
-| `structural.content-measurability` | frames carry no content fingerprint, so the duplicate-episode and stuck-stream checks had no bytes to compare |
+| `structural.content-measurability` | frames carry no content fingerprint, so the duplicate-episode and stuck-stream checks had no bytes to compare — and, separately, that the run covers too few episodes for the seven checks that answer by comparing one episode against another |
 
 A fourth disclosure comes from the engine rather than the catalog. When a check *crashes* instead of
 producing findings, that is neither a pass nor a defect in the data — it is a hole where a

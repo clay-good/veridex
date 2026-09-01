@@ -22,6 +22,15 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   when any camera declares no frame the count would be a guess and the rule abstains, that stream
   being already reported by `AUTONOMY.SENSOR_FRAME_UNDECLARED`.
 
+- **`PROVENANCE.PARTIAL` proven end-to-end through the RLDS adapter**, on the shape it was written
+  for: a TFDS export where only some shards carry `episode_metadata/file_path`. The test asserts
+  that `upstream` is reported partial for 2 of 4 episodes, that `PROVENANCE.MISSING_UPSTREAM` stays
+  silent because the element is genuinely present, and that `ProvenanceCoverage` still counts it as
+  covered — which is exactly why the finding has to exist. Also corrected the abstention summary
+  table in `docs/checks.md`, which described `structural.content-measurability` as reporting only
+  unfingerprinted frames and not the too-few-episodes half it has emitted since
+  `STRUCTURAL.UNCOMPARED_EPISODES` was added.
+
 - **The emitted Croissant and PROV documents now say what a provenance element describes.** Both
   flattened scope away, so an `upstream` recorded for one episode of four was published — to other
   tools, not just shown to a person — as the dataset's lineage. Lineage that looks complete is worse

@@ -681,6 +681,105 @@ fn the_episode_source_file_becomes_upstream_provenance() {
 }
 
 #[test]
+fn lineage_on_half_the_shards_is_reported_as_partial_end_to_end() {
+    // A real Open X-Embodiment conversion where only some shards carried
+    // `episode_metadata/file_path`. Through the real adapter: `upstream` is *present*, so
+    // `PROVENANCE.MISSING_UPSTREAM` is correctly silent, and the coverage percentage counts the
+    // strongest class found anywhere — so the certificate reads `upstream: known` over episodes
+    // that have no origin at all. `PROVENANCE.PARTIAL` is the only thing that says so.
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    std::fs::write(dir.join("features.json"), features_json()).unwrap();
+    std::fs::write(
+        dir.join("dataset_info.json"),
+        dataset_info_json(Some(vec![4]), "tfrecord"),
+    )
+    .unwrap();
+    // Episodes 0 and 1 carry a source file; 2 and 3 record no `episode_metadata` at all.
+    let records: Vec<Vec<u8>> = (0..4usize)
+        .map(|e| {
+            if e < 2 {
+                episode_record(
+                    2,
+                    &["pick up the block"],
+                    &format!("/raw/ep{e}.h5"),
+                    e as f32 * 100.0,
+                )
+            } else {
+                episode_record_without_source_file(2, e as f32 * 100.0)
+            }
+        })
+        .collect();
+    std::fs::write(
+        dir.join("demo_rlds-train.tfrecord-00000-of-00001"),
+        shard(&records),
+    )
+    .unwrap();
+
+    let ingested = ingest(dir).expect("rlds ingest");
+    let mut d = ingested.dataset;
+    d.canonicalize_order();
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let hash = veridex_core::content_hash(&d);
+    let findings = engine
+        .run(&d, hash, &veridex_core::RunConfig::default())
+        .findings;
+    let partial = findings
+        .iter()
+        .find(|f| f.code == "PROVENANCE.PARTIAL")
+        .unwrap_or_else(|| panic!("{findings:#?}"));
+    assert!(
+        partial.message.contains("`upstream`") && partial.message.contains("2 of 4"),
+        "{}",
+        partial.message
+    );
+    assert!(
+        findings
+            .iter()
+            .all(|f| f.code != "PROVENANCE.MISSING_UPSTREAM"),
+        "it is present, so it is not missing"
+    );
+    // And the coverage the certificate carries still counts it as covered — which is exactly why
+    // the finding has to exist.
+    assert!(veridex_core::ProvenanceCoverage::of(&d).known > 0);
+}
+
+/// [`episode_record`], for a shard that records no `episode_metadata` — the half of an Open
+/// X-Embodiment conversion that lost its source-file field.
+fn episode_record_without_source_file(steps: usize, offset: f32) -> Vec<u8> {
+    let mut action = Vec::new();
+    let mut state = Vec::new();
+    for step in 0..steps {
+        for dof in 0..7 {
+            action.push(offset + step as f32 + dof as f32 * 0.1);
+        }
+        for axis in 0..3 {
+            state.push(offset + step as f32 * 0.5 + axis as f32);
+        }
+    }
+    example(&[
+        ("steps/action", Value::Floats(action)),
+        (
+            "steps/is_first",
+            Value::Ints((0..steps).map(|s| i64::from(s == 0)).collect()),
+        ),
+        (
+            "steps/language_instruction",
+            Value::Bytes((0..steps).map(|_| b"pick up the block".to_vec()).collect()),
+        ),
+        (
+            "steps/observation/image",
+            Value::Bytes(
+                (0..steps)
+                    .map(|s| format!("jpeg-{s}").into_bytes())
+                    .collect(),
+            ),
+        ),
+        ("steps/observation/state", Value::Floats(state)),
+    ])
+}
+
+#[test]
 fn a_changed_step_value_changes_the_content_hash() {
     let one = tempfile::tempdir().unwrap();
     let two = tempfile::tempdir().unwrap();
