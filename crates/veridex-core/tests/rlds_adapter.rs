@@ -744,6 +744,120 @@ fn lineage_on_half_the_shards_is_reported_as_partial_end_to_end() {
     assert!(veridex_core::ProvenanceCoverage::of(&d).known > 0);
 }
 
+#[test]
+fn a_sample_reports_the_partiality_it_read_and_not_the_one_it_created() {
+    // The denominator of `PROVENANCE.PARTIAL` is the episodes in the *run*. Both directions matter.
+    // A sampled run that happens to draw only episodes carrying lineage saw complete coverage and
+    // must say nothing — reporting the un-drawn episodes would be reporting a partiality the
+    // request created, which the run's own coverage note already discloses. And a sample that draws
+    // one of each must still report it, or sampling becomes a way to launder a real gap.
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    std::fs::write(dir.join("features.json"), features_json()).unwrap();
+    std::fs::write(
+        dir.join("dataset_info.json"),
+        dataset_info_json(Some(vec![4]), "tfrecord"),
+    )
+    .unwrap();
+    let records: Vec<Vec<u8>> = (0..4usize)
+        .map(|e| {
+            if e < 2 {
+                episode_record(
+                    2,
+                    &["pick up the block"],
+                    &format!("/raw/ep{e}.h5"),
+                    e as f32 * 100.0,
+                )
+            } else {
+                episode_record_without_source_file(2, e as f32 * 100.0)
+            }
+        })
+        .collect();
+    std::fs::write(
+        dir.join("demo_rlds-train.tfrecord-00000-of-00001"),
+        shard(&records),
+    )
+    .unwrap();
+
+    let partial_for = |sample: veridex_core::adapter::Sample| -> Option<String> {
+        let ingested = RldsAdapter
+            .ingest(
+                &Source::Local(dir.to_path_buf()),
+                &IngestOptions {
+                    sample,
+                    ..IngestOptions::default()
+                },
+            )
+            .expect("rlds ingest");
+        let mut d = ingested.dataset;
+        d.canonicalize_order();
+        let engine = veridex_core::checks::default_engine().unwrap();
+        let hash = veridex_core::content_hash(&d);
+        engine
+            .run(&d, hash, &veridex_core::RunConfig::default())
+            .findings
+            .into_iter()
+            .find(|f| f.code == "PROVENANCE.PARTIAL")
+            .map(|f| f.message)
+    };
+
+    // The first two episodes both carry lineage: this run read complete coverage.
+    assert_eq!(
+        partial_for(veridex_core::adapter::Sample::FirstEpisodes(2)),
+        None,
+        "a run that saw every episode carry the element must not report a gap it did not read"
+    );
+    // All four: two carry it, two do not.
+    let all = partial_for(veridex_core::adapter::Sample::All).expect("the real gap is reported");
+    assert!(all.contains("2 of 4"), "{all}");
+
+    // And a draw that skips episodes counts what it drew, not the highest index it drew. A
+    // fractional sample selects a non-contiguous set, which is the only shape that tells the two
+    // apart — `FirstEpisodes` is always `0..n`, so a denominator taken from the maximum index would
+    // agree with the right answer on every contiguous draw and be wrong on every other.
+    let drawn = probe_fraction_draw(dir);
+    let sampled = partial_for(veridex_core::adapter::Sample::Fraction {
+        fraction: 0.5,
+        seed: DRAW_SEED,
+    });
+    let carrying = drawn.iter().filter(|i| **i < 2).count();
+    let expected = (carrying > 0 && carrying < drawn.len())
+        .then(|| format!("{carrying} of {} episode(s)", drawn.len()));
+    assert_eq!(
+        sampled.map(|m| m
+            .split("recorded for ")
+            .nth(1)
+            .unwrap_or_default()
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .to_string()),
+        expected,
+        "the denominator is what the run read: drew {drawn:?}"
+    );
+}
+
+/// The seed used for the fractional draw above, and by [`probe_fraction_draw`] to learn which
+/// episodes it selects. Any seed works; the test computes its expectation from the actual draw.
+const DRAW_SEED: u64 = 7;
+
+/// Which episode indices `Sample::Fraction { fraction: 0.5, seed: DRAW_SEED }` selects from `dir`.
+fn probe_fraction_draw(dir: &Path) -> Vec<u64> {
+    let ingested = RldsAdapter
+        .ingest(
+            &Source::Local(dir.to_path_buf()),
+            &IngestOptions {
+                sample: veridex_core::adapter::Sample::Fraction {
+                    fraction: 0.5,
+                    seed: DRAW_SEED,
+                },
+                ..IngestOptions::default()
+            },
+        )
+        .expect("rlds ingest");
+    ingested.dataset.episodes.iter().map(|e| e.index).collect()
+}
+
 /// [`episode_record`], for a shard that records no `episode_metadata` — the half of an Open
 /// X-Embodiment conversion that lost its source-file field.
 fn episode_record_without_source_file(steps: usize, offset: f32) -> Vec<u8> {
