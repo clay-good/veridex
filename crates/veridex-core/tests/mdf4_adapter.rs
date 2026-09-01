@@ -353,6 +353,47 @@ fn ingest(bytes: &[u8]) -> veridex_core::adapter::Ingested {
 }
 
 #[test]
+fn a_metadata_only_run_says_how_much_it_declined_to_read() {
+    // "No sample values were read" and "none of the 400 records this file declares were read" are
+    // the same fact and very different statements. A metadata-only inspect shows three streams and
+    // zero frames, and without the count nothing says whether the measurement behind them is four
+    // samples or four million. The `##CG` headers state it and reading them is the whole of what a
+    // metadata-only run does — it was parsed and discarded, under a doc comment claiming the run
+    // reports "how many samples each declares".
+    //
+    // Pinned against a full read of the same file, because the number is only worth printing if it
+    // is the number: one record is one sample of every channel in the group, so the declared count
+    // is the frames a full read yields *per stream*.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("demo.mf4");
+    veridex_demo::mf4::write(&path, "clean").expect("write the demo measurement");
+
+    let ingest_at = |opts: &IngestOptions| {
+        Mdf4Adapter
+            .ingest(&Source::Local(path.to_path_buf()), opts)
+            .expect("ingest")
+    };
+    let full = ingest_at(&IngestOptions::default());
+    let per_stream = full.dataset.episodes[0].streams[0].frames.len();
+    assert!(per_stream > 0, "the full read decodes frames");
+
+    let meta = ingest_at(&IngestOptions {
+        metadata_only: true,
+        ..IngestOptions::default()
+    });
+    let note = meta
+        .report
+        .omitted_fields
+        .iter()
+        .find(|o| o.contains("record(s) the ##CG headers declare"))
+        .expect("the metadata-only omission note names the record count");
+    assert!(
+        note.contains(&format!("{per_stream} record(s)")),
+        "the declared count must be the frames a full read yields per stream ({per_stream}): {note}"
+    );
+}
+
+#[test]
 fn detects_an_mf4_file_by_its_identification_block() {
     let path = write_temp(&well_formed_file(4), ".mf4");
     assert_eq!(

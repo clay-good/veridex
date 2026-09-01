@@ -608,6 +608,14 @@ fn note_source(out: &mut GroupResult, source: Option<AcquisitionSource>) {
 /// What a single channel group contributed.
 struct GroupResult {
     streams: Vec<Stream>,
+    /// Records (cycles) the `##CG` block headers declare across this group's channel groups.
+    ///
+    /// One record holds one sample of every channel in its group, so this is the frame count a full
+    /// read produces *per stream*, not the total across them. Read under `--metadata-only`, where no
+    /// data block is opened: it is what turns "no sample values were read" into "none of the 400
+    /// records this file declares were read". A reader otherwise sees three streams and zero frames
+    /// with nothing saying how big the measurement they declined to read actually is.
+    declared_cycles: u64,
     unmapped: Vec<UnmappedField>,
     /// Acquisition sources named by the `##SI` blocks this group's channel groups and channels
     /// point at, in the order first seen.
@@ -720,6 +728,9 @@ impl Adapter for Mdf4Adapter {
         // Every distinct `##SI` acquisition source named anywhere in the file, in the order first
         // seen — the file's own account of which device produced its samples.
         let mut sources: Vec<AcquisitionSource> = Vec::new();
+        // Samples the `##CG` headers declare across every group, read under `--metadata-only` so the
+        // omission note can say how large the measurement this run declined to read actually is.
+        let mut declared_cycles: u64 = 0;
         let mut names_used: BTreeSet<String> = BTreeSet::new();
         // Next disambiguation suffix to try per colliding base name, so each collision is one probe.
         let mut next_suffix: std::collections::BTreeMap<String, u64> =
@@ -794,6 +805,7 @@ impl Adapter for Mdf4Adapter {
                 }
                 streams.push(stream);
             }
+            declared_cycles = declared_cycles.saturating_add(result.declared_cycles);
             unmapped.extend(result.unmapped);
             unread.extend(result.unread);
             for source in result.sources {
@@ -956,11 +968,19 @@ impl Adapter for Mdf4Adapter {
                         "declared-rate (MF4 channels declare no nominal sample rate)".into(),
                     ];
                     if options.metadata_only {
-                        o.push(
-                            "sample values, timestamps and content hashes (no ##DT or ##DZ data \
-                             block was opened; only the ##HD/##DG/##CG/##CN header tree was read)"
-                                .into(),
-                        );
+                        // Quantified, not merely named. "No sample values were read" and "none of
+                        // the 6,000 samples this file declares were read" are the same fact and
+                        // very different statements: a reader sees three streams and zero frames,
+                        // and without the count nothing says how big the thing they declined to
+                        // read is. The `##CG` headers state it, and reading them is the whole of
+                        // what a metadata-only run does.
+                        o.push(format!(
+                            "sample values, timestamps and content hashes for the \
+                             {declared_cycles} record(s) the ##CG headers declare — one sample of \
+                             every channel in the group each, so a full read yields that many \
+                             frames per stream (no ##DT or ##DZ data block was opened; only the \
+                             ##HD/##DG/##CG/##CN header tree was read)"
+                        ));
                         o.push(
                             "the physical/raw distinction (a ##CC conversion is applied to values, \
                              and no value was read)"
@@ -1004,6 +1024,7 @@ fn ingest_data_group(
 ) -> Result<GroupResult, IngestError> {
     let mut out = GroupResult {
         streams: Vec::new(),
+        declared_cycles: 0,
         unmapped: Vec::new(),
         unread: Vec::new(),
         sources: Vec::new(),
@@ -1613,7 +1634,10 @@ fn untranspose(data: &[u8], columns: usize) -> Option<Vec<u8>> {
 ///
 /// The `--metadata-only` counterpart to [`decode_channel_group`]: a `##CG` states how many cycles it
 /// holds and each `##CN` states its name, so the recording's shape — which signals, on which raster,
-/// how many samples each declares — is readable without touching a data block at all. That is what
+/// and how many records each group declares — is readable without touching a data block at all. The
+/// cycle count is summed into [`GroupResult::declared_cycles`] and reaches the reader through the
+/// omission note, which is what turns "no sample values were read" into "none of the 400 records
+/// this file declares were read". That is what
 /// inventories a large measurement without decompressing it, and what still describes one whose data
 /// block a full read declines.
 fn declare_channel_group(
@@ -1657,7 +1681,7 @@ fn declare_channel_group(
             frame_id: None,
         });
     }
-    let _ = cycle_count;
+    out.declared_cycles = out.declared_cycles.saturating_add(cycle_count);
     Ok(())
 }
 

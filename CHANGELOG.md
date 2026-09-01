@@ -10,6 +10,17 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A metadata-only MF4 run said what it skipped, not how much.** `declare_channel_group` took the
+  `##CG` cycle count and threw it away (`let _ = cycle_count;`) under a doc comment claiming the run
+  reports "how many samples each declares". So `inspect --metadata-only` showed three streams and
+  zero frames, correctly noting that no data block was opened — and nothing said whether the
+  measurement behind them was four samples or four million.
+
+  The omission note is now quantified: "…for the 400 record(s) the ##CG headers declare — one sample
+  of every channel in the group each, so a full read yields that many frames per stream". Pinned
+  against a full read of the same file, because the number is only worth printing if it is the
+  number.
+
 - **Two CAN buses in one log were decoded as one.** `parse_candump_line` read the interface column
   into a `_`-prefixed binding and dropped it. A vehicle has several CAN buses and `candump -l can0
   can1` writes them all to one file — and a CAN id is per-bus: `0x100` is one message on the
