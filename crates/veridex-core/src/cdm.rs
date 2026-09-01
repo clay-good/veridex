@@ -637,7 +637,8 @@ pub type FrameId = String;
 
 /// Pinhole camera intrinsics for a named camera stream, with an optional validity range. Distortion
 /// coefficients are recorded verbatim in source order (their meaning is model-specific and Veridex
-/// does not interpret them).
+/// does not interpret them) alongside the name of the model they belong to, which is what says how
+/// many of them the source should have written.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CameraIntrinsics {
     /// The camera [`Stream::name`] these intrinsics calibrate.
@@ -652,6 +653,11 @@ pub struct CameraIntrinsics {
     pub cy: f64,
     /// Distortion coefficients in source order (empty when the source records none).
     pub distortion: Vec<f64>,
+    /// The distortion model the coefficients belong to (`plumb_bob`, `rational_polynomial`,
+    /// `equidistant`, …), as the source names it — `None` when it does not name one. The
+    /// coefficients are recorded verbatim and never interpreted, but the model is what says how many
+    /// of them there should be, which is the one thing about them Veridex can check.
+    pub distortion_model: Option<String>,
     /// Image width in pixels, as the calibration itself declares it — `None` when the source does
     /// not say. A `sensor_msgs/msg/CameraInfo` carries `width` and `height` in the same message as
     /// the intrinsic matrix, and they are what makes the principal point checkable: `cx` is a pixel

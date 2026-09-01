@@ -1266,6 +1266,8 @@ fn unusable_calibration(dataset: &Dataset) -> Vec<String> {
             ));
         } else if let Some(reason) = principal_point_outside_image(k) {
             out.push(reason);
+        } else if let Some(reason) = distortion_coefficient_count_wrong(k) {
+            out.push(reason);
         }
     }
     for t in &calibration.transforms {
@@ -1350,6 +1352,58 @@ fn principal_point_outside_image(k: &CameraIntrinsics) -> Option<String> {
          principal point is a pixel coordinate, so the intrinsics were computed for a different \
          resolution than the one recorded, or `cx`/`cy` were transposed with `fx`/`fy`",
         k.stream, k.cx, k.cy, dims
+    ))
+}
+
+/// How many coefficients a named distortion model takes, or `None` for a name Veridex does not know.
+///
+/// The model namespace is open — a driver may publish whatever string it likes, and new models
+/// appear — so an unrecognized name yields `None` and the comparison abstains rather than treating
+/// "I have not heard of this" as "these disagree". The same rule [`crate::cdm::canonical_codec`]
+/// follows for codecs, and for the same reason: a closed table judging an open namespace flags
+/// honest data.
+fn distortion_coefficient_count(model: &str) -> Option<usize> {
+    match model.trim().to_ascii_lowercase().as_str() {
+        // k1, k2, t1, t2, k3 — OpenCV's `CALIB_*` default and what almost every ROS driver writes.
+        "plumb_bob" | "radtan" | "radial_tangential" => Some(5),
+        // k1, k2, p1, p2, k3, k4, k5, k6.
+        "rational_polynomial" => Some(8),
+        // The fisheye models: k1, k2, k3, k4.
+        "equidistant" | "fisheye" | "kannala_brandt" => Some(4),
+        _ => None,
+    }
+}
+
+/// Whether a camera's distortion coefficients disagree in *count* with the model they are declared
+/// under — as the sentence naming it, or `None` when they agree, when the model is one Veridex does
+/// not know, or when the source declared no coefficients at all.
+///
+/// The coefficients themselves are never interpreted; their meaning is model-specific and reading it
+/// would be a guess. The count is not a guess: `plumb_bob` is five numbers, `rational_polynomial` is
+/// eight, the fisheye models are four, and a list of a different length cannot be undistorted under
+/// the model it claims. It is what a calibration copied between two models leaves behind, and what a
+/// hand-edited YAML with a coefficient deleted leaves behind, and both pass every presence test.
+///
+/// An **empty** list is not a mismatch. `sensor_msgs/msg/CameraInfo` says an empty `d` means no
+/// distortion, so a rectified camera legitimately publishes a model name and no coefficients;
+/// reading that as "five expected, zero found" would accuse every rectified stream in a rig.
+fn distortion_coefficient_count_wrong(k: &CameraIntrinsics) -> Option<String> {
+    let model = k.distortion_model.as_deref()?;
+    if k.distortion.is_empty() {
+        return None;
+    }
+    let expected = distortion_coefficient_count(model)?;
+    if k.distortion.len() == expected {
+        return None;
+    }
+    Some(format!(
+        "camera `{}` declares the `{}` distortion model, which takes {} coefficient(s), but records \
+         {} — the coefficients cannot be applied under the model they are declared under, so \
+         undistortion has no defined result",
+        k.stream,
+        model,
+        expected,
+        k.distortion.len()
     ))
 }
 

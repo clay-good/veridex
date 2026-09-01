@@ -168,7 +168,7 @@ pub fn decode_point_cloud2_fields(data: &[u8]) -> Option<Vec<PointField>> {
 /// Decode a `sensor_msgs/msg/CameraInfo` body far enough to recover intrinsics for `stream`: `Header`,
 /// `uint32 height`, `uint32 width`, `string distortion_model`, `float64[] d` (sequence), then the
 /// row-major 3×3 intrinsic matrix `float64[9] k` (`fx=k0, fy=k4, cx=k2, cy=k5`). The image
-/// dimensions are carried through onto the intrinsics — the message states them alongside the
+/// distortion model name and the image dimensions are carried through onto the intrinsics — the message states them alongside the
 /// matrix, and they are what makes `cx`/`cy` checkable as the pixel coordinates they are. A zero is
 /// the field's unset value and becomes `None`. `valid_from`/`_to` are left open — the caller stamps
 /// the validity range from the message time if it wishes.
@@ -181,7 +181,10 @@ pub fn decode_camera_info(data: &[u8], stream: &str) -> Option<CameraIntrinsics>
     // and the checks that read the dimensions abstain instead of inventing an image.
     let height = r.u32()?;
     let width = r.u32()?;
-    let _distortion_model = r.string()?;
+    // Kept: the coefficients below are recorded verbatim and never interpreted, and this is the
+    // only thing that says how many of them there should be. An empty string is a source that named
+    // no model, not a model named "".
+    let distortion_model = r.string()?;
     let d_len = r.u32()? as usize;
     // Each distortion coefficient is an 8-byte f64; a count beyond that can't be honored.
     if d_len > data.len() / 8 {
@@ -203,6 +206,7 @@ pub fn decode_camera_info(data: &[u8], stream: &str) -> Option<CameraIntrinsics>
         cx: k[2],
         cy: k[5],
         distortion,
+        distortion_model: (!distortion_model.is_empty()).then_some(distortion_model),
         width: (width > 0).then_some(width as u64),
         height: (height > 0).then_some(height as u64),
         valid_from: None,

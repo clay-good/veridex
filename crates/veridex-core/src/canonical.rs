@@ -68,7 +68,13 @@ use crate::cdm::{
 /// them to judge whether the principal point falls inside the image, so the same `cx`/`cy` are a
 /// working calibration under one declared resolution and an impossible one under another. Same rule
 /// as v4, v5, v7, v8 and v9: the hash binds whatever changes what a check can conclude.
-pub const CANONICAL_VERSION: u32 = 11;
+///
+/// v12 binds each camera's declared `distortion_model`. `AUTONOMY.CALIBRATION_IMPLAUSIBLE` reads it
+/// to judge whether the source wrote the number of coefficients that model takes, so the same five
+/// coefficients are a complete calibration under `plumb_bob` and a truncated one under
+/// `rational_polynomial`. Same rule again: the hash binds whatever changes what a check can
+/// conclude.
+pub const CANONICAL_VERSION: u32 = 12;
 
 const DOMAIN: &[u8] = b"veridex.cdm.v1\0";
 
@@ -256,6 +262,7 @@ impl Calibration {
             e.f64(c.cx);
             e.f64(c.cy);
             e.seq(&c.distortion, |e, d| e.f64(*d));
+            e.opt(&c.distortion_model, |e, m| e.str(m));
             e.opt(&c.width, |e, w| e.u64(*w));
             e.opt(&c.height, |e, h| e.u64(*h));
             e.opt(&c.valid_from, |e, v| e.i64(*v));
@@ -548,6 +555,7 @@ pub(crate) type IntrinsicsKey<'a> = (
     Option<i64>,
     [u64; 4],
     Vec<u64>,
+    Option<&'a str>,
     Option<u64>,
     Option<u64>,
 );
@@ -564,6 +572,7 @@ pub(crate) fn intrinsics_sort_key(c: &CameraIntrinsics) -> IntrinsicsKey<'_> {
             canon_f64_bits(c.cy),
         ],
         c.distortion.iter().copied().map(canon_f64_bits).collect(),
+        c.distortion_model.as_deref(),
         c.width,
         c.height,
     )

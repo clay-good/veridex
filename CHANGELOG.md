@@ -10,6 +10,26 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A distortion coefficient list that does not fit its own model.** The same `CameraInfo` decoder
+  also read `distortion_model` into a `_`-prefixed binding and dropped it, which left the
+  coefficients recorded verbatim with nothing saying how many of them there should be. `plumb_bob`
+  takes 5, `rational_polynomial` 8, the fisheye models 4 — so five coefficients still declared under
+  `rational_polynomial`, which is what a calibration copied between two models leaves behind, is
+  finite, positively-focal, inside its own image, and cannot be undistorted, because three of the
+  eight terms were never written. Now carried on `CameraIntrinsics` and reported as
+  `AUTONOMY.CALIBRATION_IMPLAUSIBLE`.
+
+  The coefficients themselves are still never interpreted — their meaning is model-specific and
+  reading it would be a guess. Only the count, which is not. And two silences are deliberate: the
+  model namespace is **open**, so a name Veridex has not heard of abstains rather than reading "I
+  have not heard of this" as "these disagree" (the rule `canonical_codec` already follows for
+  codecs), and an **empty** `d` is what `CameraInfo` specifies for a camera with no distortion, so a
+  rectified stream that names a model and writes no coefficients is not accused.
+
+  `CANONICAL_VERSION` goes to **12**, for the same reason it went to 11: the same five coefficients
+  are a complete calibration under one model and a truncated one under another, so the hash binds
+  the model. Golden vector re-pinned here, with the fixture reaching the new arm with a real value.
+
 - **A `CameraInfo`'s image dimensions were read and thrown away.** `decode_camera_info` parsed
   `height` and `width` — they sit in the message immediately before the intrinsic matrix — into two
   `_`-prefixed bindings and dropped them, and `AUTONOMY.CALIBRATION_IMPLAUSIBLE`'s own documentation

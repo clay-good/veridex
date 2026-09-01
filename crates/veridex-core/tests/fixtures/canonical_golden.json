@@ -477,6 +477,7 @@
           0.0,
           0.0
         ],
+        "distortion_model": "plumb_bob",
         "width": 640,
         "height": 480,
         "valid_from": 0,

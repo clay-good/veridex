@@ -29,12 +29,12 @@ fn the_canonical_encoding_has_not_changed_without_a_version_bump() {
     let d: Dataset = serde_json::from_str(GOLDEN).expect("the golden fixture parses");
 
     assert_eq!(
-        CANONICAL_VERSION, 11,
+        CANONICAL_VERSION, 12,
         "the encoding version changed; re-pin the hash below in the same commit"
     );
     assert_eq!(
         content_hash(&d).to_hex(),
-        "6e1586a600427646e94f5693c07b0f728e858080c079848b5adf3d0a9d95cbfc",
+        "3904e19cfe99d85ef0eba0d8900384196d5ee3905ebcc3a39fad66cf455e6fb8",
         "the canonical encoding changed. If that was deliberate, bump CANONICAL_VERSION and \
          re-pin this vector in the same commit — a hash change without a version bump means two \
          builds disagree about byte-identical data while both claiming the same encoding, and \
@@ -58,6 +58,16 @@ fn the_golden_fixture_still_covers_what_it_claims_to() {
             .iter()
             .any(|c| c.width.is_some() && c.height.is_some()),
         "declared image dimensions — the vector must reach the encoding with a value, not the \
+         absent marker"
+    );
+    assert!(
+        d.calibration
+            .as_ref()
+            .unwrap()
+            .intrinsics
+            .iter()
+            .any(|c| c.distortion_model.is_some()),
+        "declared distortion model — the vector must reach the encoding with a value, not the \
          absent marker"
     );
     assert!(!d.provenance.is_empty(), "provenance arm");

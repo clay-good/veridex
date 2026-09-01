@@ -89,6 +89,7 @@ fn intrinsics(stream: &str, fx: f64) -> CameraIntrinsics {
         cx: 640.0,
         cy: 360.0,
         distortion: vec![0.1, -0.05],
+        distortion_model: None,
         width: None,
         height: None,
         valid_from: None,

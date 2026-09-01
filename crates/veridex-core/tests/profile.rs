@@ -75,6 +75,7 @@ fn healthy_rig() -> Dataset {
         cx: 320.0,
         cy: 240.0,
         distortion: vec![],
+        distortion_model: None,
         width: None,
         height: None,
         valid_from: None,

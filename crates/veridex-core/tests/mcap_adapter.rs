@@ -758,6 +758,13 @@ fn ros_message_bodies_populate_the_autonomy_cdm_end_to_end() {
     // unable to judge a principal point that the source itself puts outside its own image.
     assert_eq!(calib.intrinsics[0].width, Some(640));
     assert_eq!(calib.intrinsics[0].height, Some(480));
+    // And the model the coefficients belong to, which is what says how many of them there should
+    // be. Read and discarded before, which left a truncated `d` array indistinguishable from a
+    // complete one.
+    assert_eq!(
+        calib.intrinsics[0].distortion_model.as_deref(),
+        Some("plumb_bob")
+    );
     assert_eq!(calib.transforms.len(), 1);
     assert_eq!(calib.transforms[0].parent_frame, "base_link");
     assert_eq!(calib.transforms[0].child_frame, "lidar");

@@ -2905,6 +2905,7 @@ fn intr(stream: &str) -> veridex_core::cdm::CameraIntrinsics {
         cx: 320.0,
         cy: 240.0,
         distortion: vec![],
+        distortion_model: None,
         width: None,
         height: None,
         valid_from: None,
@@ -5105,6 +5106,68 @@ fn the_image_boundary_is_the_last_pixel_not_the_width() {
     assert!(!judged(639.9, 479.9), "the far edge is still in the image");
     assert!(judged(640.0, 240.0), "one past the last column is outside");
     assert!(judged(320.0, 480.0), "one past the last row is outside");
+}
+
+#[test]
+fn coefficients_that_do_not_fit_their_own_distortion_model_cannot_be_applied() {
+    // What a calibration copied between two models leaves behind: five `plumb_bob` coefficients
+    // still declared under `rational_polynomial`, which takes eight. The numbers are finite, the
+    // focal length is positive, the principal point is inside the image — every presence test and
+    // every other impossibility rule passes — and undistortion has no defined result, because three
+    // of the eight terms the model needs were never written. The coefficients themselves are still
+    // not interpreted; only how many of them there are, which is not a guess.
+    let mut truncated = intr("cam");
+    truncated.distortion_model = Some("rational_polynomial".into());
+    truncated.distortion = vec![0.1, -0.2, 0.0, 0.0, 0.0];
+    let cal = veridex_core::cdm::Calibration {
+        transforms: vec![xf("base_link", "lidar"), xf("base_link", "cam")],
+        intrinsics: vec![truncated],
+    };
+    let f = autonomy::CalibrationCompleteness.run(&rig_with_calibration(Some(cal)));
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "AUTONOMY.CALIBRATION_IMPLAUSIBLE");
+    assert_eq!(f[0].severity, Severity::Error);
+    assert!(
+        f[0].message.contains("rational_polynomial"),
+        "{}",
+        f[0].message
+    );
+    assert!(
+        f[0].message.contains("8 coefficient(s)"),
+        "{}",
+        f[0].message
+    );
+    assert!(f[0].message.contains("records 5"), "{}", f[0].message);
+}
+
+#[test]
+fn a_distortion_model_is_an_open_namespace_and_an_unknown_one_is_not_a_disagreement() {
+    // Three ways this rule must stay silent, and each is a working camera it would otherwise
+    // accuse. A model name Veridex has not heard of says nothing about how many coefficients it
+    // takes — the same reasoning `canonical_codec` follows, because a closed table judging an open
+    // namespace flags honest data. An empty `d` is what `CameraInfo` specifies for a camera with no
+    // distortion, so a rectified stream legitimately names a model and writes no coefficients. And
+    // the right count under a known model is, of course, fine.
+    let case = |model: Option<&str>, d: Vec<f64>| {
+        let mut k = intr("cam");
+        k.distortion_model = model.map(str::to_string);
+        k.distortion = d;
+        let cal = veridex_core::cdm::Calibration {
+            transforms: vec![xf("base_link", "lidar"), xf("base_link", "cam")],
+            intrinsics: vec![k],
+        };
+        autonomy::CalibrationCompleteness
+            .run(&rig_with_calibration(Some(cal)))
+            .is_empty()
+    };
+    assert!(case(Some("some_new_fisheye_model"), vec![0.1, 0.2, 0.3]));
+    assert!(case(Some("plumb_bob"), vec![]));
+    assert!(case(Some("plumb_bob"), vec![0.1, -0.2, 0.0, 0.0, 0.0]));
+    assert!(case(Some("equidistant"), vec![0.1, 0.2, 0.3, 0.4]));
+    assert!(case(None, vec![0.1, 0.2, 0.3]));
+    // And the count is what is judged, not the name's spelling: the same list under a model that
+    // takes a different number of terms is the defect.
+    assert!(!case(Some("plumb_bob"), vec![0.1, 0.2, 0.3, 0.4]));
 }
 
 // ---- AUTONOMY.CALIBRATION_AMBIGUOUS ----
