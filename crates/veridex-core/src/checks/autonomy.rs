@@ -1223,7 +1223,11 @@ impl Check for PointCloudDensity {
         "autonomy.point-cloud-density"
     }
     fn finding_codes(&self) -> &'static [&'static str] {
-        &["AUTONOMY.POINT_CLOUD_EMPTY", "AUTONOMY.POINT_CLOUD_DROPPED"]
+        &[
+            "AUTONOMY.POINT_CLOUD_EMPTY",
+            "AUTONOMY.POINT_CLOUD_DROPPED",
+            "AUTONOMY.POINT_CLOUD_UNMEASURED",
+        ]
     }
     fn title(&self) -> &'static str {
         "Point-cloud density"
@@ -1315,7 +1319,74 @@ impl Check for PointCloudDensity {
                 }
             }
         }
+        // A check that measured nothing must say so, or its silence reads as a pass. A point-cloud
+        // stream carrying no per-message count is one this check never asked its question about,
+        // and it is indistinguishable in the report from one that was asked and came back clean —
+        // which is the whole value of the result. Reported once for the dataset, and named by the
+        // *property* rather than by a list of formats, which goes stale the moment an adapter reads
+        // more.
+        let unmeasured: Vec<&str> = {
+            let mut names: std::collections::BTreeSet<&str> = Default::default();
+            for ep in &dataset.episodes {
+                for s in &ep.streams {
+                    if s.modality == Modality::PointCloud && s.observed_point_counts.is_none() {
+                        names.insert(s.name.as_str());
+                    }
+                }
+            }
+            names.into_iter().collect()
+        };
+        if !unmeasured.is_empty() {
+            let shown = unmeasured
+                .iter()
+                .take(4)
+                .copied()
+                .collect::<Vec<_>>()
+                .join(", ");
+            let listed = match unmeasured.len().saturating_sub(4) {
+                0 => shown,
+                rest => format!("{shown} and {rest} more"),
+            };
+            findings.push(
+                Finding::new(
+                    self.id(),
+                    Category::Autonomy,
+                    Severity::Info,
+                    Location::Dataset,
+                    "AUTONOMY.POINT_CLOUD_UNMEASURED",
+                    format!(
+                        "{} point-cloud stream(s) carry no per-message point count, so the \
+                         density rules had nothing to measure on them ({listed})",
+                        unmeasured.len()
+                    ),
+                )
+                .with_risk(
+                    "Nothing in this run can tell you whether these sensors recorded any points. \
+                     A clean autonomy result here is the absence of a measurement, not evidence \
+                     that the LiDAR was working.",
+                )
+                .with_remedy(
+                    "Treat the density result as unverified for these streams. The count is read \
+                     from a cloud message's own header, so it is available wherever the messages \
+                     themselves are decoded rather than only fingerprinted.",
+                ),
+            );
+        }
         findings
+    }
+
+    /// Withholds the abstention under a metadata-only ingest.
+    ///
+    /// The two density codes are conclusions about counts that were read, and a run that did not
+    /// open the message bodies read none — so `AUTONOMY.POINT_CLOUD_UNMEASURED` would fire on every
+    /// point-cloud stream of every format, blaming the data for a silence the *request* caused.
+    /// `COVERAGE.METADATA_ONLY` already states that. The other two codes cannot fire without counts
+    /// anyway, so the whole check stands down rather than reporting half a question.
+    fn run_in(&self, dataset: &Dataset, context: &CheckContext) -> Vec<Finding> {
+        if !context.frames_read {
+            return Vec::new();
+        }
+        self.run(dataset)
     }
 }
 

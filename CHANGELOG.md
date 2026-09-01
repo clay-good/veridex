@@ -10,6 +10,27 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **`autonomy.point-cloud-density` was silent where it never measured.** The check concludes from
+  `Stream::observed_point_counts`, and a stream that carries none — a format that states no
+  per-message point count — hit the `let Some(...) else { continue }` and produced nothing. A
+  point-cloud sensor nobody asked the question about was then indistinguishable in the report from
+  one that was asked and came back clean, which is the whole value of the result. Now
+  `AUTONOMY.POINT_CLOUD_UNMEASURED` (info), reported once for the dataset and naming the streams.
+
+  **Withheld under `--metadata-only`**, through `run_in`. A run that did not open the message bodies
+  read no counts for any stream of any format, so the finding would blame the data for a silence the
+  *request* caused, beside a remedy pointing the reader at a format that reads more.
+  `COVERAGE.METADATA_ONLY` already states the run's own shape. The text names the **property** the
+  count is read from rather than listing the formats that supply it, because such a list goes stale
+  the moment an adapter reads more.
+
+  The abstention reaches the **readiness criterion**, and that is the point of it. `world-model-ready`
+  attests that "every point-cloud sensor actually recorded points", which over counts nobody read is
+  not a claim anyone can make — and without the finding the criterion counted zero findings, reported
+  green, and signed a rig whose LiDAR was never measured as ready to build a world model from. It now
+  refuses. The `healthy_rig` profile fixture carries the counts a healthy rig read in full carries,
+  rather than passing the criterion by never having been measured.
+
 - **The two rosbag2 storage plugins were only proven to agree about names and timestamps.**
   `which_storage_plugin_recorded_a_bag_does_not_change_what_veridex_sees` compared stream names,
   modalities and frame times — the shape of the recording. But most of what Veridex sees on a rig is

@@ -46,7 +46,19 @@ fn sensor_in_frame(name: &str, modality: Modality, ts: &[i64], frame_id: Option<
         latched: None,
         declared_range: None,
         point_fields: None,
-        observed_point_counts: None,
+        // A point-cloud sensor read in full carries a per-message point count, and a healthy one's
+        // counts are non-zero. Left absent, `autonomy.point-cloud-density` abstains out loud — and
+        // rightly refuses the `world-model-ready` criterion, because "every point-cloud sensor
+        // actually recorded points" cannot be attested over counts nobody read. A fixture standing
+        // in for a healthy rig has to carry what a healthy rig carries.
+        observed_point_counts: (modality == Modality::PointCloud).then_some(
+            veridex_core::cdm::PointCounts {
+                message_count: ts.len() as u64,
+                min: 19_800,
+                max: 24_000,
+                empty: 0,
+            },
+        ),
         media: None,
         frame_id,
     }
@@ -702,6 +714,48 @@ fn a_loosened_threshold_cannot_buy_a_ready_verdict() {
     assert!(
         !report.applicable,
         "readiness cannot be judged at all over a narrowed run: {report:?}"
+    );
+}
+
+#[test]
+fn a_lidar_whose_density_was_never_measured_is_not_a_lidar_known_to_have_recorded() {
+    // The criterion reads "every point-cloud sensor actually recorded points". Over counts nobody
+    // read, that is not a claim anyone can make — and the shape this guards against is the one that
+    // certifies anyway: the check finds no counts, produces nothing, the criterion counts zero
+    // findings and reports green, and a rig whose LiDAR was never measured is signed as ready to
+    // build a world model from. `AUTONOMY.POINT_CLOUD_UNMEASURED` is what stops that, so it has to
+    // reach the criterion, not merely the report.
+    let p = profile::world_model_ready();
+    let mut d = healthy_rig();
+    for ep in &mut d.episodes {
+        for s in &mut ep.streams {
+            if s.modality == Modality::PointCloud {
+                s.observed_point_counts = None;
+            }
+        }
+    }
+    let v = verdict_for(&d, &p);
+    let r = ReadinessReport::evaluate(&p, &v, &d);
+    let density = r
+        .criteria
+        .iter()
+        .find(|c| c.check_id == "autonomy.point-cloud-density")
+        .expect("the density criterion");
+    assert!(
+        !density.passed,
+        "a criterion cannot be satisfied by a measurement that was never taken: {density:?}"
+    );
+    assert!(!r.ready, "and the rig is therefore not ready");
+
+    // Every other criterion is untouched, so this is the density question failing and not a rig
+    // that fell over for some unrelated reason.
+    assert!(
+        r.criteria
+            .iter()
+            .filter(|c| c.check_id != "autonomy.point-cloud-density")
+            .all(|c| c.passed),
+        "{:?}",
+        r.criteria
     );
 }
 

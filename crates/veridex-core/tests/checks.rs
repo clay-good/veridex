@@ -5236,13 +5236,18 @@ fn a_sensor_that_cut_out_mid_recording_is_a_warning_not_a_dead_sensor() {
 
 #[test]
 fn a_stream_whose_density_was_never_measured_is_not_a_stream_found_empty() {
-    // Two silences, and neither may be read as a verdict. A source that carries no point counts at
-    // all — every non-ROS format, and a metadata-only run, which does not open message bodies —
-    // leaves `None`, and a check that reported on it would be measuring the request rather than the
-    // data. A stream whose every sweep held points is simply fine.
-    assert!(autonomy::PointCloudDensity
-        .run(&cloud_with_counts(None))
-        .is_empty());
+    // A source that carries no per-message point count leaves `None`, and reporting that as an
+    // empty LiDAR would be measuring the request rather than the data. But silence is not the
+    // answer either: a stream nobody asked the question about is indistinguishable in the report
+    // from one that was asked and came back clean, and that difference is the whole value of the
+    // result. So it abstains *out loud* — info, never an error.
+    let f = autonomy::PointCloudDensity.run(&cloud_with_counts(None));
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "AUTONOMY.POINT_CLOUD_UNMEASURED");
+    assert_eq!(f[0].severity, Severity::Info);
+    assert!(f[0].message.contains("lidar"), "{}", f[0].message);
+
+    // A stream whose every sweep held points is simply fine, and says nothing at all.
     assert!(autonomy::PointCloudDensity
         .run(&cloud_with_counts(Some(veridex_core::cdm::PointCounts {
             message_count: 600,
@@ -5251,6 +5256,29 @@ fn a_stream_whose_density_was_never_measured_is_not_a_stream_found_empty() {
             empty: 0,
         })))
         .is_empty());
+}
+
+#[test]
+fn a_metadata_only_run_is_not_a_rig_whose_lidar_was_never_measured() {
+    // The abstention's cause matters. Under `--metadata-only` no message body is opened, so *every*
+    // point-cloud stream of *every* format carries no counts — and a finding saying so would blame
+    // the data for a silence the request caused, beside a remedy telling the reader to go look in a
+    // format that reads more. The run's own shape is already stated by `COVERAGE.METADATA_ONLY`, so
+    // the check stands down entirely rather than reporting half a question.
+    let d = cloud_with_counts(None);
+    use veridex_core::check::CheckContext;
+    let metadata_only = CheckContext {
+        frames_read: false,
+        ..Default::default()
+    };
+    assert!(autonomy::PointCloudDensity
+        .run_in(&d, &metadata_only)
+        .is_empty());
+    let full = CheckContext {
+        frames_read: true,
+        ..Default::default()
+    };
+    assert_eq!(autonomy::PointCloudDensity.run_in(&d, &full).len(), 1);
 }
 
 // ---- AUTONOMY.CALIBRATION_AMBIGUOUS ----
