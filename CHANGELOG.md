@@ -10,6 +10,14 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **The README's picture of the engine named three of seven check families.** The flowchart read
+  "structural · temporal · provenance checks" and the sequence diagram said the same, so the front
+  page understated the catalog by four families — including `autonomy`, which is most of what a rig
+  log is checked for. Prose that summarizes a list drifts the moment the list grows, and nothing was
+  watching: the existing doc guards cover `docs/checks.md` and not the page most readers see first.
+  Both diagrams now name every family, and a test asserts the flowchart node against the live
+  catalog's categories.
+
 - **An ego trajectory recorded for a frame the transform tree never names.** `decode_odometry_pose`
   read `child_frame_id` into a `_`-prefixed binding and dropped it — the last discarded field in the
   CDR decoder. That frame is the vehicle body the trajectory is *of*, and it is a different question

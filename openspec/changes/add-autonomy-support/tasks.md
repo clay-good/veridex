@@ -178,8 +178,8 @@ No code until this change is approved; this is the build plan.
 
 ## A4 — World-model readiness
 - [x] `world-model-ready` policy profile bundling sync/calibration/ego-pose/sequence thresholds
-      (`crate::profile`): tightens cross-sensor sync to 20 ms and names the autonomy criteria (five as of
-      `autonomy.sensor-frame-resolution`).
+      (`crate::profile`): tightens cross-sensor sync to 20 ms and names the autonomy criteria (seven as of
+      `autonomy.point-cloud-density`).
       Applied via `veridex certify --profile world-model-ready`.
 - [x] Certificate reports per-criterion pass/fail against that profile. A `readiness` block
       (`ReadinessReport`) records profile name, `applicable` (a rig that also carries a

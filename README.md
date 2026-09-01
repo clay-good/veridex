@@ -82,7 +82,7 @@ also captures **provenance**.
 flowchart LR
     A[Your dataset<br/>LeRobot · RLDS/TFDS · HDF5 · Zarr · MCAP · rosbag2 · CAN+DBC · MF4] --> B[Adapter]
     B --> C[Canonical Dataset Model<br/>one neutral shape]
-    C --> D[Validation engine<br/>structural · temporal · provenance checks]
+    C --> D[Validation engine<br/>structural · temporal · statistical · semantic<br/>video · autonomy · provenance checks]
     D --> E[Trust score<br/>0–100 · A–F grade]
     E --> F[Signed certificate<br/>portable · verifiable offline]
     D --> G[Human + JSON report]
@@ -104,7 +104,7 @@ sequenceDiagram
 
     You->>CLI: veridex check dataset/
     CLI->>Core: load via adapter → CDM
-    Core->>Core: run structural + temporal + provenance checks
+    Core->>Core: run the check catalog (7 families)
     Core-->>CLI: verdict + trust score + report
     CLI-->>You: report (terminal + JSON)
 

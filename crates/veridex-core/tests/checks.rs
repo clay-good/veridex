@@ -2208,6 +2208,35 @@ fn meaningful_and_absent_tasks_are_not_flagged() {
 
 // ---- documentation drift guard ----
 
+/// The README's own picture of the engine must name every check family the engine runs.
+///
+/// It named three of seven. The flowchart read "structural · temporal · provenance checks" and the
+/// sequence diagram said the same, so the front page of the project understated its own catalog by
+/// four families — including `autonomy`, which is most of what a rig log is checked for. Prose that
+/// summarizes a list drifts the moment the list grows, and nothing was watching: the `docs/checks.md`
+/// guards below cover the catalog page and not the page most readers see first.
+#[test]
+fn the_readme_names_every_check_family_the_engine_runs() {
+    let readme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../README.md"))
+        .expect("README.md is readable");
+    let engine = veridex_core::checks::default_engine().expect("standard checks have unique ids");
+    let families: std::collections::BTreeSet<&str> =
+        engine.catalog().iter().map(|c| c.category.tag()).collect();
+    assert!(!families.is_empty(), "the catalog has categories");
+
+    // The flowchart node, which is the picture a reader forms of what the engine does.
+    let engine_node = readme
+        .lines()
+        .find(|l| l.contains("Validation engine"))
+        .expect("the README's flowchart names the validation engine");
+    for family in &families {
+        assert!(
+            engine_node.to_ascii_lowercase().contains(*family),
+            "the README's engine node does not name the `{family}` family:\n  {engine_node}"
+        );
+    }
+}
+
 #[test]
 fn every_registered_check_is_documented_in_docs_checks_md() {
     // docs/checks.md is the user-facing catalog reference; guard it against silently drifting when a
