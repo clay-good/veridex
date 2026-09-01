@@ -47,6 +47,17 @@ form but empty in substance, so it does **not** count as known or asserted — i
 `unknown` here and flagged as `PROVENANCE.PLACEHOLDER_VALUE`. This keeps fake provenance from
 inflating the score.
 
+Coverage counts an element as present when **any** provenance record supplies it, whatever that
+record's scope. Provenance is scoped in the CDM (dataset, episode, stream), so lineage recorded for
+one episode of a thousand counts the same here as lineage recorded for the whole dataset — the axis
+answers "does this dataset carry the element", not "for how much of it". That is a deliberate
+property of rubric v1 rather than an oversight, and prorating it would move every score issued
+against this rubric. What it must not do is stay invisible, so the partiality is reported instead:
+`PROVENANCE.PARTIAL` names the element and how many of the run's episodes it covers, `veridex
+inspect` ends the line with `(recorded for 1 of 1000 episode(s))`, and both emitted documents carry
+it — the Croissant per element as `scope`, the PROV entity as `veridex:partialProvenance`. A reader
+who wants a prorated number has what they need to compute one.
+
 ## Overall score and grade
 
 ```
