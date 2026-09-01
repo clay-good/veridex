@@ -652,6 +652,14 @@ pub struct CameraIntrinsics {
     pub cy: f64,
     /// Distortion coefficients in source order (empty when the source records none).
     pub distortion: Vec<f64>,
+    /// Image width in pixels, as the calibration itself declares it — `None` when the source does
+    /// not say. A `sensor_msgs/msg/CameraInfo` carries `width` and `height` in the same message as
+    /// the intrinsic matrix, and they are what makes the principal point checkable: `cx` is a pixel
+    /// coordinate, so it has to fall inside the image the calibration was computed for.
+    pub width: Option<u64>,
+    /// Image height in pixels, as the calibration itself declares it — `None` when the source does
+    /// not say. See [`CameraIntrinsics::width`].
+    pub height: Option<u64>,
     /// Start of the validity range on the rig clock, or `None` for open-ended.
     pub valid_from: Option<TimestampNs>,
     /// End of the validity range on the rig clock, or `None` for open-ended.

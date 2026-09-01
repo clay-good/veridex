@@ -10,6 +10,26 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A `CameraInfo`'s image dimensions were read and thrown away.** `decode_camera_info` parsed
+  `height` and `width` — they sit in the message immediately before the intrinsic matrix — into two
+  `_`-prefixed bindings and dropped them, and `AUTONOMY.CALIBRATION_IMPLAUSIBLE`'s own documentation
+  then said a principal point could not be judged because it "would need the image dimensions the
+  CDM does not carry." The source said them; nothing carried them.
+
+  They are now on `CameraIntrinsics` (`width`, `height`, `None` when the source is silent — a driver
+  publishing `0` is stating nothing, not a one-pixel camera), which makes `cx`/`cy` checkable as the
+  pixel coordinates they are. A principal point at or past the image edge is reported: intrinsics
+  calibrated at 1920×1080 and applied to a stream recorded at 640×480 put the optical centre off the
+  right-hand edge, and every undistortion silently rectifies about a point outside the sensor. So
+  does a matrix copied out by hand with `cx`/`cy` transposed into `fx`/`fy`. Judged only where the
+  source declares the dimension — a format that carries no image size (MF4, HDF5) is not measured
+  against an assumed one — and the boundary is the last valid pixel, pinned in both directions so an
+  off-centre principal point stays legitimate and a one-pixel overshoot is still caught.
+
+  `CANONICAL_VERSION` goes to **11**: the dimensions change what a check concludes about the same
+  `cx`/`cy`, so the content hash has to bind them, and the golden vector is re-pinned in this commit
+  with a fixture that reaches the new arm with a real value rather than the absent marker.
+
 - **A rotation quaternion that is not a unit quaternion is not a rotation.**
   `AUTONOMY.CALIBRATION_IMPLAUSIBLE` judged a transform's rotation by two tests — is it finite, and
   is it the all-zero uninitialized value — which leaves everything between them passing. A

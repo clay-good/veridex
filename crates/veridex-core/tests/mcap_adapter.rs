@@ -752,6 +752,12 @@ fn ros_message_bodies_populate_the_autonomy_cdm_end_to_end() {
     let calib = d.calibration.as_ref().expect("calibration decoded");
     assert_eq!(calib.intrinsics.len(), 1);
     assert_eq!(calib.intrinsics[0].fx, 600.0);
+    // The image the matrix was computed for, stated in the same message and carried through: `cx`
+    // and `cy` are pixel coordinates, and without these nothing says which image they index. The
+    // decoder read both fields and discarded them, which left `AUTONOMY.CALIBRATION_IMPLAUSIBLE`
+    // unable to judge a principal point that the source itself puts outside its own image.
+    assert_eq!(calib.intrinsics[0].width, Some(640));
+    assert_eq!(calib.intrinsics[0].height, Some(480));
     assert_eq!(calib.transforms.len(), 1);
     assert_eq!(calib.transforms[0].parent_frame, "base_link");
     assert_eq!(calib.transforms[0].child_frame, "lidar");

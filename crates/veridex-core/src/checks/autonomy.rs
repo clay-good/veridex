@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use crate::cdm::{Dataset, Episode, Modality, Stream, Transform};
+use crate::cdm::{CameraIntrinsics, Dataset, Episode, Modality, Stream, Transform};
 use crate::check::{Category, Check, CheckContext, Finding, Location, Scope, Severity};
 
 /// Number of AV-native rig sensors (LiDAR/IMU/GNSS/CAN/ego-pose) an episode must carry to be treated
@@ -1230,10 +1230,14 @@ const MAX_UNUSABLE_REPORTED: usize = 8;
 ///
 /// Only impossibilities, never implausibilities. A focal length must be positive and finite — the
 /// projection divides by it. A principal point must be finite and non-negative — it is a pixel
-/// coordinate. A rotation must be an actual rotation — a quaternion whose norm is not 1 is a
+/// coordinate, and where the source declares the image's size it must be a pixel coordinate *in
+/// that image*. A rotation must be an actual rotation — a quaternion whose norm is not 1 is a
 /// rotation composed with a scale, and an all-zero one is the uninitialized value rather than a
-/// pose. Nothing here judges whether a number is *sensible* for a given camera, which would need
-/// the image dimensions the CDM does not carry and would guess where it cannot know.
+/// pose. Nothing here judges whether a number is *sensible* for a given camera — a long lens and a
+/// strong distortion coefficient are legitimate, and telling sensible from silly would be a guess.
+/// The image dimensions are the one exception, and only because the calibration itself states them:
+/// where a source declares the image it was computed for, a principal point outside that image is
+/// arithmetic with no answer rather than a judgement call.
 fn unusable_calibration(dataset: &Dataset) -> Vec<String> {
     let Some(calibration) = &dataset.calibration else {
         return Vec::new();
@@ -1260,6 +1264,8 @@ fn unusable_calibration(dataset: &Dataset) -> Vec<String> {
                  result",
                 k.stream
             ));
+        } else if let Some(reason) = principal_point_outside_image(k) {
+            out.push(reason);
         }
     }
     for t in &calibration.transforms {
@@ -1302,6 +1308,49 @@ fn unusable_calibration(dataset: &Dataset) -> Vec<String> {
         ));
     }
     out
+}
+
+/// Whether a camera's principal point falls outside the image the calibration itself declares — as
+/// the sentence naming it, or `None` when it does not or the source never said how big the image is.
+///
+/// `cx`/`cy` are pixel coordinates in the image the intrinsic matrix was computed for, and a
+/// `sensor_msgs/msg/CameraInfo` states that image's `width` and `height` in the same message. So
+/// this is arithmetic, not judgement: an optical centre outside the sensor is not a centre. The two
+/// ways it happens are both silent — intrinsics calibrated at one resolution and applied to a stream
+/// recorded at another (a `cx` of 960 on a 640-wide image), and `cx`/`cy` transposed with `fx`/`fy`
+/// when a matrix is copied out by hand.
+///
+/// Abstains whenever the source did not declare the dimension, rather than assuming one. A camera
+/// whose driver publishes `width: 0` says nothing about its image, and reading that silence as a
+/// zero-pixel image would flag every unconfigured `CameraInfo` for the wrong reason — the missing
+/// intrinsics are already `AUTONOMY.CALIBRATION_IMPLAUSIBLE`'s first rule.
+///
+/// The boundary is the last valid pixel: a principal point at exactly `width` is off the image, one
+/// at `width - 1` is its far edge. An off-centre principal point is legitimate and stays unjudged;
+/// only being outside the image at all is reported.
+fn principal_point_outside_image(k: &CameraIntrinsics) -> Option<String> {
+    let outside = |v: f64, extent: Option<u64>| extent.is_some_and(|e| v >= e as f64);
+    if !outside(k.cx, k.width) && !outside(k.cy, k.height) {
+        return None;
+    }
+    // Rendered only from what the source declared, so a camera that states one dimension and not
+    // the other reads as the partial statement it is rather than as a guess at the other.
+    let dims = match (k.width, k.height) {
+        (Some(w), Some(h)) => format!("{w}×{h}"),
+        (Some(w), None) => format!("{w} wide"),
+        (None, Some(h)) => format!("{h} high"),
+        // Unreachable: with neither extent declared the point cannot be outside one, and the
+        // early return above has already taken that case. Written as a `None` rather than a panic
+        // — a check that reads an untrusted file must not carry an abort in it, however well the
+        // argument for its unreachability holds today.
+        (None, None) => return None,
+    };
+    Some(format!(
+        "camera `{}` declares a principal point of ({}, {}) outside the {} image it declares — a \
+         principal point is a pixel coordinate, so the intrinsics were computed for a different \
+         resolution than the one recorded, or `cx`/`cy` were transposed with `fx`/`fy`",
+        k.stream, k.cx, k.cy, dims
+    ))
 }
 
 /// Every way a dataset's transform tree is present, connected, and still not a tree — as sentences

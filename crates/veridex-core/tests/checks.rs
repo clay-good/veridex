@@ -2905,6 +2905,8 @@ fn intr(stream: &str) -> veridex_core::cdm::CameraIntrinsics {
         cx: 320.0,
         cy: 240.0,
         distortion: vec![],
+        width: None,
+        height: None,
         valid_from: None,
         valid_to: None,
     }
@@ -5036,6 +5038,73 @@ fn a_systematically_broken_calibration_is_a_bounded_report_not_one_finding_per_e
         "the skipped elements must be counted, not silently dropped: {}",
         summary.message
     );
+}
+
+#[test]
+fn a_principal_point_outside_the_image_is_a_calibration_for_a_different_camera() {
+    // Intrinsics calibrated at 1920×1080 and applied to a stream recorded at 640×480: `cx` of 960
+    // is the centre of the image it was computed for and off the right-hand edge of the one that
+    // was recorded. Every presence check passes, the focal length is positive and finite, and the
+    // undistortion silently rectifies about a point outside the sensor. The `CameraInfo` states the
+    // image size in the same message as the matrix, so this is arithmetic, not a judgement.
+    let mut mismatched = intr("cam");
+    mismatched.cx = 960.0;
+    mismatched.cy = 540.0;
+    mismatched.width = Some(640);
+    mismatched.height = Some(480);
+    let cal = veridex_core::cdm::Calibration {
+        transforms: vec![xf("base_link", "lidar"), xf("base_link", "cam")],
+        intrinsics: vec![mismatched],
+    };
+    let f = autonomy::CalibrationCompleteness.run(&rig_with_calibration(Some(cal)));
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "AUTONOMY.CALIBRATION_IMPLAUSIBLE");
+    assert_eq!(f[0].severity, Severity::Error);
+    assert!(f[0].message.contains("640×480"), "{}", f[0].message);
+    assert!(f[0].message.contains("principal point"), "{}", f[0].message);
+}
+
+#[test]
+fn a_camera_that_never_said_how_big_its_image_is_is_not_judged_against_one() {
+    // The rule reads only what the calibration itself declares. A source that carries no dimensions
+    // (an MF4 rig, an HDF5 collector, a driver publishing `width: 0`) says nothing about where the
+    // principal point should fall, and assuming an image would flag every honest calibration whose
+    // source is quieter than ROS. Abstention, not a guess.
+    let mut undeclared = intr("cam");
+    undeclared.cx = 100_000.0;
+    undeclared.cy = 100_000.0;
+    let cal = veridex_core::cdm::Calibration {
+        transforms: vec![xf("base_link", "lidar"), xf("base_link", "cam")],
+        intrinsics: vec![undeclared],
+    };
+    assert!(autonomy::CalibrationCompleteness
+        .run(&rig_with_calibration(Some(cal)))
+        .is_empty());
+}
+
+#[test]
+fn the_image_boundary_is_the_last_pixel_not_the_width() {
+    // A 640-wide image's rightmost pixel is 639, so a principal point at 639.9 is inside it and one
+    // at 640.0 is not. Pinned in both directions: an off-centre principal point is legitimate and a
+    // rule that flagged it would accuse a working wide-angle rig, while a rule that only fired well
+    // past the edge would miss the transposed-matrix case by a pixel and pass just the same.
+    let judged = |cx: f64, cy: f64| {
+        let mut k = intr("cam");
+        k.cx = cx;
+        k.cy = cy;
+        k.width = Some(640);
+        k.height = Some(480);
+        let cal = veridex_core::cdm::Calibration {
+            transforms: vec![xf("base_link", "lidar"), xf("base_link", "cam")],
+            intrinsics: vec![k],
+        };
+        !autonomy::CalibrationCompleteness
+            .run(&rig_with_calibration(Some(cal)))
+            .is_empty()
+    };
+    assert!(!judged(639.9, 479.9), "the far edge is still in the image");
+    assert!(judged(640.0, 240.0), "one past the last column is outside");
+    assert!(judged(320.0, 480.0), "one past the last row is outside");
 }
 
 // ---- AUTONOMY.CALIBRATION_AMBIGUOUS ----

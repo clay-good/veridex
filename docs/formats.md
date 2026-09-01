@@ -193,8 +193,9 @@ rosbag2's `sqlite3` storage plugin keeps the recording in two tables: `topics` (
 topic) and `messages` (one row per message, with its receive timestamp and its serialized body). Each
 topic becomes a stream, each message a frame on the bag's single log clock, and the ROS type names
 the modality. The AV message *headers* are CDR-decoded exactly as they are from MCAP — rosbag2's
-other storage plugin — so a `PointCloud2` supplies the per-point field layout, `CameraInfo` and
-`TFMessage` the intrinsics and the transform tree, and `Odometry` the ego trajectory. The bulk
+other storage plugin — so a `PointCloud2` supplies the per-point field layout, `CameraInfo` the
+intrinsics **and the image dimensions they were computed for**, `TFMessage` the transform
+tree, and `Odometry` the ego trajectory. The bulk
 payload is fingerprinted, never decoded.
 
 Two exceptions, and they are what let the statistical family grade a bag at all. A
