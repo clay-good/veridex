@@ -7,23 +7,84 @@
 
 use serde_json::{json, Map, Value};
 
-use crate::cdm::{Dataset, ProvenanceClass, ProvenanceElement};
+use std::collections::{BTreeMap, BTreeSet};
 
-/// All provenance elements across every record, sorted by key for deterministic output.
-fn collect_elements(dataset: &Dataset) -> Vec<&ProvenanceElement> {
-    let mut out: Vec<&ProvenanceElement> = Vec::new();
+use crate::cdm::{Dataset, ProvenanceClass, ProvenanceElement, ProvenanceScope};
+
+/// All provenance elements across every record, each with the scope of the record it came from,
+/// sorted for deterministic output.
+fn collect_elements(dataset: &Dataset) -> Vec<(String, &ProvenanceElement)> {
+    let mut out: Vec<(String, &ProvenanceElement)> = Vec::new();
     for record in &dataset.provenance {
+        let scope = scope_label(&record.scope);
         for el in &record.elements {
-            out.push(el);
+            out.push((scope.clone(), el));
         }
     }
-    // Sorted by full content (key, value, class) — the encoder's key. Sorting by `key` alone leaves
-    // ties resolved by Vec order, so two datasets with an identical content hash could emit
-    // contradictory attribution.
-    out.sort_by(|a, b| {
-        crate::canonical::element_sort_key(a).cmp(&crate::canonical::element_sort_key(b))
+    // Sorted by full content (key, value, class) — the encoder's key — then by scope. Sorting by
+    // `key` alone leaves ties resolved by Vec order, so two datasets with an identical content hash
+    // could emit contradictory attribution.
+    out.sort_by(|(a_scope, a), (b_scope, b)| {
+        crate::canonical::element_sort_key(a)
+            .cmp(&crate::canonical::element_sort_key(b))
+            .then_with(|| a_scope.cmp(b_scope))
     });
     out
+}
+
+/// A provenance record's scope as a stable string, for documents that must say what an element
+/// actually describes.
+///
+/// A consumer reading `upstream: raw/session-3.bag` off a dataset document reads it as the
+/// dataset's lineage. It is the lineage of one episode, and the flattened document gave no way to
+/// tell the two apart — the same overreach `veridex inspect` and `PROVENANCE.PARTIAL` were fixed
+/// for, published to other tools instead of shown to a person.
+fn scope_label(scope: &ProvenanceScope) -> String {
+    match scope {
+        ProvenanceScope::Dataset => "dataset".to_string(),
+        ProvenanceScope::Episode(index) => format!("episode/{index}"),
+        ProvenanceScope::Stream { episode, stream } => format!("episode/{episode}/stream/{stream}"),
+    }
+}
+
+/// For each expected provenance key, the episodes it is actually recorded for — `None` when a
+/// dataset-scoped record supplies it (that covers everything) or when it is absent entirely.
+///
+/// Used to disclose partial lineage in the emitted documents rather than let a per-episode record
+/// read as a claim about the whole dataset.
+fn partial_keys(dataset: &Dataset) -> Vec<(String, usize, usize)> {
+    let total = dataset.episodes.len();
+    if total == 0 {
+        return Vec::new();
+    }
+    let mut dataset_scoped: BTreeSet<&str> = BTreeSet::new();
+    let mut covering: BTreeMap<&str, BTreeSet<u64>> = BTreeMap::new();
+    for record in &dataset.provenance {
+        for el in &record.elements {
+            if el.class == ProvenanceClass::Unknown || !el.has_real_value() {
+                continue;
+            }
+            match &record.scope {
+                ProvenanceScope::Dataset => {
+                    dataset_scoped.insert(el.key.as_str());
+                }
+                ProvenanceScope::Episode(index) => {
+                    covering.entry(el.key.as_str()).or_default().insert(*index);
+                }
+                ProvenanceScope::Stream { episode, .. } => {
+                    covering
+                        .entry(el.key.as_str())
+                        .or_default()
+                        .insert(*episode);
+                }
+            }
+        }
+    }
+    covering
+        .into_iter()
+        .filter(|(key, eps)| !dataset_scoped.contains(key) && eps.len() < total)
+        .map(|(key, eps)| (key.to_string(), eps.len(), total))
+        .collect()
 }
 
 /// Every distinct known-or-asserted value recorded for a key, sorted.
@@ -70,11 +131,14 @@ pub fn to_croissant(dataset: &Dataset, cdm_content_hash: &str) -> Value {
     // Each provenance element, preserving its class so consumers see what is known vs. unknown.
     let provenance: Vec<Value> = collect_elements(dataset)
         .iter()
-        .map(|e| {
+        .map(|(scope, e)| {
             json!({
                 "key": e.key,
                 "value": e.value,
                 "class": e.class.tag(),
+                // What this element actually describes. Without it a lineage recorded for one
+                // episode reads, in a dataset document, as the dataset's lineage.
+                "scope": scope,
             })
         })
         .collect();
@@ -299,6 +363,27 @@ pub fn to_prov(dataset: &Dataset) -> Value {
     }
     if let Some(categories) = annotation_categories {
         entity.insert("veridex:annotationCreators".into(), json!(categories));
+    }
+    // What the attributions above actually cover. `prov:wasAttributedTo` and `prov:wasDerivedFrom`
+    // hang off the *dataset* entity, so an agent or an upstream recorded for one episode is
+    // published as a fact about the whole dataset — lineage that looks complete, which this repo
+    // already treats as worse than lineage that is absent. PROV has no vocabulary for "this holds
+    // for part of the entity" short of splitting the entity per episode, which would change the
+    // graph every existing consumer reads; so the coverage is stated under our own namespace,
+    // beside the claim it qualifies.
+    let partial = partial_keys(dataset);
+    if !partial.is_empty() {
+        entity.insert(
+            "veridex:partialProvenance".into(),
+            json!(partial
+                .iter()
+                .map(|(key, covered, total)| json!({
+                    "key": key,
+                    "episodes": covered,
+                    "of": total,
+                }))
+                .collect::<Vec<_>>()),
+        );
     }
     // Autonomy rig lineage as descriptive properties on the entity (known values only).
     for key in PROV_ENTITY_PROPERTIES {

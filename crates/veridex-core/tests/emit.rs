@@ -393,6 +393,93 @@ fn an_emit_carries_attested_provenance_and_names_who_signed_for_it() {
 /// document that says a merge came from one of its parents is worse than one that says nothing,
 /// because it looks complete.
 #[test]
+fn a_document_says_which_episodes_an_element_describes() {
+    // Both emitted documents flattened provenance scope away, so an `upstream` recorded for one
+    // episode of four was published — to Croissant and PROV consumers — as the dataset's lineage.
+    // Lineage that looks complete is worse than lineage that is absent, which is the reasoning
+    // `prov:wasDerivedFrom` already applies to naming one upstream of three.
+    let ep = |i: u64| Episode {
+        index: i,
+        start_ts: None,
+        end_ts: None,
+        streams: vec![],
+        task: None,
+        labels: vec![],
+        ego_poses: None,
+        declared_frame_count: None,
+    };
+    let mut d = Dataset {
+        id: "acme/pick".into(),
+        calibration: None,
+        metadata: vec![],
+        provenance: vec![
+            Provenance {
+                scope: ProvenanceScope::Episode(0),
+                elements: vec![el("upstream", Some("raw/s0.bag"), ProvenanceClass::Known)],
+            },
+            Provenance {
+                scope: ProvenanceScope::Dataset,
+                elements: vec![el("license", Some("mit"), ProvenanceClass::Known)],
+            },
+        ],
+        episodes: (0..4).map(ep).collect(),
+    };
+
+    let croissant = to_croissant(&d, "deadbeef");
+    let prov_list = croissant["veridex:provenance"].as_array().unwrap();
+    let upstream = prov_list.iter().find(|e| e["key"] == "upstream").unwrap();
+    assert_eq!(
+        upstream["scope"], "episode/0",
+        "the element names the episode it describes: {upstream}"
+    );
+    let license = prov_list.iter().find(|e| e["key"] == "license").unwrap();
+    assert_eq!(license["scope"], "dataset");
+
+    let graph = to_prov(&d);
+    let entity = graph["@graph"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["@type"] == "prov:Entity")
+        .unwrap();
+    // The derivation is still emitted — episode 0 really does derive from that file — but the
+    // document no longer lets it read as lineage for all four episodes.
+    assert!(entity.get("prov:wasDerivedFrom").is_some());
+    let partial = entity["veridex:partialProvenance"].as_array().unwrap();
+    assert_eq!(partial.len(), 1, "{partial:?}");
+    assert_eq!(partial[0]["key"], "upstream");
+    assert_eq!(partial[0]["episodes"], 1);
+    assert_eq!(partial[0]["of"], 4);
+    assert!(
+        !partial.iter().any(|p| p["key"] == "license"),
+        "a dataset-scoped element covers every episode and is not partial: {partial:?}"
+    );
+
+    // Recorded for every episode: complete, and nothing is disclosed.
+    d.provenance = (0..4)
+        .map(|i| Provenance {
+            scope: ProvenanceScope::Episode(i),
+            elements: vec![el(
+                "upstream",
+                Some(&format!("raw/s{i}.bag")),
+                ProvenanceClass::Known,
+            )],
+        })
+        .collect();
+    let graph = to_prov(&d);
+    let entity = graph["@graph"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["@type"] == "prov:Entity")
+        .unwrap();
+    assert!(
+        entity.get("veridex:partialProvenance").is_none(),
+        "{entity}"
+    );
+}
+
+#[test]
 fn every_recorded_upstream_reaches_the_lineage_graph() {
     let d = dataset_with(vec![
         el("upstream", Some("acme/raw-v1"), ProvenanceClass::Known),

@@ -53,8 +53,10 @@ Veridex Trust Report
   ([what each format supplies](docs/checks.md#what-each-format-can-supply)). Then surfaced, scored,
   and emitted two ways: as a signed trust certificate, and as Croissant + W3C PROV documents
   (`veridex provenance --emit`) for tools that speak them. The Croissant carries what Veridex actually extracted — name, license, creator
-  *when a person was actually named*, the CDM hash, and every provenance element with its class —
-  and deliberately omits `datePublished`,
+  *when a person was actually named*, the CDM hash, and every provenance element with its class and
+  the **scope** it describes (`dataset`, or the episode it was recorded for — so lineage recorded for
+  one episode of a thousand does not read as the dataset's; the PROV document says the same with
+  `veridex:partialProvenance`) — and deliberately omits `datePublished`,
   `url` and `version`, which it has no honest value for. A Croissant validator warns about exactly
   those three; it will not warn about anything Veridex made up.
 - **A number you can trust and share.** A deterministic 0–100 trust score and A–F grade. Same

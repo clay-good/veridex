@@ -22,6 +22,18 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   when any camera declares no frame the count would be a guess and the rule abstains, that stream
   being already reported by `AUTONOMY.SENSOR_FRAME_UNDECLARED`.
 
+- **The emitted Croissant and PROV documents now say what a provenance element describes.** Both
+  flattened scope away, so an `upstream` recorded for one episode of four was published — to other
+  tools, not just shown to a person — as the dataset's lineage. Lineage that looks complete is worse
+  than lineage that is absent, which is the reasoning `prov:wasDerivedFrom` already applied to
+  naming one upstream of three. Each Croissant provenance element now carries a `scope`
+  (`dataset`, `episode/3`, `episode/3/stream/…`), and the PROV entity carries
+  `veridex:partialProvenance` naming each key and how many episodes it covers. The derivations and
+  attributions themselves are unchanged — episode 0 really does derive from that file — so every
+  existing consumer reads what it always read; what is new is the qualifier beside it. PROV has no
+  vocabulary for "this holds for part of the entity" short of splitting the entity per episode,
+  which would change the graph shape, so the coverage is stated under the `veridex:` namespace.
+
 - **`veridex inspect` now qualifies a partially-recorded provenance element.** It printed the value
   and class of every expected key with no indication of *scope*, so an episode-scoped lineage
   recorded for one episode of four read exactly like a dataset-scoped one recorded for all of them.
