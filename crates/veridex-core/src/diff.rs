@@ -4,6 +4,8 @@
 //! Operates on the report JSON (`veridex.report/1`) so it works on any two saved reports without
 //! re-running validation. A finding is "the same" when its full JSON object is equal.
 
+use std::collections::HashSet;
+
 use serde_json::Value;
 
 /// The result of diffing two reports.
@@ -245,19 +247,34 @@ pub fn diff_reports(old: &Value, new: &Value) -> ReportDiff {
     let old_findings = findings(old);
     let new_findings = findings(new);
 
+    // Set membership, not `Vec::contains`. The three partitions each scanned the other report's
+    // whole finding list per finding, so the work grew as the product of two counts that come from
+    // *files the caller hands in* — and each comparison was a deep equality over a multi-field JSON
+    // object with long message, risk and remedy strings. Two 20,000-finding reports (an ordinary
+    // size for a large dataset reported per episode) is 4·10^8 of those, which is a diff that never
+    // returns rather than one that says nothing changed.
+    //
+    // The key is the finding's own JSON text. `serde_json::Map` is a `BTreeMap` here — the
+    // `preserve_order` feature is off — so a value's serialization is canonical: two findings are
+    // equal exactly when their rendered text is, and this partitions identically to what it
+    // replaces rather than approximately.
+    let key = |f: &Value| f.to_string();
+    let old_keys: HashSet<String> = old_findings.iter().map(&key).collect();
+    let new_keys: HashSet<String> = new_findings.iter().map(&key).collect();
+
     let introduced: Vec<Value> = new_findings
         .iter()
-        .filter(|f| !old_findings.contains(f))
+        .filter(|f| !old_keys.contains(&key(f)))
         .cloned()
         .collect();
     let resolved: Vec<Value> = old_findings
         .iter()
-        .filter(|f| !new_findings.contains(f))
+        .filter(|f| !new_keys.contains(&key(f)))
         .cloned()
         .collect();
     let unchanged: Vec<Value> = new_findings
         .iter()
-        .filter(|f| old_findings.contains(f))
+        .filter(|f| old_keys.contains(&key(f)))
         .cloned()
         .collect();
 

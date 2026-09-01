@@ -313,6 +313,75 @@ fn two_veridex_versions_are_a_comparison_of_catalogs_not_of_data() {
 }
 
 #[test]
+fn the_same_finding_written_in_a_different_key_order_is_the_same_finding() {
+    // The set key the partitions use is the finding's own JSON text, which is canonical only
+    // because `serde_json::Map` is a `BTreeMap` here — the `preserve_order` feature is off. If
+    // anything in the tree ever turns it on, key order would follow the input file and two reports
+    // that differ only in how their JSON was written would diff as wholly disjoint: every finding
+    // introduced, every finding resolved, a regression gate failing a run with no change in it.
+    // Nothing in the type system says so, so this says it.
+    let one: serde_json::Value = serde_json::from_str(
+        r#"{"verdict":{"findings":[{"code":"TEMPORAL.GAP","message":"m","severity":"warning"}]}}"#,
+    )
+    .unwrap();
+    let other: serde_json::Value = serde_json::from_str(
+        r#"{"verdict":{"findings":[{"severity":"warning","message":"m","code":"TEMPORAL.GAP"}]}}"#,
+    )
+    .unwrap();
+    let d = veridex_core::diff::diff_reports(&one, &other);
+    assert!(d.introduced.is_empty(), "{:?}", d.introduced);
+    assert!(d.resolved.is_empty(), "{:?}", d.resolved);
+    assert_eq!(d.unchanged.len(), 1);
+}
+
+#[test]
+fn two_large_reports_diff_in_a_time_a_person_will_wait() {
+    // The three partitions each scanned the other report's whole finding list per finding, so the
+    // work grew as the product of two counts that come from files the caller hands in — and each
+    // comparison was a deep equality over a multi-field JSON object with long message, risk and
+    // remedy strings. Two 20,000-finding reports (an ordinary size for a large dataset reported per
+    // episode) is 4e8 of those: a diff that never returns rather than one that says what changed.
+    let finding = |i: usize| {
+        serde_json::json!({
+            "check_id": "temporal.monotonic",
+            "severity": "error",
+            "category": "temporal",
+            "location": { "Stream": { "episode": i, "stream": format!("observation.images.cam{i}") } },
+            "code": "TEMPORAL.NON_MONOTONIC",
+            "message": format!("stream `observation.images.cam{i}` in episode {i}: timestamp does not increase at frame 5"),
+            "risk": "Out-of-order or duplicated frames corrupt trajectory ordering and any windowed learning.",
+            "remedy": "Re-sort or de-duplicate the stream by timestamp at the source.",
+        })
+    };
+    let report = |range: std::ops::Range<usize>| {
+        serde_json::json!({
+            "verdict": {
+                "veridex_version": "0.1.0",
+                "cdm_content_hash": "abc",
+                "findings": range.map(finding).collect::<Vec<_>>(),
+                "errored_checks": [],
+            },
+            "dataset": { "id": "big" },
+            "trust_score": { "score": 50 },
+        })
+    };
+    // 10,000 findings in common, 10,000 unique to each side.
+    let old = report(0..20_000);
+    let new = report(10_000..30_000);
+
+    let started = std::time::Instant::now();
+    let d = veridex_core::diff::diff_reports(&old, &new);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(20),
+        "the diff must not be quadratic in counts the input files choose"
+    );
+    // And it partitions exactly as the pairwise form did — the point is the same answer, faster.
+    assert_eq!(d.introduced.len(), 10_000);
+    assert_eq!(d.resolved.len(), 10_000);
+    assert_eq!(d.unchanged.len(), 10_000);
+}
+
+#[test]
 fn a_redacted_reports_placeholder_id_is_not_a_dataset_mismatch() {
     // A redacted report's dataset id is a placeholder by construction, so comparing one against a
     // real id is guaranteed to differ and says nothing about which dataset either describes. The

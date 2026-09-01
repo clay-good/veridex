@@ -22,6 +22,17 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   when any camera declares no frame the count would be a guess and the rule abstains, that stream
   being already reported by `AUTONOMY.SENSOR_FRAME_UNDECLARED`.
 
+- **`veridex diff` no longer takes minutes on a large report.** Its three partitions — introduced,
+  resolved, unchanged — each scanned the other report's whole finding list per finding, so the work
+  grew as the *product* of two counts that come from the files the caller hands in, with each
+  comparison a deep equality over a multi-field JSON object carrying long message, risk and remedy
+  strings. Two 20,000-finding reports (an ordinary size for a large dataset reported per episode) is
+  4e8 of those: a diff that never returns rather than one that says what changed. Now set
+  membership keyed on the finding's own JSON text, which partitions **identically** rather than
+  approximately, because `serde_json::Map` is a `BTreeMap` here and that text is canonical. The same
+  case now finishes in about two seconds; a test pins both the timing and the exact partition, and a
+  second test pins the canonicalization the key depends on.
+
 - **A broken rig calibration is now one finding, not one per episode.** Both rules that judge the
   calibration read `dataset.calibration` — a dataset-level document — yet were emitted inside
   `autonomy.calibration-completeness`'s per-episode loop, so a 200-episode drive log reported
