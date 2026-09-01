@@ -714,6 +714,30 @@ impl Check for CalibrationCompleteness {
     }
     fn run(&self, dataset: &Dataset) -> Vec<Finding> {
         let mut findings = Vec::new();
+        // The transform tree is dataset-level, and so is everything derived from it. Reading it
+        // inside the episode loop made the work the product of the episode count and the tree size
+        // — both numbers the input file chooses — for an answer that is the same on every episode.
+        let transforms = dataset
+            .calibration
+            .as_ref()
+            .map(|c| c.transforms.as_slice())
+            .unwrap_or(&[]);
+        let intrinsics_empty = dataset
+            .calibration
+            .as_ref()
+            .map(|c| c.intrinsics.is_empty())
+            .unwrap_or(true);
+        let intrinsics_count = dataset
+            .calibration
+            .as_ref()
+            .map(|c| c.intrinsics.len())
+            .unwrap_or(0);
+        // Computed once, and only when it can be needed: the walk is over the whole tree.
+        let tree_frames: HashSet<&str> = transforms
+            .iter()
+            .flat_map(|t| [t.parent_frame.as_str(), t.child_frame.as_str()])
+            .collect();
+        let mut components: Option<usize> = None;
         let flag = |episode: u64, msg: String| {
             Finding::new(
                 "autonomy.calibration-completeness",
@@ -792,17 +816,6 @@ impl Check for CalibrationCompleteness {
                 continue; // no spatial sensors that need extrinsics/intrinsics
             }
 
-            let transforms = dataset
-                .calibration
-                .as_ref()
-                .map(|c| c.transforms.as_slice())
-                .unwrap_or(&[]);
-            let intrinsics_empty = dataset
-                .calibration
-                .as_ref()
-                .map(|c| c.intrinsics.is_empty())
-                .unwrap_or(true);
-
             if transforms.is_empty() {
                 findings.push(flag(
                     ep.index,
@@ -812,12 +825,12 @@ impl Check for CalibrationCompleteness {
                         ep.index
                     ),
                 ));
-            } else if !break_is_localizable(ep, transforms) {
+            } else if !break_is_localizable(ep, &tree_frames) {
                 // Deferred to `autonomy.sensor-frame-resolution` only when that check can actually
                 // name the stranded sensors — which is what a reader acts on. When it cannot (a
                 // sensor that declares no frame, or no camera to anchor connectivity against), this
                 // episode-level report is the only warning that exists, so it stays.
-                let components = tf_component_count(transforms);
+                let components = *components.get_or_insert_with(|| tf_component_count(transforms));
                 if components > 1 {
                     findings.push(flag(
                         ep.index,
@@ -830,11 +843,6 @@ impl Check for CalibrationCompleteness {
                 }
             }
 
-            let intrinsics_count = dataset
-                .calibration
-                .as_ref()
-                .map(|c| c.intrinsics.len())
-                .unwrap_or(0);
             if has_camera && intrinsics_empty {
                 findings.push(flag(
                     ep.index,
@@ -945,11 +953,7 @@ fn is_spatial_sensor(modality: Modality) -> bool {
 /// whole episode: a camera anchors the connectivity question, and every spatial sensor declares a
 /// frame. Miss either and the stranded sensor may be one the successor never mentions — leaving the
 /// break reported by neither check, which is worse than reporting it twice.
-fn break_is_localizable(ep: &Episode, transforms: &[Transform]) -> bool {
-    let known: HashSet<&str> = transforms
-        .iter()
-        .flat_map(|t| [t.parent_frame.as_str(), t.child_frame.as_str()])
-        .collect();
+fn break_is_localizable(ep: &Episode, known: &HashSet<&str>) -> bool {
     let camera_anchors_the_question = ep
         .streams
         .iter()

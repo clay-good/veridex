@@ -4978,6 +4978,48 @@ fn a_frame_with_two_parents_is_not_a_calibrated_rig() {
 }
 
 #[test]
+fn a_long_drive_log_does_not_rewalk_its_transform_tree_per_episode() {
+    // The same shape as the frame-resolution fix, one check over. The transform tree is
+    // dataset-level and so is everything derived from it, but the tree was read inside the episode
+    // loop: `break_is_localizable` rebuilt the set of every frame the tree names, and
+    // `tf_component_count` rebuilt its whole adjacency and walked it, once per episode. Both counts
+    // — episodes and transforms — come from the input file, so a 2,000-episode drive log with a
+    // 20,000-frame tree paid their product for an answer identical on every episode.
+    //
+    // The episodes carry a spatial sensor that declares no frame, which is what forces the
+    // disconnected-tree branch to be reached rather than deferred.
+    let mut transforms: Vec<veridex_core::cdm::Transform> = (0..10_000u32)
+        .map(|i| xf(&format!("root_a{i}"), &format!("leaf_a{i}")))
+        .collect();
+    // A second component, so the branch actually reports rather than returning early.
+    transforms.extend((0..10_000u32).map(|i| xf(&format!("root_b{i}"), &format!("leaf_b{i}"))));
+    let mut d = rig_with_calibration(Some(veridex_core::cdm::Calibration {
+        transforms,
+        intrinsics: vec![intr("cam")],
+    }));
+    let first = d.episodes[0].clone();
+    for index in 1..2_000u64 {
+        let mut ep = first.clone();
+        ep.index = index;
+        d.episodes.push(ep);
+    }
+
+    let started = std::time::Instant::now();
+    let f = autonomy::CalibrationCompleteness.run(&d);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(20),
+        "the tree is read once for the dataset, not once per episode"
+    );
+    assert!(
+        f.iter()
+            .any(|x| x.code == "AUTONOMY.CALIBRATION_INCOMPLETE"
+                && x.message.contains("disconnected")),
+        "and the disconnected tree is still reported: {:?}",
+        f.iter().take(3).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn one_broken_calibration_is_one_finding_however_many_episodes_the_rig_recorded() {
     // The calibration is a dataset-level document, and both rules that judge it read `dataset` —
     // yet they were emitted inside the per-episode loop, so a 200-episode drive log reported the

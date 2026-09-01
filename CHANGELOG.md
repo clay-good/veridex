@@ -22,6 +22,14 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   when any camera declares no frame the count would be a guess and the rule abstains, that stream
   being already reported by `AUTONOMY.SENSOR_FRAME_UNDECLARED`.
 
+- **`autonomy.calibration-completeness` re-read its transform tree once per episode.** The same
+  shape, one check over: the tree is dataset-level and so is everything derived from it, but
+  `break_is_localizable` rebuilt the set of every frame the tree names and `tf_component_count`
+  rebuilt its whole adjacency and walked it, inside the per-episode loop — for an answer identical on
+  every episode. Both counts come from the input file, so a 2,000-episode drive log with a
+  20,000-frame tree paid their product: **203 seconds, now 0.66**. The component count is computed
+  at most once, and only on the branch that needs it.
+
 - **`autonomy.sensor-frame-resolution` was quadratic three ways over counts a bag chooses.** Nothing
   caps how many channels a recording may declare, so the number of cameras and the number of spatial
   sensors on one episode are both file-controlled, and a log of 5,000 image topics beside 5,000 LiDAR
