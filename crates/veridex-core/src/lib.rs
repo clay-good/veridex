@@ -140,6 +140,7 @@ mod tests {
                         latched: None,
                         declared_range: None,
                         point_fields: None,
+                        observed_point_counts: None,
                         media: None,
                         frame_id: None,
                         frames: vec![
@@ -181,6 +182,7 @@ mod tests {
                         latched: None,
                         declared_range: None,
                         point_fields: None,
+                        observed_point_counts: None,
                         media: None,
                         frame_id: None,
                         frames: vec![Frame {
@@ -391,7 +393,7 @@ mod tests {
         };
         let base = content_hash(&sample_dataset());
         type Mutator = fn(&mut Stream);
-        let mutate: [(&str, Mutator); 30] = [
+        let mutate: [(&str, Mutator); 31] = [
             // The fields the encoder has carried from the beginning. Absent from this table until a
             // mutation audit deleted `clock_kind` from `encode` and watched 692 tests pass: a
             // stream's frames are a synchronized rig under one value and an unmeasurable timeline
@@ -548,6 +550,18 @@ mod tests {
                     max: 100.0,
                 })
             }),
+            // How many points the stream's cloud messages carried. `AUTONOMY.POINT_CLOUD_EMPTY`
+            // fails a stream on it, and a LiDAR that published only empty sweeps is otherwise
+            // identical to one that published full ones — same schema, same timestamps, same rate,
+            // same frame.
+            ("observed_point_counts", |s| {
+                s.observed_point_counts = Some(crate::cdm::PointCounts {
+                    message_count: 10,
+                    min: 0,
+                    max: 0,
+                    empty: 10,
+                })
+            }),
         ];
 
         // A compile-time census. Adding a field to `Stream` breaks this destructuring, which is the
@@ -575,6 +589,7 @@ mod tests {
                 observed_non_finite: _,
                 observed_dim_stats: _,
                 point_fields: _,
+                observed_point_counts: _,
                 media: _,
                 frame_id: _,
             } = s;
@@ -685,6 +700,7 @@ mod proptests {
                 latched: None,
                 declared_range: None,
                 point_fields: None,
+                observed_point_counts: None,
                 media: None,
                 frame_id: None,
             })

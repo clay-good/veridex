@@ -1651,6 +1651,7 @@ fn declare_channel_group(
             latched: None,
             declared_range: None,
             point_fields: None,
+            observed_point_counts: None,
             media: None,
             frame_id: None,
         });
@@ -1859,6 +1860,7 @@ fn decode_channel_group(
             latched: None,
             declared_range: None,
             point_fields: None,
+            observed_point_counts: None,
             // MF4 channels declare no coordinate frame.
             media: None,
             frame_id: None,

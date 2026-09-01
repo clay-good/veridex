@@ -111,6 +111,7 @@ struct StreamBuilder {
     latched: Option<bool>,
     /// Per-point field layout, decoded from the first `PointCloud2` message on this topic (if any).
     point_fields: Option<Vec<PointField>>,
+    point_counts: super::cdr::PointCountAccum,
     /// The coordinate frame this topic's messages declare, from the first message whose body starts
     /// with a `std_msgs/Header`. First one wins: a topic that changes frame mid-recording is a rig
     /// fault, but recording the last one seen would hide it behind whichever message came last.
@@ -495,6 +496,7 @@ impl Adapter for McapAdapter {
             let builder = streams
                 .entry(topic.clone())
                 .or_insert_with(|| StreamBuilder {
+                    point_counts: Default::default(),
                     modality: infer_modality(schema_name, &topic),
                     frames: Vec::new(),
                     // rosbag2's MCAP writer carries each publisher's QoS on the channel, so a bag
@@ -536,6 +538,12 @@ impl Adapter for McapAdapter {
             if schema_is(schema_name, "PointCloud2") {
                 if builder.point_fields.is_none() {
                     builder.point_fields = super::cdr::decode_point_cloud2_fields(&message.data);
+                }
+                // Per message, unlike the layout above: the layout is a property of the stream and
+                // the first message settles it, while whether a sweep held any points is a property
+                // of each message and only the messages can settle it.
+                if let Some(n) = super::cdr::decode_point_cloud2_point_count(&message.data) {
+                    builder.point_counts.observe(n);
                 }
             } else if schema_is(schema_name, "CameraInfo") {
                 // First successfully-decoded intrinsics per camera topic wins.
@@ -625,6 +633,7 @@ impl Adapter for McapAdapter {
                     latched: b.latched,
                     declared_range: None,
                     point_fields: b.point_fields,
+                    observed_point_counts: b.point_counts.finish(),
                     // The coordinate frame the sensor declares, from its message headers.
                     media: None,
                     frame_id: b.frame_id,
@@ -996,6 +1005,7 @@ fn ingest_summary_only(path: &Path, summary: McapSummary) -> Result<Ingested, In
             observed_non_finite: None,
             observed_dim_stats: None,
             point_fields: None,
+            observed_point_counts: None,
             media: None,
             frame_id: None,
         })

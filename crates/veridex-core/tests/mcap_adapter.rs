@@ -684,6 +684,62 @@ fn build_mcap_one_shot(channels: &[(&str, &str, Vec<u8>)]) -> Vec<u8> {
 }
 
 #[test]
+fn a_lidar_that_published_only_empty_clouds_is_caught_end_to_end() {
+    // The same well-formed `PointCloud2` the working fixture writes, with `width` of zero: the
+    // schema, the frame, the timestamps and the rate of a healthy LiDAR and no points. Run through
+    // the real adapter and the real engine, because the whole claim is that everything *else*
+    // passes on it — a unit test on a hand-built CDM cannot show that.
+    let cloud = |points: u32| {
+        let mut pc = Cdr::new();
+        pc.header("lidar");
+        pc.u32(1);
+        pc.u32(points);
+        pc.u32(4);
+        for name in ["x", "y", "z", "intensity"] {
+            pc.string(name);
+            pc.u32(0);
+            pc.u8(7); // FLOAT32
+            pc.u32(1);
+        }
+        pc.buf
+    };
+    let bytes = build_mcap_one_shot(&[
+        ("sensor_msgs/msg/PointCloud2", "/lidar/points", cloud(0)),
+        ("sensor_msgs/msg/PointCloud2", "/lidar/points", cloud(0)),
+    ]);
+    let path = write_temp_mcap(&bytes);
+    let d = McapAdapter
+        .ingest(
+            &Source::Local(path.to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest")
+        .dataset;
+
+    let counts = d.episodes[0].streams[0]
+        .observed_point_counts
+        .expect("point counts decoded");
+    assert_eq!(counts.message_count, 2);
+    assert_eq!(counts.empty, 2);
+    assert_eq!(counts.max, 0);
+
+    let engine = veridex_core::checks::default_engine().expect("the standard catalog");
+    let hash = veridex_core::content_hash(&d);
+    let verdict = engine.run(&d, hash, &veridex_core::RunConfig::default());
+    let empty: Vec<_> = verdict
+        .findings
+        .iter()
+        .filter(|f| f.code == "AUTONOMY.POINT_CLOUD_EMPTY")
+        .collect();
+    assert_eq!(empty.len(), 1, "{:?}", verdict.findings);
+    assert!(
+        empty[0].message.contains("/lidar/points"),
+        "{}",
+        empty[0].message
+    );
+}
+
+#[test]
 fn ros_message_bodies_populate_the_autonomy_cdm_end_to_end() {
     // PointCloud2 with x/y/z/intensity fields.
     let mut pc = Cdr::new();
@@ -747,6 +803,16 @@ fn ros_message_bodies_populate_the_autonomy_cdm_end_to_end() {
     let pf = lidar.point_fields.as_ref().expect("point_fields decoded");
     let names: Vec<&str> = pf.iter().map(|f| f.name.as_str()).collect();
     assert_eq!(names, ["x", "y", "z", "intensity"]);
+    // And how many points each cloud actually held (`height × width`, stated in the message header
+    // ahead of the bulk blob). The layout says what a record looks like; this says whether there
+    // were any — a LiDAR whose driver lost its sensor publishes the same layout forever with
+    // `width` of zero.
+    let counts = lidar
+        .observed_point_counts
+        .expect("point counts decoded per message");
+    assert_eq!(counts.message_count, 1);
+    assert_eq!(counts.max, 1000);
+    assert_eq!(counts.empty, 0);
 
     // Calibration: intrinsics + the transform tree.
     let calib = d.calibration.as_ref().expect("calibration decoded");

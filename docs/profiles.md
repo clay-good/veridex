@@ -98,6 +98,7 @@ Three rules keep that honest:
 | Calibration completeness | `autonomy.calibration-completeness` | a connected, unambiguous transform (TF) tree and camera intrinsics present, and arithmetically usable |
 | Sensor frame resolution | `autonomy.sensor-frame-resolution` | every sensor's own frame resolves through the tree to a camera |
 | GNSS plausibility | `autonomy.gnss-plausibility` | every satellite fix is a possible place, and the receiver actually had one — a drive whose fix is impossible or never acquired cannot be aligned to a map or to another drive |
+| Point-cloud density | `autonomy.point-cloud-density` | every point-cloud sensor actually recorded points — a LiDAR whose driver lost its sensor keeps publishing well-formed empty clouds at the right rate, and satisfies every criterion above |
 
 The `readiness` block on the certificate records the profile name, whether it was `applicable`, the
 overall `ready` flag, and each criterion's `check_id`, `threshold`, `passed`, and finding count — plus
@@ -129,6 +130,7 @@ veridex verify my-rig.mcap --certificate my-rig.veridex.json --key issuer.pub
     ✓ autonomy.calibration-completeness — a connected, unambiguous transform (TF) tree and camera intrinsics present, and arithmetically usable
     ✓ autonomy.sensor-frame-resolution — every sensor's own frame resolves through the tree to a camera
     ✓ autonomy.gnss-plausibility — every satellite fix is a possible place, and the receiver actually had one
+    ✓ autonomy.point-cloud-density — every point-cloud sensor actually recorded points
 ```
 
 Add `--json` for the machine-readable summary (the same fields, plus the `readiness` block verbatim)

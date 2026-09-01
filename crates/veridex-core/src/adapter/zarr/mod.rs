@@ -1083,6 +1083,7 @@ fn declared_stream(
         latched: None,
         declared_range: None,
         point_fields: None,
+        observed_point_counts: None,
         frame_id: None,
     }))
 }
@@ -1222,6 +1223,7 @@ fn build_stream(
         latched: None,
         declared_range: None,
         point_fields: None,
+        observed_point_counts: None,
         media: None,
         frame_id: None,
     }))

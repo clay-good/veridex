@@ -1711,6 +1711,7 @@ fn empty_stream(leaf: &Leaf) -> Stream {
         latched: None,
         declared_range: None,
         point_fields: None,
+        observed_point_counts: None,
         media: None,
         frame_id: None,
     }
@@ -1876,6 +1877,7 @@ fn build_episode(
             latched: None,
             declared_range: None,
             point_fields: None,
+            observed_point_counts: None,
             media: None,
             frame_id: None,
         });

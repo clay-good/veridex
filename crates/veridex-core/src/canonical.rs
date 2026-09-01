@@ -74,7 +74,13 @@ use crate::cdm::{
 /// coefficients are a complete calibration under `plumb_bob` and a truncated one under
 /// `rational_polynomial`. Same rule again: the hash binds whatever changes what a check can
 /// conclude.
-pub const CANONICAL_VERSION: u32 = 12;
+///
+/// v13 binds each stream's `observed_point_counts` — how many points its `PointCloud2` messages
+/// actually carried, which the messages state in their own headers. `AUTONOMY.POINT_CLOUD_EMPTY`
+/// fails a stream on it, and a LiDAR that published ten thousand empty sweeps is otherwise
+/// indistinguishable from one that published ten thousand full ones: same schema, same timestamps,
+/// same rate, same frame. Same rule again.
+pub const CANONICAL_VERSION: u32 = 13;
 
 const DOMAIN: &[u8] = b"veridex.cdm.v1\0";
 
@@ -378,6 +384,16 @@ impl Stream {
                 e.str(&pf.name);
                 e.opt(&pf.dtype, |e, d| e.str(d));
             })
+        });
+        // How many points the cloud messages carried. Bound because `autonomy.point-cloud-density`
+        // fails a stream on it: a LiDAR that published ten thousand empty sweeps and one that
+        // published ten thousand full ones carry identical schemas, timestamps, rates and frames,
+        // and must not hash alike.
+        e.opt(&self.observed_point_counts, |e, c| {
+            e.u64(c.message_count);
+            e.u64(c.min);
+            e.u64(c.max);
+            e.u64(c.empty);
         });
         // The sensor's coordinate frame. Bound because `autonomy.sensor-frame-resolution` fails a
         // stream on it: two rigs differing only in which frame a sensor claims are a passing dataset

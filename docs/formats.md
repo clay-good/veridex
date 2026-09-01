@@ -193,7 +193,7 @@ rosbag2's `sqlite3` storage plugin keeps the recording in two tables: `topics` (
 topic) and `messages` (one row per message, with its receive timestamp and its serialized body). Each
 topic becomes a stream, each message a frame on the bag's single log clock, and the ROS type names
 the modality. The AV message *headers* are CDR-decoded exactly as they are from MCAP — rosbag2's
-other storage plugin — so a `PointCloud2` supplies the per-point field layout, `CameraInfo` the
+other storage plugin — so a `PointCloud2` supplies the per-point field layout **and its own point count**, `CameraInfo` the
 intrinsics **plus the image dimensions they were computed for and the distortion model they
 belong to**, `TFMessage` the transform tree, and `Odometry` the ego trajectory. The bulk
 payload is fingerprinted, never decoded.

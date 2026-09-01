@@ -414,6 +414,7 @@ struct StreamBuilder {
     /// From the topic's recorded QoS durability, when it states one unambiguously.
     latched: Option<bool>,
     point_fields: Option<Vec<PointField>>,
+    point_counts: super::cdr::PointCountAccum,
     frame_id: Option<String>,
     /// Values decoded from this topic's `JointState` or `Imu` messages, with the joint set they
     /// belong to. Empty for every other topic, whose payload stays opaque.
@@ -732,6 +733,7 @@ fn read_shard(
             .streams
             .entry(topic.name.clone())
             .or_insert_with(|| StreamBuilder {
+                point_counts: Default::default(),
                 modality: super::mcap::infer_modality(&topic.ros_type, &topic.name),
                 ros_type: topic.ros_type.clone(),
                 frames: Vec::new(),
@@ -760,6 +762,10 @@ fn read_shard(
         if super::mcap::schema_is(ty, "PointCloud2") {
             if builder.point_fields.is_none() {
                 builder.point_fields = super::cdr::decode_point_cloud2_fields(data);
+            }
+            // Per message: see the same call in the MCAP reader.
+            if let Some(n) = super::cdr::decode_point_cloud2_point_count(data) {
+                builder.point_counts.observe(n);
             }
         } else if super::mcap::schema_is(ty, "CameraInfo") {
             if !contents.intrinsics.contains_key(&topic.name) {
@@ -874,6 +880,7 @@ fn read_mcap_shard(
             .streams
             .entry(topic.clone())
             .or_insert_with(|| StreamBuilder {
+                point_counts: Default::default(),
                 modality: super::mcap::infer_modality(&ros_type, &topic),
                 ros_type: ros_type.clone(),
                 frames: Vec::new(),
@@ -902,6 +909,10 @@ fn read_mcap_shard(
         if super::mcap::schema_is(&ros_type, "PointCloud2") {
             if builder.point_fields.is_none() {
                 builder.point_fields = super::cdr::decode_point_cloud2_fields(data);
+            }
+            // Per message: see the same call in the MCAP reader.
+            if let Some(n) = super::cdr::decode_point_cloud2_point_count(data) {
+                builder.point_counts.observe(n);
             }
         } else if super::mcap::schema_is(&ros_type, "CameraInfo") {
             if !contents.intrinsics.contains_key(&topic) {
@@ -1037,6 +1048,7 @@ fn ingest_metadata_only(
             observed_non_finite: None,
             observed_dim_stats: None,
             point_fields: None,
+            observed_point_counts: None,
             media: None,
             frame_id: None,
         })
@@ -1441,6 +1453,7 @@ impl Adapter for Rosbag2Adapter {
                     latched: b.latched,
                     declared_range: None,
                     point_fields: b.point_fields,
+                    observed_point_counts: b.point_counts.finish(),
                     media: None,
                     frame_id: b.frame_id,
                 }

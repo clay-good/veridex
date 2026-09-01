@@ -311,6 +311,94 @@
             "min": -3.14159,
             "max": 3.14159
           }
+        },
+        {
+          "name": "lidar_top",
+          "modality": "point-cloud",
+          "declared_rate_hz": 10.0,
+          "clock_id": "rig",
+          "clock_kind": "measured",
+          "dtype": null,
+          "shape": null,
+          "dim_names": null,
+          "frames": [
+            {
+              "ts": 0,
+              "value_ref": {
+                "uri": "l0",
+                "byte_offset": 0,
+                "byte_len": 96,
+                "content_hash": [
+                  9,
+                  9,
+                  9,
+                  9,
+                  9,
+                  9,
+                  9,
+                  9,
+                  9,
+                  9,
+                  9,
+                  9,
+                  9,
+                  9,
+                  9,
+                  9,
+                  9,
+                  9,
+                  9,
+                  9,
+                  9,
+                  9,
+                  9,
+                  9,
+                  9,
+                  9,
+                  9,
+                  9,
+                  9,
+                  9,
+                  9,
+                  9
+                ]
+              }
+            },
+            {
+              "ts": 100000000,
+              "value_ref": {
+                "uri": "l1",
+                "byte_offset": 96,
+                "byte_len": 96,
+                "content_hash": null
+              }
+            }
+          ],
+          "point_fields": [
+            {
+              "name": "x",
+              "dtype": "float32"
+            },
+            {
+              "name": "y",
+              "dtype": "float32"
+            },
+            {
+              "name": "z",
+              "dtype": "float32"
+            },
+            {
+              "name": "intensity",
+              "dtype": null
+            }
+          ],
+          "observed_point_counts": {
+            "message_count": 2,
+            "min": 0,
+            "max": 24000,
+            "empty": 1
+          },
+          "frame_id": "lidar_top"
         }
       ],
       "task": "pick up the block",

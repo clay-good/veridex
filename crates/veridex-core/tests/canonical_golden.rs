@@ -29,12 +29,12 @@ fn the_canonical_encoding_has_not_changed_without_a_version_bump() {
     let d: Dataset = serde_json::from_str(GOLDEN).expect("the golden fixture parses");
 
     assert_eq!(
-        CANONICAL_VERSION, 12,
+        CANONICAL_VERSION, 13,
         "the encoding version changed; re-pin the hash below in the same commit"
     );
     assert_eq!(
         content_hash(&d).to_hex(),
-        "3904e19cfe99d85ef0eba0d8900384196d5ee3905ebcc3a39fad66cf455e6fb8",
+        "1da86b34260d516ef6483006311562fe47fb8dcfcbacdf6a3883b63a02c72dcc",
         "the canonical encoding changed. If that was deliberate, bump CANONICAL_VERSION and \
          re-pin this vector in the same commit — a hash change without a version bump means two \
          builds disagree about byte-identical data while both claiming the same encoding, and \
@@ -82,6 +82,18 @@ fn the_golden_fixture_still_covers_what_it_claims_to() {
     assert!(
         streams.iter().any(|s| s.latched == Some(true)),
         "latched arm — the vector must reach the encoding with a value, not just the absent marker"
+    );
+    assert!(
+        streams
+            .iter()
+            .any(|s| s.point_fields.as_ref().is_some_and(|f| !f.is_empty())),
+        "point-cloud layout arm — the vector reached it only as the absent marker until a cloud \
+         stream was added"
+    );
+    assert!(
+        streams.iter().any(|s| s.observed_point_counts.is_some()),
+        "observed point counts — the vector must reach the encoding with a value, not the absent \
+         marker"
     );
     assert!(streams.iter().any(|s| s.stats.is_some()), "stats arm");
     assert!(streams.iter().any(|s| s.dim_stats.is_some()), "dim arm");

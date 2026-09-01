@@ -426,6 +426,17 @@ pub struct Stream {
     /// media file — a scalar feature, or a dataset that stores its images inline.
     #[serde(default)]
     pub media: Option<Media>,
+    /// How many points the point-cloud messages on this stream actually carried, summarized over the
+    /// episode — `None` for every non-cloud stream and for a run that did not open the message
+    /// bodies. Extension for `autonomy-sensor-data`.
+    ///
+    /// [`Stream::point_fields`] records what the cloud's records are *shaped* like; this records
+    /// whether there were any. They are different questions with different answers: a LiDAR whose
+    /// driver lost its sensor still publishes a perfectly-formed `PointCloud2` at 10 Hz with `width`
+    /// of zero, which has the schema, the timestamps, the rate and the frame of a working LiDAR and
+    /// none of its data.
+    #[serde(default)]
+    pub observed_point_counts: Option<PointCounts>,
     /// The coordinate frame this sensor's data is expressed in (a ROS `header.frame_id`, e.g.
     /// `lidar_top` or `camera_front`), when the source records one. This is the name that has to
     /// appear in [`Calibration::transforms`] for the sensor to be relatable to any other — the
@@ -475,6 +486,25 @@ pub struct Saturation {
     /// stream, or the saturating joint of a vector — e.g. `6` for the gripper of a 7-DoF `action`).
     /// The adapter reports the worst-saturating dimension; the check names it in its finding.
     pub dim: u64,
+}
+
+/// How many points the point-cloud messages on a stream carried, summarized over the episode.
+///
+/// A `PointCloud2` states its own point count as `height × width` in the message header, ahead of
+/// the bulk `data` blob — so this is read without decoding a single point, the same discipline the
+/// rest of the autonomy decode follows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PointCounts {
+    /// Messages whose point count was read (the denominator for `empty`).
+    pub message_count: u64,
+    /// The smallest point count seen.
+    pub min: u64,
+    /// The largest point count seen.
+    pub max: u64,
+    /// How many messages carried no points at all. Counted rather than inferred from `min`, because
+    /// "the smallest sweep was empty" and "half the sweeps were empty" are different faults and a
+    /// reader acts on them differently.
+    pub empty: u64,
 }
 
 /// The media file backing a video stream, and what Veridex learned about it.

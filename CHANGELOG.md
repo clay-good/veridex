@@ -10,6 +10,35 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A LiDAR that recorded no points.** New check `autonomy.point-cloud-density` (#44), emitting
+  `AUTONOMY.POINT_CLOUD_EMPTY` (error) when every `PointCloud2` message on a stream carried zero
+  points, and `AUTONOMY.POINT_CLOUD_DROPPED` (warning) when only some did.
+
+  This is the autonomy fault every other check passes. A driver that lost its sensor keeps
+  publishing perfectly-formed clouds at the configured rate: the right schema, the right `frame_id`,
+  monotonic timestamps, no jitter — and `width` of zero. The structural family sees frames, the
+  temporal family sees a clean 10 Hz, `autonomy.sensor-frame-resolution` places the sensor in the
+  tree, and the rig certified as world-model-ready on a LiDAR that recorded nothing. Proven
+  end-to-end through the real MCAP adapter and the real engine, because the whole claim is that
+  everything *else* passes on it — a unit test on a hand-built CDM cannot show that.
+
+  The count comes from each message's own `height × width`, which a `PointCloud2` states in its
+  header ahead of the bulk blob, so no point payload is decoded; it is read per message rather than
+  once per stream, because the layout is a property of the stream and the first message settles it
+  while whether a sweep held points is a property of each message. Summarized as a running
+  `PointCounts` (message count, min, max, empty) rather than a list, since the number of messages on
+  a topic is chosen by the file. Silent where no counts were read at all — every non-ROS format, and
+  a `--metadata-only` run — because a stream whose density was never measured is not a stream
+  measured and found empty. Added as a seventh `world-model-ready` criterion, without which a rig
+  failing it would still certify as ready.
+
+  `CANONICAL_VERSION` goes to **13**: a LiDAR that published ten thousand empty sweeps and one that
+  published ten thousand full ones are otherwise identical in the hash, and the clean one's
+  certificate would verify the broken one. Re-pinning the golden vector also turned up that the
+  fixture had **no point-cloud stream at all**, so the `point_fields` arm was itself only ever
+  reached as the absent marker; the fixture now carries a real cloud stream and both arms are
+  asserted.
+
 - **A distortion coefficient list that does not fit its own model.** The same `CameraInfo` decoder
   also read `distortion_model` into a `_`-prefixed binding and dropped it, which left the
   coefficients recorded verbatim with nothing saying how many of them there should be. `plumb_bob`

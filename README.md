@@ -43,7 +43,8 @@ Veridex Trust Report
   arithmetically impossible, a sensor rig whose transform tree is connected but gives one frame two
   different parents so nothing says where that sensor sits, a mount transform whose rotation
   quaternion is not a unit quaternion so every point it places lands at the wrong distance from the
-  rig — each reported with the *training risk* it creates and a *remedy*.
+  rig, the LiDAR whose driver lost its sensor and published ten minutes of perfectly-timed empty
+  point clouds — each reported with the *training risk* it creates and a *remedy*.
 - **Proves where data came from.** Which sensor, clock, calibration, annotator, license, and
   upstream dataset produced each segment — read out of the dataset itself wherever it says so, and
   it usually does: a `robomimic` file's `env_args` names its robot, a DBC's `BO_` line names the ECU

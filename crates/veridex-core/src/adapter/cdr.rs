@@ -14,7 +14,7 @@
 //! little-endian representation (what ROS 2 emits by default) is decoded; a big-endian body is
 //! declined (the caller simply gets no decoded metadata, exactly as if the field were absent).
 
-use crate::cdm::{CameraIntrinsics, PointField, Pose, Transform};
+use crate::cdm::{CameraIntrinsics, PointCounts, PointField, Pose, Transform};
 
 /// Ceiling on any name this reader will return (coordinate frames, point-field names, distortion
 /// models). ROS names are identifiers — tens of bytes — so this is generous by three orders of
@@ -163,6 +163,66 @@ pub fn decode_point_cloud2_fields(data: &[u8]) -> Option<Vec<PointField>> {
         });
     }
     Some(fields)
+}
+
+/// Accumulates the point counts of a stream's `PointCloud2` messages into a [`PointCounts`].
+///
+/// Kept as a running summary rather than a `Vec` of counts: the number of messages on a topic is
+/// chosen by the file, so holding one entry per message is a memory cost a bag controls.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct PointCountAccum {
+    messages: u64,
+    min: u64,
+    max: u64,
+    empty: u64,
+}
+
+impl PointCountAccum {
+    /// Fold in one message's point count.
+    pub fn observe(&mut self, points: u64) {
+        if self.messages == 0 {
+            self.min = points;
+        } else {
+            self.min = self.min.min(points);
+        }
+        self.messages += 1;
+        self.max = self.max.max(points);
+        if points == 0 {
+            self.empty += 1;
+        }
+    }
+
+    /// The summary, or `None` when no message's count was read — an empty summary and a stream of
+    /// empty clouds are opposite verdicts, so "nothing was measured" must not render as a count.
+    pub fn finish(self) -> Option<PointCounts> {
+        (self.messages > 0).then_some(PointCounts {
+            message_count: self.messages,
+            min: self.min,
+            max: self.max,
+            empty: self.empty,
+        })
+    }
+}
+
+/// Decode a `sensor_msgs/msg/PointCloud2` body far enough to recover its **point count**:
+/// `Header`, then `uint32 height` and `uint32 width`, whose product is the number of points. The
+/// bulk `data` blob is never read, and neither is the field layout — this is the whole message
+/// header up to the count and nothing more, so it is cheap enough to run on every message rather
+/// than only the first.
+///
+/// Run per message on purpose. [`decode_point_cloud2_fields`] answers what a cloud's records are
+/// *shaped* like, which the first message settles for the whole stream; this answers whether there
+/// were any records, which only the messages themselves can settle. A LiDAR whose driver lost its
+/// sensor keeps publishing a perfectly-formed cloud at 10 Hz with `width` of zero.
+///
+/// The product is computed with a saturating multiply: both factors come out of the file, and
+/// `u32::MAX × u32::MAX` overflows a `u32` and would panic in a debug build on a crafted message.
+pub fn decode_point_cloud2_point_count(data: &[u8]) -> Option<u64> {
+    let mut r = Reader::new(data)?;
+    r.header()?;
+    let height = r.u32()? as u64;
+    let width = r.u32()? as u64;
+    Some(height.saturating_mul(width))
 }
 
 /// Decode a `sensor_msgs/msg/CameraInfo` body far enough to recover intrinsics for `stream`: `Header`,

@@ -44,6 +44,7 @@ fn stream(name: &str, clock: &str, rate: Option<f64>, ts: &[i64]) -> Stream {
         latched: None,
         declared_range: None,
         point_fields: None,
+        observed_point_counts: None,
         media: None,
         frame_id: None,
         frames: frames_at(ts),
@@ -314,6 +315,7 @@ fn stream_hashed(name: &str, clock: &str, ts: &[i64], contents: &[u8]) -> Stream
         latched: None,
         declared_range: None,
         point_fields: None,
+        observed_point_counts: None,
         media: None,
         frame_id: None,
         frames,
@@ -403,6 +405,7 @@ fn stream_with_content(name: &str, modality: Modality, contents: &[u8]) -> Strea
         latched: None,
         declared_range: None,
         point_fields: None,
+        observed_point_counts: None,
         media: None,
         frame_id: None,
         frames,
@@ -480,6 +483,7 @@ fn shaped(name: &str, dtype: Option<&str>, shape: Option<Vec<u64>>, ts: &[i64]) 
         latched: None,
         declared_range: None,
         point_fields: None,
+        observed_point_counts: None,
         media: None,
         frame_id: None,
         dim_names: None,
@@ -1533,7 +1537,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 43);
+    assert_eq!(verdict.executed_checks.len(), 44);
 }
 
 #[test]
@@ -3004,6 +3008,7 @@ fn a_bus_only_measurement_is_not_treated_as_a_sensor_rig() {
                 latched: None,
                 declared_range: None,
                 point_fields: None,
+                observed_point_counts: None,
                 media: None,
                 frame_id: None,
             })
@@ -3085,6 +3090,7 @@ fn one_shared_timeline_reports_once_and_an_event_driven_signal_is_not_called_inc
         latched: None,
         declared_range: None,
         point_fields: None,
+        observed_point_counts: None,
         media: None,
         frame_id: None,
     };
@@ -5168,6 +5174,83 @@ fn a_distortion_model_is_an_open_namespace_and_an_unknown_one_is_not_a_disagreem
     // And the count is what is judged, not the name's spelling: the same list under a model that
     // takes a different number of terms is the defect.
     assert!(!case(Some("plumb_bob"), vec![0.1, 0.2, 0.3, 0.4]));
+}
+
+// ---- AUTONOMY.POINT_CLOUD_EMPTY / POINT_CLOUD_DROPPED ----
+
+fn cloud_with_counts(counts: Option<veridex_core::cdm::PointCounts>) -> Dataset {
+    let mut ep = episode(
+        0,
+        vec![rig_stream("lidar", Modality::PointCloud, 1_000_000_000)],
+    );
+    ep.streams[0].observed_point_counts = counts;
+    dataset(vec![ep])
+}
+
+#[test]
+fn a_lidar_that_recorded_no_points_is_not_a_working_lidar() {
+    // A driver that lost its sensor keeps publishing. The messages have the schema, the rate, the
+    // coordinate frame and the monotonic timestamps of a working LiDAR — so the structural family
+    // sees frames, the temporal family sees a clean 10 Hz, the frame checks place the sensor in the
+    // tree, and every one of them passes on a stream carrying no data at all. The point count is in
+    // the message header, ahead of the bulk blob, so reading it decodes no points.
+    let f =
+        autonomy::PointCloudDensity.run(&cloud_with_counts(Some(veridex_core::cdm::PointCounts {
+            message_count: 600,
+            min: 0,
+            max: 0,
+            empty: 600,
+        })));
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "AUTONOMY.POINT_CLOUD_EMPTY");
+    assert_eq!(f[0].severity, Severity::Error);
+    assert_eq!(
+        f[0].location,
+        veridex_core::check::Location::Stream {
+            episode: 0,
+            stream: "lidar".into()
+        }
+    );
+    assert!(f[0].message.contains("600"), "{}", f[0].message);
+}
+
+#[test]
+fn a_sensor_that_cut_out_mid_recording_is_a_warning_not_a_dead_sensor() {
+    // Some sweeps empty, not all: the sensor dropped out partway. Distinguished from the dead-sensor
+    // case because a reader acts on them differently — this recording holds real data on either side
+    // and may be usable once the affected span is cut. Invisible to every timing check, because the
+    // empty messages keep the stream's rate and continuity intact.
+    let f =
+        autonomy::PointCloudDensity.run(&cloud_with_counts(Some(veridex_core::cdm::PointCounts {
+            message_count: 600,
+            min: 0,
+            max: 24_000,
+            empty: 37,
+        })));
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "AUTONOMY.POINT_CLOUD_DROPPED");
+    assert_eq!(f[0].severity, Severity::Warning);
+    assert!(f[0].message.contains("37 empty"), "{}", f[0].message);
+    assert!(f[0].message.contains("24000 points"), "{}", f[0].message);
+}
+
+#[test]
+fn a_stream_whose_density_was_never_measured_is_not_a_stream_found_empty() {
+    // Two silences, and neither may be read as a verdict. A source that carries no point counts at
+    // all — every non-ROS format, and a metadata-only run, which does not open message bodies —
+    // leaves `None`, and a check that reported on it would be measuring the request rather than the
+    // data. A stream whose every sweep held points is simply fine.
+    assert!(autonomy::PointCloudDensity
+        .run(&cloud_with_counts(None))
+        .is_empty());
+    assert!(autonomy::PointCloudDensity
+        .run(&cloud_with_counts(Some(veridex_core::cdm::PointCounts {
+            message_count: 600,
+            min: 19_800,
+            max: 24_000,
+            empty: 0,
+        })))
+        .is_empty());
 }
 
 // ---- AUTONOMY.CALIBRATION_AMBIGUOUS ----

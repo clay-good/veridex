@@ -1201,6 +1201,124 @@ impl Check for SensorFrameResolution {
     }
 }
 
+/// **Point-cloud density (design A2).** A LiDAR or radar stream whose messages carried no points.
+///
+/// The one autonomy fault that every other check passes: a driver that lost its sensor keeps
+/// publishing a perfectly-formed `PointCloud2` at its configured rate, with the right schema, the
+/// right `frame_id`, monotonic timestamps and no jitter — and `width` of zero. The structural family
+/// sees frames, the temporal family sees a clean 10 Hz, `autonomy.sensor-frame-resolution` places
+/// the sensor in the tree, and the rig certifies as world-model-ready on a LiDAR that recorded
+/// nothing. `AUTONOMY.POINT_CLOUD_EMPTY` reports a stream on which *every* message was empty;
+/// `AUTONOMY.POINT_CLOUD_DROPPED` reports one where some were, which is the sensor cutting out
+/// rather than never starting.
+///
+/// Read from the messages' own `height × width`, never from the point payload — the count is stated
+/// in the header, ahead of the bulk blob. Silent for a source that carries no point counts at all
+/// (every non-ROS format, and a metadata-only run): a stream whose density was never measured is
+/// not a stream that was measured and found empty.
+pub struct PointCloudDensity;
+
+impl Check for PointCloudDensity {
+    fn id(&self) -> &'static str {
+        "autonomy.point-cloud-density"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["AUTONOMY.POINT_CLOUD_EMPTY", "AUTONOMY.POINT_CLOUD_DROPPED"]
+    }
+    fn title(&self) -> &'static str {
+        "Point-cloud density"
+    }
+    fn category(&self) -> Category {
+        Category::Autonomy
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Error
+    }
+    fn scope(&self) -> Scope {
+        Scope::Stream
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        for ep in &dataset.episodes {
+            for stream in &ep.streams {
+                let Some(counts) = &stream.observed_point_counts else {
+                    continue;
+                };
+                if counts.empty == 0 {
+                    continue;
+                }
+                let at = || Location::Stream {
+                    episode: ep.index,
+                    stream: stream.name.clone(),
+                };
+                if counts.empty == counts.message_count {
+                    findings.push(
+                        Finding::new(
+                            self.id(),
+                            Category::Autonomy,
+                            Severity::Error,
+                            at(),
+                            "AUTONOMY.POINT_CLOUD_EMPTY",
+                            format!(
+                                "episode {}: stream `{}` published {} point cloud(s) and every one \
+                                 of them was empty — the messages have the schema, the rate and \
+                                 the coordinate frame of a working sensor and none of its data",
+                                ep.index, stream.name, counts.message_count
+                            ),
+                        )
+                        .with_risk(
+                            "Nothing else reports this. The frames exist, the timestamps are \
+                             monotonic and evenly spaced, the transform tree places the sensor, \
+                             and the stream grades clean — so a rig that recorded no LiDAR at all \
+                             certifies as ready to build a world model from.",
+                        )
+                        .with_remedy(
+                            "Check the sensor and its driver for the recording (power, network, \
+                             the driver's own diagnostics) and re-record; the segment holds no \
+                             point data to recover.",
+                        ),
+                    );
+                } else {
+                    findings.push(
+                        Finding::new(
+                            self.id(),
+                            Category::Autonomy,
+                            Severity::Warning,
+                            at(),
+                            "AUTONOMY.POINT_CLOUD_DROPPED",
+                            format!(
+                                "episode {}: stream `{}` published {} empty point cloud(s) out of \
+                                 {} — the sensor cut out during the recording (the fullest sweep \
+                                 held {} points)",
+                                ep.index,
+                                stream.name,
+                                counts.empty,
+                                counts.message_count,
+                                counts.max
+                            ),
+                        )
+                        .with_risk(
+                            "The gap is invisible to every timing check, because the empty \
+                             messages keep the stream's rate and continuity intact. Anything \
+                             fusing this sensor with the others is missing its observations over a \
+                             stretch of the drive while the timeline says it was present.",
+                        )
+                        .with_remedy(
+                            "Find the dropout in the sensor's diagnostics and either re-record or \
+                             cut the affected span, rather than training over a stretch the sensor \
+                             did not see.",
+                        ),
+                    );
+                }
+            }
+        }
+        findings
+    }
+}
+
 /// How far a rotation quaternion's norm may sit from 1 before it stops being a rotation.
 ///
 /// A quaternion is a rotation only when it is a *unit* quaternion. The standard

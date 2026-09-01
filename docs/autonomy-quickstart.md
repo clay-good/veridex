@@ -136,6 +136,7 @@ certified av — fail, grade C (73), bound to 845c0ac76fbc80f0
     ✗ autonomy.calibration-completeness — a connected, unambiguous transform (TF) tree and camera intrinsics present, and arithmetically usable
     ✓ autonomy.sensor-frame-resolution — every sensor's own frame resolves through the tree to a camera
     ✓ autonomy.gnss-plausibility — every satellite fix is a possible place, and the receiver actually had one
+    ✓ autonomy.point-cloud-density — every point-cloud sensor actually recorded points
 ```
 
 A certificate is issued for a failing dataset too — it records what is true, and what is true here is

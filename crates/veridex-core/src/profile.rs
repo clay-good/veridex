@@ -150,13 +150,18 @@ const WORLD_MODEL_READY_CRITERIA: &[(&str, &str)] = &[
         "autonomy.gnss-plausibility",
         "every satellite fix is a possible place, and the receiver actually had one",
     ),
+    (
+        "autonomy.point-cloud-density",
+        "every point-cloud sensor actually recorded points",
+    ),
 ];
 
 /// The `world-model-ready` profile: tightens cross-sensor sync to 20 ms and bundles the autonomy
 /// criteria a world-model training set needs (rig sync, sequence completeness, ego-pose continuity,
-/// calibration completeness, per-sensor frame resolution, and GNSS plausibility — a drive whose fix
+/// calibration completeness, per-sensor frame resolution, GNSS plausibility — a drive whose fix
 /// is impossible or never acquired cannot be aligned to a map or to another drive, which is what a
-/// world model built from more than one of them requires).
+/// world model built from more than one of them requires — and point-cloud density, because a LiDAR
+/// that published nothing but empty sweeps satisfies every one of the others).
 pub fn world_model_ready() -> Profile {
     Profile {
         name: "world-model-ready",
