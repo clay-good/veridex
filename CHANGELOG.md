@@ -10,6 +10,34 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A rotation quaternion that is not a unit quaternion is not a rotation.**
+  `AUTONOMY.CALIBRATION_IMPLAUSIBLE` judged a transform's rotation by two tests — is it finite, and
+  is it the all-zero uninitialized value — which leaves everything between them passing. A
+  quaternion is a rotation only when its norm is 1, and the standard quaternion-to-matrix conversion
+  does not renormalize: norm `n` composes a uniform scale of `n²` into the transform. So a 90° yaw
+  written as `[0.707, 0, 0, 0]` — the `w` component dropped, which is what a producer that
+  serializes only the vector part leaves behind — is finite, is nowhere near zero, satisfies every
+  presence check, and places every LiDAR point at **half** its real distance from the rig. The fused
+  scene is quietly wrong rather than visibly broken, and no downstream tool reports it.
+
+  Now flagged when the norm is more than **1%** from 1, with the finding naming both the norm and
+  the scale it implies so a reader can recognize which producer bug it is and how far the placement
+  is off. The tolerance sits in the wide gap between the honest cases and the defects, not next to
+  either: honest producers miss unit by parts in ten thousand (a quaternion serialized at three
+  decimal places is within 2e-4; an unnormalized least-squares fit within a few parts in a
+  thousand), while the real defect classes miss by tens of percent. The boundary is pinned in both
+  directions and on both sides of 1 — a fixed-point quaternion read without its scale factor
+  overshoots exactly as a truncated one undershoots — so the rule cannot be one-tailed and the
+  threshold cannot be moved without a test failing.
+
+  The unusable-calibration report is now **bounded** to eight named elements plus a sentence
+  counting the rest. These defects are the systematic kind — a producer that drops the `w` component
+  drops it on every edge — and nothing caps how many transforms a file may declare, so one finding
+  per bad element was a report size the *input file* chose, in the terminal, the JSON, the SARIF and
+  the signed certificate alike. The overflow is counted rather than dropped: a bound that stops a
+  check mid-judgement has to reach the verdict, or a reader cannot tell a capped report from a
+  complete one.
+
 - **A rig with fewer `CameraInfo`s than cameras** now reports `AUTONOMY.CALIBRATION_INCOMPLETE`.
   The rule asked only whether the intrinsics list was *empty*, so a six-camera surround rig that
   published a single `CameraInfo` — one driver configured, five not — satisfied it, and the

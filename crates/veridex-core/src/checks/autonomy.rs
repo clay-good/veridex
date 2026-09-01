@@ -1201,13 +1201,39 @@ impl Check for SensorFrameResolution {
     }
 }
 
+/// How far a rotation quaternion's norm may sit from 1 before it stops being a rotation.
+///
+/// A quaternion is a rotation only when it is a *unit* quaternion. The standard
+/// quaternion-to-matrix conversion does not renormalize, so a quaternion of norm `n` composes a
+/// uniform scale of `n²` into the transform and every point placed through it lands at the wrong
+/// distance from the rig — a defect no presence check sees and no downstream tool reports.
+///
+/// The tolerance sits far from the honest cases and far from the defects, in the wide gap between
+/// them. Honest producers are off by rounding: a quaternion serialized at three decimal places is
+/// within 2e-4 of unit, and an unnormalized least-squares fit within a few parts in a thousand. The
+/// real defect classes miss by tens of percent — a dropped `w` on a 90° rotation leaves a norm of
+/// 0.707, a fixed-point quaternion read without its scale factor leaves thousands. 1% separates
+/// them with two orders of magnitude to spare on the honest side.
+const ROTATION_NORM_TOLERANCE: f64 = 1e-2;
+
+/// How many unusable-calibration sentences are reported before the rest are summarized.
+///
+/// Each sentence becomes its own `AUTONOMY.CALIBRATION_IMPLAUSIBLE` finding, and every finding
+/// reaches the terminal, the JSON, the SARIF *and* the signed certificate. Nothing caps how many
+/// transforms or intrinsics a file may declare, and the defects here are the systematic kind — a
+/// producer that drops the `w` component drops it on every edge — so "one finding per bad element"
+/// is a report size the input file chooses. The overflow is counted and reported, never dropped
+/// silently: a bound that stops a check mid-judgement has to reach the verdict.
+const MAX_UNUSABLE_REPORTED: usize = 8;
+
 /// Every way a dataset's calibration is present and cannot be used, as sentences naming the element.
 ///
 /// Only impossibilities, never implausibilities. A focal length must be positive and finite — the
 /// projection divides by it. A principal point must be finite and non-negative — it is a pixel
-/// coordinate. A rotation must be an actual rotation — an all-zero quaternion is the uninitialized
-/// value, not a pose. Nothing here judges whether a number is *sensible* for a given camera, which
-/// would need the image dimensions the CDM does not carry and would guess where it cannot know.
+/// coordinate. A rotation must be an actual rotation — a quaternion whose norm is not 1 is a
+/// rotation composed with a scale, and an all-zero one is the uninitialized value rather than a
+/// pose. Nothing here judges whether a number is *sensible* for a given camera, which would need
+/// the image dimensions the CDM does not carry and would guess where it cannot know.
 fn unusable_calibration(dataset: &Dataset) -> Vec<String> {
     let Some(calibration) = &dataset.calibration else {
         return Vec::new();
@@ -1250,7 +1276,30 @@ fn unusable_calibration(dataset: &Dataset) -> Vec<String> {
                  rotation — the uninitialized value, not a measured pose",
                 t.parent_frame, t.child_frame
             ));
+        } else if (norm - 1.0).abs() > ROTATION_NORM_TOLERANCE {
+            out.push(format!(
+                "the transform `{}` → `{}` carries a rotation quaternion of norm {norm:.4}, not \
+                 1 — the standard quaternion-to-matrix conversion turns that into a rotation \
+                 scaled by {:.4}, so every point it places is moved the wrong distance from the \
+                 rig",
+                t.parent_frame,
+                t.child_frame,
+                norm * norm
+            ));
         }
+    }
+    if out.len() > MAX_UNUSABLE_REPORTED {
+        let rest = out.len() - MAX_UNUSABLE_REPORTED;
+        out.truncate(MAX_UNUSABLE_REPORTED);
+        // Written with a positional argument rather than an inline one: `rustfmt` collapses a
+        // single-argument `format!` onto one line and bakes the continuation indentation into the
+        // sentence (`tests/report.rs::no_user_facing_message_was_mangled_by_the_formatter`).
+        out.push(format!(
+            "and {} further calibration element(s) are present and unusable in the same ways — \
+             these defects are systematic, so treat this as the whole calibration rather than a \
+             list of edges to patch",
+            rest
+        ));
     }
     out
 }

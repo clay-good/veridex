@@ -4920,10 +4920,11 @@ fn an_uninitialized_transform_is_not_a_pose() {
 
 #[test]
 fn only_impossible_calibration_is_flagged_never_merely_unusual() {
-    // A long lens, an off-centre principal point, a strong distortion coefficient and an
-    // unnormalized-but-real quaternion are all legitimate. Judging plausibility would need the image
-    // dimensions the CDM does not carry, so it is not attempted — a wrong accusation about a working
-    // rig is worse than the silence it replaces.
+    // A long lens, an off-centre principal point, a strong distortion coefficient and a quaternion
+    // off unit by the rounding an honest producer does are all legitimate. Judging plausibility
+    // would need the image dimensions the CDM does not carry, so it is not attempted — a wrong
+    // accusation about a working rig is worse than the silence it replaces. The quaternion here is
+    // 0.2% off unit, well inside the 1% tolerance that separates rounding from a scale error.
     let mut unusual = intr("cam");
     unusual.fx = 12_000.0;
     unusual.fy = 0.5;
@@ -4939,6 +4940,102 @@ fn only_impossible_calibration_is_flagged_never_merely_unusual() {
     assert!(autonomy::CalibrationCompleteness
         .run(&rig_with_calibration(Some(cal)))
         .is_empty());
+}
+
+#[test]
+fn a_quaternion_that_is_not_unit_is_a_rotation_with_a_scale_in_it() {
+    // What a producer that writes only the vector part of a quaternion leaves behind: a 90° yaw
+    // recorded as [0.707, 0, 0, 0] instead of [0.707, 0, 0, 0.707]. Every presence check passes —
+    // the edge is there, the numbers are finite, and it is nowhere near the all-zero uninitialized
+    // value the norm floor catches. But a quaternion is a rotation only when it is a *unit*
+    // quaternion, and the standard conversion to a matrix does not renormalize: norm 0.707 composes
+    // a uniform scale of 0.5 into the transform, so every LiDAR point it places lands at half its
+    // real distance from the rig, and the fused scene is quietly wrong rather than visibly broken.
+    let mut half = xf("base_link", "lidar");
+    half.pose.rotation = [0.707, 0.0, 0.0, 0.0];
+    let cal = veridex_core::cdm::Calibration {
+        transforms: vec![half, xf("base_link", "cam")],
+        intrinsics: vec![intr("cam")],
+    };
+    let f = autonomy::CalibrationCompleteness.run(&rig_with_calibration(Some(cal)));
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "AUTONOMY.CALIBRATION_IMPLAUSIBLE");
+    assert_eq!(
+        f[0].severity,
+        Severity::Error,
+        "a quaternion that is not a rotation is arithmetic with no answer, not a judgment call"
+    );
+    // The reader needs both numbers: the norm to recognize which producer bug this is, and the
+    // scale to know how far the placement is off.
+    assert!(f[0].message.contains("norm 0.7070"), "{}", f[0].message);
+    assert!(f[0].message.contains("0.4998"), "{}", f[0].message);
+    // Named, so a reader knows which edge to re-publish.
+    assert!(
+        f[0].message.contains("`base_link` → `lidar`"),
+        "{}",
+        f[0].message
+    );
+}
+
+#[test]
+fn the_rotation_norm_boundary_holds_in_both_directions() {
+    // The tolerance has to sit far from honest rounding and far from the defect, and a rule pinned
+    // on only one side of its threshold passes just as well with the threshold moved. Both sides,
+    // above and below 1, so the rule is not accidentally one-tailed: a quaternion read with a
+    // too-large scale factor overshoots exactly as a truncated one undershoots.
+    let flagged = |q: [f64; 4]| {
+        let mut t = xf("base_link", "lidar");
+        t.pose.rotation = q;
+        let cal = veridex_core::cdm::Calibration {
+            transforms: vec![t, xf("base_link", "cam")],
+            intrinsics: vec![intr("cam")],
+        };
+        !autonomy::CalibrationCompleteness
+            .run(&rig_with_calibration(Some(cal)))
+            .is_empty()
+    };
+    // Inside 1%: rounding an honest producer does, on both sides. Silent.
+    assert!(!flagged([0.0, 0.0, 0.0, 0.995]));
+    assert!(!flagged([0.0, 0.0, 0.0, 1.005]));
+    // Outside 1%: a scale in the transform, on both sides. Flagged.
+    assert!(flagged([0.0, 0.0, 0.0, 0.98]));
+    assert!(flagged([0.0, 0.0, 0.0, 1.02]));
+}
+
+#[test]
+fn a_systematically_broken_calibration_is_a_bounded_report_not_one_finding_per_edge() {
+    // The defects this rule finds are the systematic kind: a producer that drops the `w` component
+    // drops it on every edge it writes. Nothing caps how many transforms a file may declare, so one
+    // finding per bad edge is a report size the *input file* chooses — and every finding reaches
+    // the terminal, the JSON, the SARIF and the signed certificate. Bounded to eight, with the
+    // remainder counted rather than dropped: a bound that stops a check mid-judgement has to reach
+    // the verdict, or a reader cannot tell a capped report from a complete one.
+    let mut transforms: Vec<_> = (0..50)
+        .map(|i| {
+            let mut t = xf("base_link", &format!("lidar_{i}"));
+            t.pose.rotation = [0.707, 0.0, 0.0, 0.0];
+            t
+        })
+        .collect();
+    transforms.push(xf("base_link", "cam"));
+    let cal = veridex_core::cdm::Calibration {
+        transforms,
+        intrinsics: vec![intr("cam")],
+    };
+    let f = autonomy::CalibrationCompleteness.run(&rig_with_calibration(Some(cal)));
+    let unusable: Vec<_> = f
+        .iter()
+        .filter(|x| x.code == "AUTONOMY.CALIBRATION_IMPLAUSIBLE")
+        .collect();
+    assert_eq!(unusable.len(), 9, "eight named, one summarizing the rest");
+    let summary = unusable.last().unwrap();
+    assert!(
+        summary
+            .message
+            .contains("42 further calibration element(s)"),
+        "the skipped elements must be counted, not silently dropped: {}",
+        summary.message
+    );
 }
 
 // ---- AUTONOMY.CALIBRATION_AMBIGUOUS ----
