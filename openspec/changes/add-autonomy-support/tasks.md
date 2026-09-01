@@ -206,6 +206,12 @@ No code until this change is approved; this is the build plan.
       the LiDAR is in it, yet no chain reaches the camera, so the reprojection is undefined
       (`a_lidar_stranded_from_the_camera_is_caught_end_to_end`). What remains out of scope by design is
       a reprojection *error* in pixels, which would require decoding point coordinates.
+      A third class is now reproduced alongside them: `make_demo_mcap -- <out> av-dead-lidar` writes
+      the same rig with a LiDAR whose driver lost its sensor — every `PointCloud2` well-formed, on
+      time, in the right frame, and holding zero points — which `veridex check` flags as
+      `AUTONOMY.POINT_CLOUD_EMPTY` naming `/lidar/points`. Nothing else moves: the structural and
+      temporal families both pass, because the empty messages keep the stream's schema, rate and
+      continuity intact.
 - [x] Issue and offline-verify a world-model-readiness certificate. `certify --profile` issues it and
       `verify` now reads it back: the bound hash, trust score, profile verdict, and each criterion,
       with `--json` for the machine-readable form. Everything reported comes from the signed

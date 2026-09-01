@@ -119,6 +119,34 @@ needed its own rule. The same code covers a **cycle** (`base_link` → `lidar` �
 `base_link`), where every frame has one parent and the rig has no root. A re-parenting across
 *disjoint* validity windows is a recalibration, not an ambiguity, and is not reported.
 
+### A LiDAR that recorded nothing
+
+A driver that lost its sensor does not stop publishing. It keeps emitting a well-formed
+`PointCloud2` at the configured rate, in the right coordinate frame, declaring the same four fields
+— with `width` of zero. Every other family passes on it: the structural checks see frames, the
+temporal checks see a clean 10 Hz with no jitter, and `autonomy.sensor-frame-resolution` places the
+sensor in the transform tree. The `av-dead-lidar` variant is that rig.
+
+```sh
+cargo run -p veridex-demo --example make_demo_mcap -- /tmp/av-dead.mcap av-dead-lidar
+cargo run -p veridex-cli -- check /tmp/av-dead.mcap
+```
+
+```
+  [error] AUTONOMY.POINT_CLOUD_EMPTY  episode 0 · stream `/lidar/points`
+      episode 0: stream `/lidar/points` published 11 point cloud(s) and every one of them was empty
+      — the messages have the schema, the rate and the coordinate frame of a working sensor and none
+      of its data
+      remedy: Check the sensor and its driver for the recording (power, network, the driver's own
+              diagnostics) and re-record; the segment holds no point data to recover.
+```
+
+The count comes from each message's own `height × width`, stated in the header ahead of the bulk
+blob — no point is decoded. A count is believed only when the body's own length invariants hold, so
+a mislabelled topic or a truncated write abstains rather than reporting a fabricated one. When only
+*some* sweeps are empty the sensor cut out mid-recording, which is `AUTONOMY.POINT_CLOUD_DROPPED` at
+warning: the recording holds real data either side of the dropout.
+
 ## 4. Certify readiness
 
 ```sh
@@ -128,7 +156,7 @@ cargo run -p veridex-cli -- certify /tmp/av.mcap --key /tmp/issuer \
 ```
 
 ```
-certified av — fail, grade C (73), bound to 845c0ac76fbc80f0
+certified av — fail, grade C (73), bound to ceaae7feeb2b0c09
   world-model-ready profile: NOT READY
     ✗ autonomy.rig-sync — rig sensors within a 20 ms cross-sensor span drift
     ✓ autonomy.sequence-complete — no rig sensor dropping more than 5% of its frames

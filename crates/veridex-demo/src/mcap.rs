@@ -29,7 +29,13 @@
 //!   *undirected*. It is still not a tree, and the LiDAR's pose depends on which of the two chains a
 //!   consumer resolves → `AUTONOMY.CALIBRATION_AMBIGUOUS`, and nothing else moves.
 //!
-//! Usage: `cargo run -p veridex-demo --example make_demo_mcap -- <output.mcap> [clean|late-start|stuck|av|av-miscalibrated|av-ambiguous-tf]`
+//! - `av-dead-lidar` — the same rig with a LiDAR whose driver lost its sensor. Every `PointCloud2`
+//!   is well-formed, on time, in the right coordinate frame and declares the same four fields — and
+//!   holds zero points. The structural family sees frames, the temporal family sees a clean 10 Hz,
+//!   the frame checks place the sensor in the tree, and every one of them passes →
+//!   `AUTONOMY.POINT_CLOUD_EMPTY` is the only thing that reports the sensor recorded nothing.
+//!
+//! Usage: `cargo run -p veridex-demo --example make_demo_mcap -- <output.mcap> [clean|late-start|stuck|av|av-miscalibrated|av-ambiguous-tf|av-dead-lidar]`
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
@@ -46,6 +52,7 @@ pub const VARIANTS: &[&str] = &[
     "av",
     "av-miscalibrated",
     "av-ambiguous-tf",
+    "av-dead-lidar",
 ];
 
 /// Write the demo MCAP recording to `path`, replacing anything already there.
@@ -63,14 +70,17 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
     // `av-ambiguous-tf` is the same rig with `lidar_top` claimed by two parents at once, so its
     // pose depends on which chain a consumer walks.
     let ambiguous_tf = variant == "av-ambiguous-tf";
-    let av = variant == "av" || miscalibrated || ambiguous_tf;
+    // `av-dead-lidar` is the same rig with a LiDAR whose driver lost its sensor: every cloud is
+    // well-formed, on time, in the right frame — and holds no points.
+    let dead_lidar = variant == "av-dead-lidar";
+    let av = variant == "av" || miscalibrated || ambiguous_tf || dead_lidar;
 
     let mut buf = Vec::new();
     {
         let mut w = mcap::Writer::new(Cursor::new(&mut buf)).expect("writer");
 
         if av {
-            write_av_rig(&mut w, miscalibrated, ambiguous_tf);
+            write_av_rig(&mut w, miscalibrated, ambiguous_tf, dead_lidar);
         } else {
             write_manipulation(&mut w, stuck, clean, late_start);
         }
@@ -180,6 +190,7 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(
     w: &mut mcap::Writer<W>,
     miscalibrated: bool,
     ambiguous_tf: bool,
+    dead_lidar: bool,
 ) {
     // (schema, topic, message count, inter-message interval ns, coordinate frame). The IMU runs the
     // same 100 msg count as a healthy 100 Hz sensor but at a compressed 7 ms interval, so it finishes
@@ -288,12 +299,28 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(
                 // very sensor this demo exists to show drifting.
                 let phase = i as f64 * (*interval as f64 / 1e9);
                 write_msg(w, channel, i as u32, t, &imu_body(phase));
+            } else if *schema == "sensor_msgs/msg/PointCloud2" {
+                // Likewise real, and for the reason the others became real: a stub body left the
+                // rig's LiDAR with no declared point layout and no point counts at all, so
+                // `autonomy.point-cloud-density` abstained on the one sensor a world model is
+                // mostly built from. The point count is read from the message's own
+                // `height × width` and believed only when the body's length invariants hold, which
+                // a stub prefix does not satisfy — so the flagship rig demo has to write a whole
+                // cloud, tail included. The payload bytes are zero and never read; only their
+                // *count* is asserted.
+                let points = if dead_lidar { 0 } else { 1024 };
+                write_msg(
+                    w,
+                    channel,
+                    i as u32,
+                    t,
+                    &point_cloud2_body(frame_id, points, i as u32),
+                );
             } else {
                 // A real header-first CDR body, so the sensor's coordinate frame is genuinely
                 // decoded into the CDM (that is what the frame-resolution check reads). The trailing
                 // payload varies per (sensor, frame) so frames stay content-distinct. Enough for the
-                // `Image` and `PointCloud2` readers, which take the header and the field list and
-                // never the pixels or the points.
+                // `Image` reader, which takes the header and never the pixels.
                 let payload = ((seq_base as u64) << 32) | i;
                 write_msg(w, channel, i as u32, t, &header_body(frame_id, payload));
             }
@@ -394,6 +421,61 @@ fn header_body(frame_id: &str, payload: u64) -> Vec<u8> {
     buf.extend_from_slice(frame_id.as_bytes());
     buf.push(0);
     buf.extend_from_slice(&payload.to_le_bytes());
+    buf
+}
+
+/// A complete `sensor_msgs/msg/PointCloud2` CDR body: `Header`, `height`/`width`, four
+/// `PointField`s (`x`/`y`/`z`/`intensity` as float32), then `is_bigendian`, `point_step`, `row_step`
+/// and the `data` blob.
+///
+/// The tail past the fields is what makes it a cloud rather than a prefix that looks like one: the
+/// point-count decode checks the message's own invariants — `row_step` covers a row of `width`
+/// points, `data` is `row_step × height` bytes and those bytes are present — precisely so a stubbed
+/// body cannot be read as a real count. `seed` varies one byte of the payload so each sweep's
+/// content hash differs, the way successive real sweeps do.
+///
+/// A `width` of 0 is an organized-cloud-shaped message holding nothing, which is what a driver that
+/// lost its sensor publishes: it keeps the schema, the rate and the frame of a working LiDAR.
+fn point_cloud2_body(frame_id: &str, width: u32, seed: u32) -> Vec<u8> {
+    const POINT_STEP: u32 = 16; // x, y, z, intensity as float32
+    let mut buf: Vec<u8> = vec![0x00, 0x01, 0x00, 0x00]; // encapsulation: CDR_LE
+    let align = |buf: &mut Vec<u8>, n: usize| {
+        while (buf.len() - 4) % n != 0 {
+            buf.push(0)
+        }
+    };
+    let u32v = |buf: &mut Vec<u8>, v: u32| {
+        align(buf, 4);
+        buf.extend_from_slice(&v.to_le_bytes());
+    };
+    let strv = |buf: &mut Vec<u8>, s: &str| {
+        align(buf, 4);
+        buf.extend_from_slice(&((s.len() + 1) as u32).to_le_bytes());
+        buf.extend_from_slice(s.as_bytes());
+        buf.push(0);
+    };
+    u32v(&mut buf, 0); // stamp.sec
+    u32v(&mut buf, 0); // stamp.nanosec
+    strv(&mut buf, frame_id);
+    u32v(&mut buf, 1); // height — an unorganized sweep is one row
+    u32v(&mut buf, width);
+    u32v(&mut buf, 4); // fields
+    for (i, name) in ["x", "y", "z", "intensity"].iter().enumerate() {
+        strv(&mut buf, name);
+        u32v(&mut buf, i as u32 * 4); // offset
+        buf.push(7); // datatype: FLOAT32
+        u32v(&mut buf, 1); // count
+    }
+    buf.push(0); // is_bigendian
+    u32v(&mut buf, POINT_STEP);
+    let row_step = POINT_STEP * width;
+    u32v(&mut buf, row_step);
+    u32v(&mut buf, row_step); // data length: row_step * height, and height is 1
+    let start = buf.len();
+    buf.resize(start + row_step as usize, 0);
+    if row_step > 0 {
+        buf[start] = seed as u8;
+    }
     buf
 }
 

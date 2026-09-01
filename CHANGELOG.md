@@ -10,6 +10,21 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **The demo rig's LiDAR now writes real point clouds, and a variant where it writes empty ones.**
+  `make_demo_mcap`'s `PointCloud2` was the last stub body in the flagship rig — a header and a
+  varying `u64` — so the demo carried no declared point layout and no point counts, and
+  `autonomy.point-cloud-density` abstained on the one sensor a world model is mostly built from. It
+  now writes a whole cloud, tail included: fields, `is_bigendian`, `point_step`, `row_step` and the
+  `data` blob, because the count decode believes a body only when those invariants hold. The healthy
+  rig's findings are unchanged, which is the point.
+
+  New variant **`av-dead-lidar`**: the same rig with a LiDAR whose driver lost its sensor. Every
+  cloud is well-formed, on time, in the right coordinate frame, declaring the same four fields — and
+  holds zero points. It adds exactly one finding, `AUTONOMY.POINT_CLOUD_EMPTY`; the structural and
+  temporal families pass on it unchanged, because the empty messages keep the stream's schema, rate
+  and continuity intact. Walked through in the [autonomy quickstart](docs/autonomy-quickstart.md),
+  whose printed output is pinned against a live run so the page cannot rot.
+
 - **A LiDAR that recorded no points.** New check `autonomy.point-cloud-density` (#44), emitting
   `AUTONOMY.POINT_CLOUD_EMPTY` (error) when every `PointCloud2` message on a stream carried zero
   points, and `AUTONOMY.POINT_CLOUD_DROPPED` (warning) when only some did.

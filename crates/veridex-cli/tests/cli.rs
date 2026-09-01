@@ -3074,6 +3074,32 @@ fn the_autonomy_quickstart_still_prints_what_it_says_it_does() {
             );
         }
     }
+
+    // Step 3's dead-LiDAR aside: `veridex check /tmp/av-dead.mcap`. Pinned for the same reason as
+    // the rest — the page prints a finding message with a message count in it, and a count is
+    // exactly the sort of thing that rots when the fixture changes.
+    let dead = dir.join("av-dead.mcap");
+    veridex_demo::mcap::write(&dead, "av-dead-lidar").expect("write the dead-LiDAR rig");
+    let (_, stdout, _) = run(&["check", dead.to_str().unwrap()]);
+    let empty = stdout
+        .lines()
+        .find(|l| l.contains("point cloud(s) and every one of them was empty"))
+        .expect("the POINT_CLOUD_EMPTY message");
+    // The page wraps the message, so compare the half that carries the stream and the count.
+    let measured = empty
+        .split_once(": ")
+        .map(|(_, rest)| {
+            rest.split(" — ")
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .to_string()
+        })
+        .expect("the measured half");
+    assert!(
+        quickstart.contains(&measured),
+        "the quickstart's POINT_CLOUD_EMPTY message has drifted; it should show:\n  {measured}"
+    );
 }
 
 #[test]
