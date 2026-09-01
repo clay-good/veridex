@@ -239,7 +239,17 @@ impl ProvenanceCompleteness {
         // request rather than found in the data.
         let total_episodes = dataset.episodes.len();
         for exp in EXPECTED {
-            if dataset_scoped.contains(exp.key) || total_episodes == 0 {
+            // A verified producer attestation is a claim about the whole dataset — that is what
+            // signing for an element means, and what makes the trust score count it as covered. So
+            // it settles the scope question the way a dataset-scoped record does, and reporting the
+            // element partial beside it would have the same report say both: exactly the
+            // contradiction `PROVENANCE.MISSING_*` was fixed for when an attested element was also
+            // reported missing. What the attestation *is* stays disclosed by `PROVENANCE.ATTESTED`,
+            // which names the element and the key that signed for it.
+            if dataset_scoped.contains(exp.key)
+                || attested_keys.iter().any(|k| k == exp.key)
+                || total_episodes == 0
+            {
                 continue;
             }
             let Some(covered) = episodes_covering.get(exp.key) else {

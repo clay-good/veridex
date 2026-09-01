@@ -1442,6 +1442,28 @@ fn lineage_on_one_episode_is_not_lineage_for_a_thousand() {
 }
 
 #[test]
+fn an_attested_element_is_not_also_reported_partial() {
+    // The precedent is exact: this report already said an element was both attested and missing,
+    // and the remedy it printed was the one the reader had already followed. Signing for an element
+    // is a claim about the *whole dataset* — that is what makes the trust score count it as covered
+    // — so it settles the scope question the way a dataset-scoped record does. Reporting it partial
+    // beside the attestation would have the same report say both again.
+    use veridex_core::check::{Check, CheckContext};
+    let d = dataset_with_episode_scoped_upstream(1000, 1);
+    let context = CheckContext {
+        frames_read: true,
+        attested_keys: vec!["upstream".to_string()],
+    };
+    let f = provenance::ProvenanceCompleteness.run_in(&d, &context);
+    assert!(f.iter().all(|x| x.code != "PROVENANCE.PARTIAL"), "{f:?}");
+    // And without the attestation it is still reported — the silence is the signature's doing, not
+    // the rule going quiet.
+    assert!(provenance_findings_after_full_read(&d)
+        .iter()
+        .any(|x| x.code == "PROVENANCE.PARTIAL"));
+}
+
+#[test]
 fn an_element_every_episode_records_is_not_partial() {
     let d = dataset_with_episode_scoped_upstream(4, 4);
     let f = provenance_findings_after_full_read(&d);

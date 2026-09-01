@@ -22,6 +22,13 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   when any camera declares no frame the count would be a guess and the rule abstains, that stream
   being already reported by `AUTONOMY.SENSOR_FRAME_UNDECLARED`.
 
+- **An attested element is no longer also reported partial.** Signing for an element is a claim
+  about the whole dataset — that is what makes the trust score count it as covered — so it settles
+  the scope question the way a dataset-scoped record does. Without this, a dataset whose lineage was
+  recorded for one episode *and* attested by its producer had the same report say both, printing a
+  remedy the reader had already followed: the exact contradiction `PROVENANCE.MISSING_*` was fixed
+  for. What the attestation is stays disclosed by `PROVENANCE.ATTESTED`.
+
 - **`PROVENANCE.PARTIAL` proven end-to-end through the RLDS adapter**, on the shape it was written
   for: a TFDS export where only some shards carry `episode_metadata/file_path`. The test asserts
   that `upstream` is reported partial for 2 of 4 episodes, that `PROVENANCE.MISSING_UPSTREAM` stays
