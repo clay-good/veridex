@@ -60,6 +60,7 @@ fn episode(index: u64, streams: Vec<Stream>) -> Episode {
         task: None,
         labels: vec![],
         ego_poses: None,
+        ego_frame: None,
         declared_frame_count: None,
     }
 }

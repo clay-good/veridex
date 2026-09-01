@@ -60,6 +60,7 @@ fn episode(index: u64, streams: Vec<Stream>) -> Episode {
         task: None,
         labels: vec![],
         ego_poses: None,
+        ego_frame: None,
         declared_frame_count: None,
     }
 }
@@ -3016,6 +3017,7 @@ fn a_bus_only_measurement_is_not_treated_as_a_sensor_rig() {
         task: None,
         labels: vec![],
         ego_poses: None,
+        ego_frame: None,
         declared_frame_count: None,
     };
     let is_rig = veridex_core::checks::autonomy::is_rig_episode;
@@ -3106,6 +3108,7 @@ fn one_shared_timeline_reports_once_and_an_event_driven_signal_is_not_called_inc
             task: None,
             labels: vec![],
             ego_poses: None,
+            ego_frame: None,
             declared_frame_count: None,
         }],
         calibration: None,
@@ -5174,6 +5177,58 @@ fn a_distortion_model_is_an_open_namespace_and_an_unknown_one_is_not_a_disagreem
     // And the count is what is judged, not the name's spelling: the same list under a model that
     // takes a different number of terms is the defect.
     assert!(!case(Some("plumb_bob"), vec![0.1, 0.2, 0.3, 0.4]));
+}
+
+// ---- AUTONOMY.EGO_FRAME_UNKNOWN ----
+
+/// The `rig_with_calibration` rig, with an ego trajectory recorded for `frame`.
+fn rig_with_ego_frame(frame: Option<&str>) -> Dataset {
+    let cal = veridex_core::cdm::Calibration {
+        transforms: vec![xf("base_link", "lidar"), xf("base_link", "cam")],
+        intrinsics: vec![intr("cam")],
+    };
+    let mut d = rig_with_calibration(Some(cal));
+    d.episodes[0].ego_frame = frame.map(str::to_string);
+    d
+}
+
+#[test]
+fn a_trajectory_for_a_frame_the_tree_never_names_tracks_a_different_vehicle() {
+    // A rig publishing odometry for `base_footprint` while its transform tree roots at `base_link`.
+    // Every other frame check passes: the tree is well-formed, every sensor declares a frame the
+    // tree knows, and each reaches the camera. The ego-pose stream is deliberately outside the
+    // per-sensor rule, because its *reference* frame (`odom`, `map`) is joined to the body
+    // dynamically — but the body frame the trajectory is *of* is exactly the static question, and
+    // nothing was asking it. Every sensor's extrinsics hang off that frame, so a trajectory
+    // expressed for one outside the tree cannot place a single observation along the drive.
+    let f = autonomy::SensorFrameResolution.run(&rig_with_ego_frame(Some("base_footprint")));
+    let ego: Vec<_> = f
+        .iter()
+        .filter(|x| x.code == "AUTONOMY.EGO_FRAME_UNKNOWN")
+        .collect();
+    assert_eq!(ego.len(), 1, "{f:?}");
+    assert_eq!(ego[0].severity, Severity::Error);
+    assert!(
+        ego[0].message.contains("base_footprint"),
+        "{}",
+        ego[0].message
+    );
+}
+
+#[test]
+fn a_trajectory_for_a_frame_the_tree_does_name_is_the_rig_it_claims_to_be() {
+    // The body frame in the tree is the whole point of the rule, so it must stay silent there —
+    // and silent too where the source names no body frame at all: a trajectory that does not say
+    // what it is of is not a trajectory of the wrong thing.
+    let ego_findings = |frame: Option<&str>| {
+        autonomy::SensorFrameResolution
+            .run(&rig_with_ego_frame(frame))
+            .into_iter()
+            .filter(|x| x.code == "AUTONOMY.EGO_FRAME_UNKNOWN")
+            .count()
+    };
+    assert_eq!(ego_findings(Some("base_link")), 0);
+    assert_eq!(ego_findings(None), 0);
 }
 
 // ---- AUTONOMY.POINT_CLOUD_EMPTY / POINT_CLOUD_DROPPED ----

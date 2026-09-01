@@ -65,6 +65,7 @@ fn dataset(streams: Vec<Stream>, provenance: Vec<ProvenanceElement>) -> Dataset 
             task: None,
             labels: vec![],
             ego_poses: None,
+            ego_frame: None,
             declared_frame_count: None,
         }],
     }

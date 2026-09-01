@@ -22,6 +22,7 @@ fn dataset_with(elements: Vec<ProvenanceElement>) -> Dataset {
             task: None,
             labels: vec![],
             ego_poses: None,
+            ego_frame: None,
             declared_frame_count: None,
         }],
     }
@@ -406,6 +407,7 @@ fn a_document_says_which_episodes_an_element_describes() {
         task: None,
         labels: vec![],
         ego_poses: None,
+        ego_frame: None,
         declared_frame_count: None,
     };
     let mut d = Dataset {

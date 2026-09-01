@@ -122,6 +122,7 @@ fn rig_dataset() -> Dataset {
             task: None,
             labels: vec![],
             ego_poses: Some(vec![ego(0, 0.0), ego(50_000_000, 1.0)]),
+            ego_frame: None,
             declared_frame_count: None,
         }],
         calibration: Some(Calibration {
@@ -323,6 +324,7 @@ fn permuting_every_canonicalized_collection_changes_neither_the_hash_nor_the_ver
             task: None,
             labels: vec![],
             ego_poses: Some(poses.clone()),
+            ego_frame: None,
             declared_frame_count: None,
         }],
         calibration: None,
@@ -382,6 +384,7 @@ fn a_manifest_frame_count_changes_the_content_hash() {
                 task: None,
                 labels: vec![],
                 ego_poses: None,
+                ego_frame: None,
                 declared_frame_count: Some(declared),
             }],
         };
@@ -413,6 +416,7 @@ fn duplicate_episode_indices_still_hash_order_independently() {
         task: None,
         labels: vec![],
         ego_poses: None,
+        ego_frame: None,
         declared_frame_count: None,
     };
     let ds = |a: &str, b: &str| veridex_core::cdm::Dataset {
@@ -449,6 +453,7 @@ fn duplicate_stream_names_still_hash_order_independently() {
             task: None,
             labels: vec![],
             ego_poses: None,
+            ego_frame: None,
             declared_frame_count: None,
         }],
     };

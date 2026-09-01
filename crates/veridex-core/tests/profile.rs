@@ -124,6 +124,9 @@ fn healthy_rig() -> Dataset {
                     })
                     .collect(),
             ),
+            // The body the trajectory is of, and a frame the tree below actually contains — the
+            // static link between the trajectory and every sensor's extrinsics.
+            ego_frame: Some("base_link".into()),
             declared_frame_count: None,
         }],
         calibration: Some(Calibration {
@@ -206,6 +209,7 @@ fn a_manipulation_dataset_is_not_applicable() {
             task: None,
             labels: vec![],
             ego_poses: None,
+            ego_frame: None,
             declared_frame_count: None,
         }],
         calibration: None,
@@ -313,6 +317,7 @@ fn a_non_rig_readiness_certificate_verifies_and_reports_n_a_not_a_pass() {
             task: None,
             labels: vec![],
             ego_poses: None,
+            ego_frame: None,
             declared_frame_count: None,
         }],
         calibration: None,
@@ -394,6 +399,7 @@ fn a_bus_only_measurement_is_not_a_world_model_candidate() {
             task: None,
             labels: vec![],
             ego_poses: None,
+            ego_frame: None,
             declared_frame_count: None,
         }],
         calibration: None,

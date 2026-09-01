@@ -415,6 +415,7 @@ impl Adapter for ZarrAdapter {
                     .unwrap_or_default(),
                 // A Zarr replay buffer records no ego trajectory.
                 ego_poses: None,
+                ego_frame: None,
                 // On a full run the boundaries *are* the length, so recording it as a separate
                 // claim would give the length check `n` to compare against `n`. A metadata-only run
                 // reads no rows, so the boundaries are the only length there is — recorded, so the

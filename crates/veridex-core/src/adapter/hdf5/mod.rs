@@ -1206,6 +1206,7 @@ fn build_episode(
         labels,
         // An HDF5 manipulation dataset records no ego trajectory.
         ego_poses: None,
+        ego_frame: None,
         declared_frame_count: declared_frame_count.filter(|_| !ragged),
     })
 }

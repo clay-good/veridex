@@ -850,6 +850,13 @@ fn ros_message_bodies_populate_the_autonomy_cdm_end_to_end() {
     assert_eq!(calib.transforms[0].parent_frame, "base_link");
     assert_eq!(calib.transforms[0].child_frame, "lidar");
 
+    // ...and the body frame the trajectory is *of*, from the same message's `child_frame_id`. The
+    // stream's own `frame_id` is the reference frame the poses are expressed in; this is the
+    // vehicle they are poses of, and the frame every sensor's extrinsics hang off. It was decoded
+    // and discarded, which left nothing able to ask whether the trajectory and the sensors describe
+    // the same vehicle.
+    assert_eq!(d.episodes[0].ego_frame.as_deref(), Some("base_link"));
+
     // Ego trajectory.
     let ego = d.episodes[0].ego_poses.as_ref().expect("ego_poses decoded");
     assert_eq!(ego.len(), 1);

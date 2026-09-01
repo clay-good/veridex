@@ -71,6 +71,20 @@ pub struct Episode {
     /// `autonomy-sensor-data` A0.
     #[serde(default)]
     pub ego_poses: Option<Vec<EgoPose>>,
+    /// The coordinate frame the ego trajectory tracks — a `nav_msgs/msg/Odometry`'s
+    /// `child_frame_id`, the vehicle body (`base_link`, `base_footprint`). `None` when the source
+    /// records no ego trajectory or does not name the frame it tracks.
+    ///
+    /// Distinct from the ego-pose stream's own [`Stream::frame_id`], which is the *reference* frame
+    /// the poses are expressed in (`odom`, `map`) and is joined to the body dynamically rather than
+    /// by the static transform tree. This one is the static question: the body frame is what every
+    /// sensor's extrinsics hang off, so a trajectory tracking a frame the tree does not contain
+    /// places the vehicle somewhere no sensor observation can be related to.
+    ///
+    /// One per episode, because [`Episode::ego_poses`] is one sequence per episode: a log with two
+    /// odometry sources is merged into a single trajectory, and the first frame decoded names it.
+    #[serde(default)]
+    pub ego_frame: Option<FrameId>,
     /// Frame count the **source manifest** declares for this episode (e.g. LeRobot
     /// `meta/episodes.jsonl` `length`), if any. This is an assertion *about* the content, not the
     /// content itself: a structural check compares it against the frames actually ingested to catch

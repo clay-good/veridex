@@ -1258,6 +1258,7 @@ impl Adapter for RldsAdapter {
                     labels: b.labels.clone(),
                     // RLDS is a manipulation format: no ego trajectory.
                     ego_poses: None,
+                    ego_frame: None,
                     // RLDS declares no per-episode step count — it is derived, not asserted.
                     declared_frame_count: None,
                 }
@@ -1558,6 +1559,7 @@ fn ingest_metadata_only(
             task: None,
             labels: Vec::new(),
             ego_poses: None,
+            ego_frame: None,
             // RLDS declares how many episodes each shard holds, never how many steps an episode
             // holds. Left `None` rather than derived, so `STRUCTURAL.EPISODE_LENGTH_MISMATCH` has
             // nothing to compare rather than a number Veridex made up.

@@ -613,6 +613,7 @@ impl Adapter for CanDbcAdapter {
                 task: None,
                 labels: vec![],
                 ego_poses: None,
+                ego_frame: None,
                 declared_frame_count: None,
             }],
             calibration: None,

@@ -10,6 +10,23 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **An ego trajectory recorded for a frame the transform tree never names.** `decode_odometry_pose`
+  read `child_frame_id` into a `_`-prefixed binding and dropped it — the last discarded field in the
+  CDR decoder. That frame is the vehicle body the trajectory is *of*, and it is a different question
+  from the one the per-stream frame rules ask, and the one they deliberately do not: an ego-pose
+  stream's own `frame_id` is the *reference* frame (`odom`, `map`), joined to the body dynamically
+  rather than by the static tree, which is why `is_spatial_sensor` excludes it. The body frame is
+  the static question. Every sensor's extrinsics hang off it, so a rig publishing odometry for
+  `base_footprint` while its tree roots at `base_link` cannot place a single observation along the
+  drive — and the tree is well-formed, every sensor resolves through it, and the trajectory itself
+  is continuous, so nothing reported it.
+
+  Now carried as `Episode::ego_frame` and reported as `AUTONOMY.EGO_FRAME_UNKNOWN` (error), once per
+  episode. Silent where the source names no body frame: a trajectory that does not say what it is of
+  is not a trajectory of the wrong thing. `CANONICAL_VERSION` goes to **14** — two logs differing
+  only in which frame the odometry claims are a passing dataset and a failing one — with the golden
+  vector re-pinned and the fixture reaching the new arm with a real value.
+
 - **`autonomy.point-cloud-density` was silent where it never measured.** The check concludes from
   `Stream::observed_point_counts`, and a stream that carries none — a format that states no
   per-message point count — hit the `let Some(...) else { continue }` and produced nothing. A

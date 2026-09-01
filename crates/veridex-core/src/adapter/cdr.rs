@@ -340,11 +340,23 @@ fn read_pose(r: &mut Reader) -> Option<Pose> {
 
 /// Decode a `nav_msgs/msg/Odometry` body far enough to recover the ego pose: `Header`,
 /// `string child_frame_id`, then `pose.pose` (a `Pose`). The covariance and twist are ignored.
-pub fn decode_odometry_pose(data: &[u8]) -> Option<Pose> {
+/// Decode a `nav_msgs/msg/Odometry` body into its pose and the coordinate frame it tracks.
+///
+/// `child_frame_id` is the vehicle body (`base_link`, `base_footprint`) — the frame the pose *is
+/// of*, as distinct from the header's `frame_id`, which is the reference frame the pose is
+/// expressed *in* (`odom`, `map`). Both matter and they answer different questions: the reference
+/// frame is joined to the body dynamically, while the body frame is what every sensor's extrinsics
+/// hang off, so it has to appear in the static transform tree. It was read and discarded, which
+/// left nothing able to ask whether the trajectory and the sensors describe the same vehicle.
+///
+/// An empty `child_frame_id` is what an unconfigured publisher emits, and becomes `None` rather than
+/// a frame named `""` — the same rule [`decode_header_frame_id`] follows.
+pub fn decode_odometry(data: &[u8]) -> Option<(Pose, Option<String>)> {
     let mut r = Reader::new(data)?;
     r.header()?;
-    let _child_frame_id = r.string()?;
-    read_pose(&mut r)
+    let child_frame_id = r.string()?;
+    let pose = read_pose(&mut r)?;
+    Some((pose, (!child_frame_id.is_empty()).then_some(child_frame_id)))
 }
 
 /// Decode a `sensor_msgs/msg/JointState` body far enough to recover its joint `name`s and its
@@ -616,7 +628,8 @@ mod tests {
         for v in [1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0] {
             w.f64(v);
         }
-        let pose = decode_odometry_pose(&w.buf).expect("decode");
+        let (pose, child) = decode_odometry(&w.buf).expect("decode");
+        assert_eq!(child.as_deref(), Some("base_link"));
         assert_eq!(pose.translation, [1.0, 2.0, 3.0]);
         assert_eq!(pose.rotation, [0.0, 0.0, 0.0, 1.0]);
     }
@@ -861,7 +874,7 @@ mod tests {
             let _ = decode_header_frame_id(b);
             let _ = decode_point_cloud2_fields(b);
             let _ = decode_camera_info(b, "/topic");
-            let _ = decode_odometry_pose(b);
+            let _ = decode_odometry(b);
             let _ = decode_joint_state(b);
             let _ = decode_imu_values(b);
             let _ = decode_nav_sat_fix_values(b);
@@ -941,7 +954,7 @@ mod tests {
     #[test]
     fn malformed_or_big_endian_bodies_are_declined_not_panicked() {
         // Big-endian encapsulation.
-        assert!(decode_odometry_pose(&[0x00, 0x00, 0x00, 0x00]).is_none());
+        assert!(decode_odometry(&[0x00, 0x00, 0x00, 0x00]).is_none());
         // Truncated after the header.
         assert!(decode_point_cloud2_fields(&[0x00, 0x01, 0x00, 0x00, 0x01]).is_none());
         // A field count far larger than the buffer must not over-allocate or panic.

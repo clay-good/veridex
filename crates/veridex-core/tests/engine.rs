@@ -96,6 +96,7 @@ fn ds(n: u64) -> Dataset {
                 task: None,
                 labels: vec![],
                 ego_poses: None,
+                ego_frame: None,
                 declared_frame_count: None,
             })
             .collect(),

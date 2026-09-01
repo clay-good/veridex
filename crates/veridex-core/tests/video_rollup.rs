@@ -94,6 +94,7 @@ fn episode(index: u64, stream: Stream) -> Episode {
         task: None,
         labels: vec![],
         ego_poses: None,
+        ego_frame: None,
         declared_frame_count: None,
     }
 }

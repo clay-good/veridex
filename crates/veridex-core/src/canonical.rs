@@ -80,7 +80,12 @@ use crate::cdm::{
 /// fails a stream on it, and a LiDAR that published ten thousand empty sweeps is otherwise
 /// indistinguishable from one that published ten thousand full ones: same schema, same timestamps,
 /// same rate, same frame. Same rule again.
-pub const CANONICAL_VERSION: u32 = 13;
+///
+/// v14 binds each episode's `ego_frame` — the body frame a `nav_msgs/msg/Odometry` says its
+/// trajectory is of. `AUTONOMY.EGO_FRAME_UNKNOWN` fails an episode on whether that frame appears in
+/// the transform tree, so two logs differing only in which frame the odometry claims are a passing
+/// dataset and a failing one. Same rule again.
+pub const CANONICAL_VERSION: u32 = 14;
 
 const DOMAIN: &[u8] = b"veridex.cdm.v1\0";
 
@@ -310,6 +315,10 @@ impl Episode {
         // one failing — share a content hash, so the clean one's certificate verified against the
         // corrupt one.
         e.opt(&self.declared_frame_count, |e, n| e.u64(*n));
+        // The body frame the ego trajectory is of. Bound because `autonomy.sensor-frame-resolution`
+        // fails an episode on whether the transform tree contains it: two logs differing only in
+        // which frame the odometry claims are a passing dataset and a failing one.
+        e.opt(&self.ego_frame, |e, f| e.str(f));
 
         // ego_poses (autonomy trajectory): absent for manipulation episodes. Order-insensitive —
         // canonicalized by (ts, pose) — so the same set of poses hashes identically regardless of the

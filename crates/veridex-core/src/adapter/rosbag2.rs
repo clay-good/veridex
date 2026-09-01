@@ -428,6 +428,8 @@ struct BagContents {
     min_ts: Option<i64>,
     max_ts: Option<i64>,
     ego_poses: Vec<EgoPose>,
+    /// The body frame the trajectory is of; the first message that names one settles it.
+    ego_frame: Option<String>,
     intrinsics: BTreeMap<String, CameraIntrinsics>,
     transforms: BTreeMap<(String, String), Transform>,
     serialization_formats: BTreeSet<String>,
@@ -774,8 +776,11 @@ fn read_shard(
                 }
             }
         } else if super::mcap::schema_is(ty, "Odometry") {
-            if let Some(pose) = super::cdr::decode_odometry_pose(data) {
+            if let Some((pose, child)) = super::cdr::decode_odometry(data) {
                 contents.ego_poses.push(EgoPose { ts, pose });
+                if contents.ego_frame.is_none() {
+                    contents.ego_frame = child;
+                }
             }
         } else if super::mcap::schema_is(ty, "JointState") {
             // The one message whose entire payload is the measurement: a handful of joint angles.
@@ -921,8 +926,11 @@ fn read_mcap_shard(
                 }
             }
         } else if super::mcap::schema_is(&ros_type, "Odometry") {
-            if let Some(pose) = super::cdr::decode_odometry_pose(data) {
+            if let Some((pose, child)) = super::cdr::decode_odometry(data) {
                 contents.ego_poses.push(EgoPose { ts, pose });
+                if contents.ego_frame.is_none() {
+                    contents.ego_frame = child;
+                }
             }
         } else if super::mcap::schema_is(&ros_type, "JointState") {
             // The one message whose entire payload is the measurement: a handful of joint angles.
@@ -1111,6 +1119,7 @@ fn ingest_metadata_only(
             task: None,
             labels: Vec::new(),
             ego_poses: None,
+            ego_frame: None,
             declared_frame_count: None,
         }],
         calibration: None,
@@ -1583,6 +1592,7 @@ impl Adapter for Rosbag2Adapter {
                 task: None,
                 labels: Vec::new(),
                 ego_poses,
+                ego_frame: contents.ego_frame,
                 // Deliberately not the manifest's `message_count`. That is a bag-wide total across
                 // every topic, while `declared_frame_count` is what one episode's streams are each
                 // expected to hold — the boundary check would compare 363 messages against the

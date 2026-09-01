@@ -1916,6 +1916,7 @@ mod tests {
             task: None,
             labels: Vec::new(),
             ego_poses: None,
+            ego_frame: None,
             declared_frame_count: None,
         }
     }

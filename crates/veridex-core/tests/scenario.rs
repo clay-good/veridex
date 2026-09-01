@@ -19,6 +19,7 @@ fn episode_with(index: u64, labels: &[(&str, &str)]) -> Episode {
             })
             .collect(),
         ego_poses: None,
+        ego_frame: None,
         declared_frame_count: None,
     }
 }

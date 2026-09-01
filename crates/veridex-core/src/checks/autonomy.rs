@@ -996,6 +996,7 @@ impl Check for SensorFrameResolution {
             "AUTONOMY.SENSOR_FRAME_UNDECLARED",
             "AUTONOMY.SENSOR_FRAME_UNKNOWN",
             "AUTONOMY.SENSOR_FRAME_UNRELATED",
+            "AUTONOMY.EGO_FRAME_UNKNOWN",
         ]
     }
     fn title(&self) -> &'static str {
@@ -1037,9 +1038,54 @@ impl Check for SensorFrameResolution {
         // (stream, code) once — a 200-episode drive log would otherwise bury the one actionable line
         // under 200 copies of it. Same reason `statistical.rs` dedupes its dataset-level stats checks.
         let mut reported: BTreeSet<(&str, &'static str)> = BTreeSet::new();
+        // The ego trajectory's own frame is a separate question from the sensors' — and the one the
+        // per-sensor rule below deliberately does not ask. An ego-pose stream's `frame_id` is the
+        // *reference* frame (`odom`, `map`), joined to the body dynamically rather than by the
+        // static tree, which is why it is excluded from `is_spatial_sensor`. The body frame the
+        // trajectory is *of* is the static question: it is what every sensor's extrinsics hang off,
+        // so a trajectory tracking a frame the tree never names cannot be related to a single sensor
+        // observation. A rig that publishes odometry for `base_footprint` while its tree roots at
+        // `base_link` is exactly that, and every other frame check passes on it.
+        //
+        // Once per episode, because the trajectory is per-episode. Silent when the source names no
+        // body frame — a trajectory that does not say what it is of is not a trajectory of the wrong
+        // thing.
+        let mut ego_reported: BTreeSet<&str> = BTreeSet::new();
         for ep in &dataset.episodes {
             if !is_rig_episode(ep) {
                 continue;
+            }
+            if let Some(frame) = ep.ego_frame.as_deref() {
+                if !tree_frames.contains(frame) && ego_reported.insert(frame) {
+                    findings.push(
+                        Finding::new(
+                            self.id(),
+                            Category::Autonomy,
+                            Severity::Error,
+                            Location::Episode { episode: ep.index },
+                            "AUTONOMY.EGO_FRAME_UNKNOWN",
+                            format!(
+                                "episode {}: the ego trajectory is recorded for frame `{frame}`, \
+                                 which the transform (TF) tree never names — the vehicle the \
+                                 trajectory tracks is not the one the sensors are mounted on, as \
+                                 far as the calibration says",
+                                ep.index
+                            ),
+                        )
+                        .with_risk(
+                            "Every sensor's extrinsics hang off the body frame, so a trajectory \
+                             expressed for a frame outside the tree cannot place a single \
+                             observation along the drive. Nothing else reports it: the tree is \
+                             well-formed, every sensor resolves through it, and the trajectory \
+                             itself is continuous.",
+                        )
+                        .with_remedy(
+                            "Publish the static transform joining the odometry's `child_frame_id` \
+                             to the rig's root (commonly `base_footprint` → `base_link`), or \
+                             re-record the odometry against the frame the tree already uses.",
+                        ),
+                    );
+                }
             }
 
             // The camera frames the other sensors have to reach. Only cameras that name a frame the

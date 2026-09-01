@@ -1201,6 +1201,7 @@ fn ingest_metadata_only(
             task: declared_lengths.get(&index).and_then(|d| d.task.clone()),
             labels: Vec::new(),
             ego_poses: None,
+            ego_frame: None,
             declared_frame_count: declared_lengths.get(&index).map(|d| d.length),
         })
         .collect();
@@ -1900,6 +1901,7 @@ impl Adapter for LeRobotAdapter {
                     labels,
                     // LeRobot carries no ego-vehicle trajectory.
                     ego_poses: None,
+                    ego_frame: None,
                     declared_frame_count: declared_lengths.get(&index).map(|d| d.length),
                 }
             })

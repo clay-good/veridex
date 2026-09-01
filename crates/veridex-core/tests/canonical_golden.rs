@@ -29,12 +29,12 @@ fn the_canonical_encoding_has_not_changed_without_a_version_bump() {
     let d: Dataset = serde_json::from_str(GOLDEN).expect("the golden fixture parses");
 
     assert_eq!(
-        CANONICAL_VERSION, 13,
+        CANONICAL_VERSION, 14,
         "the encoding version changed; re-pin the hash below in the same commit"
     );
     assert_eq!(
         content_hash(&d).to_hex(),
-        "1da86b34260d516ef6483006311562fe47fb8dcfcbacdf6a3883b63a02c72dcc",
+        "fd59a4d0e2713d66d372f2fb1382e1e9ab962c1153fefaea464e5c64c4a0a583",
         "the canonical encoding changed. If that was deliberate, bump CANONICAL_VERSION and \
          re-pin this vector in the same commit — a hash change without a version bump means two \
          builds disagree about byte-identical data while both claiming the same encoding, and \
@@ -104,6 +104,10 @@ fn the_golden_fixture_still_covers_what_it_claims_to() {
     assert!(
         d.episodes.iter().any(|e| e.ego_poses.is_some()),
         "ego-pose arm"
+    );
+    assert!(
+        d.episodes.iter().any(|e| e.ego_frame.is_some()),
+        "ego body frame — the vector must reach the encoding with a value, not the absent marker"
     );
     assert!(d.episodes.iter().any(|e| !e.labels.is_empty()), "label arm");
     assert!(

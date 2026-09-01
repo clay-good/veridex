@@ -80,6 +80,7 @@ fn sensitive_dataset() -> Dataset {
                 ts: None,
             }],
             ego_poses: None,
+            ego_frame: None,
             declared_frame_count: None,
         }],
     }
@@ -415,6 +416,7 @@ fn the_redacted_dataset_id_does_not_depend_on_what_the_redactor_saw_first() {
                 task: None,
                 labels: vec![],
                 ego_poses: None,
+                ego_frame: None,
                 declared_frame_count: None,
             }],
         };

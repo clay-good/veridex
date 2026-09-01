@@ -463,6 +463,9 @@ impl Adapter for McapAdapter {
         // trajectory from Odometry, camera intrinsics from CameraInfo (first per camera topic), and the
         // static transform tree from TFMessage (first per parent→child edge). See `super::cdr`.
         let mut ego_poses: Vec<EgoPose> = Vec::new();
+        // The body frame the trajectory is of; the first message that names one settles it, the way
+        // the first decoded intrinsics settle a camera's.
+        let mut ego_frame: Option<String> = None;
         let mut intrinsics: BTreeMap<String, CameraIntrinsics> = BTreeMap::new();
         let mut transforms: BTreeMap<(String, String), Transform> = BTreeMap::new();
 
@@ -553,8 +556,11 @@ impl Adapter for McapAdapter {
                     }
                 }
             } else if schema_is(schema_name, "Odometry") {
-                if let Some(pose) = super::cdr::decode_odometry_pose(&message.data) {
+                if let Some((pose, child)) = super::cdr::decode_odometry(&message.data) {
                     ego_poses.push(EgoPose { ts, pose });
+                    if ego_frame.is_none() {
+                        ego_frame = child;
+                    }
                 }
             } else if schema_is(schema_name, "JointState") {
                 // The one message whose entire payload is the measurement: a handful of joint
@@ -807,6 +813,7 @@ impl Adapter for McapAdapter {
                 task: None,
                 labels: scenario_labels,
                 ego_poses,
+                ego_frame,
                 declared_frame_count: None,
             }],
             calibration,
@@ -1199,6 +1206,7 @@ fn ingest_summary_only(path: &Path, summary: McapSummary) -> Result<Ingested, In
             task: None,
             labels: scenario_labels,
             ego_poses: None,
+            ego_frame: None,
             // The message total is a count across every channel, not this episode's frame count,
             // so it is recorded as metadata rather than as a claim the length check would grade.
             declared_frame_count: None,
