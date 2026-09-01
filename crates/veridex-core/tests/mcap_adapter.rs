@@ -683,29 +683,54 @@ fn build_mcap_one_shot(channels: &[(&str, &str, Vec<u8>)]) -> Vec<u8> {
     out
 }
 
+/// A complete `sensor_msgs/msg/PointCloud2` body: header, `height`/`width`, four `PointField`s, and
+/// the `is_bigendian`/`point_step`/`row_step`/`data` tail.
+///
+/// The tail is what makes it a cloud rather than a prefix that looks like one. The point-count
+/// decode checks the message's own length invariants — `row_step` covers a row of `width` points and
+/// `data` is `row_step × height` bytes — precisely so a stubbed or mislabelled body cannot be read
+/// as a real count, so a fixture that stops after the fields is not a `PointCloud2` and must not be
+/// used to prove anything about counts.
+fn point_cloud2(height: u32, width: u32) -> Vec<u8> {
+    const POINT_STEP: u32 = 16; // x, y, z, intensity as float32
+    let mut pc = Cdr::new();
+    pc.header("lidar");
+    pc.u32(height);
+    pc.u32(width);
+    pc.u32(4);
+    for (i, name) in ["x", "y", "z", "intensity"].iter().enumerate() {
+        pc.string(name);
+        pc.u32(i as u32 * 4);
+        pc.u8(7); // FLOAT32
+        pc.u32(1);
+    }
+    pc.u8(0); // is_bigendian
+    pc.u32(POINT_STEP);
+    let row_step = POINT_STEP * width;
+    pc.u32(row_step);
+    let data_len = row_step * height;
+    pc.u32(data_len);
+    pc.buf.resize(pc.buf.len() + data_len as usize, 0);
+    pc.buf
+}
+
 #[test]
 fn a_lidar_that_published_only_empty_clouds_is_caught_end_to_end() {
     // The same well-formed `PointCloud2` the working fixture writes, with `width` of zero: the
     // schema, the frame, the timestamps and the rate of a healthy LiDAR and no points. Run through
     // the real adapter and the real engine, because the whole claim is that everything *else*
     // passes on it — a unit test on a hand-built CDM cannot show that.
-    let cloud = |points: u32| {
-        let mut pc = Cdr::new();
-        pc.header("lidar");
-        pc.u32(1);
-        pc.u32(points);
-        pc.u32(4);
-        for name in ["x", "y", "z", "intensity"] {
-            pc.string(name);
-            pc.u32(0);
-            pc.u8(7); // FLOAT32
-            pc.u32(1);
-        }
-        pc.buf
-    };
     let bytes = build_mcap_one_shot(&[
-        ("sensor_msgs/msg/PointCloud2", "/lidar/points", cloud(0)),
-        ("sensor_msgs/msg/PointCloud2", "/lidar/points", cloud(0)),
+        (
+            "sensor_msgs/msg/PointCloud2",
+            "/lidar/points",
+            point_cloud2(1, 0),
+        ),
+        (
+            "sensor_msgs/msg/PointCloud2",
+            "/lidar/points",
+            point_cloud2(1, 0),
+        ),
     ]);
     let path = write_temp_mcap(&bytes);
     let d = McapAdapter
@@ -742,17 +767,7 @@ fn a_lidar_that_published_only_empty_clouds_is_caught_end_to_end() {
 #[test]
 fn ros_message_bodies_populate_the_autonomy_cdm_end_to_end() {
     // PointCloud2 with x/y/z/intensity fields.
-    let mut pc = Cdr::new();
-    pc.header("lidar");
-    pc.u32(1);
-    pc.u32(1000);
-    pc.u32(4);
-    for name in ["x", "y", "z", "intensity"] {
-        pc.string(name);
-        pc.u32(0);
-        pc.u8(7); // FLOAT32
-        pc.u32(1);
-    }
+    let pc = point_cloud2(1, 1000);
     // CameraInfo with fx=600, fy=600, cx=320, cy=240.
     let mut cam = Cdr::new();
     cam.header("cam");
@@ -780,7 +795,7 @@ fn ros_message_bodies_populate_the_autonomy_cdm_end_to_end() {
     }
 
     let bytes = build_mcap_one_shot(&[
-        ("sensor_msgs/msg/PointCloud2", "/lidar/points", pc.buf),
+        ("sensor_msgs/msg/PointCloud2", "/lidar/points", pc),
         ("sensor_msgs/msg/CameraInfo", "/cam/info", cam.buf),
         ("nav_msgs/msg/Odometry", "/odom", odom.buf),
         ("tf2_msgs/msg/TFMessage", "/tf", tf.buf),

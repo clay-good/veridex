@@ -22,6 +22,19 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   end-to-end through the real MCAP adapter and the real engine, because the whole claim is that
   everything *else* passes on it — a unit test on a hand-built CDM cannot show that.
 
+  A count is believed only when the body proves it is a `PointCloud2`. The count is the first two
+  `uint32`s after the header, so a decode that read only those would believe whatever bytes happen to
+  sit there — and a channel's declared schema is not proof of its bodies. A recorder that stubs the
+  payload, a mislabelled topic, a truncated write: each presents as a `PointCloud2` channel, and a
+  fabricated count reaches the report as a finding about honest data, which is worse than the silence
+  it replaces. So the decode walks the field list to the `point_step`/`row_step`/`data` values behind
+  it and returns a count only when the message's own invariants hold — at least one declared field, a
+  non-zero point stride, a `row_step` covering a row of `width` points, `data` of exactly `row_step ×
+  height` bytes, and those bytes actually present. An empty cloud satisfies every one of them, which
+  is the case the check exists for; a buffer of zeroes does not, which is what the field and stride
+  rules are for. The field count is capped at 64 before the walk, because it is a `uint32` out of the
+  file and the walk is a per-message cost.
+
   The count comes from each message's own `height × width`, which a `PointCloud2` states in its
   header ahead of the bulk blob, so no point payload is decoded; it is read per message rather than
   once per stream, because the layout is a property of the stream and the first message settles it

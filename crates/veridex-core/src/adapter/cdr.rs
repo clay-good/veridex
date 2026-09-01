@@ -204,24 +204,72 @@ impl PointCountAccum {
     }
 }
 
-/// Decode a `sensor_msgs/msg/PointCloud2` body far enough to recover its **point count**:
-/// `Header`, then `uint32 height` and `uint32 width`, whose product is the number of points. The
-/// bulk `data` blob is never read, and neither is the field layout — this is the whole message
-/// header up to the count and nothing more, so it is cheap enough to run on every message rather
-/// than only the first.
+/// The most `PointField` entries a body may declare before the point-count decode declines it.
 ///
-/// Run per message on purpose. [`decode_point_cloud2_fields`] answers what a cloud's records are
-/// *shaped* like, which the first message settles for the whole stream; this answers whether there
-/// were any records, which only the messages themselves can settle. A LiDAR whose driver lost its
-/// sensor keeps publishing a perfectly-formed cloud at 10 Hz with `width` of zero.
+/// A real `PointCloud2` declares a handful — `x`, `y`, `z`, `intensity`, `ring`, `time`. The count
+/// is a `uint32` out of the file, and the decode below walks the list to reach the length invariants
+/// that prove the body is a cloud at all, so an uncapped count is a per-message cost the file
+/// chooses. 64 is far above any real layout and far below anything expensive.
+const MAX_POINT_FIELDS: usize = 64;
+
+/// Decode a `sensor_msgs/msg/PointCloud2` body far enough to recover its **point count** — `height ×
+/// width` — or `None` when the body is not a `PointCloud2` at all.
 ///
-/// The product is computed with a saturating multiply: both factors come out of the file, and
-/// `u32::MAX × u32::MAX` overflows a `u32` and would panic in a debug build on a crafted message.
+/// The count itself is the first two `uint32`s after the header, but reading only those believes
+/// whatever bytes happen to sit there. A channel's declared schema is not proof of its bodies: a
+/// mislabelled topic, a truncated write, or a recorder that stubbed the payload all present as a
+/// `PointCloud2` channel, and a fabricated count would be reported as a real one — a finding about
+/// honest data, which is worse than the silence it replaces. So the decode continues to the fields
+/// and the three length values behind them, and returns a count only when the message's own
+/// invariants hold: `row_step` covers a row of `width` points, `data` is `row_step × height` bytes,
+/// and the buffer actually holds them. An empty cloud satisfies all three with zeroes, which is the
+/// case this exists to find.
+///
+/// Run per message, unlike [`decode_point_cloud2_fields`]: the layout is a property of the stream
+/// and the first message settles it, while whether a sweep held any points is a property of each
+/// message. Nothing here reads the point payload — `data`'s length is its `uint32` prefix, and the
+/// bytes are only bounds-checked.
 pub fn decode_point_cloud2_point_count(data: &[u8]) -> Option<u64> {
     let mut r = Reader::new(data)?;
     r.header()?;
     let height = r.u32()? as u64;
     let width = r.u32()? as u64;
+    let field_count = r.u32()? as usize;
+    // A cloud that declares no per-point fields is not describing points, so there is nothing for a
+    // count to be a count *of*. Together with the `point_step` rule below this is what an all-zero
+    // body fails: every length invariant holds trivially at zero, and without these two a buffer of
+    // zeroes reads as a well-formed empty cloud and is reported as a dead sensor.
+    if field_count == 0 || field_count > MAX_POINT_FIELDS {
+        return None;
+    }
+    for _ in 0..field_count {
+        r.string()?; // name
+        r.u32()?; // offset
+        r.u8()?; // datatype
+        r.u32()?; // count
+    }
+    let _is_bigendian = r.u8()?;
+    let point_step = r.u32()? as u64;
+    let row_step = r.u32()? as u64;
+    let data_len = r.u32()? as u64;
+    // A point occupies bytes, in an empty cloud as much as a full one — a driver that publishes no
+    // returns still declares the stride of the point it would have published.
+    if point_step == 0 {
+        return None;
+    }
+    // A row holds `width` points, so it is at least `point_step × width` bytes — the message may pad
+    // beyond that but cannot fall short of it.
+    if row_step < point_step.saturating_mul(width) {
+        return None;
+    }
+    // `data` is exactly `row_step × height` bytes, per the message definition. This is the one
+    // invariant an arbitrary body will not satisfy by accident.
+    if data_len != row_step.saturating_mul(height) {
+        return None;
+    }
+    // ...and the bytes are actually there. A stub body claiming a full cloud fails here even if its
+    // numbers are self-consistent.
+    r.take(usize::try_from(data_len).ok()?)?;
     Some(height.saturating_mul(width))
 }
 
@@ -905,5 +953,65 @@ mod tests {
         assert!(decode_point_cloud2_fields(&w.buf).is_none());
         // Empty input.
         assert!(decode_tf_message(&[]).is_none());
+    }
+
+    /// A `PointCloud2` point count is believed only when the body proves it is a `PointCloud2`.
+    ///
+    /// The count is the first two `uint32`s after the header, so a decode that read only those would
+    /// believe whatever bytes happen to sit there — and a channel's declared schema is not proof of
+    /// its bodies. A recorder that stubs the payload, a mislabelled topic, a truncated write: each
+    /// presents as a `PointCloud2` channel, and a fabricated count reaches the report as a finding
+    /// about honest data. So the decode continues to the message's own length invariants.
+    #[test]
+    fn a_body_that_is_not_a_point_cloud_yields_no_point_count() {
+        const POINT_STEP: u32 = 16;
+        let cloud = |height: u32, width: u32, data_len: u32| {
+            let mut w = W::new();
+            w.header("lidar");
+            w.u32(height);
+            w.u32(width);
+            w.u32(1);
+            w.string("x");
+            w.u32(0);
+            w.u8(7);
+            w.u32(1);
+            w.u8(0); // is_bigendian
+            w.u32(POINT_STEP);
+            w.u32(POINT_STEP * width);
+            w.u32(data_len);
+            w.buf.resize(w.buf.len() + data_len as usize, 0);
+            w.buf
+        };
+        // A real cloud, and a real *empty* cloud: both counted. The empty one is the case the
+        // check exists for, so it must survive every rule above.
+        assert_eq!(
+            decode_point_cloud2_point_count(&cloud(1, 100, 1600)),
+            Some(100)
+        );
+        assert_eq!(decode_point_cloud2_point_count(&cloud(1, 0, 0)), Some(0));
+
+        // The stub body a demo recorder writes: a header and a payload that is not a cloud. Read as
+        // two `uint32`s it yields a count; read as a message it is not one.
+        let mut stub = W::new();
+        stub.header("lidar");
+        stub.buf.extend_from_slice(&0u64.to_le_bytes());
+        stub.buf.extend_from_slice(&[0u8; 32]);
+        assert!(decode_point_cloud2_point_count(&stub.buf).is_none());
+
+        // `data` shorter than `row_step × height` claims — the shape a truncated write leaves.
+        assert!(decode_point_cloud2_point_count(&cloud(1, 100, 0)).is_none());
+        // ...and a `data` length the buffer does not actually hold.
+        let mut short = cloud(1, 100, 1600);
+        short.truncate(short.len() - 1);
+        assert!(decode_point_cloud2_point_count(&short).is_none());
+
+        // A field count past the cap is declined rather than walked: it is a `uint32` out of the
+        // file, and the walk to the length invariants is a per-message cost.
+        let mut many = W::new();
+        many.header("lidar");
+        many.u32(1);
+        many.u32(1);
+        many.u32(4_000_000_000);
+        assert!(decode_point_cloud2_point_count(&many.buf).is_none());
     }
 }
