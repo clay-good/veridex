@@ -103,12 +103,15 @@ cargo run -p veridex-cli -- check /tmp/av-amb.mcap
 ```
 
 ```
-  [error] AUTONOMY.CALIBRATION_AMBIGUOUS  episode 0
-      episode 0: frame `lidar_top` is given 2 different parents at the same time (base_link,
-      lidar_mount) — its place on the rig depends on which chain a consumer happens to resolve
+  [error] AUTONOMY.CALIBRATION_AMBIGUOUS  dataset
+      frame `lidar_top` is given 2 different parents at the same time (base_link, lidar_mount)
+      — its place on the rig depends on which chain a consumer happens to resolve
       remedy: Publish exactly one parent per frame: remove the duplicate broadcaster, or re-parent
               the sensor under the mount it is actually measured against.
 ```
+
+Reported once, at dataset scope: the calibration is one document, so what is wrong *with* it is one
+defect however many episodes the rig recorded.
 
 Nothing else moves: the tree is one connected component and every sensor still reaches the camera, so
 `CALIBRATION_INCOMPLETE` and every `SENSOR_FRAME_*` code stay silent — which is exactly why this

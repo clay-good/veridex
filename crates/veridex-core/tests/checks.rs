@@ -4930,6 +4930,46 @@ fn a_frame_with_two_parents_is_not_a_calibrated_rig() {
 }
 
 #[test]
+fn one_broken_calibration_is_one_finding_however_many_episodes_the_rig_recorded() {
+    // The calibration is a dataset-level document, and both rules that judge it read `dataset` —
+    // yet they were emitted inside the per-episode loop, so a 200-episode drive log reported the
+    // same defect 200 times, buried the one actionable line, and inflated every rollup that counts
+    // findings by episode. The sibling `autonomy.sensor-frame-resolution` claims each stream once
+    // for exactly this reason.
+    let cal = veridex_core::cdm::Calibration {
+        transforms: vec![
+            xf("base_link", "lidar"),
+            xf("velodyne_base", "lidar"),
+            xf("base_link", "velodyne_base"),
+            xf("base_link", "cam"),
+        ],
+        // An all-zero `CameraInfo` too, so both dataset-level codes are exercised at once.
+        intrinsics: vec![veridex_core::cdm::CameraIntrinsics {
+            fx: 0.0,
+            fy: 0.0,
+            ..intr("cam")
+        }],
+    };
+    let mut d = rig_with_calibration(Some(cal));
+    let first = d.episodes[0].clone();
+    for index in 1..200u64 {
+        let mut ep = first.clone();
+        ep.index = index;
+        d.episodes.push(ep);
+    }
+    let f = autonomy::CalibrationCompleteness.run(&d);
+    let count = |code: &str| f.iter().filter(|x| x.code == code).count();
+    assert_eq!(count("AUTONOMY.CALIBRATION_AMBIGUOUS"), 1, "{f:?}");
+    assert_eq!(count("AUTONOMY.CALIBRATION_IMPLAUSIBLE"), 1, "{f:?}");
+    assert!(
+        f.iter()
+            .filter(|x| x.code != "AUTONOMY.CALIBRATION_INCOMPLETE")
+            .all(|x| x.location == veridex_core::check::Location::Dataset),
+        "a dataset-level fact is located at the dataset: {f:?}"
+    );
+}
+
+#[test]
 fn a_transform_tree_that_closes_into_a_loop_has_no_root() {
     // `base_link` → `lidar` → `radar` → `base_link`. Every frame has exactly one parent, so the
     // multiple-parent rule says nothing, and the graph is one connected component. It is still not

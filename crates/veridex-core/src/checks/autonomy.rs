@@ -735,12 +735,12 @@ impl Check for CalibrationCompleteness {
         };
         // The same shape, for calibration that is present and cannot be used. Error, not warning: a
         // focal length of zero is not a judgment call, it is arithmetic with no answer.
-        let unusable = |episode: u64, msg: String| {
+        let unusable = |msg: String| {
             Finding::new(
                 "autonomy.calibration-completeness",
                 Category::Autonomy,
                 Severity::Error,
-                Location::Episode { episode },
+                Location::Dataset,
                 "AUTONOMY.CALIBRATION_IMPLAUSIBLE",
                 msg,
             )
@@ -758,12 +758,12 @@ impl Check for CalibrationCompleteness {
         // And for calibration that is present, well-formed edge by edge, and not a tree. Error for
         // the same reason: which of two chains places the sensor is not a judgment call, it is a
         // question the log does not answer.
-        let ambiguous = |episode: u64, msg: String| {
+        let ambiguous = |msg: String| {
             Finding::new(
                 "autonomy.calibration-completeness",
                 Category::Autonomy,
                 Severity::Error,
-                Location::Episode { episode },
+                Location::Dataset,
                 "AUTONOMY.CALIBRATION_AMBIGUOUS",
                 msg,
             )
@@ -869,7 +869,20 @@ impl Check for CalibrationCompleteness {
                     ));
                 }
             }
+        }
 
+        // The calibration is dataset-level, so what is wrong *with* it is one defect however many
+        // episodes the rig recorded — unlike the two rules above, which genuinely ask a per-episode
+        // question (does this episode carry spatial sensors, does its tree localize its own
+        // streams). Emitted once, at dataset scope, for the same reason
+        // `autonomy.sensor-frame-resolution` claims each stream once: a 200-episode drive log
+        // otherwise buries the one actionable line under 200 copies of it, and inflates every
+        // rollup that counts findings by episode.
+        //
+        // Only when the dataset has a rig at all — a manipulation dataset's calibration is not this
+        // check's business, and reading it here would report on a dataset the rest of the check
+        // never entered.
+        if dataset.episodes.iter().any(is_rig_episode) {
             // Present is not the same as usable. An uncalibrated ROS camera driver publishes a
             // `CameraInfo` of all zeros, which satisfies every presence test above while making the
             // projection it exists for undefined — and the rig then certifies as world-model-ready
@@ -877,21 +890,14 @@ impl Check for CalibrationCompleteness {
             // implausibility: a focal length must be positive and finite, a principal point
             // non-negative and finite, a rotation quaternion an actual rotation.
             for reason in unusable_calibration(dataset) {
-                findings.push(unusable(
-                    ep.index,
-                    format!("episode {}: {reason}", ep.index),
-                ));
+                findings.push(unusable(reason));
             }
-
-            // Connected is not the same as unique. Both checks above — and the per-sensor frame
-            // resolution that succeeds this one — walk the frame graph undirected, so a tree in
+            // Connected is not the same as unique. Both rules above — and the per-sensor frame
+            // resolution that succeeds this check — walk the frame graph undirected, so a tree in
             // which some frame has two parents, or which closes into a loop, satisfies every one of
             // them while the transform between two sensors has more than one answer.
             for reason in ambiguous_calibration(dataset) {
-                findings.push(ambiguous(
-                    ep.index,
-                    format!("episode {}: {reason}", ep.index),
-                ));
+                findings.push(ambiguous(reason));
             }
         }
         findings

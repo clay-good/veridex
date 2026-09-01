@@ -22,6 +22,15 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   when any camera declares no frame the count would be a guess and the rule abstains, that stream
   being already reported by `AUTONOMY.SENSOR_FRAME_UNDECLARED`.
 
+- **A broken rig calibration is now one finding, not one per episode.** Both rules that judge the
+  calibration read `dataset.calibration` — a dataset-level document — yet were emitted inside
+  `autonomy.calibration-completeness`'s per-episode loop, so a 200-episode drive log reported
+  `AUTONOMY.CALIBRATION_IMPLAUSIBLE` two hundred times, buried the one actionable line, and inflated
+  every rollup that counts findings by episode. `autonomy.sensor-frame-resolution` already claims
+  each stream once for exactly this reason. Both codes now report once, at **dataset** scope; the
+  presence rules beside them still report per episode, because "does this episode carry spatial
+  sensors" genuinely is a per-episode question.
+
 - **An attested element is no longer also reported partial.** Signing for an element is a claim
   about the whole dataset — that is what makes the trust score count it as covered — so it settles
   the scope question the way a dataset-scoped record does. Without this, a dataset whose lineage was
