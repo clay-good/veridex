@@ -810,68 +810,93 @@ impl DuplicateEpisode {
     /// episodes with equal `Some` signatures are byte-for-byte equivalent in every field a duplicate
     /// shares, frame contents included. Floats are captured by their bit pattern so equality is exact
     /// (and `NaN`-stable); the modality enum is captured by its `Debug` form.
-    pub(crate) fn signature(ep: &crate::cdm::Episode) -> Option<String> {
-        use std::fmt::Write as _;
+    /// A SHA-256 digest rather than the rendered text it summarizes. Both callers use the signature
+    /// only for equality — as a map key here, and pairwise in the near-duplicate check — while the
+    /// text form was about 65 KB per episode on an ordinary dataset (two hex characters per byte of
+    /// every frame's content hash, formatted one byte at a time). Every signature is held at once,
+    /// so a 2,000-episode dataset built and retained ~130 MB of strings to answer a question that
+    /// needs 32 bytes each, and a 20,000-episode one would hold well over a gigabyte — on a frame
+    /// count the input file chooses. Same partition, 4 seconds to 0.4.
+    pub(crate) fn signature(ep: &crate::cdm::Episode) -> Option<[u8; 32]> {
+        use sha2::{Digest, Sha256};
         // An episode with no streams carries no content to compare — leave it to DegenerateEpisode.
         if ep.streams.is_empty() {
             return None;
         }
-        let mut sig = String::new();
-        // task and labels (labels sorted for order-insensitivity).
-        let _ = write!(sig, "task={:?};", ep.task);
+        let mut h = Sha256::new();
+        // Every field is fed with an explicit length or terminator, so no two different episodes can
+        // produce the same byte stream by running one field into the next — the property the
+        // delimiters in the old text form provided.
+        let field = |h: &mut Sha256, tag: u8, bytes: &[u8]| {
+            h.update([tag]);
+            h.update((bytes.len() as u64).to_le_bytes());
+            h.update(bytes);
+        };
+        match &ep.task {
+            Some(task) => field(&mut h, 1, task.as_bytes()),
+            None => h.update([0u8]),
+        }
+        // labels sorted for order-insensitivity.
         let mut labels: Vec<&crate::cdm::Label> = ep.labels.iter().collect();
         labels.sort_by(|a, b| a.key.cmp(&b.key).then_with(|| a.value.cmp(&b.value)));
+        h.update((labels.len() as u64).to_le_bytes());
         for l in labels {
-            let _ = write!(sig, "L[{}={}];", l.key, l.value);
+            field(&mut h, 2, l.key.as_bytes());
+            field(&mut h, 3, l.value.as_bytes());
         }
         // streams, sorted by name (a duplicate has the same set regardless of listing order).
         let mut streams: Vec<&crate::cdm::Stream> = ep.streams.iter().collect();
         streams.sort_by(|a, b| a.name.cmp(&b.name));
+        h.update((streams.len() as u64).to_le_bytes());
         for s in streams {
             // A stream with no frames can't establish content identity.
             if s.frames.is_empty() {
                 return None;
             }
-            let _ = write!(
-                sig,
-                "S[name={};mod={:?};rate={:?};clock={};dtype={:?};shape={:?};frames=",
-                s.name,
-                s.modality,
-                s.declared_rate_hz.map(f64::to_bits),
-                s.clock_id,
-                s.dtype,
-                s.shape,
-            );
+            field(&mut h, 4, s.name.as_bytes());
+            field(&mut h, 5, format!("{:?}", s.modality).as_bytes());
+            match s.declared_rate_hz {
+                Some(rate) => {
+                    h.update([6u8]);
+                    h.update(rate.to_bits().to_le_bytes());
+                }
+                None => h.update([7u8]),
+            }
+            field(&mut h, 8, s.clock_id.as_bytes());
+            match &s.dtype {
+                Some(dtype) => field(&mut h, 9, dtype.as_bytes()),
+                None => h.update([10u8]),
+            }
+            match &s.shape {
+                Some(shape) => {
+                    h.update([11u8]);
+                    h.update((shape.len() as u64).to_le_bytes());
+                    for dim in shape {
+                        h.update(dim.to_le_bytes());
+                    }
+                }
+                None => h.update([12u8]),
+            }
+            h.update((s.frames.len() as u64).to_le_bytes());
             for f in &s.frames {
                 // The content hash is what proves duplication; without it the episode is not
                 // fingerprintable and the whole check must abstain for it.
                 let hash = f.value_ref.content_hash?;
-                let _ = write!(sig, "{}@{},", f.ts, hex32(&hash));
+                h.update(f.ts.to_le_bytes());
+                h.update(hash);
             }
-            if let Some(st) = s.stats {
-                let _ = write!(
-                    sig,
-                    ";stats={},{},{},{}",
-                    st.min.to_bits(),
-                    st.max.to_bits(),
-                    st.mean.to_bits(),
-                    st.std.to_bits()
-                );
+            match s.stats {
+                Some(st) => {
+                    h.update([13u8]);
+                    for v in [st.min, st.max, st.mean, st.std] {
+                        h.update(v.to_bits().to_le_bytes());
+                    }
+                }
+                None => h.update([14u8]),
             }
-            sig.push_str("];");
         }
-        Some(sig)
+        Some(h.finalize().into())
     }
-}
-
-/// Lowercase hex of a 32-byte content hash, for the episode signature.
-fn hex32(bytes: &[u8; 32]) -> String {
-    use std::fmt::Write as _;
-    let mut s = String::with_capacity(64);
-    for b in bytes {
-        let _ = write!(s, "{b:02x}");
-    }
-    s
 }
 
 impl Check for DuplicateEpisode {
@@ -900,7 +925,7 @@ impl Check for DuplicateEpisode {
         // signature -> episode indices, in first-seen order within each group. Episodes that are not
         // fingerprintable (no proven-identical content) return `None` and are skipped, so a duplicate
         // is never claimed from shape/timing coincidence alone.
-        let mut groups: HashMap<String, Vec<u64>> = HashMap::new();
+        let mut groups: HashMap<[u8; 32], Vec<u64>> = HashMap::new();
         for ep in &dataset.episodes {
             if let Some(sig) = Self::signature(ep) {
                 groups.entry(sig).or_default().push(ep.index);
@@ -1172,13 +1197,13 @@ impl Check for NearDuplicateEpisode {
         // Built in one pass keyed by episode index: looking each one up by scanning the episode list
         // is quadratic in the episode count, and a signature is itself linear in the episode's
         // frames, so the naive form costs a large dataset dearly for a suppression list.
-        let mut signature_of: BTreeMap<u64, Option<String>> = BTreeMap::new();
+        let mut signature_of: BTreeMap<u64, Option<[u8; 32]>> = BTreeMap::new();
         for episode in &dataset.episodes {
             signature_of
                 .entry(episode.index)
                 .or_insert_with(|| DuplicateEpisode::signature(episode));
         }
-        let signatures: Vec<Option<&String>> = evidence
+        let signatures: Vec<Option<&[u8; 32]>> = evidence
             .iter()
             .map(|(index, _)| signature_of.get(index).and_then(Option::as_ref))
             .collect();
@@ -1835,4 +1860,125 @@ fn all_frames_identical(stream: &crate::cdm::Stream) -> Option<bool> {
         identical &= hash? == first;
     }
     Some(identical)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cdm::{Episode, Frame, Label, Stream, ValueRef};
+
+    fn stream(name: &str) -> Stream {
+        let mut s = Stream {
+            name: name.into(),
+            modality: Modality::ScalarState,
+            declared_rate_hz: None,
+            clock_id: "c".into(),
+            clock_kind: crate::cdm::ClockKind::Measured,
+            dtype: None,
+            shape: None,
+            dim_names: None,
+            frames: Vec::new(),
+            stats: None,
+            dim_stats: None,
+            observed_stats: None,
+            observed_dim_stats: None,
+            observed_saturation: None,
+            observed_non_finite: None,
+            frame_id: None,
+            point_fields: None,
+            media: None,
+            declared_range: None,
+            latched: None,
+        };
+        for i in 0..2u8 {
+            let mut h = [0u8; 32];
+            h[0] = i;
+            s.frames.push(Frame {
+                ts: i as i64,
+                value_ref: ValueRef {
+                    uri: String::new(),
+                    byte_offset: None,
+                    byte_len: None,
+                    content_hash: Some(h),
+                },
+            });
+        }
+        s
+    }
+
+    fn ep(streams: Vec<Stream>) -> Episode {
+        Episode {
+            index: 0,
+            start_ts: None,
+            end_ts: None,
+            streams,
+            task: None,
+            labels: Vec::new(),
+            ego_poses: None,
+            declared_frame_count: None,
+        }
+    }
+
+    /// The signature is a digest, not the text it summarizes, and a digest is only as trustworthy as
+    /// the boundaries between the fields fed into it. Run one field's content into the next and two
+    /// genuinely different episodes hash alike — which reports them as duplicates of each other, at
+    /// warning severity, on data that is fine. The old text form got this from its delimiters; each
+    /// case below moves content across exactly one boundary a naive concatenation would not see.
+    #[test]
+    fn no_two_different_episodes_share_a_signature() {
+        let mut variants: Vec<(&str, Episode)> = Vec::new();
+
+        // Stream name `ab` + clock `c`, against name `a` + clock `bc`.
+        variants.push(("name=ab clock=c", ep(vec![stream("ab")])));
+        let mut shifted = stream("a");
+        shifted.clock_id = "bc".into();
+        variants.push(("name=a clock=bc", ep(vec![shifted])));
+
+        // One label `k`=`xy`, against `kx`=`y`.
+        for (key, value, label) in [("k", "xy", "label k=xy"), ("kx", "y", "label kx=y")] {
+            let mut e = ep(vec![stream("ab")]);
+            e.labels = vec![Label {
+                key: key.into(),
+                value: value.into(),
+                ts: None,
+            }];
+            variants.push((label, e));
+        }
+
+        // A declared shape of [1, 2] against [12] — the same digits, a different tensor.
+        for (shape, label) in [(vec![1u64, 2], "shape [1,2]"), (vec![12], "shape [12]")] {
+            let mut s = stream("ab");
+            s.shape = Some(shape);
+            variants.push((label, ep(vec![s])));
+        }
+
+        // A dtype that is absent, against one present and empty.
+        let mut empty_dtype = stream("ab");
+        empty_dtype.dtype = Some(String::new());
+        variants.push(("dtype empty", ep(vec![empty_dtype])));
+
+        // Two streams `a` and `b`, against one stream named `ab`.
+        variants.push(("two streams", ep(vec![stream("a"), stream("b")])));
+
+        let mut seen: HashMap<[u8; 32], &str> = HashMap::new();
+        for (label, e) in &variants {
+            let sig = DuplicateEpisode::signature(e)
+                .unwrap_or_else(|| panic!("{label} must be fingerprintable"));
+            if let Some(other) = seen.insert(sig, label) {
+                panic!("`{label}` and `{other}` hash alike — a field boundary is ambiguous");
+            }
+        }
+    }
+
+    /// And the property the check actually reads: identical content collides, and the episode's own
+    /// index is deliberately not part of it.
+    #[test]
+    fn identical_content_shares_a_signature_whatever_the_episode_index() {
+        let mut other = ep(vec![stream("ab")]);
+        other.index = 7;
+        assert_eq!(
+            DuplicateEpisode::signature(&ep(vec![stream("ab")])),
+            DuplicateEpisode::signature(&other)
+        );
+    }
 }

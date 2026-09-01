@@ -22,6 +22,23 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   when any camera declares no frame the count would be a guess and the rule abstains, that stream
   being already reported by `AUTONOMY.SENSOR_FRAME_UNDECLARED`.
 
+- **The duplicate-episode signature is a digest, not the 65 KB of text it summarized.**
+  `DuplicateEpisode::signature` rendered an episode's whole content into a `String` — two hex
+  characters per byte of every frame's content hash, formatted one byte at a time — and both callers
+  used it only for equality, as a map key and pairwise. Every signature is held at once, so a
+  2,000-episode dataset built and retained about **130 MB** of strings to answer a question that
+  needs 32 bytes each; a 20,000-episode one would hold over a gigabyte, on a frame count the input
+  file chooses. Now a SHA-256 over the same content: `structural.duplicate-episode` goes from
+  **3.1 s to 0.26 s** and `near-duplicate-episode`, which shares the signature, from **5.3 s to
+  0.86 s** (release, 2,000 episodes × 800 frames).
+
+  Every field is fed with an explicit tag and length, because a digest is only as trustworthy as the
+  boundaries between the fields in it — run one field into the next and two genuinely different
+  episodes hash alike, which reports them as duplicates of each other on data that is fine. A unit
+  test walks pairs that differ only across a boundary (`ab`+`c` against `a`+`bc`, `k`=`xy` against
+  `kx`=`y`, shape `[1,2]` against `[12]`, an absent dtype against an empty one) and fails if any two
+  collide; removing the length prefixes makes it fail.
+
 - **`autonomy.calibration-completeness` re-read its transform tree once per episode.** The same
   shape, one check over: the tree is dataset-level and so is everything derived from it, but
   `break_is_localizable` rebuilt the set of every frame the tree names and `tf_component_count`
