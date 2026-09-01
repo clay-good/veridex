@@ -123,6 +123,19 @@ fn the_av_message_headers_populate_the_rig_cdm() {
     assert_eq!(fields[0].dtype.as_deref(), Some("float32"));
     assert_eq!(fields[4].dtype.as_deref(), Some("uint16"));
 
+    // ...and how many points each cloud actually held, from the same header. The layout says what
+    // a record looks like; this says whether there were any, and a LiDAR whose driver lost its
+    // sensor keeps publishing the same layout forever with `width` of zero. Asserted on the bag
+    // path as well as the MCAP one because they are two call sites into the same decoder, and a
+    // wiring that reached only one would leave every bag silently unmeasured.
+    let counts = lidar
+        .observed_point_counts
+        .expect("point counts decoded per message");
+    assert_eq!(counts.min, 8);
+    assert_eq!(counts.max, 8);
+    assert_eq!(counts.empty, 0);
+    assert_eq!(counts.message_count, lidar.frames.len() as u64);
+
     // Every header-first message names the frame its data is expressed in.
     assert_eq!(lidar.frame_id.as_deref(), Some("lidar_link"));
 
@@ -856,6 +869,65 @@ fn signature(d: &veridex_core::cdm::Dataset) -> Vec<EpisodeSig> {
 type Channel = (String, String, Vec<u64>);
 
 /// Write an MCAP carrying the given channels.
+/// A CDR body appropriate to `schema`, so both storage plugins have something real to decode.
+///
+/// A one-byte payload decodes to nothing, which makes any claim that the two plugins "see the same
+/// thing" vacuous — two read paths that both read nothing agree trivially. Every ROS message here is
+/// header-first, so every one of them yields a `frame_id`; a `PointCloud2` gets a whole cloud,
+/// tail included, so the point layout and the per-message point count are decoded too. Those are
+/// the fields wired separately into each plugin's reader, and so the ones a divergence would hide
+/// in.
+fn cdr_body(schema: &str, seq: u32) -> Vec<u8> {
+    let frame_id = match schema {
+        "sensor_msgs/msg/PointCloud2" => "lidar_link",
+        "sensor_msgs/msg/Imu" => "imu_link",
+        _ => "odom",
+    };
+    let mut buf: Vec<u8> = vec![0x00, 0x01, 0x00, 0x00]; // encapsulation: CDR_LE
+    let align = |buf: &mut Vec<u8>, n: usize| {
+        while (buf.len() - 4) % n != 0 {
+            buf.push(0)
+        }
+    };
+    let u32v = |buf: &mut Vec<u8>, v: u32| {
+        align(buf, 4);
+        buf.extend_from_slice(&v.to_le_bytes());
+    };
+    let strv = |buf: &mut Vec<u8>, s: &str| {
+        align(buf, 4);
+        buf.extend_from_slice(&((s.len() + 1) as u32).to_le_bytes());
+        buf.extend_from_slice(s.as_bytes());
+        buf.push(0);
+    };
+    u32v(&mut buf, 0); // stamp.sec
+    u32v(&mut buf, 0); // stamp.nanosec
+    strv(&mut buf, frame_id);
+    if schema != "sensor_msgs/msg/PointCloud2" {
+        // Enough to name the frame; the body varies per message so frames stay content-distinct.
+        buf.extend_from_slice(&seq.to_le_bytes());
+        return buf;
+    }
+    const POINT_STEP: u32 = 16;
+    const WIDTH: u32 = 64;
+    u32v(&mut buf, 1); // height
+    u32v(&mut buf, WIDTH);
+    u32v(&mut buf, 4); // fields
+    for (i, name) in ["x", "y", "z", "intensity"].iter().enumerate() {
+        strv(&mut buf, name);
+        u32v(&mut buf, i as u32 * 4);
+        buf.push(7); // FLOAT32
+        u32v(&mut buf, 1);
+    }
+    buf.push(0); // is_bigendian
+    u32v(&mut buf, POINT_STEP);
+    u32v(&mut buf, POINT_STEP * WIDTH); // row_step
+    u32v(&mut buf, POINT_STEP * WIDTH); // data length (height is 1)
+    let start = buf.len();
+    buf.resize(start + (POINT_STEP * WIDTH) as usize, 0);
+    buf[start] = seq as u8;
+    buf
+}
+
 fn write_mcap(path: &std::path::Path, channels: &[Channel]) {
     let mut out = Vec::new();
     {
@@ -871,7 +943,7 @@ fn write_mcap(path: &std::path::Path, channels: &[Channel]) {
                         log_time: t,
                         publish_time: t,
                     },
-                    b"x",
+                    &cdr_body(schema, seq as u32),
                 )
                 .unwrap();
             }
@@ -1100,6 +1172,42 @@ fn which_storage_plugin_recorded_a_bag_does_not_change_what_veridex_sees() {
         .dataset;
 
     assert_eq!(signature(&as_bag), signature(&as_mcap));
+
+    // ...and everything else the CDM holds, by content hash. The signature above covers stream
+    // names, modalities and timestamps, which is the shape of the recording — but the neutrality
+    // claim is about what Veridex *sees*, and most of what it sees on a rig is decoded out of the
+    // message bodies: the point layout and point counts, each sensor's coordinate frame, the
+    // transform tree, the intrinsics, the ego trajectory. Two read paths reach those, one per
+    // storage plugin, and a wiring added to one and missed in the other passes the signature
+    // unchanged. Only the dataset id is normalized away — a bag is a directory and a bare recording
+    // is a file, so their ids differ by construction and nothing else may.
+    // Three things are properties of the *container* rather than of what was recorded, and only
+    // these three: a bag is a directory and a bare recording is a file, so their ids differ by
+    // construction; `metadata.yaml`'s keys exist only for a bag; and the log clock and the recorder
+    // are named after whichever plugin wrote the file. Everything else — every stream, every
+    // timestamp, every fingerprint, and everything decoded out of the message bodies — is what
+    // Veridex read, and none of it may depend on which plugin stored it.
+    let normalized = |d: &veridex_core::cdm::Dataset| {
+        let mut d = d.clone();
+        d.id = "container".into();
+        d.metadata.clear();
+        for p in &mut d.provenance {
+            p.elements
+                .retain(|e| !matches!(e.key.as_str(), "source_format" | "recorder"));
+        }
+        for ep in &mut d.episodes {
+            for s in &mut ep.streams {
+                s.clock_id = "container-log".into();
+            }
+        }
+        veridex_core::content_hash(&d)
+    };
+    assert_eq!(
+        normalized(&as_bag),
+        normalized(&as_mcap),
+        "the two storage plugins of one recorder must yield the same CDM, not merely the same \
+         stream names and timestamps"
+    );
 }
 
 #[test]

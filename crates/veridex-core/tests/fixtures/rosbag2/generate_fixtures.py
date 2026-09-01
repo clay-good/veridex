@@ -101,7 +101,11 @@ def point_cloud2(frame_id, ts_ns, npoints=8):
     c.u8(0)  # is_bigendian
     c.u32(18)  # point_step
     c.u32(18 * npoints)  # row_step
-    c.u32(18 * npoints)  # data (sequence<uint8>) — filler; Veridex never reads it
+    # `data` — filler. Veridex never reads the points, but it does check that the message's own
+    # length invariants hold (`row_step` covers a row of `width` points, `data` is
+    # `row_step * height` bytes and those bytes are present) before believing the point count,
+    # so the blob has to actually be here and be the right size.
+    c.u32(18 * npoints)  # data (sequence<uint8>)
     c.raw(bytes(18 * npoints))
     c.u8(1)  # is_dense
     return c.bytes()

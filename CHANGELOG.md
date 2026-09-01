@@ -10,6 +10,27 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **The two rosbag2 storage plugins were only proven to agree about names and timestamps.**
+  `which_storage_plugin_recorded_a_bag_does_not_change_what_veridex_sees` compared stream names,
+  modalities and frame times — the shape of the recording. But most of what Veridex sees on a rig is
+  decoded out of the message *bodies*: the point layout and point counts, each sensor's coordinate
+  frame, the transform tree, the intrinsics, the ego trajectory. Those go through two separate
+  readers, one per plugin, and a field wired into one and missed in the other passed the comparison
+  unchanged. Worse, the fixture wrote a **one-byte payload**, so neither path decoded anything and
+  the agreement was between two readers that had both read nothing.
+
+  The fixture now writes real CDR bodies — every ROS message header-first so each yields a
+  `frame_id`, and a whole `PointCloud2` so the layout and per-message point count decode too — and
+  the comparison is a **content hash** of the whole CDM. Exactly three things are normalized away,
+  because exactly three are properties of the container rather than of what was recorded: the
+  dataset id (a bag is a directory, a bare recording is a file), `metadata.yaml`'s keys, and the
+  names of the log clock and the recorder. Disabling the point-count wiring in either reader now
+  fails the test.
+
+  Also asserted directly on the bag path: `the_av_message_headers_populate_the_rig_cdm` now pins the
+  LiDAR's decoded point counts, which had been wired into two rosbag2 call sites with no test on
+  either.
+
 - **The demo rig's LiDAR now writes real point clouds, and a variant where it writes empty ones.**
   `make_demo_mcap`'s `PointCloud2` was the last stub body in the flagship rig — a header and a
   varying `u64` — so the demo carried no declared point layout and no point counts, and
