@@ -5028,6 +5028,51 @@ fn two_windows_that_touch_at_one_instant_do_overlap() {
 }
 
 #[test]
+fn a_loop_that_never_closes_at_one_instant_is_not_a_loop() {
+    // `base_link` → `lidar` → `radar` → `base_link`, but the closing edge is only valid *after* the
+    // others stop. At no instant does the rig have a rootless tree, so there is nothing to report —
+    // the same reasoning that keeps a re-parenting from being called an ambiguity. Without the
+    // simultaneity condition this is a false accusation about a rig that recorded its
+    // reconfiguration honestly.
+    let mut closing = xf("radar", "base_link");
+    closing.valid_from = Some(2_001);
+    let mut a = xf("base_link", "lidar");
+    a.valid_to = Some(2_000);
+    let mut b = xf("lidar", "radar");
+    b.valid_to = Some(2_000);
+    let cal = veridex_core::cdm::Calibration {
+        transforms: vec![a, b, closing, xf("base_link", "cam")],
+        intrinsics: vec![intr("cam")],
+    };
+    assert!(autonomy::CalibrationCompleteness
+        .run(&rig_with_calibration(Some(cal)))
+        .is_empty());
+}
+
+#[test]
+fn a_loop_that_closes_for_one_instant_is_a_loop() {
+    // The boundary of the rule above: the closing edge opens at exactly the instant the others
+    // stop. All three are valid at that instant, so the tree really is rootless there — briefly,
+    // and a transform composed around it is still not the identity. `max(start) <= min(end)` has to
+    // hold at equality, or the rule silently misses every loop that meets rather than overlaps.
+    let mut closing = xf("radar", "base_link");
+    closing.valid_from = Some(2_000);
+    let mut a = xf("base_link", "lidar");
+    a.valid_to = Some(2_000);
+    let mut b = xf("lidar", "radar");
+    b.valid_to = Some(2_000);
+    let cal = veridex_core::cdm::Calibration {
+        transforms: vec![a, b, closing, xf("base_link", "cam")],
+        intrinsics: vec![intr("cam")],
+    };
+    let f = autonomy::CalibrationCompleteness.run(&rig_with_calibration(Some(cal)));
+    assert!(
+        f.iter().any(|x| x.code == "AUTONOMY.CALIBRATION_AMBIGUOUS"),
+        "{f:?}"
+    );
+}
+
+#[test]
 fn a_recalibration_is_not_an_ambiguous_tree() {
     // The rig is re-parented partway through the log: `lidar` hangs off `base_link` for the first
     // half and off `velodyne_base` for the second. At no instant does it have two parents, so
