@@ -2361,14 +2361,15 @@ fn a_joint_pinned_at_its_limit_in_a_bag_is_caught_end_to_end() {
 }
 
 #[test]
-fn a_topic_whose_payload_stays_opaque_is_still_reported() {
+fn a_topic_whose_payload_stays_opaque_is_still_reported_unmeasured() {
     // Reading JointState must not turn into a claim about every other topic. A bag carrying an
     // arm beside a camera measures the arm and says so about the camera.
     //
-    // The camera is reported as **unmeasurable**, not merely unmeasured: its payload is imagery,
-    // and Veridex reads container headers and fingerprints bytes without ever decoding a pixel. No
-    // re-run and no other format changes that, so the finding that names it must not carry the
-    // remedy that says to go and check it somewhere the values are read.
+    // *Unmeasured*, not unmeasurable: a bag's camera topic is an encoded frame Veridex fingerprints
+    // without decoding, but the same camera stored as a `uint8` array in an HDF5 or Zarr file is
+    // read and summarized per dimension. Whether a picture's values are measurable is a property of
+    // how the source stores them, so the remedy — read it from a source that stores the values
+    // rather than an encoded payload — is real advice here.
     let arm: Vec<Vec<u8>> = (0..40)
         .map(|i: i32| joint_state_body(&["elbow"], &[i as f64 * 0.01]))
         .collect();
@@ -2416,20 +2417,21 @@ fn a_topic_whose_payload_stays_opaque_is_still_reported() {
     let reported = verdict
         .findings
         .iter()
-        .find(|f| f.code == "STATISTICAL.UNMEASURABLE_VALUES")
+        .find(|f| f.code == "STATISTICAL.UNMEASURED_VALUES")
         .expect("the camera's payload is still opaque");
     assert!(
         reported.message.contains("/cam") && !reported.message.contains("/joint_states"),
         "only the opaque topic should be named: {}",
         reported.message
     );
-    // And the arm, which *was* measured, raises neither code.
+    // And nothing here is *unmeasurable*: a camera's pixels are numbers, just not ones this
+    // container hands over.
     assert!(
         !verdict
             .findings
             .iter()
-            .any(|f| f.code == "STATISTICAL.UNMEASURED_VALUES"),
-        "nothing here is unmeasured — the arm was read and the camera never can be"
+            .any(|f| f.code == "STATISTICAL.UNMEASURABLE_VALUES"),
+        "a camera topic is unmeasured here, not unmeasurable everywhere"
     );
 }
 

@@ -5245,17 +5245,18 @@ fn a_string_has_no_minimum_and_that_is_not_a_gap_in_the_run() {
         unmeasurable.contains("language_instruction"),
         "{unmeasurable}"
     );
-    assert!(unmeasurable.contains("observation/image"), "{unmeasurable}");
     assert!(
-        !unmeasurable.contains("observation/state"),
-        "a numeric stream is not unmeasurable: {unmeasurable}"
+        !unmeasurable.contains("observation/state") && !unmeasurable.contains("observation/image"),
+        "only a stream no source could summarize belongs here: {unmeasurable}"
     );
 
-    // ...and the numeric one is still reported as unmeasured, with the remedy that fits it.
+    // ...and the two whose values a different source *could* summarize stay unmeasured, with the
+    // remedy that fits them.
     let unmeasured = by_code("STATISTICAL.UNMEASURED_VALUES").expect("{f:?}");
     assert!(unmeasured.contains("observation/state"), "{unmeasured}");
+    assert!(unmeasured.contains("observation/image"), "{unmeasured}");
     assert!(
-        !unmeasured.contains("language_instruction") && !unmeasured.contains("observation/image"),
+        !unmeasured.contains("language_instruction"),
         "the two causes must not be mixed: {unmeasured}"
     );
 }

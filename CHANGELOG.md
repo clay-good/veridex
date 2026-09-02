@@ -29,12 +29,21 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   (LeRobot, **RLDS/TFDS**, HDF5, …)" — the format already in use. The finding was collapsing two
   silences that lead a reader to opposite actions.
 
-  A numeric stream this run did not summarize is *unmeasured*: read it again where the values are
-  read. A text feature has no minimum, and imagery is pixels Veridex never decodes by design — those
-  are **unmeasurable**, here and in every other format, and no re-run changes it. Now
-  `STATISTICAL.UNMEASURABLE_VALUES` (info), judged from what the source declares (its dtype and the
-  modality the adapter mapped it to) and never guessed from a name, with a remedy that says there is
-  nothing to do and points at the families that do own text and imagery.
+  A stream this source did not hand over values for is *unmeasured*: read it from one that does. A
+  text feature has no minimum, maximum, mean or standard deviation in this format or any other —
+  that is **unmeasurable**, and no re-run changes it. Now `STATISTICAL.UNMEASURABLE_VALUES` (info),
+  judged from the dtype the source declares and never guessed from a name, with a remedy that says
+  there is nothing to do.
+
+  **Imagery is deliberately not in it**, and finding out why took journeying two more formats: an
+  HDF5 or Zarr image feature is a plain `uint8` array Veridex reads and summarizes per dimension,
+  while an RLDS `bytes_list` leaf or a bag's camera topic is an encoded frame it fingerprints. So
+  whether a picture's values are measurable is a property of how the source stores them, not of the
+  modality — calling it unmeasurable would have told a Zarr user that a stream Veridex had already
+  measured could never be measured. It stays with `UNMEASURED_VALUES`, whose remedy no longer
+  enumerates formats (a list that goes stale, and that listed RLDS to an RLDS user) but names the
+  property that decides it: read the values from a source that stores them rather than an encoded
+  payload.
 
 - **The sweep finished clean on the last two families, and the rule it taught is written down.**
   `semantic`'s three boundary comparisons — the episode-span construction and both ends of the
