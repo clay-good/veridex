@@ -1051,6 +1051,38 @@ fn episode_duration_flags_a_stuck_recorder() {
 }
 
 #[test]
+fn the_duration_factor_bounds_are_inclusive_at_both_ends() {
+    // The rule is `d < median / factor || d > median * factor`, so an episode exactly `factor` times
+    // shorter or longer than the median is *at* the configured limit and not past it. Unpinned: the
+    // sweep's `<` → `<=` mutation survived, and a user's `episode_duration_factor` could have been
+    // silently tightened to flag an episode that sits on the boundary they chose. Reachable
+    // exactly, because a median of 1 s over a factor of 10 is 100 ms in whole nanoseconds.
+    let four_seconds_of_median = || {
+        vec![
+            episode_lasting(0, 1_000_000_000),
+            episode_lasting(1, 1_000_000_000),
+            episode_lasting(2, 1_000_000_000),
+            episode_lasting(3, 1_000_000_000),
+        ]
+    };
+    let judged = |dur: i64| {
+        let mut eps = four_seconds_of_median();
+        eps.push(episode_lasting(4, dur));
+        temporal::EpisodeDuration { factor: 10.0 }
+            .run(&dataset(eps))
+            .len()
+    };
+    assert_eq!(
+        judged(100_000_000),
+        0,
+        "exactly 10x shorter is at the limit"
+    );
+    assert_eq!(judged(10_000_000_000), 0, "and exactly 10x longer");
+    assert_eq!(judged(99_000_000), 1, "past it in the short direction");
+    assert_eq!(judged(10_100_000_000), 1, "and in the long one");
+}
+
+#[test]
 fn episode_duration_abstains_below_the_minimum_episode_count() {
     // Only three episodes — too few for a stable median — so even a wild outlier is not flagged.
     let d = dataset(vec![
@@ -1176,6 +1208,72 @@ fn clock_skew_within_tolerance_is_clean() {
     let robot = stream("robot", "robot", None, &[0, 1_020_000_000]);
     let d = dataset(vec![episode(0, vec![cam, robot])]);
     assert!(temporal::ClockSkew::default().run(&d).is_empty());
+}
+
+#[test]
+fn the_clock_skew_allowance_is_a_boundary_the_config_promises() {
+    // The headline check, and its threshold was unpinned: a mutation sweep flipping `>` to `>=`
+    // left the suite green, so `clock_skew_ns` could have been silently tightened to fail a pair of
+    // streams that sit exactly on the tolerance a user configured.
+    //
+    // The allowance is the configured tolerance widened by the larger sampling period, because two
+    // synchronized streams sampling one window differ in span by up to that quantum. Both streams
+    // here run at 100 Hz, so the quantum is exactly 10 ms and the allowance is exactly 60 ms at the
+    // 50 ms default. Spans are whole 10 ms ticks, so 60 ms is landed on rather than approached.
+    let dense = |span_ns: i64| -> Vec<i64> {
+        (0..=(span_ns / 10_000_000))
+            .map(|i| i * 10_000_000)
+            .collect()
+    };
+    let pair = |robot_span: i64| {
+        dataset(vec![episode(
+            0,
+            vec![
+                stream("cam", "camera", None, &dense(1_000_000_000)),
+                stream("robot", "robot", None, &dense(robot_span)),
+            ],
+        )])
+    };
+    assert!(
+        temporal::ClockSkew::default()
+            .run(&pair(1_060_000_000))
+            .is_empty(),
+        "a 60 ms drift is within a 60 ms allowance"
+    );
+    assert_eq!(
+        temporal::ClockSkew::default()
+            .run(&pair(1_070_000_000))
+            .len(),
+        1,
+        "one tick past it, the clocks have drifted"
+    );
+}
+
+#[test]
+fn the_gap_threshold_is_a_multiple_of_the_cadence_not_a_number_near_it() {
+    // `TEMPORAL.GAP` fires when an interval exceeds `expected × gap_factor`, so an interval of
+    // exactly that product is the largest one the configured factor permits. Unpinned: the sweep's
+    // `>` → `>=` mutation survived, and a user's `gap_factor` could have been silently tightened by
+    // one cadence tick. Reachable exactly, because both the cadence and the interval are whole
+    // nanoseconds.
+    //
+    // Ten frames at 10 ms, then one interval of exactly 3 × 10 ms at the default factor of 3.
+    let with_gap = |gap_ns: i64| {
+        let mut ts: Vec<i64> = (0..10).map(|i| i * 10_000_000).collect();
+        let last = *ts.last().unwrap();
+        ts.push(last + gap_ns);
+        for k in 1..6 {
+            ts.push(last + gap_ns + k * 10_000_000);
+        }
+        dataset(vec![episode(0, vec![stream("s", "wall", None, &ts)])])
+    };
+    let gaps = |gap_ns: i64| {
+        temporal::Gaps { gap_factor: 3.0 }
+            .run(&with_gap(gap_ns))
+            .len()
+    };
+    assert_eq!(gaps(30_000_000), 0, "exactly 3x the cadence is not a gap");
+    assert_eq!(gaps(40_000_000), 1, "4x is");
 }
 
 #[test]

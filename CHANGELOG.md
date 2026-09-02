@@ -10,6 +10,19 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **Every user-configurable temporal threshold was unpinned at its boundary — including the headline
+  one.** The same sweep, aimed at the five comparisons that read a knob from `veridex.toml`, found
+  all five mutations alive: `clock_skew_ns`, `gap_factor`, `jitter_cv`, `rate_deviation` and
+  `episode_duration_factor` could each have been silently tightened to fail data that sits exactly on
+  the limit a user configured.
+
+  Three are reachable exactly and are now pinned on both sides: a clock drift of exactly the
+  allowance (the tolerance widened by the larger sampling period), an interval of exactly
+  `expected × gap_factor`, and an episode exactly `factor` times shorter or longer than the median.
+  Each test was proven against the mutation that survived without it. The other two — the jitter CV
+  and the rate deviation — are ratios of measured floats whose exact equality no realistic recording
+  produces, so the mutation there changes nothing a dataset can reach.
+
 - **A mutation sweep over the autonomy checks: four documented thresholds were unpinned.** Flipping
   every comparison in `checks/autonomy.rs` to its neighbour — `>` to `>=`, `<` to `<=`, `==` to `!=`
   — and running the suite against each, 26 of 56 mutations survived. Most are inert (a guard, a
