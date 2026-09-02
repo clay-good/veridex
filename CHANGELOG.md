@@ -10,6 +10,21 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **The demo dataset now ships the summary a real export ships.** Every LeRobot dataset writes
+  `meta/stats.json`; the demo did not. So every run of the fixture the docs tell a reader to try
+  first reported `STATISTICAL.NO_STORED_STATS` — an abstention on the one comparison this format
+  makes possible — and `statistical.stored-vs-observed`, the check behind the "stale stats silently
+  mis-normalize your inputs" claim, had nothing to run on outside the unit tests.
+
+  The demo now writes a real `stats.json` computed from the rows it actually wrote, so it agrees with
+  the data by construction. New variant `stale-stats` ships the summary a team exported *before*
+  re-recording — a stored `[min, max]` that no longer contains the values beside it, which every
+  other check passes over → `STATISTICAL.STATS_STALE`.
+
+  The `nan` variant gets stronger rather than weaker: its summary skips the NaN the way a real
+  exporter's `numpy.nanmin` does, so the stored file agrees with itself and is blind, and only the
+  recompute finds the bad frame. Previously it shipped no summary at all, which demonstrated less.
+
 - **A demo for the message loss no timeline shows.** `AUTONOMY.SEQUENCE_DROPPED` had no runnable
   example. New variant `av-lossy-camera` is the rig with a camera whose transport dropped one message
   in five: the publisher numbered every one of them, and the survivors keep the times they were

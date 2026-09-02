@@ -46,8 +46,11 @@ maximum for most of the episode — a clamped actuator against its stop — and 
 `STATISTICAL.SATURATED` from the values it recomputes as it fingerprints them. The `spike` variant
 jumps a single frame far off the baseline — a sensor glitch or unit error — and `check` flags it as
 `STATISTICAL.OUTLIER`, provably a rare value by Chebyshev's inequality. The `nan` variant writes one
-NaN feature value and no `meta/stats.json`, so the stored-stats check has nothing to inspect — only
-the recompute over the real cells sees it, flagged as `STATISTICAL.NON_FINITE_OBSERVED`. The
+NaN feature value, and its `meta/stats.json` skips it the way a real exporter's `numpy.nanmin` does —
+so the stored summary agrees with itself and is blind, and only the recompute over the real cells
+sees it, flagged as `STATISTICAL.NON_FINITE_OBSERVED`. The `stale-stats` variant ships the summary a
+team exported before re-recording: a stored `[min, max]` that no longer contains the values beside
+it, which every other check passes over, flagged as `STATISTICAL.STATS_STALE`. The
 `multi-joint` variant is a 3-DoF `action` whose gripper (dimension 2) saturates while the arm joints
 sweep freely; `check` flags `STATISTICAL.SATURATED` and **names the dimension** — the value-based
 checks scan every joint, not just element 0, which is where real robot data hides its problems. Every

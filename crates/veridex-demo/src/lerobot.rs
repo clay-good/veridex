@@ -22,7 +22,14 @@
 //! - `spike` — one 150-frame episode whose values hug zero except a single frame that jumps to 1000
 //!   (a sensor glitch or unit error), an extreme >10σ from the mean → `STATISTICAL.OUTLIER`.
 //! - `nan` — one 30-frame episode with a single NaN feature value (a failed sensor read) and no
-//!   `meta/stats.json`, so only a recompute over the real cells sees it → `STATISTICAL.NON_FINITE_OBSERVED`.
+//!   `meta/stats.json` — whose summary skips NaNs the way `numpy.nanmin` does, so the stored file
+//!   looks perfectly healthy — and only a recompute over the real cells sees it →
+//!   `STATISTICAL.NON_FINITE_OBSERVED`.
+//!
+//! - `stale-stats` — a clean two-episode dataset whose `meta/stats.json` was computed before the
+//!   data was re-recorded: the stored `[min, max]` no longer contains the values beside it. Every
+//!   other check passes, because nothing else compares the two → `STATISTICAL.STATS_STALE`.
+//!   Normalization built from that file clips the real inputs, silently.
 //! - `multi-joint` — a 3-DoF `action` (a `FixedSizeList`) whose gripper (dimension 2) saturates while
 //!   the arm joints sweep → `STATISTICAL.SATURATED` naming the dimension, which element 0 alone misses.
 //! - `video` — two 10-frame episodes with a real camera feature: `videos/**/episode_<n>.mp4` files
@@ -56,6 +63,7 @@ pub const VARIANTS: &[&str] = &[
     "saturated",
     "spike",
     "nan",
+    "stale-stats",
     "multi-joint",
     "video",
     "video-desync",
@@ -83,6 +91,7 @@ enum Mode {
     Saturated,
     Spike,
     Nan,
+    StaleStats,
     MultiJoint,
     Video,
     VideoDesync,
@@ -125,6 +134,7 @@ fn mode_of(variant: &str) -> Result<Mode, DemoError> {
         "saturated" => Mode::Saturated,
         "spike" => Mode::Spike,
         "nan" => Mode::Nan,
+        "stale-stats" => Mode::StaleStats,
         "multi-joint" => Mode::MultiJoint,
         "video" => Mode::Video,
         "video-desync" => Mode::VideoDesync,
@@ -173,6 +183,10 @@ pub fn describe(variant: &str) -> Result<&'static str, DemoError> {
         }
         Mode::Nan => {
             "nan (one frame's value is NaN, invisible to the absent stats.json → STATISTICAL.NON_FINITE_OBSERVED)"
+        }
+        Mode::StaleStats => {
+            "stale-stats (meta/stats.json was computed on earlier data and no longer bounds it → \
+             STATISTICAL.STATS_STALE)"
         }
         Mode::MultiJoint => {
             "multi-joint (a 3-DoF `action` whose gripper — dimension 2 — saturates → STATISTICAL.SATURATED naming the dimension)"
@@ -244,6 +258,13 @@ fn write_dataset(dir: &Path, mode: Mode) {
     .expect("write info.json");
 
     write_shared_meta(dir);
+    // A real export ships its summary statistics. `stale-stats` ships one that no longer bounds the
+    // data — computed before a re-record, and never refreshed.
+    write_stats(
+        dir,
+        &rows,
+        if mode == Mode::StaleStats { -2.0 } else { 0.0 },
+    );
     write_parquet(&dir.join("data/chunk-000/file-000.parquet"), &rows);
 
     if mode.has_video() {
@@ -259,6 +280,54 @@ fn write_dataset(dir: &Path, mode: Mode) {
             {\"episode_index\": 1, \"tasks\": [\"pick up the red cube\"], \"length\": 7}\n";
         fs::write(dir.join("meta/episodes.jsonl"), episodes).expect("write episodes.jsonl");
     }
+}
+
+/// Write `meta/stats.json` the way a LeRobot export does: one entry per feature, each carrying the
+/// `min`/`max`/`mean`/`std` arrays the normalization layer reads.
+///
+/// Real datasets ship this file, and omitting it made every demo run report
+/// `STATISTICAL.NO_STORED_STATS` — an abstention on the one comparison this format makes possible,
+/// on the fixture a reader is told to try first. It also left `statistical.stored-vs-observed` with
+/// nothing to run on outside the unit tests, so the "stale stats silently mis-normalize your inputs"
+/// claim had no demo behind it.
+///
+/// The summary is computed from the rows actually written, so it agrees with the data by
+/// construction — except under [`Mode::StaleStats`], where `widen` is negative and the stored range
+/// is *narrower* than the values: the file a team exported before re-recording, still sitting beside
+/// the new data.
+///
+/// NaNs are skipped the way `numpy.nanmin` skips them, which is what an exporter actually does — so
+/// the `nan` variant's summary looks perfectly healthy, and only the recompute finds the bad frame.
+/// That is a stronger demo than shipping no summary at all: the file agrees with itself and is still
+/// blind.
+fn write_stats(dir: &Path, rows: &[DemoRow], widen: f32) {
+    let values: Vec<f32> = rows
+        .iter()
+        .map(|(_, _, v)| *v)
+        .filter(|v| v.is_finite())
+        .collect();
+    if values.is_empty() {
+        return;
+    }
+    let min = values.iter().copied().fold(f32::INFINITY, f32::min) - widen;
+    let max = values.iter().copied().fold(f32::NEG_INFINITY, f32::max) + widen;
+    let mean = values.iter().copied().sum::<f32>() / values.len() as f32;
+    let var = values.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / values.len() as f32;
+    let per_feature = serde_json::json!({
+        "min": [min],
+        "max": [max],
+        "mean": [mean],
+        "std": [var.sqrt()],
+    });
+    let stats = serde_json::json!({
+        "observation.state": per_feature,
+        "action": per_feature,
+    });
+    fs::write(
+        dir.join("meta/stats.json"),
+        serde_json::to_string_pretty(&stats).expect("serialize stats.json"),
+    )
+    .expect("write stats.json");
 }
 
 /// The tasks table (so the CLI resolves task strings) and a Hugging Face-style dataset card (so the
@@ -415,9 +484,10 @@ fn build_rows(mode: Mode, fps: f64) -> (Vec<DemoRow>, u64, u64) {
 
     if mode == Mode::Nan {
         // One 30-frame episode at ~30 Hz whose values step distinctly except frame 15, whose value is
-        // NaN — a failed sensor read. No `meta/stats.json` is written, so the stored-stats
-        // NON_FINITE check has nothing to inspect; only a recompute over the real cells sees it →
-        // STATISTICAL.NON_FINITE_OBSERVED. (`action` mirrors the value, so both streams carry it.)
+        // NaN — a failed sensor read. `meta/stats.json` is written, and its summary skips the NaN
+        // the way a real exporter's `numpy.nanmin` does, so the stored file agrees with itself and
+        // is blind; only a recompute over the real cells sees it → STATISTICAL.NON_FINITE_OBSERVED.
+        // (`action` mirrors the value, so both streams carry it.)
         let rows: Vec<DemoRow> = (0..30i64)
             .map(|f| {
                 let v = if f == 15 { f32::NAN } else { f as f32 };

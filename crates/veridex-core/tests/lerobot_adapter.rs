@@ -2215,3 +2215,62 @@ fn the_scalar_form_of_each_card_field_is_read_too() {
         Some("crowdsourced")
     );
 }
+
+#[test]
+fn the_demo_dataset_ships_the_summary_a_real_export_ships() {
+    // A LeRobot export writes `meta/stats.json`; the demo did not, so every run of the fixture a
+    // reader is told to try first reported `STATISTICAL.NO_STORED_STATS` — an abstention on the one
+    // comparison this format makes possible — and `statistical.stored-vs-observed` had nothing to
+    // run on outside the unit tests.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let codes = |variant: &str| -> Vec<String> {
+        let root = dir.path().join(variant);
+        veridex_demo::lerobot::write(&root, variant).expect("write the demo dataset");
+        let d = veridex_core::adapter::lerobot::LeRobotAdapter
+            .ingest(
+                &veridex_core::adapter::Source::Local(root),
+                &veridex_core::adapter::IngestOptions::default(),
+            )
+            .expect("ingest")
+            .dataset;
+        let engine = veridex_core::checks::default_engine().expect("the standard catalog");
+        let hash = veridex_core::content_hash(&d);
+        engine
+            .run(&d, hash, &veridex_core::RunConfig::default())
+            .findings
+            .into_iter()
+            .map(|f| f.code)
+            .collect()
+    };
+
+    let clean = codes("clean");
+    assert!(
+        !clean.contains(&"STATISTICAL.NO_STORED_STATS".to_string()),
+        "the clean demo now carries stored stats, so the abstention is gone: {clean:?}"
+    );
+    assert!(
+        !clean.contains(&"STATISTICAL.STATS_STALE".to_string()),
+        "and they agree with the data by construction: {clean:?}"
+    );
+
+    // The stale variant is that same dataset with the summary a team exported before re-recording.
+    let stale = codes("stale-stats");
+    assert!(
+        stale.contains(&"STATISTICAL.STATS_STALE".to_string()),
+        "a stored range that no longer bounds the data must be caught: {stale:?}"
+    );
+
+    // And the NaN variant now ships a summary that skips the NaN, the way `numpy.nanmin` does. The
+    // stored file agrees with itself and is blind; only the recompute finds the bad frame. That is
+    // the real failure, and a stronger demo than shipping no summary at all.
+    let nan = codes("nan");
+    assert!(
+        nan.contains(&"STATISTICAL.NON_FINITE_OBSERVED".to_string()),
+        "the recompute still finds it: {nan:?}"
+    );
+    assert!(
+        !nan.contains(&"STATISTICAL.NO_STORED_STATS".to_string())
+            && !nan.contains(&"STATISTICAL.STATS_STALE".to_string()),
+        "while the stored summary looks perfectly healthy: {nan:?}"
+    );
+}
