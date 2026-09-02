@@ -42,7 +42,12 @@
 //!   and `AUTONOMY.SENSOR_CLOCK_UNSET` is the only thing that reports the rig's sync result is
 //!   about the recording host rather than about the sensors.
 //!
-//! Usage: `cargo run -p veridex-demo --example make_demo_mcap -- <output.mcap> [clean|late-start|stuck|av|av-miscalibrated|av-ambiguous-tf|av-dead-lidar|av-unstamped]`
+//! - `av-uncalibrated-camera` — the same rig whose camera publishes a `CameraInfo` before anyone
+//!   calibrated it: the model is named, the five coefficients are there, and every number is zero.
+//!   Every presence check passes — the rig has intrinsics — and a projection through them divides by
+//!   a focal length of zero → `AUTONOMY.CALIBRATION_IMPLAUSIBLE`.
+//!
+//! Usage: `cargo run -p veridex-demo --example make_demo_mcap -- <output.mcap> [clean|late-start|stuck|av|av-miscalibrated|av-ambiguous-tf|av-dead-lidar|av-unstamped|av-uncalibrated-camera]`
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
@@ -61,6 +66,7 @@ pub const VARIANTS: &[&str] = &[
     "av-ambiguous-tf",
     "av-dead-lidar",
     "av-unstamped",
+    "av-uncalibrated-camera",
 ];
 
 /// Write the demo MCAP recording to `path`, replacing anything already there.
@@ -84,7 +90,15 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
     // `av-unstamped` is the same rig with a LiDAR driver that never set `header.stamp`: the clouds
     // are full and on time, and the sensor says nothing about when it sampled them.
     let unstamped_lidar = variant == "av-unstamped";
-    let av = variant == "av" || miscalibrated || ambiguous_tf || dead_lidar || unstamped_lidar;
+    // `av-uncalibrated-camera` is the same rig whose camera publishes a `CameraInfo` before anyone
+    // calibrated it: the model named, the coefficients present, and every number zero.
+    let uncalibrated_camera = variant == "av-uncalibrated-camera";
+    let av = variant == "av"
+        || miscalibrated
+        || ambiguous_tf
+        || dead_lidar
+        || unstamped_lidar
+        || uncalibrated_camera;
 
     let mut buf = Vec::new();
     {
@@ -97,6 +111,7 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
                 ambiguous_tf,
                 dead_lidar,
                 unstamped_lidar,
+                uncalibrated_camera,
             );
         } else {
             write_manipulation(&mut w, stuck, clean, late_start);
@@ -214,7 +229,8 @@ const RECORDING_EPOCH_NS: u64 = 1_767_225_600_000_000_000;
 /// against a tolerance three orders of magnitude above this rather than requiring it to be zero.
 const SENSOR_LATENCY_NS: u64 = 5_000_000; // 5 ms
 
-/// Write a five-sensor autonomy rig (camera, LiDAR, IMU, GNSS, ego-odometry) over ~1.0 s. Every
+/// Write a five-sensor autonomy rig (camera + its `CameraInfo`, LiDAR, IMU, GNSS, ego-odometry) over
+/// ~1.0 s. Every
 /// sensor spans ~1.0 s from a shared start except the IMU, whose span is deliberately cut to ~0.70 s
 /// — a single-sensor sync drift of ~0.30 s that the duration-based `TEMPORAL.CLOCK_SKEW` flags.
 fn write_av_rig<W: std::io::Write + std::io::Seek>(
@@ -223,6 +239,7 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(
     ambiguous_tf: bool,
     dead_lidar: bool,
     unstamped_lidar: bool,
+    uncalibrated_camera: bool,
 ) {
     // (schema, topic, message count, inter-message interval ns, coordinate frame). The IMU runs the
     // same 100 msg count as a healthy 100 Hz sensor but at a compressed 7 ms interval, so it finishes
@@ -235,6 +252,17 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(
             33_000_000,
             "camera_front",
         ), // ~30 Hz, ~0.99 s
+        // The camera's calibration, published beside its images the way a real driver publishes it.
+        // Without it the rig has a camera nothing can project into, so every variant here — the
+        // healthy one included — reported `AUTONOMY.CALIBRATION_INCOMPLETE` and the flagship demo
+        // could never show a calibrated rig.
+        (
+            "sensor_msgs/msg/CameraInfo",
+            "/camera/camera_info",
+            31,
+            33_000_000,
+            "camera_front",
+        ),
         (
             "sensor_msgs/msg/PointCloud2",
             "/lidar/points",
@@ -334,6 +362,14 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(
                     t,
                     // ~37.4°N, 122.1°W, moving north at the odometry's 10 m/s (1 m ≈ 9e-6°).
                     &nav_sat_fix_body(37.4 + drive * 9.0e-6, -122.1, 12.0, stamp),
+                );
+            } else if *schema == "sensor_msgs/msg/CameraInfo" {
+                write_msg(
+                    w,
+                    channel,
+                    i as u32,
+                    t,
+                    &camera_info_body(frame_id, stamp, uncalibrated_camera),
                 );
             } else if *schema == "sensor_msgs/msg/Imu" {
                 // Likewise real: the adapter decodes an Imu body in full, so a dummy payload left
@@ -472,6 +508,71 @@ fn header_body(frame_id: &str, stamp_ns: u64, payload: u64) -> Vec<u8> {
     buf.extend_from_slice(frame_id.as_bytes());
     buf.push(0);
     buf.extend_from_slice(&payload.to_le_bytes());
+    buf
+}
+
+/// A real `sensor_msgs/msg/CameraInfo` CDR body for the rig's front camera: `Header`, the declared
+/// image `height`/`width`, the `distortion_model` and its coefficients, then the 3x3 intrinsic
+/// matrix `k` (and the `r`/`p` matrices behind it, which Veridex does not read).
+///
+/// A rig without one is a rig whose LiDAR points cannot be projected into its image, so a demo that
+/// omitted it could never show a calibrated rig — and never ran the intrinsics decode on the
+/// flagship fixture, which is where the rules that read the declared resolution and the distortion
+/// model live. `uncalibrated` writes what a driver publishes before anyone calibrates it: the model
+/// named, the coefficients present, and every number zero — which satisfies every presence test and
+/// is arithmetically unusable.
+fn camera_info_body(frame_id: &str, stamp_ns: u64, uncalibrated: bool) -> Vec<u8> {
+    // 1280x720 with a focal length and a principal point at the image centre: an ordinary pinhole.
+    const WIDTH: u32 = 1280;
+    const HEIGHT: u32 = 720;
+    let (fx, fy, cx, cy) = if uncalibrated {
+        (0.0, 0.0, 0.0, 0.0)
+    } else {
+        (1050.0, 1050.0, 640.0, 360.0)
+    };
+    let mut buf: Vec<u8> = vec![0x00, 0x01, 0x00, 0x00]; // encapsulation: CDR_LE
+    let align = |buf: &mut Vec<u8>, n: usize| {
+        while (buf.len() - 4) % n != 0 {
+            buf.push(0)
+        }
+    };
+    let u32v = |buf: &mut Vec<u8>, v: u32| {
+        align(buf, 4);
+        buf.extend_from_slice(&v.to_le_bytes());
+    };
+    let f64v = |buf: &mut Vec<u8>, v: f64| {
+        align(buf, 8);
+        buf.extend_from_slice(&v.to_le_bytes());
+    };
+    let strv = |buf: &mut Vec<u8>, s: &str| {
+        align(buf, 4);
+        buf.extend_from_slice(&((s.len() + 1) as u32).to_le_bytes());
+        buf.extend_from_slice(s.as_bytes());
+        buf.push(0);
+    };
+    u32v(&mut buf, (stamp_ns / 1_000_000_000) as u32); // stamp.sec
+    u32v(&mut buf, (stamp_ns % 1_000_000_000) as u32); // stamp.nanosec
+    strv(&mut buf, frame_id);
+    u32v(&mut buf, HEIGHT);
+    u32v(&mut buf, WIDTH);
+    // `plumb_bob` takes exactly five coefficients, which is what makes the pair checkable.
+    strv(&mut buf, "plumb_bob");
+    u32v(&mut buf, 5);
+    for v in [-0.28, 0.07, 0.0, 0.0, 0.0] {
+        f64v(&mut buf, v);
+    }
+    // k: [fx, 0, cx, 0, fy, cy, 0, 0, 1]
+    for v in [fx, 0.0, cx, 0.0, fy, cy, 0.0, 0.0, 1.0] {
+        f64v(&mut buf, v);
+    }
+    // r (3x3 rectification) and p (3x4 projection): written so the body is a whole `CameraInfo`
+    // rather than a prefix of one. Veridex reads neither.
+    for _ in 0..9 {
+        f64v(&mut buf, 0.0);
+    }
+    for _ in 0..12 {
+        f64v(&mut buf, 0.0);
+    }
     buf
 }
 

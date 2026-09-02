@@ -42,7 +42,7 @@ cargo run -p veridex-cli -- check /tmp/av.mcap
 ```
 
 ```
-  Status:   FAIL   Trust: 73 (C)  [data 77 · provenance 66%]
+  Status:   FAIL   Trust: 76 (C)  [data 81 · provenance 66%]
   [error] AUTONOMY.RIG_SYNC  episode 0
       rig sensors are out of sync — `/imu/data` spans 700.0 ms but `/odom` spans 1000.0 ms,
       a 300.0 ms drift across 5 sensors
@@ -50,9 +50,10 @@ cargo run -p veridex-cli -- check /tmp/av.mcap
               trigger/latency offsets before fusing.
 ```
 
-Three findings, all about the same rig fault: the IMU stops 300 ms early, so `RIG_SYNC` reports the
-spread and `TEMPORAL.END_OFFSET` reports the tail, and the rig has cameras but no `CameraInfo` to
-project points into them. Nothing here is about `/tf_static`, which this demo publishes latched —
+Two findings, both about the same rig fault: the IMU stops 300 ms early, so `RIG_SYNC` reports the
+spread and `TEMPORAL.END_OFFSET` reports the tail. The camera publishes its `CameraInfo` beside its
+images, so the rig is calibrated and the projection into the image is defined. Nothing here is about
+`/tf_static`, which this demo publishes latched —
 exactly as a real ROS 2 stack does — so the checks that ask whether a stream covers the recording's
 window leave it alone.
 
@@ -156,12 +157,12 @@ cargo run -p veridex-cli -- certify /tmp/av.mcap --key /tmp/issuer \
 ```
 
 ```
-certified av — fail, grade C (73), bound to ceaae7feeb2b0c09
+certified av — fail, grade C (76), bound to e670d87e99c8be71
   world-model-ready profile: NOT READY
     ✗ autonomy.rig-sync — rig sensors within a 20 ms cross-sensor span drift
     ✓ autonomy.sequence-complete — no rig sensor dropping more than 5% of its frames
     ✓ autonomy.ego-pose-continuity — ego trajectory continuous (no step above 100 m/s implied speed)
-    ✗ autonomy.calibration-completeness — a connected, unambiguous transform (TF) tree and camera intrinsics present, and arithmetically usable
+    ✓ autonomy.calibration-completeness — a connected, unambiguous transform (TF) tree and camera intrinsics present, and arithmetically usable
     ✓ autonomy.sensor-frame-resolution — every sensor's own frame resolves through the tree to a camera
     ✓ autonomy.gnss-plausibility — every satellite fix is a possible place, and the receiver actually had one
     ✓ autonomy.point-cloud-density — every point-cloud sensor actually recorded points

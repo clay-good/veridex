@@ -1535,7 +1535,7 @@ impl Check for PointCloudDensity {
 /// **Sensor clock (design A2).** Whether a rig sensor stamped its own data, and whether the clock it
 /// stamped with is the clock the recording was timed by.
 ///
-/// Every temporal and cross-sensor result on a bag is computed from [`Frame::ts`], and on a bag that
+/// Every temporal and cross-sensor result on a bag is computed from [`Frame::ts`](crate::cdm::Frame::ts), and on a bag that
 /// is the **recorder's** clock: the moment a message arrived, not the moment the sensor sampled. A
 /// ROS message carries the sensor's own clock beside it, in `header.stamp`. Reading both is the only
 /// way to find out what the recorder's clock is standing in for.

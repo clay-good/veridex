@@ -10,6 +10,21 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **The demo rig had a camera nothing could project into.** The flagship `av` fixture published
+  images and a transform tree and no `CameraInfo` at all, so every variant of it — the healthy one
+  included — reported `AUTONOMY.CALIBRATION_INCOMPLETE`, the `world-model-ready` demo could never
+  show a calibrated rig, and the intrinsics decode (the matrix, the declared resolution, the
+  distortion model) never ran on the fixture the docs tell a reader to try. The rig now publishes a
+  real `sensor_msgs/msg/CameraInfo` beside its images, the way a driver does: 1280x720, an ordinary
+  pinhole, `plumb_bob` with its five coefficients.
+
+  New variant `av-uncalibrated-camera` is the same rig publishing what a driver emits before anyone
+  calibrates it — the model named, the coefficients present, every number zero — which satisfies
+  every presence check and divides by a focal length of zero → `AUTONOMY.CALIBRATION_IMPLAUSIBLE`.
+
+  Found by running the CLI on the demo and reading what it said. The quickstart's pinned output is
+  regenerated: the rig now fails on one criterion, `rig-sync`, which is the fault that demo is *for*.
+
 - **A dropped message the timeline could not show.** `AUTONOMY.SEQUENCE_COMPLETE` estimated a rig
   sensor's lost frames from its median cadence — which needs a cadence to exist (it abstains on
   anything event-driven), needs eight frames to establish one, and cannot see the one shape that
