@@ -8,6 +8,25 @@ All notable changes to Veridex are recorded here. The format follows
 The first shippable slice of the [`bootstrap-veridex-mvp`](openspec/changes/bootstrap-veridex-mvp/)
 change. Runs end-to-end: ingest → validate → score → report → sign.
 
+### Fixed
+
+- **A transform tree was reported as a measurement nobody read.** A `CameraInfo` channel and a
+  `tf2_msgs/msg/TFMessage` were both typed `ScalarState` — the joint-position modality — so
+  `STATISTICAL.UNMEASURED_VALUES` named them among the streams that might hold "a saturated
+  actuator, a NaN, a stuck sensor, or a unit error". Neither has values to summarize: one announces
+  a camera's calibration and the other the rig's geometry. The effect was not just a wrong word — it
+  padded the finding from three streams to five, burying the ones that genuinely went unread.
+
+  New `Modality::Calibration` says what these channels are, `inspect` now prints it, and
+  `statistical.value-measurability` excludes them. The content is not dropped: both are decoded into
+  the CDM's calibration and graded by the `autonomy.calibration-*` rules — including the all-zero
+  `CameraInfo` that a value summary would be the wrong tool for — which an end-to-end test pins
+  alongside the exclusion, so the skip cannot become a blind spot.
+
+  `CameraInfo` was typed `ScalarState` in the first place to stop it being read as a `Video` sensor,
+  which had failed a synchronized rig at `AUTONOMY.RIG_SYNC`. That fix traded one wrong
+  classification for another; this is the classification both cases wanted.
+
 ### Added
 
 - **The demo rig had a camera nothing could project into.** The flagship `av` fixture published

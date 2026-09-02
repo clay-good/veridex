@@ -920,6 +920,65 @@ fn a_publisher_that_never_used_the_counter_is_not_a_publisher_that_lost_everythi
 }
 
 #[test]
+fn a_calibration_channel_is_not_a_measurement_that_went_unread() {
+    // The demo rig publishes a `CameraInfo` and a transform tree. Neither measures the world, and
+    // both used to be typed `ScalarState` — the joint-position modality — so the statistical family
+    // named them among the streams that might hold "a saturated actuator, a NaN, a stuck sensor",
+    // burying the three streams that genuinely went unread in a list of five.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("av.mcap");
+    veridex_demo::mcap::write(&path, "av").expect("write the demo rig");
+    let d = McapAdapter
+        .ingest(&Source::Local(path.clone()), &IngestOptions::default())
+        .expect("ingest")
+        .dataset;
+
+    let modality_of = |name: &str| {
+        d.episodes[0]
+            .streams
+            .iter()
+            .find(|s| s.name == name)
+            .unwrap_or_else(|| panic!("stream {name}"))
+            .modality
+    };
+    assert_eq!(
+        modality_of("/camera/camera_info"),
+        veridex_core::cdm::Modality::Calibration
+    );
+    assert_eq!(
+        modality_of("/tf_static"),
+        veridex_core::cdm::Modality::Calibration
+    );
+
+    let engine = veridex_core::checks::default_engine().expect("the standard catalog");
+    let hash = veridex_core::content_hash(&d);
+    let verdict = engine.run(&d, hash, &veridex_core::RunConfig::default());
+    let unmeasured = verdict
+        .findings
+        .iter()
+        .find(|f| f.code == "STATISTICAL.UNMEASURED_VALUES")
+        .expect("the abstention still fires for the streams that were genuinely unread");
+    for named in ["/camera/camera_info", "/tf_static"] {
+        assert!(
+            !unmeasured.message.contains(named),
+            "a calibration channel is not an unread measurement: {}",
+            unmeasured.message
+        );
+    }
+    assert!(
+        unmeasured.message.contains("/lidar/points"),
+        "the streams that did go unread are still named: {}",
+        unmeasured.message
+    );
+
+    // And the excluded content is not unexamined — it reached the calibration the autonomy rules
+    // grade, which is what makes the exclusion an improvement rather than a blind spot.
+    let calibration = d.calibration.as_ref().expect("calibration decoded");
+    assert!(!calibration.transforms.is_empty(), "the transform tree");
+    assert_eq!(calibration.intrinsics.len(), 1, "the camera's intrinsics");
+}
+
+#[test]
 fn a_sensor_that_never_stamped_its_data_is_caught_end_to_end() {
     // The demo rig, twice: once as recorded, once with a LiDAR driver that never set
     // `header.stamp`. Nothing else differs — the clouds are full, on time, in the right frame, and

@@ -4,7 +4,7 @@
 //! (design keeps Veridex from decoding frame payloads). Stored-vs-recomputed comparison arrives
 //! once adapters stream values.
 
-use crate::cdm::{Dataset, Stream, StreamStats};
+use crate::cdm::{Dataset, Modality, Stream, StreamStats};
 use crate::check::{Category, Check, Finding, Location, Scope, Severity};
 
 /// Actuator/state saturation. When the adapter recomputes values from the data
@@ -1139,6 +1139,18 @@ impl Check for ValueMeasurability {
         let mut no_stored: std::collections::BTreeSet<&str> = Default::default();
         for ep in &dataset.episodes {
             for s in &ep.streams {
+                // A calibration channel announces the rig's geometry — a `CameraInfo`, a transform
+                // tree — and has no values to summarize by construction. Both silences below are
+                // about a *measurement* that was not summarized, and neither describes this: naming
+                // a transform tree among the streams that might hold "a saturated actuator, a NaN,
+                // a stuck sensor" is a category error, and it buries the streams that genuinely went
+                // unread in a longer list. The content is not unexamined — it is decoded into
+                // `Dataset::calibration`, and the `autonomy.calibration-*` rules grade it there,
+                // including the case (an all-zero `CameraInfo`) that a value summary would be the
+                // wrong tool for anyway.
+                if s.modality == Modality::Calibration {
+                    continue;
+                }
                 let recomputed = s.observed_stats.is_some()
                     || s.observed_saturation.is_some()
                     || s.observed_non_finite.is_some()

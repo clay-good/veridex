@@ -241,6 +241,19 @@ pub enum Modality {
     CanSignal,
     /// Ego-vehicle pose / odometry.
     EgoPose,
+    /// A channel that announces the rig's *geometry* rather than measuring the world: a
+    /// `sensor_msgs/msg/CameraInfo`, a `tf2_msgs/msg/TFMessage`.
+    ///
+    /// Distinct from [`Modality::ScalarState`], which these used to fall into, because the two
+    /// answer opposite questions about a value. A joint-position stream that carries no summarizable
+    /// values is a measurement Veridex could not read, and `STATISTICAL.UNMEASURED_VALUES` is right
+    /// to say so. A calibration channel has no values to summarize *by construction* — it announces
+    /// a transform, not a reading — so reporting it as unmeasured describes the request rather than
+    /// the data, and buries the streams that genuinely went unread in a longer list.
+    ///
+    /// Its content is not lost: it is decoded into [`Dataset::calibration`], which is where a rig's
+    /// geometry belongs, and the `autonomy.calibration-*` checks grade it there.
+    Calibration,
 }
 
 impl Modality {
@@ -257,6 +270,7 @@ impl Modality {
             Modality::Gnss => "gnss",
             Modality::CanSignal => "can-signal",
             Modality::EgoPose => "ego-pose",
+            Modality::Calibration => "calibration",
         }
     }
 

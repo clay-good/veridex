@@ -64,14 +64,18 @@ pub(crate) fn infer_modality(schema_name: &str, topic: &str) -> Modality {
     );
     let has = |kw: &str| hay.contains(kw);
 
-    // A `CameraInfo` channel carries a camera's calibration, not its imagery — and its cadence is
-    // whatever the driver chose, commonly latched or 1 Hz. Typing it `Video` made it a *sensor*, and
-    // the rig-sync check then compared a latched calibration topic's span against a LiDAR's and
-    // reported a synchronized rig as drifting. Its content is not lost: Veridex decodes it into
-    // `Dataset::calibration`, which is where a camera's intrinsics belong. Tested first, because the
-    // topic name almost always contains "camera".
-    if schema_is(schema_name, "CameraInfo") {
-        Modality::ScalarState
+    // A `CameraInfo` channel carries a camera's calibration, not its imagery — and a `TFMessage`
+    // carries the rig's transform tree. Neither measures the world, and their cadence is whatever
+    // the driver chose (commonly latched, or 1 Hz). Typing `CameraInfo` as `Video` made it a
+    // *sensor*, and the rig-sync check then compared a latched calibration topic's span against a
+    // LiDAR's and reported a synchronized rig as drifting; typing both as `ScalarState` — the
+    // joint-position modality — then had the statistical family list a transform tree among the
+    // streams that might hold "a saturated actuator, a NaN, a stuck sensor". `Calibration` is what
+    // they are. Their content is not lost: Veridex decodes both into `Dataset::calibration`, which
+    // is where a rig's geometry belongs. Tested first, because a `CameraInfo` topic name almost
+    // always contains "camera".
+    if schema_is(schema_name, "CameraInfo") || schema_is(schema_name, "TFMessage") {
+        Modality::Calibration
     }
     // Camera imagery.
     else if has("image") || has("camera") || has("compressedimage") || has("video") {

@@ -83,12 +83,14 @@ fn the_ros_message_type_selects_the_modality() {
     assert_eq!(by_name("/camera/front/image_raw"), Modality::Video);
     // A CameraInfo channel is a camera's calibration, not its imagery. Typing it `Video` made it a
     // sensor for `AUTONOMY.RIG_SYNC`, which then compared a latched or 1 Hz calibration topic's span
-    // against a LiDAR's and failed a synchronized rig. Its content still reaches the CDM — as
-    // `Dataset::calibration`, which is where intrinsics belong.
+    // against a LiDAR's and failed a synchronized rig; typing it `ScalarState` — the joint-position
+    // modality — then had `STATISTICAL.UNMEASURED_VALUES` name it among the streams that might hold
+    // a saturated actuator or a NaN. It announces the rig's geometry and measures nothing, and its
+    // content reaches the CDM as `Dataset::calibration`, which is where intrinsics belong.
     assert_eq!(
         by_name("/camera/front/camera_info"),
-        Modality::ScalarState,
-        "a CameraInfo topic is telemetry about a camera, not a camera"
+        Modality::Calibration,
+        "a CameraInfo topic is a camera's calibration, not a camera and not a measurement"
     );
 }
 
