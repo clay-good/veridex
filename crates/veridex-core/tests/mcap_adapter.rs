@@ -920,6 +920,51 @@ fn a_publisher_that_never_used_the_counter_is_not_a_publisher_that_lost_everythi
 }
 
 #[test]
+fn a_camera_losing_a_fifth_of_its_messages_moves_nothing_but_the_count() {
+    // The demo rig twice: as recorded, and with a camera whose transport dropped one message in
+    // five. The publisher numbered every one of them and the survivors keep the times they were
+    // published at, which is what a real dropping transport leaves behind.
+    //
+    // The assertion is the whole claim of the measured path: the two reports differ by exactly one
+    // finding. Nineteen percent of a camera is missing and not one timing check — rate, gap, jitter,
+    // rig sync, start/end offset — notices, because none of them can: what is missing left no trace
+    // in the timeline. Only the publisher's own count says so.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let codes = |variant: &str| -> Vec<String> {
+        let path = dir.path().join(format!("{variant}.mcap"));
+        veridex_demo::mcap::write(&path, variant).expect("write the demo rig");
+        let d = McapAdapter
+            .ingest(&Source::Local(path.clone()), &IngestOptions::default())
+            .expect("ingest")
+            .dataset;
+        let engine = veridex_core::checks::default_engine().expect("the standard catalog");
+        let hash = veridex_core::content_hash(&d);
+        let mut codes: Vec<String> = engine
+            .run(&d, hash, &veridex_core::RunConfig::default())
+            .findings
+            .into_iter()
+            .map(|f| f.code)
+            .collect();
+        codes.sort();
+        codes
+    };
+
+    let healthy = codes("av");
+    let lossy = codes("av-lossy-camera");
+    let added: Vec<&String> = lossy.iter().filter(|c| !healthy.contains(c)).collect();
+    let removed: Vec<&String> = healthy.iter().filter(|c| !lossy.contains(c)).collect();
+    assert_eq!(
+        added,
+        ["AUTONOMY.SEQUENCE_DROPPED"].iter().collect::<Vec<_>>(),
+        "losing a fifth of a camera must add exactly the finding that counts it"
+    );
+    assert!(
+        removed.is_empty(),
+        "and must take nothing away: {removed:?}"
+    );
+}
+
+#[test]
 fn a_calibration_channel_is_not_a_measurement_that_went_unread() {
     // The demo rig publishes a `CameraInfo` and a transform tree. Neither measures the world, and
     // both used to be typed `ScalarState` — the joint-position modality — so the statistical family

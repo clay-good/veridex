@@ -47,7 +47,14 @@
 //!   Every presence check passes — the rig has intrinsics — and a projection through them divides by
 //!   a focal length of zero → `AUTONOMY.CALIBRATION_IMPLAUSIBLE`.
 //!
-//! Usage: `cargo run -p veridex-demo --example make_demo_mcap -- <output.mcap> [clean|late-start|stuck|av|av-miscalibrated|av-ambiguous-tf|av-dead-lidar|av-unstamped|av-uncalibrated-camera]`
+//! - `av-lossy-camera` — the same rig with a camera whose transport dropped one message in five.
+//!   The publisher numbered every one of them; the recording holds the rest, at the times they were
+//!   published. The bag itself is the only record that anything is missing →
+//!   `AUTONOMY.SEQUENCE_DROPPED`, counted from the publisher's own `sequence` rather than estimated
+//!   from the cadence, and **nothing else moves**: the report differs from the healthy rig's by that
+//!   one finding, so nineteen percent of a camera goes missing with every timing check passing.
+//!
+//! Usage: `cargo run -p veridex-demo --example make_demo_mcap -- <output.mcap> [clean|late-start|stuck|av|av-miscalibrated|av-ambiguous-tf|av-dead-lidar|av-unstamped|av-uncalibrated-camera|av-lossy-camera]`
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
@@ -67,6 +74,7 @@ pub const VARIANTS: &[&str] = &[
     "av-dead-lidar",
     "av-unstamped",
     "av-uncalibrated-camera",
+    "av-lossy-camera",
 ];
 
 /// Write the demo MCAP recording to `path`, replacing anything already there.
@@ -93,12 +101,16 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
     // `av-uncalibrated-camera` is the same rig whose camera publishes a `CameraInfo` before anyone
     // calibrated it: the model named, the coefficients present, and every number zero.
     let uncalibrated_camera = variant == "av-uncalibrated-camera";
+    // `av-lossy-camera` is the same rig with a camera whose messages did not all reach the file: the
+    // publisher numbered them and the recording holds fewer.
+    let lossy_camera = variant == "av-lossy-camera";
     let av = variant == "av"
         || miscalibrated
         || ambiguous_tf
         || dead_lidar
         || unstamped_lidar
-        || uncalibrated_camera;
+        || uncalibrated_camera
+        || lossy_camera;
 
     let mut buf = Vec::new();
     {
@@ -112,6 +124,7 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
                 dead_lidar,
                 unstamped_lidar,
                 uncalibrated_camera,
+                lossy_camera,
             );
         } else {
             write_manipulation(&mut w, stuck, clean, late_start);
@@ -240,6 +253,7 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(
     dead_lidar: bool,
     unstamped_lidar: bool,
     uncalibrated_camera: bool,
+    lossy_camera: bool,
 ) {
     // (schema, topic, message count, inter-message interval ns, coordinate frame). The IMU runs the
     // same 100 msg count as a healthy 100 Hz sensor but at a compressed 7 ms interval, so it finishes
@@ -340,6 +354,13 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(
             // compares.
             let t = RECORDING_EPOCH_NS + i * interval;
             let stamp = t - SENSOR_LATENCY_NS;
+            // The `av-lossy-camera` fault: the publisher numbered every message and one in five
+            // never reached the file. Nothing marks the hole except the numbering itself — the
+            // surviving messages keep the times they were published at, so the camera still spans
+            // the whole recording alongside every other sensor.
+            if lossy_camera && *schema == "sensor_msgs/msg/Image" && i % 5 == 4 {
+                continue;
+            }
             if *schema == "nav_msgs/msg/Odometry" {
                 // A real CDR Odometry body, so the ego trajectory is genuinely decoded rather than
                 // skipped: the demo drives ~10 m/s down +x, which is what makes the rig a

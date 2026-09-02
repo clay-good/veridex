@@ -8,6 +8,16 @@ All notable changes to Veridex are recorded here. The format follows
 The first shippable slice of the [`bootstrap-veridex-mvp`](openspec/changes/bootstrap-veridex-mvp/)
 change. Runs end-to-end: ingest → validate → score → report → sign.
 
+### Added
+
+- **A demo for the message loss no timeline shows.** `AUTONOMY.SEQUENCE_DROPPED` had no runnable
+  example. New variant `av-lossy-camera` is the rig with a camera whose transport dropped one message
+  in five: the publisher numbered every one of them, and the survivors keep the times they were
+  published at, which is what a dropping transport actually leaves behind. Its report differs from
+  the healthy rig's by exactly one finding — a fifth of a camera goes missing while rate, gap,
+  jitter, rig sync and the start/end offsets all pass, because none of them can see it. A test pins
+  that difference rather than asserting the claim.
+
 ### Fixed
 
 - **Two storage plugins agreed about a topic neither had read the same way.** The test that gates
