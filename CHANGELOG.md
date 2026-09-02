@@ -35,6 +35,27 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **Two spelled-out counts in the docs were held to nothing.** "Seven formats support
+  `--metadata-only`" and "the seven checks that answer by comparing episodes against each other" are
+  numbers the registry and the catalog own, restated across the README, `docs/partial-runs.md`,
+  `docs/checks.md` and a source comment in `checks/structural.rs`. The sensor-rig count in the
+  status table is already held to the catalog, because it had gone stale once. These were not.
+
+  Both are correct today; the point is that nothing would say when they stopped being. A count that
+  has drifted is worse than no count, because it reads as precision: a reader told seven formats
+  support a mode, who finds an eighth adapter that does, cannot tell which sentence is wrong.
+
+  `crates/veridex-core/tests/documented_counts.rs` now holds each restatement to its source — the
+  registry's `formats_supporting_metadata_only`, and the count the engine actually prints in
+  `STRUCTURAL.UNCOMPARED_EPISODES` on a one-episode run, which is what a reader sees. Each of the
+  three restatements was mutated on its own and fails on its own.
+
+  The guard matches against the page with its whitespace collapsed, because these sentences wrap:
+  the README states the check count with the numeral ending one line and the noun beginning the
+  next, and the first, line-by-line version of this test read that as a claim with no number in it
+  and passed. A restatement that merely names the checks without counting them — `docs/checks.md`
+  does — is passed over rather than failed.
+
 - **The repository went public with no way to install the tool.** The README documents fifteen
   `veridex <command>` invocations and never said how to get the `veridex` binary; the Quickstart
   runs `cargo run -p veridex-cli --`, which is a development workflow, not an installation.
