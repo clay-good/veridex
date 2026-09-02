@@ -97,6 +97,18 @@ The decision and its consequences are recorded as design D6a.
 - Provenance is best-effort on extraction (capture whatever the source encodes) and explicit on
   attestation (let the producer sign the rest); a certificate always states what is *known*,
   *asserted*, and *unknown*.
+- **A threshold a document promises is pinned at its boundary, in both directions.** The
+  certificate's criteria are worded precisely — "within a 20 ms drift", "more than 5% of its
+  frames", "above 100 m/s" — and so are the physical bounds (latitude ±90° is inclusive) and the
+  format conventions (one more observation than actions is the terminal-observation convention, not
+  a mismatch). A test that exercises a threshold *near* its limit passes just as well with the
+  comparison moved by one, which silently turns honest data into a finding, or the reverse. So the
+  test lands **on** the boundary: the largest value that passes, and the smallest that does not.
+  Where the quantity is a ratio of measured floats and no real recording lands on the limit exactly
+  (a jitter CV, a rate deviation), say so rather than pin it with a fabricated value. A mutation
+  sweep — flip each comparison to its neighbour and re-run the suite — is how the unpinned ones were
+  found; a survivor is a candidate, not automatically a defect, since some are inert behind a later
+  guard.
 
 ## Glossary
 

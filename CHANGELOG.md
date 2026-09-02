@@ -10,6 +10,18 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **The sweep finished clean on the last two families, and the rule it taught is written down.**
+  `semantic`'s three boundary comparisons — the episode-span construction and both ends of the
+  annotation-alignment window — were all killed, so that family was already pinned; `video`'s one
+  threshold is the shared `rate_deviation`, a float ratio nothing lands on exactly. Nothing to fix,
+  which is worth recording as much as a fix is.
+
+  What the sweep taught is now a convention in [`openspec/project.md`](openspec/project.md): a
+  threshold a document promises is pinned **at** its boundary, in both directions, because a test
+  that exercises it merely *near* the limit passes just as well with the comparison moved by one.
+  That covers the certificate's criterion wording, inclusive physical bounds, and format conventions
+  — and says explicitly when not to pin, so the next threshold added does not have to rediscover it.
+
 - **Four more structural boundaries pinned, and one survivor found harmless.** Extending the sweep
   to the ten comparisons that back documented structural behavior, eight survived. Triaged rather
   than pinned wholesale — a surviving mutation is not automatically a gap:
