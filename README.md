@@ -142,6 +142,21 @@ built locally with maturin — not yet published to PyPI) that produce identical
 config to Python explicitly (`veridex.check(path, config=open("veridex.toml").read())`) — unlike the
 CLI, an import never picks one up from the working directory.
 
+## Install
+
+Neither crate is on crates.io yet — v0.1.0 is the first release — so today the `veridex` binary
+comes from this repository. Both paths need a Rust toolchain ([rustup](https://rustup.rs/)) and put
+`veridex` on your `PATH`:
+
+```sh
+cargo install --git https://github.com/clay-good/veridex veridex-cli   # no clone needed
+cargo install --path crates/veridex-cli                                # from a clone
+```
+
+Once v0.1.0 ships this becomes `cargo install veridex-cli`; until then that command fails, because
+there is nothing there to install. The [Quickstart](#quickstart) below installs nothing and runs out
+of a clone with `cargo run`, which is the shorter path if you only want to try the demo.
+
 ## Quickstart
 
 ```sh

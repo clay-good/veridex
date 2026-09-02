@@ -35,6 +35,30 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **The repository went public with no way to install the tool.** The README documents fifteen
+  `veridex <command>` invocations and never said how to get the `veridex` binary; the Quickstart
+  runs `cargo run -p veridex-cli --`, which is a development workflow, not an installation.
+
+  Worse, `docs/ci-recipes.md` — which opens by saying every command in it was run before it was
+  written down — gave a GitHub Actions and a GitLab recipe whose first step was
+  `cargo install veridex-cli`. Neither crate is on crates.io (v0.1.0 is the first release, as
+  `docs/releasing.md` says plainly), so that step could not have been run and cannot succeed: a
+  reader copying the recipe on a public repo fails at step one with a crate that does not exist.
+
+  The README now has an `## Install` section, and both recipes install the way that works today.
+  Both documented paths were run end to end and produce `veridex 0.1.0`:
+
+  ```sh
+  cargo install --git https://github.com/clay-good/veridex veridex-cli   # no clone needed
+  cargo install --path crates/veridex-cli                                # from a clone
+  ```
+
+  A guard in `crates/veridex-cli/tests/cli.rs` now holds every `cargo install` inside a fenced block
+  in the README or `docs/` to a form that works — `--git` or `--path` — so an unpublished install
+  cannot again be handed to a reader as a working one. Prose may still *name* the future crates.io
+  command, which is how the Install section says it does not work yet. `docs/releasing.md`, the page
+  about publishing, is exempt. Delete the guard when v0.1.0 ships; it says so.
+
 - **The demo variant lists told a reader to run commands that fail.** Every generator has one
   authoritative list — its `VARIANTS` — and five restatements of it: the module doc's bullets, the
   module doc's `Usage:` line, the `examples/` wrapper's `Usage:` line, the page that offers a reader

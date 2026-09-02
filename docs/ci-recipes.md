@@ -3,6 +3,10 @@
 Copy-pasteable recipes. Every command here was run against this repo's demo dataset before it was
 written down.
 
+The install step is `--git` because neither crate is on crates.io yet; it becomes
+`cargo install veridex-cli` once v0.1.0 ships. Pin it — `--git <url> --tag v0.1.0` — if you want a
+job whose tool version does not move when `main` does.
+
 ## The contract CI depends on
 
 | Exit code | Meaning |
@@ -29,7 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo install veridex-cli
+      - run: cargo install --git https://github.com/clay-good/veridex veridex-cli
       - name: Check the dataset
         run: veridex check datasets/pick-place --min-score 80
 ```
@@ -85,7 +89,7 @@ point — a baseline artifact from another project is the mistake being caught.
 veridex:
   image: rust:latest
   script:
-    - cargo install veridex-cli
+    - cargo install --git https://github.com/clay-good/veridex veridex-cli
     - veridex check datasets/pick-place --json --out report.json
   artifacts:
     when: always

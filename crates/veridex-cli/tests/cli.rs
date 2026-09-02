@@ -3175,3 +3175,68 @@ fn a_directory_holding_datasets_says_so_instead_of_listing_eight_format_names() 
     assert!(stderr.contains("unsupported format"), "{stderr}");
     assert!(!stderr.contains("readable"), "{stderr}");
 }
+
+/// Every `cargo install` a doc hands a reader must be one that works today.
+///
+/// `docs/ci-recipes.md` opens by saying every command in it was run before it was written down,
+/// then gave two CI recipes whose first step was `cargo install veridex-cli` — a crate that is not
+/// on crates.io, so that step could not have been run and cannot succeed. A reader copying the
+/// GitHub Actions recipe on a now-public repo failed at step one, and the README offered no install
+/// path at all: it documents fifteen `veridex <command>` invocations and never said how to get the
+/// binary.
+///
+/// Until `veridex-cli` is published, an install command must name where it is coming from — `--git`
+/// or `--path`. **When v0.1.0 ships to crates.io, delete this test** and let the docs say the short
+/// thing; it exists only to keep an unpublished install from being promised as a working one.
+#[test]
+fn every_documented_cargo_install_is_one_that_works_today() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut pages: Vec<std::path::PathBuf> = vec![root.join("README.md")];
+    let mut docs: Vec<std::path::PathBuf> = std::fs::read_dir(root.join("docs"))
+        .expect("docs/ is readable")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "md"))
+        .collect();
+    docs.sort();
+    pages.append(&mut docs);
+
+    // `docs/releasing.md` is the page *about* publishing: it names the future command on purpose.
+    let mut checked = 0usize;
+    for page in pages {
+        if page.file_name().is_some_and(|n| n == "releasing.md") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&page).expect("a readable page");
+        // Only inside fenced blocks: a page may *name* the future crates.io command in prose (the
+        // README's Install section does, to say it does not work yet), and prose is not something a
+        // reader copies into a shell.
+        let mut fenced = false;
+        for line in text.lines() {
+            if line.trim_start().starts_with("```") {
+                fenced = !fenced;
+                continue;
+            }
+            if !fenced {
+                continue;
+            }
+            let Some(at) = line.find("cargo install ") else {
+                continue;
+            };
+            let command = &line[at..];
+            checked += 1;
+            assert!(
+                command.contains("--git ") || command.contains("--path "),
+                "{} hands a reader an install that cannot work — `veridex-cli` is not on \
+                 crates.io, so it needs `--git` or `--path`:\n  {}",
+                page.display(),
+                line.trim()
+            );
+        }
+    }
+    // A guard that finds nothing to check has stopped guarding. The README's own Install section
+    // and the two CI recipes are the floor.
+    assert!(
+        checked >= 4,
+        "expected the install commands in the README and docs/ci-recipes.md, found {checked}"
+    );
+}
