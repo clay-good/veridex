@@ -128,9 +128,16 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
   Streams are now named `<interface>:<Message>.<Signal>` when a log carries more than one interface,
   so the buses stay apart; a single-bus log — nearly every log — keeps the names it has always had,
-  so no existing CDM hash moves. Which bus the `.dbc` describes is not something the log says, so
-  that is disclosed as an unread source rather than guessed: every frame from a bus the database does
+  so no existing CDM hash moves. Which bus the `.dbc` describes is not something the log or the
+  database says, so that is disclosed rather than guessed: every frame from a bus the database does
   not describe was decoded from the wrong definitions.
+
+  The disclosure is a **fidelity** note, not an unread source. Filing it under `unread_sources` —
+  which means "there is data here and I did not look at it" — raised `COVERAGE.SOURCE_UNREAD`, whose
+  text tells a reader every result "speaks for the part that was" read, beside a remedy about
+  re-exporting missing files. Every frame on both buses was read; what the CDM cannot represent is
+  which bus the database is for. Caught by running the CLI on a two-bus log rather than by reading
+  the code.
 
 - **The README's picture of the engine named three of seven check families.** The flowchart read
   "structural · temporal · provenance checks" and the sequence diagram said the same, so the front

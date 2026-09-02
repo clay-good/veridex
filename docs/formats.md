@@ -364,9 +364,12 @@ something else entirely on the chassis bus. Decoded by id alone, two buses' fram
 signal stream and its values and statistics blend two unrelated physical quantities. So when a log
 carries more than one interface, streams are named `<interface>:<Message>.<Signal>` and the buses
 stay apart; a single-bus log — which is nearly every log — keeps the names it has always had. Which
-bus the `.dbc` describes is not something the log says, so that is disclosed rather than guessed:
-every frame from a bus the database does not describe was decoded from the wrong definitions and is a
-plausible number rather than a measurement.
+bus the `.dbc` describes is not something the log or the database says, so that is disclosed rather
+than guessed: every frame from a bus the database does not describe was decoded from the wrong
+definitions and is a plausible number rather than a measurement. Disclosed as a **fidelity** note
+(`unmapped`), not as an unread source — every frame on every bus was read, and claiming otherwise
+would tell a reader the verdict "speaks for the part that was" over a dataset none of which was
+skipped.
 
 **A partial DBC is the failure mode worth naming.** Bus traffic on an id the database never defines
 decodes into nothing, and so does a log line that is not a candump frame — and a run that passed over

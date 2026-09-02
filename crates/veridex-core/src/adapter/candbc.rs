@@ -644,6 +644,43 @@ impl Adapter for CanDbcAdapter {
             calibration: None,
         };
 
+        // One database, more than one bus — a **fidelity** note, not a coverage hole. Every frame
+        // was read; what the CDM cannot represent is *which* bus the database describes, because
+        // neither the log nor the DBC says. A DBC describes a network and a CAN id means a
+        // different message on a different one, so signals decoded from a bus this database does
+        // not describe are plausible numbers rather than measurements. The buses are kept in
+        // separate streams (`<interface>:<Message>.<Signal>`) so they are not blended; that is the
+        // fix, and this is the caveat that remains after it.
+        //
+        // Deliberately not an unread source: that vector means "there is data here and I did not
+        // look at it", and `COVERAGE.SOURCE_UNREAD` says every result "speaks for the part that
+        // was" read. Nothing here went unread, and filing it there made the report claim a hole
+        // that does not exist beside a remedy about re-exporting missing files.
+        let mut unmapped: Vec<UnmappedField> = Vec::new();
+        if multi_bus {
+            let named: Vec<&str> = interfaces.iter().copied().collect();
+            unmapped.push(UnmappedField {
+                source_path: named.join(", "),
+                note: format!(
+                    "the log carries frames from {} interfaces and one DBC was applied to all of \
+                     them; which bus the database describes is not something the log or the \
+                     database says, so signals decoded from a bus it does not describe are \
+                     plausible numbers rather than measurements. Streams are named \
+                     `<interface>:<Message>.<Signal>` so the buses are not blended",
+                    named.len()
+                ),
+            });
+        }
+        if transmitters.len() > MAX_NAMED_TRANSMITTERS {
+            unmapped.push(UnmappedField {
+                source_path: "DBC BO_ transmitters".into(),
+                note: format!(
+                    "{MAX_NAMED_TRANSMITTERS} of {} transmitting nodes are named in provenance; \
+                     the rest are counted in `dbc_transmitters` rather than recorded as elements",
+                    transmitters.len()
+                ),
+            });
+        }
         // Fidelity: DBC-coverage gaps (CAN ids in the log with no DBC message definition). Those
         // frames carried payload down the bus and went into no stream, so they are unread data —
         // the busiest ids named first, because which traffic is missing is the useful half.
@@ -669,26 +706,6 @@ impl Adapter for CanDbcAdapter {
                     "{frames} more frame(s) on ids with no DBC message definition; `veridex \
                      inspect` is not a bus dump, so only the {MAX_NAMED_UNKNOWN_IDS} busiest are \
                      named"
-                ),
-            });
-        }
-        // One database, more than one bus. A DBC describes *a* network, and a CAN id means a
-        // different message on a different one — so every frame from a bus this database does not
-        // describe was decoded from the wrong definitions and produced a plausible number that is
-        // not a measurement of anything. Veridex cannot tell which bus the database is for, so it
-        // keeps the buses in separate streams and says what it did rather than picking one.
-        if multi_bus {
-            let named: Vec<&str> = interfaces.iter().copied().collect();
-            unread_sources.push(UnmappedField {
-                source_path: named.join(", "),
-                note: format!(
-                    "the log carries frames from {} interfaces and one DBC was applied to all of \
-                     them; a CAN id is a different message on a different bus, so signals decoded \
-                     from a bus this database does not describe are plausible numbers rather than \
-                     measurements. Streams are named `<interface>:<Message>.<Signal>` so the buses \
-                     are not blended, but which bus the database describes is not something the \
-                     log says",
-                    named.len()
                 ),
             });
         }
@@ -727,19 +744,7 @@ impl Adapter for CanDbcAdapter {
                         .then(|| "DBC BO_ transmitter -> provenance.sensor".to_string()),
                 )
                 .collect(),
-                unmapped_fields: if transmitters.len() > MAX_NAMED_TRANSMITTERS {
-                    vec![UnmappedField {
-                        source_path: "DBC BO_ transmitters".into(),
-                        note: format!(
-                            "{MAX_NAMED_TRANSMITTERS} of {} transmitting nodes are named in \
-                             provenance; the rest are counted in `dbc_transmitters` rather than \
-                             recorded as elements",
-                            transmitters.len()
-                        ),
-                    }]
-                } else {
-                    Vec::new()
-                },
+                unmapped_fields: unmapped,
                 omitted_fields: vec![
                     "CAN frames are one continuous timeline; no episode segmentation".into(),
                 ],

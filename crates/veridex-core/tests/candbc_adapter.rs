@@ -67,14 +67,23 @@ fn two_buses_in_one_log_are_two_buses() {
         "no stream may blend the two: {names:?}"
     );
 
-    // ...and the limit is stated. Veridex cannot tell which bus the DBC describes, so it says so
-    // instead of picking one.
+    // ...and the limit is stated, as a **fidelity** note. Veridex cannot tell which bus the DBC
+    // describes, so it says so instead of picking one.
     assert!(
         out.report
-            .unread_sources
+            .unmapped_fields
             .iter()
             .any(|u| u.note.contains("one DBC was applied to all of them")),
         "{:?}",
+        out.report.unmapped_fields
+    );
+    // Not as an unread source. That vector means "there is data here and I did not look at it", and
+    // `COVERAGE.SOURCE_UNREAD` tells a reader every result "speaks for the part that was" read —
+    // which would be false here, where every frame on both buses was read. Filing it there made the
+    // report claim a hole that does not exist, beside a remedy about re-exporting missing files.
+    assert!(
+        out.report.unread_sources.is_empty(),
+        "nothing went unread: {:?}",
         out.report.unread_sources
     );
 }
