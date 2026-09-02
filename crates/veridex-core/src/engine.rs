@@ -64,6 +64,9 @@ pub struct Tolerances {
     /// `STRUCTURAL.NEAR_DUPLICATE_EPISODE` fires on two episodes sharing at least this fraction of
     /// their frames byte-for-byte, in every stream compared (0.80 = four frames in five).
     pub near_duplicate_fraction: f64,
+    /// `AUTONOMY.SENSOR_CLOCK_OFFSET` fires when a rig sensor's own capture stamps sit further than
+    /// this from the recorder's clock on *every* message, in nanoseconds.
+    pub sensor_clock_offset_ns: i64,
 }
 
 impl Tolerances {
@@ -106,6 +109,10 @@ impl Default for Tolerances {
             sequence_drop_fraction: 0.05, // 5%
             ego_max_speed_mps: 100.0,
             near_duplicate_fraction: 0.8, // four frames in five
+            // 1 s. Far above any sensor pipeline latency (tens of milliseconds) and far below the
+            // disagreements an undisciplined clock produces (minutes to years), so the rule sits in
+            // the gap rather than near either edge.
+            sensor_clock_offset_ns: 1_000_000_000,
         }
     }
 }

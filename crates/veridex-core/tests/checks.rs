@@ -45,6 +45,7 @@ fn stream(name: &str, clock: &str, rate: Option<f64>, ts: &[i64]) -> Stream {
         declared_range: None,
         point_fields: None,
         observed_point_counts: None,
+        observed_header_stamps: None,
         media: None,
         frame_id: None,
         frames: frames_at(ts),
@@ -340,6 +341,7 @@ fn stream_hashed(name: &str, clock: &str, ts: &[i64], contents: &[u8]) -> Stream
         declared_range: None,
         point_fields: None,
         observed_point_counts: None,
+        observed_header_stamps: None,
         media: None,
         frame_id: None,
         frames,
@@ -430,6 +432,7 @@ fn stream_with_content(name: &str, modality: Modality, contents: &[u8]) -> Strea
         declared_range: None,
         point_fields: None,
         observed_point_counts: None,
+        observed_header_stamps: None,
         media: None,
         frame_id: None,
         frames,
@@ -508,6 +511,7 @@ fn shaped(name: &str, dtype: Option<&str>, shape: Option<Vec<u64>>, ts: &[i64]) 
         declared_range: None,
         point_fields: None,
         observed_point_counts: None,
+        observed_header_stamps: None,
         media: None,
         frame_id: None,
         dim_names: None,
@@ -1659,7 +1663,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 44);
+    assert_eq!(verdict.executed_checks.len(), 45);
 }
 
 #[test]
@@ -3335,6 +3339,7 @@ fn a_bus_only_measurement_is_not_treated_as_a_sensor_rig() {
                 declared_range: None,
                 point_fields: None,
                 observed_point_counts: None,
+                observed_header_stamps: None,
                 media: None,
                 frame_id: None,
             })
@@ -3418,6 +3423,7 @@ fn one_shared_timeline_reports_once_and_an_event_driven_signal_is_not_called_inc
         declared_range: None,
         point_fields: None,
         observed_point_counts: None,
+        observed_header_stamps: None,
         media: None,
         frame_id: None,
     };
@@ -5656,6 +5662,196 @@ fn a_trajectory_for_a_frame_the_tree_does_name_is_the_rig_it_claims_to_be() {
     };
     assert_eq!(ego_findings(Some("base_link")), 0);
     assert_eq!(ego_findings(None), 0);
+}
+
+// ---- AUTONOMY.SENSOR_CLOCK_UNSET / _REGRESSION / _OFFSET / _UNREAD ----
+
+/// A rig whose LiDAR carries the given capture-stamp summary. The two sensors beside it stamped
+/// their data cleanly, which is what makes the finding about one stream rather than the rig.
+fn rig_with_stamps(stamps: Option<veridex_core::cdm::HeaderStamps>) -> Dataset {
+    let healthy = veridex_core::cdm::HeaderStamps {
+        message_count: 100,
+        unset: 0,
+        min_offset_ns: 5_000_000,
+        max_offset_ns: 6_000_000,
+        regressions: 0,
+    };
+    let mut ep = episode(
+        0,
+        vec![
+            rig_stream("lidar", Modality::PointCloud, 1_000_000_000),
+            rig_stream("gnss", Modality::Gnss, 1_000_000_000),
+            rig_stream("imu", Modality::Imu, 1_000_000_000),
+        ],
+    );
+    ep.streams[0].observed_header_stamps = stamps;
+    ep.streams[1].observed_header_stamps = Some(healthy);
+    ep.streams[2].observed_header_stamps = Some(healthy);
+    dataset(vec![ep])
+}
+
+fn sensor_clock() -> autonomy::SensorClock {
+    autonomy::SensorClock {
+        max_offset_ns: 1_000_000_000,
+    }
+}
+
+#[test]
+fn a_sensor_that_never_stamped_its_data_has_no_clock_of_its_own() {
+    // A bag carries two clocks and only one of them reaches a frame timestamp: the recorder's. When
+    // the sensor's own `header.stamp` was never set, there is nothing for the recorder's clock to be
+    // standing in for — so the rig's sync result is about the recording host's scheduler, and every
+    // timing check still passes because they all read the same recorder's clock.
+    let f = sensor_clock().run(&rig_with_stamps(Some(veridex_core::cdm::HeaderStamps {
+        message_count: 600,
+        unset: 600,
+        min_offset_ns: 0,
+        max_offset_ns: 0,
+        regressions: 0,
+    })));
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "AUTONOMY.SENSOR_CLOCK_UNSET");
+    assert_eq!(f[0].severity, Severity::Error);
+    assert_eq!(
+        f[0].location,
+        veridex_core::check::Location::Stream {
+            episode: 0,
+            stream: "lidar".into()
+        }
+    );
+    assert!(f[0].message.contains("600"), "{}", f[0].message);
+}
+
+#[test]
+fn a_driver_that_stopped_stamping_partway_is_a_warning_not_a_dead_clock() {
+    // Some messages stamped, not all. Distinguished from the never-stamped case the same way a
+    // dropped sweep is distinguished from a dead LiDAR: the recording holds real capture times on
+    // one side of it, so the segment may be usable once the affected span is cut.
+    let f = sensor_clock().run(&rig_with_stamps(Some(veridex_core::cdm::HeaderStamps {
+        message_count: 600,
+        unset: 37,
+        min_offset_ns: 5_000_000,
+        max_offset_ns: 6_000_000,
+        regressions: 0,
+    })));
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "AUTONOMY.SENSOR_CLOCK_UNSET");
+    assert_eq!(f[0].severity, Severity::Warning);
+    assert!(f[0].message.contains("37 of"), "{}", f[0].message);
+}
+
+#[test]
+fn a_sensor_clock_that_steps_backwards_puts_two_capture_times_on_one_instant() {
+    let f = sensor_clock().run(&rig_with_stamps(Some(veridex_core::cdm::HeaderStamps {
+        message_count: 600,
+        unset: 0,
+        min_offset_ns: 5_000_000,
+        max_offset_ns: 6_000_000,
+        regressions: 1,
+    })));
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "AUTONOMY.SENSOR_CLOCK_REGRESSION");
+    assert_eq!(f[0].severity, Severity::Error);
+}
+
+#[test]
+fn a_constant_pipeline_latency_is_not_a_clock_disagreement() {
+    // The offset rule reads both bounds, not the spread between them. 80 ms of camera latency, and
+    // 300 ms of jitter on top of it, is one clock with a slow pipeline — the temporal family already
+    // grades the jitter from the frame timestamps. Only the *closest* the two clocks came all
+    // recording says they are different clocks.
+    assert!(sensor_clock()
+        .run(&rig_with_stamps(Some(veridex_core::cdm::HeaderStamps {
+            message_count: 600,
+            unset: 0,
+            min_offset_ns: 80_000_000,
+            max_offset_ns: 380_000_000,
+            regressions: 0,
+        })))
+        .is_empty());
+}
+
+#[test]
+fn a_sensor_host_that_never_disciplined_its_clock_is_caught_in_both_directions() {
+    // An hour behind: every message arrived an hour after the sensor says it sampled.
+    let behind = sensor_clock().run(&rig_with_stamps(Some(veridex_core::cdm::HeaderStamps {
+        message_count: 600,
+        unset: 0,
+        min_offset_ns: 3_600_000_000_000,
+        max_offset_ns: 3_600_100_000_000,
+        regressions: 0,
+    })));
+    assert_eq!(behind.len(), 1, "{behind:?}");
+    assert_eq!(behind[0].code, "AUTONOMY.SENSOR_CLOCK_OFFSET");
+    assert_eq!(behind[0].severity, Severity::Warning);
+    assert!(
+        behind[0].message.contains("behind"),
+        "{}",
+        behind[0].message
+    );
+
+    // And ahead: a sensor clock running in front of the recorder's, which is not a latency at all.
+    let ahead = sensor_clock().run(&rig_with_stamps(Some(veridex_core::cdm::HeaderStamps {
+        message_count: 600,
+        unset: 0,
+        min_offset_ns: -3_600_100_000_000,
+        max_offset_ns: -3_600_000_000_000,
+        regressions: 0,
+    })));
+    assert_eq!(ahead.len(), 1, "{ahead:?}");
+    assert_eq!(ahead[0].code, "AUTONOMY.SENSOR_CLOCK_OFFSET");
+    assert!(
+        ahead[0].message.contains("ahead of"),
+        "{}",
+        ahead[0].message
+    );
+}
+
+#[test]
+fn the_offset_rule_is_pinned_at_its_boundary() {
+    // Exactly at the tolerance is not a departure from it; one nanosecond past is.
+    let at = |off: i64| {
+        sensor_clock()
+            .run(&rig_with_stamps(Some(veridex_core::cdm::HeaderStamps {
+                message_count: 10,
+                unset: 0,
+                min_offset_ns: off,
+                max_offset_ns: off,
+                regressions: 0,
+            })))
+            .len()
+    };
+    assert_eq!(at(1_000_000_000), 0);
+    assert_eq!(at(1_000_000_001), 1);
+    assert_eq!(at(-1_000_000_000), 0);
+    assert_eq!(at(-1_000_000_001), 1);
+}
+
+#[test]
+fn a_stream_whose_capture_time_was_never_read_is_not_a_stream_found_synchronized() {
+    // A format that records one clock per file rather than one stamp per sample leaves `None`, and
+    // reporting that as an unstamped sensor would be measuring the request rather than the data.
+    // Silence is not the answer either: a clean sync result then means one clock agreeing with
+    // itself, not two clocks agreeing with each other. So it abstains out loud — info, never error.
+    let f = sensor_clock().run(&rig_with_stamps(None));
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "AUTONOMY.SENSOR_CLOCK_UNREAD");
+    assert_eq!(f[0].severity, Severity::Info);
+    assert_eq!(f[0].location, veridex_core::check::Location::Dataset);
+    assert!(f[0].message.contains("lidar"), "{}", f[0].message);
+}
+
+#[test]
+fn a_rig_whose_sensors_all_stamped_their_data_says_nothing() {
+    assert!(sensor_clock()
+        .run(&rig_with_stamps(Some(veridex_core::cdm::HeaderStamps {
+            message_count: 600,
+            unset: 0,
+            min_offset_ns: 5_000_000,
+            max_offset_ns: 6_000_000,
+            regressions: 0,
+        })))
+        .is_empty());
 }
 
 // ---- AUTONOMY.POINT_CLOUD_EMPTY / POINT_CLOUD_DROPPED ----

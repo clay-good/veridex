@@ -68,6 +68,16 @@ tolerance.
 - **THEN** a check fails with an `error` naming that sensor, the measured offset, and the time range
 - **AND** the finding notes the perception/world-model training risk
 
+#### Scenario: A sensor never recorded a capture time of its own
+- **WHEN** a recording times its messages by the recorder's arrival clock, and one sensor's messages
+  carry no capture stamp of their own (or one that disagrees with the recorder's clock on every
+  message, or one that steps backwards mid-recording)
+- **THEN** a check fails naming that sensor and which of the three faults it is
+- **AND** the finding states that the rig's synchronization result for that sensor is a measurement
+  of the recording host rather than of the sensors
+- **AND** a source that records no per-sample capture time at all is reported as unmeasured rather
+  than as synchronized
+
 ### Requirement: Spatial calibration consistency checks
 Veridex SHALL check spatial calibration coherence across sensors: extrinsics and the transform tree
 are internally consistent; LiDAR points project into camera frames within tolerance; and calibration

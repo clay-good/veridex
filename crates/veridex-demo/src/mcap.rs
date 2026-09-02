@@ -35,7 +35,14 @@
 //!   the frame checks place the sensor in the tree, and every one of them passes →
 //!   `AUTONOMY.POINT_CLOUD_EMPTY` is the only thing that reports the sensor recorded nothing.
 //!
-//! Usage: `cargo run -p veridex-demo --example make_demo_mcap -- <output.mcap> [clean|late-start|stuck|av|av-miscalibrated|av-ambiguous-tf|av-dead-lidar]`
+//! - `av-unstamped` — the same rig whose LiDAR driver never set `header.stamp`. Every cloud is
+//!   well-formed, full of points, on time and in the right frame; only the sensor's own capture time
+//!   is missing, so the recorder's arrival clock is the only clock that stream has. Every timing
+//!   check still passes — they read the recorder's clock either way —
+//!   and `AUTONOMY.SENSOR_CLOCK_UNSET` is the only thing that reports the rig's sync result is
+//!   about the recording host rather than about the sensors.
+//!
+//! Usage: `cargo run -p veridex-demo --example make_demo_mcap -- <output.mcap> [clean|late-start|stuck|av|av-miscalibrated|av-ambiguous-tf|av-dead-lidar|av-unstamped]`
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
@@ -53,6 +60,7 @@ pub const VARIANTS: &[&str] = &[
     "av-miscalibrated",
     "av-ambiguous-tf",
     "av-dead-lidar",
+    "av-unstamped",
 ];
 
 /// Write the demo MCAP recording to `path`, replacing anything already there.
@@ -73,14 +81,23 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
     // `av-dead-lidar` is the same rig with a LiDAR whose driver lost its sensor: every cloud is
     // well-formed, on time, in the right frame — and holds no points.
     let dead_lidar = variant == "av-dead-lidar";
-    let av = variant == "av" || miscalibrated || ambiguous_tf || dead_lidar;
+    // `av-unstamped` is the same rig with a LiDAR driver that never set `header.stamp`: the clouds
+    // are full and on time, and the sensor says nothing about when it sampled them.
+    let unstamped_lidar = variant == "av-unstamped";
+    let av = variant == "av" || miscalibrated || ambiguous_tf || dead_lidar || unstamped_lidar;
 
     let mut buf = Vec::new();
     {
         let mut w = mcap::Writer::new(Cursor::new(&mut buf)).expect("writer");
 
         if av {
-            write_av_rig(&mut w, miscalibrated, ambiguous_tf, dead_lidar);
+            write_av_rig(
+                &mut w,
+                miscalibrated,
+                ambiguous_tf,
+                dead_lidar,
+                unstamped_lidar,
+            );
         } else {
             write_manipulation(&mut w, stuck, clean, late_start);
         }
@@ -183,6 +200,20 @@ fn write_manipulation<W: std::io::Write + std::io::Seek>(
     }
 }
 
+/// The wall-clock instant the rig recording is timed from: 2026-01-01T00:00:00Z, in nanoseconds.
+///
+/// A real bag's log times are epoch nanoseconds. Starting at 0 is not only unrealistic, it collides
+/// with the value that means "this driver never stamped its data" — the first message of every
+/// sensor would carry `header.stamp` 0 and be indistinguishable from an unstamped one.
+const RECORDING_EPOCH_NS: u64 = 1_767_225_600_000_000_000;
+
+/// How long after a sensor samples that the recorder writes the message, in nanoseconds.
+///
+/// Every rig has one: the sensor's own pipeline latency. It is a constant offset between the two
+/// clocks, not a disagreement between them, which is why `autonomy.sensor-clock` grades the offset
+/// against a tolerance three orders of magnitude above this rather than requiring it to be zero.
+const SENSOR_LATENCY_NS: u64 = 5_000_000; // 5 ms
+
 /// Write a five-sensor autonomy rig (camera, LiDAR, IMU, GNSS, ego-odometry) over ~1.0 s. Every
 /// sensor spans ~1.0 s from a shared start except the IMU, whose span is deliberately cut to ~0.70 s
 /// — a single-sensor sync drift of ~0.30 s that the duration-based `TEMPORAL.CLOCK_SKEW` flags.
@@ -191,6 +222,7 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(
     miscalibrated: bool,
     ambiguous_tf: bool,
     dead_lidar: bool,
+    unstamped_lidar: bool,
 ) {
     // (schema, topic, message count, inter-message interval ns, coordinate frame). The IMU runs the
     // same 100 msg count as a healthy 100 Hz sensor but at a compressed 7 ms interval, so it finishes
@@ -261,7 +293,13 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(
     let tf_channel = w
         .add_channel(tf_schema, "/tf_static", "cdr", &latched_qos())
         .unwrap();
-    write_msg(w, tf_channel, 0, 0, &tf_message_body(&tf_edges));
+    write_msg(
+        w,
+        tf_channel,
+        0,
+        RECORDING_EPOCH_NS,
+        &tf_message_body(&tf_edges, RECORDING_EPOCH_NS),
+    );
 
     for (seq_base, (schema, topic, count, interval, frame_id)) in sensors.iter().enumerate() {
         let schema_id = w.add_schema(schema, "ros2msg", b"").unwrap();
@@ -269,7 +307,11 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(
             .add_channel(schema_id, topic, "cdr", &BTreeMap::new())
             .unwrap();
         for i in 0..*count {
-            let t = i * interval;
+            // The recorder's clock. The sensor sampled `SENSOR_LATENCY_NS` earlier, and says so in
+            // its own `header.stamp` — the two clocks a bag carries, which `autonomy.sensor-clock`
+            // compares.
+            let t = RECORDING_EPOCH_NS + i * interval;
+            let stamp = t - SENSOR_LATENCY_NS;
             if *schema == "nav_msgs/msg/Odometry" {
                 // A real CDR Odometry body, so the ego trajectory is genuinely decoded rather than
                 // skipped: the demo drives ~10 m/s down +x, which is what makes the rig a
@@ -277,7 +319,7 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(
                 // ego trajectory). A dummy payload here left `ego_poses` empty, and the flagship demo
                 // reported the profile as N/A.
                 let x = i as f64 * 10.0 * (*interval as f64 / 1e9);
-                write_msg(w, channel, i as u32, t, &odometry_body(x));
+                write_msg(w, channel, i as u32, t, &odometry_body(x, stamp));
             } else if *schema == "sensor_msgs/msg/NavSatFix" {
                 // A real CDR NavSatFix body, for the same reason the Odometry one is real: the
                 // adapter decodes latitude/longitude/altitude into measured values, and a dummy
@@ -291,14 +333,14 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(
                     i as u32,
                     t,
                     // ~37.4°N, 122.1°W, moving north at the odometry's 10 m/s (1 m ≈ 9e-6°).
-                    &nav_sat_fix_body(37.4 + drive * 9.0e-6, -122.1, 12.0),
+                    &nav_sat_fix_body(37.4 + drive * 9.0e-6, -122.1, 12.0, stamp),
                 );
             } else if *schema == "sensor_msgs/msg/Imu" {
                 // Likewise real: the adapter decodes an Imu body in full, so a dummy payload left
                 // the rig's IMU fingerprinted and every statistical check abstaining on it — on the
                 // very sensor this demo exists to show drifting.
                 let phase = i as f64 * (*interval as f64 / 1e9);
-                write_msg(w, channel, i as u32, t, &imu_body(phase));
+                write_msg(w, channel, i as u32, t, &imu_body(phase, stamp));
             } else if *schema == "sensor_msgs/msg/PointCloud2" {
                 // Likewise real, and for the reason the others became real: a stub body left the
                 // rig's LiDAR with no declared point layout and no point counts at all, so
@@ -309,12 +351,15 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(
                 // cloud, tail included. The payload bytes are zero and never read; only their
                 // *count* is asserted.
                 let points = if dead_lidar { 0 } else { 1024 };
+                // The `av-unstamped` fault: a driver that publishes the epoch instead of the time it
+                // sampled. Nothing else about the message changes, which is the point.
+                let cloud_stamp = if unstamped_lidar { 0 } else { stamp };
                 write_msg(
                     w,
                     channel,
                     i as u32,
                     t,
-                    &point_cloud2_body(frame_id, points, i as u32),
+                    &point_cloud2_body(frame_id, points, i as u32, cloud_stamp),
                 );
             } else {
                 // A real header-first CDR body, so the sensor's coordinate frame is genuinely
@@ -322,7 +367,13 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(
                 // payload varies per (sensor, frame) so frames stay content-distinct. Enough for the
                 // `Image` reader, which takes the header and never the pixels.
                 let payload = ((seq_base as u64) << 32) | i;
-                write_msg(w, channel, i as u32, t, &header_body(frame_id, payload));
+                write_msg(
+                    w,
+                    channel,
+                    i as u32,
+                    t,
+                    &header_body(frame_id, stamp, payload),
+                );
             }
         }
     }
@@ -331,7 +382,7 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(
 /// A real CDR `sensor_msgs/msg/Imu` body: `Header`, then orientation, angular velocity and linear
 /// acceleration, each followed by its nine-element covariance. A leading `-1` in a covariance is
 /// ROS's "not provided"; these are zero, so every value is measured.
-fn imu_body(phase: f64) -> Vec<u8> {
+fn imu_body(phase: f64, stamp_ns: u64) -> Vec<u8> {
     let mut buf: Vec<u8> = vec![0x00, 0x01, 0x00, 0x00]; // encapsulation: CDR_LE
     let align = |buf: &mut Vec<u8>, n: usize| {
         while (buf.len() - 4) % n != 0 {
@@ -346,8 +397,8 @@ fn imu_body(phase: f64) -> Vec<u8> {
         align(buf, 8);
         buf.extend_from_slice(&v.to_le_bytes());
     };
-    u32v(&mut buf, 0);
-    u32v(&mut buf, 0);
+    u32v(&mut buf, (stamp_ns / 1_000_000_000) as u32); // stamp.sec
+    u32v(&mut buf, (stamp_ns % 1_000_000_000) as u32); // stamp.nanosec
     u32v(&mut buf, 9);
     buf.extend_from_slice(b"imu_link\0");
     // Level and driving straight: identity orientation, no rotation, 1 g down with a little sway.
@@ -367,7 +418,7 @@ fn imu_body(phase: f64) -> Vec<u8> {
 
 /// A real CDR `sensor_msgs/msg/NavSatFix` body: `Header`, `NavSatStatus { int8, uint16 }`, then
 /// latitude, longitude and altitude as doubles, the covariance, and its type.
-fn nav_sat_fix_body(latitude: f64, longitude: f64, altitude: f64) -> Vec<u8> {
+fn nav_sat_fix_body(latitude: f64, longitude: f64, altitude: f64, stamp_ns: u64) -> Vec<u8> {
     let mut buf: Vec<u8> = vec![0x00, 0x01, 0x00, 0x00]; // encapsulation: CDR_LE
     let align = |buf: &mut Vec<u8>, n: usize| {
         while (buf.len() - 4) % n != 0 {
@@ -383,8 +434,8 @@ fn nav_sat_fix_body(latitude: f64, longitude: f64, altitude: f64) -> Vec<u8> {
         buf.extend_from_slice(&v.to_le_bytes());
     };
     // Header { stamp { sec, nanosec }, frame_id }
-    u32v(&mut buf, 0);
-    u32v(&mut buf, 0);
+    u32v(&mut buf, (stamp_ns / 1_000_000_000) as u32); // stamp.sec
+    u32v(&mut buf, (stamp_ns % 1_000_000_000) as u32); // stamp.nanosec
     u32v(&mut buf, 5);
     buf.extend_from_slice(b"gnss\0");
     // NavSatStatus { int8 status = STATUS_FIX (0), uint16 service = SERVICE_GPS (1) }
@@ -404,7 +455,7 @@ fn nav_sat_fix_body(latitude: f64, longitude: f64, altitude: f64) -> Vec<u8> {
 /// A minimal header-first CDR body: `Header { stamp, frame_id }` followed by a varying `u64` so each
 /// frame's bytes differ. Enough for the adapter to recover the sensor's coordinate frame without
 /// pretending to encode a full `Image` / `PointCloud2` / `Imu` message.
-fn header_body(frame_id: &str, payload: u64) -> Vec<u8> {
+fn header_body(frame_id: &str, stamp_ns: u64, payload: u64) -> Vec<u8> {
     let mut buf: Vec<u8> = vec![0x00, 0x01, 0x00, 0x00]; // encapsulation: CDR_LE
     let align = |buf: &mut Vec<u8>, n: usize| {
         while (buf.len() - 4) % n != 0 {
@@ -415,8 +466,8 @@ fn header_body(frame_id: &str, payload: u64) -> Vec<u8> {
         align(buf, 4);
         buf.extend_from_slice(&v.to_le_bytes());
     };
-    u32v(&mut buf, 0); // stamp.sec
-    u32v(&mut buf, 0); // stamp.nanosec
+    u32v(&mut buf, (stamp_ns / 1_000_000_000) as u32); // stamp.sec
+    u32v(&mut buf, (stamp_ns % 1_000_000_000) as u32); // stamp.nanosec
     u32v(&mut buf, (frame_id.len() + 1) as u32);
     buf.extend_from_slice(frame_id.as_bytes());
     buf.push(0);
@@ -436,7 +487,7 @@ fn header_body(frame_id: &str, payload: u64) -> Vec<u8> {
 ///
 /// A `width` of 0 is an organized-cloud-shaped message holding nothing, which is what a driver that
 /// lost its sensor publishes: it keeps the schema, the rate and the frame of a working LiDAR.
-fn point_cloud2_body(frame_id: &str, width: u32, seed: u32) -> Vec<u8> {
+fn point_cloud2_body(frame_id: &str, width: u32, seed: u32, stamp_ns: u64) -> Vec<u8> {
     const POINT_STEP: u32 = 16; // x, y, z, intensity as float32
     let mut buf: Vec<u8> = vec![0x00, 0x01, 0x00, 0x00]; // encapsulation: CDR_LE
     let align = |buf: &mut Vec<u8>, n: usize| {
@@ -454,8 +505,8 @@ fn point_cloud2_body(frame_id: &str, width: u32, seed: u32) -> Vec<u8> {
         buf.extend_from_slice(s.as_bytes());
         buf.push(0);
     };
-    u32v(&mut buf, 0); // stamp.sec
-    u32v(&mut buf, 0); // stamp.nanosec
+    u32v(&mut buf, (stamp_ns / 1_000_000_000) as u32); // stamp.sec
+    u32v(&mut buf, (stamp_ns % 1_000_000_000) as u32); // stamp.nanosec
     strv(&mut buf, frame_id);
     u32v(&mut buf, 1); // height — an unorganized sweep is one row
     u32v(&mut buf, width);
@@ -491,7 +542,7 @@ fn latched_qos() -> BTreeMap<String, String> {
     .collect()
 }
 
-fn tf_message_body(edges: &[(&str, &str)]) -> Vec<u8> {
+fn tf_message_body(edges: &[(&str, &str)], stamp_ns: u64) -> Vec<u8> {
     let mut buf: Vec<u8> = vec![0x00, 0x01, 0x00, 0x00]; // encapsulation: CDR_LE
     let align = |buf: &mut Vec<u8>, n: usize| {
         while (buf.len() - 4) % n != 0 {
@@ -513,8 +564,8 @@ fn tf_message_body(edges: &[(&str, &str)]) -> Vec<u8> {
     };
     u32v(&mut buf, edges.len() as u32);
     for (parent, child) in edges {
-        u32v(&mut buf, 0); // header.stamp.sec
-        u32v(&mut buf, 0); // header.stamp.nanosec
+        u32v(&mut buf, (stamp_ns / 1_000_000_000) as u32); // stamp.sec
+        u32v(&mut buf, (stamp_ns % 1_000_000_000) as u32); // stamp.nanosec
         strv(&mut buf, parent); // header.frame_id = parent
         strv(&mut buf, child); // child_frame_id
                                // translation {x,y,z} + rotation {x,y,z,w} (identity)
@@ -528,7 +579,7 @@ fn tf_message_body(edges: &[(&str, &str)]) -> Vec<u8> {
 /// A `nav_msgs/msg/Odometry` CDR body (little-endian, ROS 2 default) whose pose sits at `x` metres
 /// along +x, level and unrotated. Only the prefix Veridex reads is written: `Header`,
 /// `child_frame_id`, then `pose.pose` — the covariance and twist that follow are not decoded.
-fn odometry_body(x: f64) -> Vec<u8> {
+fn odometry_body(x: f64, stamp_ns: u64) -> Vec<u8> {
     let mut buf: Vec<u8> = vec![0x00, 0x01, 0x00, 0x00]; // encapsulation: CDR_LE
     let align = |buf: &mut Vec<u8>, n: usize| {
         while (buf.len() - 4) % n != 0 {
@@ -549,8 +600,8 @@ fn odometry_body(x: f64) -> Vec<u8> {
         buf.extend_from_slice(&v.to_le_bytes());
     };
     // Header { stamp { sec, nanosec }, frame_id }
-    u32v(&mut buf, 0);
-    u32v(&mut buf, 0);
+    u32v(&mut buf, (stamp_ns / 1_000_000_000) as u32); // stamp.sec
+    u32v(&mut buf, (stamp_ns % 1_000_000_000) as u32); // stamp.nanosec
     strv(&mut buf, "odom");
     strv(&mut buf, "base_link"); // child_frame_id
                                  // pose.pose { position { x, y, z }, orientation { x, y, z, w } }

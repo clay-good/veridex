@@ -78,6 +78,9 @@ pub fn standard_checks_with(t: &Tolerances) -> Vec<Box<dyn Check>> {
         Box::new(autonomy::CalibrationCompleteness),
         Box::new(autonomy::SensorFrameResolution),
         Box::new(autonomy::PointCloudDensity),
+        Box::new(autonomy::SensorClock {
+            max_offset_ns: t.sensor_clock_offset_ns,
+        }),
         Box::new(statistical::ValueMeasurability),
         Box::new(statistical::RangeSanity),
         Box::new(statistical::StoredVsObserved),

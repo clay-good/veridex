@@ -415,6 +415,9 @@ struct StreamBuilder {
     latched: Option<bool>,
     point_fields: Option<Vec<PointField>>,
     point_counts: super::cdr::PointCountAccum,
+    /// What this topic's messages said about their own sampling time, against the log times they
+    /// were recorded at. Empty for a topic whose bodies are not header-first.
+    header_stamps: super::cdr::HeaderStampAccum,
     frame_id: Option<String>,
     /// Values decoded from this topic's `JointState` or `Imu` messages, with the joint set they
     /// belong to. Empty for every other topic, whose payload stays opaque.
@@ -736,6 +739,7 @@ fn read_shard(
             .entry(topic.name.clone())
             .or_insert_with(|| StreamBuilder {
                 point_counts: Default::default(),
+                header_stamps: Default::default(),
                 modality: super::mcap::infer_modality(&topic.ros_type, &topic.name),
                 ros_type: topic.ros_type.clone(),
                 frames: Vec::new(),
@@ -758,6 +762,10 @@ fn read_shard(
 
         if builder.frame_id.is_none() {
             builder.frame_id = super::cdr::decode_header_frame_id(data);
+        }
+        // The recorder's clock against the sensor's: see the same pair in the MCAP reader.
+        if let Some(stamp) = super::cdr::decode_header_stamp(data) {
+            builder.header_stamps.observe(ts, stamp);
         }
 
         let ty = &topic.ros_type;
@@ -886,6 +894,7 @@ fn read_mcap_shard(
             .entry(topic.clone())
             .or_insert_with(|| StreamBuilder {
                 point_counts: Default::default(),
+                header_stamps: Default::default(),
                 modality: super::mcap::infer_modality(&ros_type, &topic),
                 ros_type: ros_type.clone(),
                 frames: Vec::new(),
@@ -910,6 +919,10 @@ fn read_mcap_shard(
 
         if builder.frame_id.is_none() {
             builder.frame_id = super::cdr::decode_header_frame_id(data);
+        }
+        // The recorder's clock against the sensor's: see the same pair in the MCAP reader.
+        if let Some(stamp) = super::cdr::decode_header_stamp(data) {
+            builder.header_stamps.observe(ts, stamp);
         }
         if super::mcap::schema_is(&ros_type, "PointCloud2") {
             if builder.point_fields.is_none() {
@@ -1057,6 +1070,7 @@ fn ingest_metadata_only(
             observed_dim_stats: None,
             point_fields: None,
             observed_point_counts: None,
+            observed_header_stamps: None,
             media: None,
             frame_id: None,
         })
@@ -1463,6 +1477,7 @@ impl Adapter for Rosbag2Adapter {
                     declared_range: None,
                     point_fields: b.point_fields,
                     observed_point_counts: b.point_counts.finish(),
+                    observed_header_stamps: b.header_stamps.finish(),
                     media: None,
                     frame_id: b.frame_id,
                 }

@@ -165,6 +165,7 @@ certified av — fail, grade C (73), bound to ceaae7feeb2b0c09
     ✓ autonomy.sensor-frame-resolution — every sensor's own frame resolves through the tree to a camera
     ✓ autonomy.gnss-plausibility — every satellite fix is a possible place, and the receiver actually had one
     ✓ autonomy.point-cloud-density — every point-cloud sensor actually recorded points
+    ✓ autonomy.sensor-clock — every rig sensor stamped its own capture time, on a clock that agrees with the recorder's
 ```
 
 A certificate is issued for a failing dataset too — it records what is true, and what is true here is

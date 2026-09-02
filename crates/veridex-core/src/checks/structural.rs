@@ -1887,6 +1887,7 @@ mod tests {
             frame_id: None,
             point_fields: None,
             observed_point_counts: None,
+            observed_header_stamps: None,
             media: None,
             declared_range: None,
             latched: None,

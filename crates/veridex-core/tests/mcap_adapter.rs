@@ -765,6 +765,52 @@ fn a_lidar_that_published_only_empty_clouds_is_caught_end_to_end() {
 }
 
 #[test]
+fn a_sensor_that_never_stamped_its_data_is_caught_end_to_end() {
+    // The demo rig, twice: once as recorded, once with a LiDAR driver that never set
+    // `header.stamp`. Nothing else differs — the clouds are full, on time, in the right frame, and
+    // the bag's own log times are identical — so this is the whole claim in one diff: every other
+    // check reads the recorder's clock and passes either way, and only `autonomy.sensor-clock`
+    // reports that the rig's sync result is about the recording host rather than about its sensors.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let codes_for = |variant: &str| -> Vec<veridex_core::check::Finding> {
+        let path = dir.path().join(format!("{variant}.mcap"));
+        veridex_demo::mcap::write(&path, variant).expect("write the demo rig");
+        let d = McapAdapter
+            .ingest(&Source::Local(path.clone()), &IngestOptions::default())
+            .expect("ingest")
+            .dataset;
+        let engine = veridex_core::checks::default_engine().expect("the standard catalog");
+        let hash = veridex_core::content_hash(&d);
+        engine
+            .run(&d, hash, &veridex_core::RunConfig::default())
+            .findings
+            .into_iter()
+            .filter(|f| f.check_id == "autonomy.sensor-clock")
+            .collect()
+    };
+
+    // A rig whose sensors stamp their own data has nothing to report — not even the abstention,
+    // because every one of its sensor streams was read.
+    let healthy = codes_for("av");
+    assert!(healthy.is_empty(), "{healthy:?}");
+
+    let unstamped = codes_for("av-unstamped");
+    assert_eq!(unstamped.len(), 1, "{unstamped:?}");
+    assert_eq!(unstamped[0].code, "AUTONOMY.SENSOR_CLOCK_UNSET");
+    assert_eq!(unstamped[0].severity, veridex_core::check::Severity::Error);
+    assert!(
+        unstamped[0].message.contains("/lidar/points"),
+        "{}",
+        unstamped[0].message
+    );
+    assert!(
+        unstamped[0].message.contains("stamped none of its"),
+        "{}",
+        unstamped[0].message
+    );
+}
+
+#[test]
 fn ros_message_bodies_populate_the_autonomy_cdm_end_to_end() {
     // PointCloud2 with x/y/z/intensity fields.
     let pc = point_cloud2(1, 1000);

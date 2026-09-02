@@ -1436,6 +1436,261 @@ impl Check for PointCloudDensity {
     }
 }
 
+/// **Sensor clock (design A2).** Whether a rig sensor stamped its own data, and whether the clock it
+/// stamped with is the clock the recording was timed by.
+///
+/// Every temporal and cross-sensor result on a bag is computed from [`Frame::ts`], and on a bag that
+/// is the **recorder's** clock: the moment a message arrived, not the moment the sensor sampled. A
+/// ROS message carries the sensor's own clock beside it, in `header.stamp`. Reading both is the only
+/// way to find out what the recorder's clock is standing in for.
+///
+/// Three faults, none of which any other check can see, because none of them move a frame timestamp:
+///
+/// - `AUTONOMY.SENSOR_CLOCK_UNSET` — the stamp is the epoch. A driver that never set it publishes
+///   `0.000000000` on every message, so the sensor says nothing about when it sampled and the rig's
+///   20 ms sync result is a statement about the recording host's scheduler.
+/// - `AUTONOMY.SENSOR_CLOCK_REGRESSION` — the stamp runs backwards while the recorder's clock runs
+///   forwards, which is a sensor clock being stepped mid-recording (an NTP correction landing, a
+///   device resetting its counter).
+/// - `AUTONOMY.SENSOR_CLOCK_OFFSET` — the two clocks disagree by more than the tolerance across
+///   *every* message. Read from `min_offset_ns`/`max_offset_ns` together rather than from an average,
+///   so a transient buffering spike cannot raise it: the finding says the clocks differ only when the
+///   smallest disagreement seen in the whole stream already exceeds the bound.
+///
+/// The offset rule deliberately does not grade the *spread* between the two bounds. A constant
+/// offset is the sensor's pipeline latency and is not a fault; a varying one is recording jitter,
+/// which the temporal family already grades from the frame timestamps themselves.
+///
+/// Scoped to rig episodes, and silent for a source that carries no such stamp — every non-ROS
+/// format, whose files record one clock and cannot be asked this question. That silence is reported
+/// once as `AUTONOMY.SENSOR_CLOCK_UNREAD` rather than left to read as a pass.
+pub struct SensorClock {
+    /// How far the sensor's clock may sit from the recorder's before the two stop being one clock,
+    /// in nanoseconds.
+    pub max_offset_ns: i64,
+}
+
+impl Check for SensorClock {
+    fn id(&self) -> &'static str {
+        "autonomy.sensor-clock"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &[
+            "AUTONOMY.SENSOR_CLOCK_UNSET",
+            "AUTONOMY.SENSOR_CLOCK_REGRESSION",
+            "AUTONOMY.SENSOR_CLOCK_OFFSET",
+            "AUTONOMY.SENSOR_CLOCK_UNREAD",
+        ]
+    }
+    fn title(&self) -> &'static str {
+        "Sensor clock"
+    }
+    fn category(&self) -> Category {
+        Category::Autonomy
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Error
+    }
+    fn scope(&self) -> Scope {
+        Scope::Stream
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        let mut unread: std::collections::BTreeSet<&str> = Default::default();
+        for ep in &dataset.episodes {
+            if !is_rig_episode(ep) {
+                continue;
+            }
+            for stream in &ep.streams {
+                // The same set `AUTONOMY.RIG_SYNC` compares — every stream that samples the world,
+                // cameras included. It is that check's result this one says whether to believe, and
+                // it deliberately excludes `/rosout`, `/parameter_events` and a `CameraInfo`
+                // channel, none of which have a capture time to stamp.
+                if !stream.modality.is_sensor() {
+                    continue;
+                }
+                let Some(h) = &stream.observed_header_stamps else {
+                    unread.insert(stream.name.as_str());
+                    continue;
+                };
+                let at = || Location::Stream {
+                    episode: ep.index,
+                    stream: stream.name.clone(),
+                };
+                if h.unset > 0 {
+                    let all = h.unset == h.message_count;
+                    findings.push(
+                        Finding::new(
+                            self.id(),
+                            Category::Autonomy,
+                            if all {
+                                Severity::Error
+                            } else {
+                                Severity::Warning
+                            },
+                            at(),
+                            "AUTONOMY.SENSOR_CLOCK_UNSET",
+                            if all {
+                                format!(
+                                    "episode {}: stream `{}` stamped none of its {} message(s) — \
+                                     every one carries `header.stamp` 0, so this sensor never said \
+                                     when it sampled",
+                                    ep.index, stream.name, h.message_count
+                                )
+                            } else {
+                                format!(
+                                    "episode {}: stream `{}` left `header.stamp` at 0 on {} of its \
+                                     {} message(s) — the driver stopped stamping partway through",
+                                    ep.index, stream.name, h.unset, h.message_count
+                                )
+                            },
+                        )
+                        .with_risk(
+                            "The only clock left for this sensor is the recorder's, which times \
+                             when a message arrived rather than when the data was captured. Every \
+                             cross-sensor result that includes this stream — rig sync, clock skew, \
+                             start and end offsets — is then measuring the recording host's \
+                             scheduling, and a rig that is genuinely out of sync passes it.",
+                        )
+                        .with_remedy(
+                            "Fix the driver to stamp `header.stamp` from the sensor's own capture \
+                             time and re-record. Data already recorded cannot be re-aligned: the \
+                             capture times were never written down.",
+                        ),
+                    );
+                }
+                if h.regressions > 0 {
+                    findings.push(
+                        Finding::new(
+                            self.id(),
+                            Category::Autonomy,
+                            Severity::Error,
+                            at(),
+                            "AUTONOMY.SENSOR_CLOCK_REGRESSION",
+                            format!(
+                                "episode {}: stream `{}` stamped {} message(s) earlier than the \
+                                 message recorded before them — the sensor's clock stepped \
+                                 backwards while the recorder's ran forwards",
+                                ep.index, stream.name, h.regressions
+                            ),
+                        )
+                        .with_risk(
+                            "A clock that jumps backwards mid-recording puts two different capture \
+                             times on the same instant. Anything that fuses this sensor with \
+                             another, or replays the segment in capture order, silently reorders \
+                             the observations across the step.",
+                        )
+                        .with_remedy(
+                            "Find the step in the sensor host's clock discipline (an NTP \
+                             correction applied without slewing, a device counter reset) and cut \
+                             the affected span, or re-record with the clock disciplined before the \
+                             run starts.",
+                        ),
+                    );
+                }
+                let stamped = h.message_count.saturating_sub(h.unset);
+                // Both bounds have to clear the tolerance on the same side: the *closest* the two
+                // clocks came all recording is what says they are different clocks, rather than one
+                // clock with a slow message somewhere in it.
+                let disagreement = if stamped > 0 && h.min_offset_ns > self.max_offset_ns {
+                    Some(h.min_offset_ns)
+                } else if stamped > 0 && h.max_offset_ns < -self.max_offset_ns {
+                    Some(h.max_offset_ns)
+                } else {
+                    None
+                };
+                if let Some(off) = disagreement {
+                    let ahead = off < 0;
+                    findings.push(
+                        Finding::new(
+                            self.id(),
+                            Category::Autonomy,
+                            Severity::Warning,
+                            at(),
+                            "AUTONOMY.SENSOR_CLOCK_OFFSET",
+                            format!(
+                                "episode {}: stream `{}` stamped every one of its {} message(s) \
+                                 {} the recorder's clock — by at least {:.3}s, tolerance {:.3}s",
+                                ep.index,
+                                stream.name,
+                                stamped,
+                                if ahead { "ahead of" } else { "behind" },
+                                off.unsigned_abs() as f64 / 1e9,
+                                self.max_offset_ns as f64 / 1e9,
+                            ),
+                        )
+                        .with_risk(
+                            "The sensor and the recorder are not on one clock, so this stream's \
+                             capture times cannot be compared with any other sensor's on this rig. \
+                             The frame timestamps hide it — they are all the recorder's — so the \
+                             sync checks pass on a rig whose sensors disagree about what time it \
+                             is.",
+                        )
+                        .with_remedy(
+                            "Discipline the sensor host to the same time source as the recorder \
+                             (PTP or NTP, locked before recording starts) and re-record. If the \
+                             offset is a known constant, correct the stamps before training rather \
+                             than treating the streams as aligned.",
+                        ),
+                    );
+                }
+            }
+        }
+        // A check that measured nothing must say so, or its silence reads as a pass — the same rule
+        // `AUTONOMY.POINT_CLOUD_UNMEASURED` follows. Named by the property, not by a list of formats.
+        if !unread.is_empty() {
+            let names: Vec<&str> = unread.into_iter().collect();
+            let shown = names.iter().take(4).copied().collect::<Vec<_>>().join(", ");
+            let listed = match names.len().saturating_sub(4) {
+                0 => shown,
+                rest => format!("{shown} and {rest} more"),
+            };
+            findings.push(
+                Finding::new(
+                    self.id(),
+                    Category::Autonomy,
+                    Severity::Info,
+                    Location::Dataset,
+                    "AUTONOMY.SENSOR_CLOCK_UNREAD",
+                    format!(
+                        "{} rig sensor stream(s) record no capture time of their own, so the \
+                         sensor-clock rules had nothing to compare the recording's timeline \
+                         against ({listed})",
+                        names.len()
+                    ),
+                )
+                .with_risk(
+                    "Nothing in this run can tell you whether these sensors agree with the \
+                     recorder about what time it is. Every timing result for them rests on the \
+                     recording clock alone, and a clean sync result here is the absence of a \
+                     second measurement rather than agreement between two.",
+                )
+                .with_remedy(
+                    "Treat the cross-sensor timing results for these streams as unverified. The \
+                     capture time is read from a message's own header, so it is available wherever \
+                     a format records one per sample rather than one clock per file.",
+                ),
+            );
+        }
+        findings
+    }
+
+    /// Withholds every code under a metadata-only ingest.
+    ///
+    /// Each one is a conclusion about stamps that were read, and a run that did not open the message
+    /// bodies read none — so `AUTONOMY.SENSOR_CLOCK_UNREAD` would fire on every rig of every format,
+    /// blaming the data for a silence the *request* caused. `COVERAGE.METADATA_ONLY` already says so.
+    fn run_in(&self, dataset: &Dataset, context: &CheckContext) -> Vec<Finding> {
+        if !context.frames_read {
+            return Vec::new();
+        }
+        self.run(dataset)
+    }
+}
+
 /// How far a rotation quaternion's norm may sit from 1 before it stops being a rotation.
 ///
 /// A quaternion is a rotation only when it is a *unit* quaternion. The standard

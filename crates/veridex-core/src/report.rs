@@ -500,6 +500,13 @@ pub(crate) fn tolerance_departures(t: &crate::Tolerances) -> Vec<ToleranceDepart
             trim_num(t.near_duplicate_fraction * 100.0)
         )
     );
+    departure!(
+        sensor_clock_offset_ns,
+        format!(
+            "sensor-clock offset {}ms",
+            trim_num(t.sensor_clock_offset_ns as f64 / 1e6)
+        )
+    );
     out
 }
 

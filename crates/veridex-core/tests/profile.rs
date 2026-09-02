@@ -59,6 +59,18 @@ fn sensor_in_frame(name: &str, modality: Modality, ts: &[i64], frame_id: Option<
                 empty: 0,
             },
         ),
+        // Likewise: a sensor read in full says when it sampled, and a healthy one's stamps sit a
+        // constant pipeline latency behind the recorder's clock. Left absent,
+        // `autonomy.sensor-clock` abstains out loud and refuses its readiness criterion.
+        observed_header_stamps: modality
+            .is_sensor()
+            .then_some(veridex_core::cdm::HeaderStamps {
+                message_count: ts.len() as u64,
+                unset: 0,
+                min_offset_ns: 5_000_000,
+                max_offset_ns: 6_000_000,
+                regressions: 0,
+            }),
         media: None,
         frame_id,
     }
@@ -165,7 +177,7 @@ fn a_healthy_rig_is_world_model_ready() {
     let r = ReadinessReport::evaluate(&p, &v, &d);
     assert!(r.applicable, "a rig is applicable");
     assert!(r.ready, "a healthy rig should be ready: {:?}", r.criteria);
-    assert_eq!(r.criteria.len(), 7);
+    assert_eq!(r.criteria.len(), 8);
     assert!(r.criteria.iter().all(|c| c.passed));
 }
 
@@ -264,7 +276,7 @@ fn a_readiness_certificate_verifies_offline_and_reports_every_criterion() {
     assert_eq!(doc["verified"], true);
     assert_eq!(doc["readiness"]["ready"], true);
     assert_eq!(doc["readiness"]["profile"], "world-model-ready");
-    assert_eq!(doc["readiness"]["criteria"].as_array().unwrap().len(), 7);
+    assert_eq!(doc["readiness"]["criteria"].as_array().unwrap().len(), 8);
     assert_eq!(doc["cdm_content_hash"], signed.certificate.cdm_content_hash);
 }
 

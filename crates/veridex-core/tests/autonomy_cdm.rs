@@ -43,6 +43,7 @@ fn cloud_stream(fields: &[&str]) -> Stream {
         observed_non_finite: None,
         observed_dim_stats: None,
         observed_point_counts: None,
+        observed_header_stamps: None,
         media: None,
         frame_id: None,
         latched: None,
@@ -277,6 +278,7 @@ fn permuting_every_canonicalized_collection_changes_neither_the_hash_nor_the_ver
         declared_range: None,
         point_fields: None,
         observed_point_counts: None,
+        observed_header_stamps: None,
         media: None,
         frame_id: None,
     };

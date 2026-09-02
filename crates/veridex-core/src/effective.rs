@@ -309,6 +309,13 @@ pub fn settings(inputs: &Inputs<'_>) -> Vec<Setting> {
             trim(f.near_duplicate_fraction),
             trim(c.near_duplicate_fraction),
         ),
+        (
+            "sensor_clock_offset_ms",
+            t.sensor_clock_offset_ms.is_some(),
+            f.sensor_clock_offset_ns == c.sensor_clock_offset_ns,
+            ms(f.sensor_clock_offset_ns),
+            ms(c.sensor_clock_offset_ns),
+        ),
     ];
     for (key, set_in_file, unchanged, value, file_value) in tolerances {
         let (origin, note) = if unchanged {

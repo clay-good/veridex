@@ -39,6 +39,7 @@ fn stream(name: &str, ts: &[i64]) -> Stream {
         declared_range: None,
         point_fields: None,
         observed_point_counts: None,
+        observed_header_stamps: None,
         media: None,
         frame_id: None,
         frames: ts

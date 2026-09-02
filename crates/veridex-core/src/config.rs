@@ -66,6 +66,9 @@ pub struct TolerancesConfig {
     /// `STRUCTURAL.NEAR_DUPLICATE_EPISODE` shared-frame fraction at which two episodes are reported
     /// as near-duplicates. Must be within (0.0, 1.0]: at 0 every pair matches.
     pub near_duplicate_fraction: Option<f64>,
+    /// `AUTONOMY.SENSOR_CLOCK_OFFSET` maximum tolerated disagreement between a sensor's own capture
+    /// stamps and the recorder's clock, in milliseconds. Must be non-negative.
+    pub sensor_clock_offset_ms: Option<f64>,
 }
 
 /// A parsed `veridex.toml`.
@@ -180,6 +183,7 @@ impl TolerancesConfig {
     fn validate(&self) -> Result<(), ConfigError> {
         let non_negative = [
             ("clock_skew_ms", self.clock_skew_ms),
+            ("sensor_clock_offset_ms", self.sensor_clock_offset_ms),
             ("start_offset_ms", self.start_offset_ms),
             ("end_offset_ms", self.end_offset_ms),
             ("rate_deviation", self.rate_deviation),
@@ -281,6 +285,10 @@ impl TolerancesConfig {
             near_duplicate_fraction: self
                 .near_duplicate_fraction
                 .unwrap_or(d.near_duplicate_fraction),
+            sensor_clock_offset_ns: self
+                .sensor_clock_offset_ms
+                .map(|ms| (ms * 1_000_000.0) as i64)
+                .unwrap_or(d.sensor_clock_offset_ns),
         }
     }
 }
@@ -326,6 +334,7 @@ pub mod env {
         "sequence_drop_fraction",
         "ego_max_speed_mps",
         "near_duplicate_fraction",
+        "sensor_clock_offset_ms",
     ];
 
     /// Merge the environment onto `base`, returning the merged config and the `veridex.toml` keys
@@ -503,6 +512,7 @@ pub mod env {
             "sequence_drop_fraction" => t.sequence_drop_fraction = Some(number()?),
             "ego_max_speed_mps" => t.ego_max_speed_mps = Some(number()?),
             "near_duplicate_fraction" => t.near_duplicate_fraction = Some(number()?),
+            "sensor_clock_offset_ms" => t.sensor_clock_offset_ms = Some(number()?),
             other => unreachable!("unmapped tolerance key {other}"),
         }
         Ok(())

@@ -1677,6 +1677,7 @@ fn declare_channel_group(
             declared_range: None,
             point_fields: None,
             observed_point_counts: None,
+            observed_header_stamps: None,
             media: None,
             frame_id: None,
         });
@@ -1886,6 +1887,7 @@ fn decode_channel_group(
             declared_range: None,
             point_fields: None,
             observed_point_counts: None,
+            observed_header_stamps: None,
             // MF4 channels declare no coordinate frame.
             media: None,
             frame_id: None,

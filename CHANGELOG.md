@@ -10,6 +10,30 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A bag has two clocks, and only one of them was ever read.** Every frame timestamp Veridex takes
+  from an MCAP or rosbag2 recording is the *recorder's* clock — the instant a message arrived at the
+  bag. The sensor states when it actually **sampled**, in its message's own `header.stamp`, and that
+  field was parsed and thrown away by the CDR decoder. So the rig-wide sync result, the clock-skew
+  check and the start/end offsets were all measurements of the recording host's scheduler, and a rig
+  whose sensors disagree about what time it is passed every one of them.
+
+  New check `autonomy.sensor-clock` (the catalog's 45th, and the `world-model-ready` profile's
+  8th criterion) reads both clocks and reports three faults, none of which moves a frame timestamp:
+  `AUTONOMY.SENSOR_CLOCK_UNSET` (a driver that never stamped — error when no message was stamped,
+  warning when it stopped partway), `AUTONOMY.SENSOR_CLOCK_REGRESSION` (a sensor clock stepped
+  backwards under a recorder's that did not), and `AUTONOMY.SENSOR_CLOCK_OFFSET` (the two clocks
+  disagree by more than `sensor_clock_offset_ms`, default 1 s, on *every* message — judged from the
+  closest the two came all recording, so a buffering spike cannot raise it and a constant pipeline
+  latency of tens of milliseconds does not either). A format that records one clock per file rather
+  than one stamp per sample abstains out loud as `AUTONOMY.SENSOR_CLOCK_UNREAD`.
+
+  Carrying the summary needed a new `Stream.observed_header_stamps` CDM field and so
+  `CANONICAL_VERSION` 14 → 15, with the golden vector re-pinned. The demo rig recorder was itself
+  writing `header.stamp` 0 on every message — found by the new check — and now stamps each message a
+  5 ms pipeline latency ahead of the log time it is written at, from a real 2026 recording epoch
+  rather than from zero. New demo variant `av-unstamped` is the same rig with a LiDAR driver that
+  never stamped: full clouds, on time, in the right frame, and every other check still passing.
+
 - **A bag's IMU was a stub, so the decoder written for it never ran on one.** The rosbag2 fixture
   generator wrote `/imu/data` through a helper documented as "any header-first message whose body
   Veridex does not decode (Image, **Imu**, …)" — true when it was written, and false since the `Imu`

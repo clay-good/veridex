@@ -112,6 +112,9 @@ struct StreamBuilder {
     /// Per-point field layout, decoded from the first `PointCloud2` message on this topic (if any).
     point_fields: Option<Vec<PointField>>,
     point_counts: super::cdr::PointCountAccum,
+    /// What this topic's messages said about their own sampling time, against the log times they
+    /// were recorded at. Empty for a topic whose bodies are not header-first.
+    header_stamps: super::cdr::HeaderStampAccum,
     /// The coordinate frame this topic's messages declare, from the first message whose body starts
     /// with a `std_msgs/Header`. First one wins: a topic that changes frame mid-recording is a rig
     /// fault, but recording the last one seen would hide it behind whichever message came last.
@@ -500,6 +503,7 @@ impl Adapter for McapAdapter {
                 .entry(topic.clone())
                 .or_insert_with(|| StreamBuilder {
                     point_counts: Default::default(),
+                    header_stamps: Default::default(),
                     modality: infer_modality(schema_name, &topic),
                     frames: Vec::new(),
                     // rosbag2's MCAP writer carries each publisher's QoS on the channel, so a bag
@@ -535,6 +539,14 @@ impl Adapter for McapAdapter {
             // TF tree, rather than only whether a TF tree exists at all.
             if builder.frame_id.is_none() {
                 builder.frame_id = super::cdr::decode_header_frame_id(&message.data);
+            }
+
+            // The same header carries the sensor's own clock. `ts` above is the recorder's — the
+            // moment the message reached the bag — and it is the only clock every temporal and
+            // cross-sensor result on this bag is computed from. Reading both is what says whether
+            // the recorder's clock is standing in for a sensor clock that agrees with it.
+            if let Some(stamp) = super::cdr::decode_header_stamp(&message.data) {
+                builder.header_stamps.observe(ts, stamp);
             }
 
             // Decode the AV message header (never the bulk payload) to populate the autonomy CDM.
@@ -640,6 +652,8 @@ impl Adapter for McapAdapter {
                     declared_range: None,
                     point_fields: b.point_fields,
                     observed_point_counts: b.point_counts.finish(),
+                    // What the messages said about their own sampling time, against the recorder's.
+                    observed_header_stamps: b.header_stamps.finish(),
                     // The coordinate frame the sensor declares, from its message headers.
                     media: None,
                     frame_id: b.frame_id,
@@ -1013,6 +1027,7 @@ fn ingest_summary_only(path: &Path, summary: McapSummary) -> Result<Ingested, In
             observed_dim_stats: None,
             point_fields: None,
             observed_point_counts: None,
+            observed_header_stamps: None,
             media: None,
             frame_id: None,
         })

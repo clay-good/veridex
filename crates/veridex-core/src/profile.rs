@@ -115,6 +115,7 @@ impl Profile {
             sequence_drop_fraction,
             ego_max_speed_mps,
             near_duplicate_fraction,
+            sensor_clock_offset_ns,
         )
     }
 }
@@ -154,14 +155,20 @@ const WORLD_MODEL_READY_CRITERIA: &[(&str, &str)] = &[
         "autonomy.point-cloud-density",
         "every point-cloud sensor actually recorded points",
     ),
+    (
+        "autonomy.sensor-clock",
+        "every rig sensor stamped its own capture time, on a clock that agrees with the recorder's",
+    ),
 ];
 
 /// The `world-model-ready` profile: tightens cross-sensor sync to 20 ms and bundles the autonomy
 /// criteria a world-model training set needs (rig sync, sequence completeness, ego-pose continuity,
 /// calibration completeness, per-sensor frame resolution, GNSS plausibility — a drive whose fix
 /// is impossible or never acquired cannot be aligned to a map or to another drive, which is what a
-/// world model built from more than one of them requires — and point-cloud density, because a LiDAR
-/// that published nothing but empty sweeps satisfies every one of the others).
+/// world model built from more than one of them requires — point-cloud density, because a LiDAR
+/// that published nothing but empty sweeps satisfies every one of the others, and sensor clock,
+/// because the 20 ms sync above is measured from the recorder's clock, and a sensor that never
+/// stamped its own data has no second clock for that result to be about).
 pub fn world_model_ready() -> Profile {
     Profile {
         name: "world-model-ready",

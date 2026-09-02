@@ -14,7 +14,7 @@
 //! little-endian representation (what ROS 2 emits by default) is decoded; a big-endian body is
 //! declined (the caller simply gets no decoded metadata, exactly as if the field were absent).
 
-use crate::cdm::{CameraIntrinsics, PointCounts, PointField, Pose, Transform};
+use crate::cdm::{CameraIntrinsics, HeaderStamps, PointCounts, PointField, Pose, Transform};
 
 /// Ceiling on any name this reader will return (coordinate frames, point-field names, distortion
 /// models). ROS names are identifiers — tens of bytes — so this is generous by three orders of
@@ -99,12 +99,91 @@ impl<'a> Reader<'a> {
         Some(String::from_utf8_lossy(bytes).into_owned())
     }
 
+    /// The `builtin_interfaces/Time` at the front of a `std_msgs/Header`, as `(sec, nanosec)`.
+    fn stamp(&mut self) -> Option<(i32, u32)> {
+        Some((self.i32()?, self.u32()?))
+    }
+
     /// Skip a `std_msgs/Header`: `{ int32 sec, uint32 nanosec }` then a `string frame_id`. Returns the
     /// `frame_id` (some messages, e.g. a `TransformStamped`, use it as the parent frame).
     fn header(&mut self) -> Option<String> {
-        let _sec = self.i32()?;
-        let _nanosec = self.u32()?;
+        self.stamp()?;
         self.string()
+    }
+}
+
+/// Recover the `header.stamp` of any message that begins with a `std_msgs/Header` — the time the
+/// **sensor** says its data was sampled, as distinct from the time the **recorder** wrote it to the
+/// bag, which is the only clock a bag's frame timestamps carry.
+///
+/// Returned in nanoseconds since the epoch. Zero is not an error: it is what a driver that never
+/// stamped its messages publishes, and telling that apart from a stamp that was set is the point.
+///
+/// Declines a body that is not header-shaped. Eight bytes read as a time are plausible in almost any
+/// payload, so two of the message's own invariants have to hold before the pair is believed: a
+/// normalized `builtin_interfaces/Time` keeps `nanosec` under a full second and no recording carries
+/// a `sec` before 1970, and the `frame_id` string behind the stamp has to decode. A fabricated clock
+/// reading would be a finding about honest data, which is worse than reading no clock at all.
+pub fn decode_header_stamp(data: &[u8]) -> Option<i64> {
+    let mut r = Reader::new(data)?;
+    let (sec, nanosec) = r.stamp()?;
+    if sec < 0 || nanosec >= 1_000_000_000 {
+        return None;
+    }
+    r.string()?;
+    Some(i64::from(sec) * 1_000_000_000 + i64::from(nanosec))
+}
+
+/// Accumulates a stream's `header.stamp` readings against the log times they were recorded at.
+///
+/// Kept as a running summary rather than a `Vec`, for the same reason [`PointCountAccum`] is: the
+/// number of messages on a topic is chosen by the file.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct HeaderStampAccum {
+    messages: u64,
+    stamped: u64,
+    unset: u64,
+    min_offset: i64,
+    max_offset: i64,
+    regressions: u64,
+    last: Option<i64>,
+}
+
+impl HeaderStampAccum {
+    /// Fold in one message: the log time the recorder wrote it at, and the stamp it carried.
+    pub fn observe(&mut self, log_ts: i64, stamp_ns: i64) {
+        self.messages += 1;
+        if stamp_ns == 0 {
+            self.unset += 1;
+            return;
+        }
+        // Saturating: both sides come out of the file, and a stamp far in the past against a log time
+        // far in the future is exactly the corrupt case this summary exists to report.
+        let offset = log_ts.saturating_sub(stamp_ns);
+        if self.stamped == 0 {
+            self.min_offset = offset;
+            self.max_offset = offset;
+        } else {
+            self.min_offset = self.min_offset.min(offset);
+            self.max_offset = self.max_offset.max(offset);
+        }
+        if self.last.is_some_and(|prev| stamp_ns < prev) {
+            self.regressions += 1;
+        }
+        self.last = Some(stamp_ns);
+        self.stamped += 1;
+    }
+
+    /// The summary, or `None` when no message's stamp was read — a stream whose stamps were never
+    /// decoded and a stream whose stamps were all zero are opposite verdicts.
+    pub fn finish(self) -> Option<HeaderStamps> {
+        (self.messages > 0).then_some(HeaderStamps {
+            message_count: self.messages,
+            unset: self.unset,
+            min_offset_ns: self.min_offset,
+            max_offset_ns: self.max_offset,
+            regressions: self.regressions,
+        })
     }
 }
 
@@ -604,10 +683,75 @@ mod tests {
             self.buf.push(0);
         }
         fn header(&mut self, frame_id: &str) {
-            self.i32(0); // stamp.sec
-            self.u32(0); // stamp.nanosec
+            self.header_at(frame_id, 0);
+        }
+        /// A header carrying a real capture stamp, in nanoseconds.
+        fn header_at(&mut self, frame_id: &str, stamp_ns: u64) {
+            self.i32((stamp_ns / 1_000_000_000) as i32); // stamp.sec
+            self.u32((stamp_ns % 1_000_000_000) as u32); // stamp.nanosec
             self.string(frame_id);
         }
+    }
+
+    #[test]
+    fn decodes_a_header_stamp() {
+        let mut w = W::new();
+        w.header_at("lidar_top", 1_767_225_600_123_456_789);
+        assert_eq!(decode_header_stamp(&w.buf), Some(1_767_225_600_123_456_789));
+    }
+
+    #[test]
+    fn an_unstamped_header_reads_as_zero_not_as_absent() {
+        // The whole point of the check this feeds: a driver that never stamped publishes the epoch,
+        // and that has to be distinguishable from a body whose stamp was never read.
+        let mut w = W::new();
+        w.header("lidar_top");
+        assert_eq!(decode_header_stamp(&w.buf), Some(0));
+    }
+
+    #[test]
+    fn a_body_that_is_not_header_shaped_yields_no_stamp() {
+        // Eight bytes read as a time are plausible in almost any payload. A denormalized `nanosec`
+        // (at or past a full second), a `sec` before 1970, and a truncated `frame_id` each say the
+        // bytes were something else — and a fabricated clock reading is worse than no reading.
+        let mut w = W::new();
+        w.i32(0);
+        w.u32(1_000_000_000); // nanosec at a full second: not a normalized ROS time
+        w.string("lidar_top");
+        assert_eq!(decode_header_stamp(&w.buf), None);
+
+        let mut w = W::new();
+        w.i32(-1); // a stamp before 1970
+        w.u32(0);
+        w.string("lidar_top");
+        assert_eq!(decode_header_stamp(&w.buf), None);
+
+        let mut w = W::new();
+        w.i32(5);
+        w.u32(0); // and then nothing where the frame_id should be
+        assert_eq!(decode_header_stamp(&w.buf), None);
+    }
+
+    #[test]
+    fn the_stamp_accumulator_separates_unset_offset_and_regression() {
+        let mut a = HeaderStampAccum::default();
+        a.observe(1_000_000_000, 995_000_000); // 5 ms behind the recorder
+        a.observe(1_100_000_000, 0); // unstamped
+        a.observe(1_200_000_000, 1_194_000_000); // 6 ms behind
+        a.observe(1_300_000_000, 1_100_000_000); // stamp steps backwards
+        let h = a.finish().expect("stamps were read");
+        assert_eq!(h.message_count, 4);
+        assert_eq!(h.unset, 1);
+        assert_eq!(h.min_offset_ns, 5_000_000);
+        assert_eq!(h.max_offset_ns, 200_000_000);
+        assert_eq!(h.regressions, 1);
+    }
+
+    #[test]
+    fn a_stream_whose_stamps_were_never_read_summarizes_to_nothing() {
+        // "No stamp was decoded" and "every stamp was zero" are opposite verdicts: one is a format
+        // that does not carry capture times, the other is a driver that never set them.
+        assert!(HeaderStampAccum::default().finish().is_none());
     }
 
     #[test]

@@ -398,7 +398,14 @@
             "max": 24000,
             "empty": 1
           },
-          "frame_id": "lidar_top"
+          "frame_id": "lidar_top",
+          "observed_header_stamps": {
+            "message_count": 600,
+            "unset": 3,
+            "min_offset_ns": 5000000,
+            "max_offset_ns": -2000000,
+            "regressions": 1
+          }
         }
       ],
       "task": "pick up the block",

@@ -451,6 +451,17 @@ pub struct Stream {
     /// none of its data.
     #[serde(default)]
     pub observed_point_counts: Option<PointCounts>,
+    /// What this stream's messages said about **their own** sampling time, against the times the
+    /// recorder wrote them — `None` for every source that carries no such stamp, and for a run that
+    /// did not open the message bodies. Extension for `autonomy-sensor-data`.
+    ///
+    /// [`Frame::ts`] is the recorder's clock: the moment a message reached the bag. A ROS message
+    /// additionally carries the sensor's own clock in its `header.stamp`, and only that one says when
+    /// the data was *sampled*. Every temporal and cross-sensor result on a bag is computed from the
+    /// recorder's clock, so this is what says whether that clock is standing in for a sensor clock
+    /// that agrees with it — or for one that was never set.
+    #[serde(default)]
+    pub observed_header_stamps: Option<HeaderStamps>,
     /// The coordinate frame this sensor's data is expressed in (a ROS `header.frame_id`, e.g.
     /// `lidar_top` or `camera_front`), when the source records one. This is the name that has to
     /// appear in [`Calibration::transforms`] for the sensor to be relatable to any other — the
@@ -519,6 +530,33 @@ pub struct PointCounts {
     /// "the smallest sweep was empty" and "half the sweeps were empty" are different faults and a
     /// reader acts on them differently.
     pub empty: u64,
+}
+
+/// What a stream's messages said about their own sampling time, against the times they were recorded
+/// at, summarized over the episode.
+///
+/// Every number here is a comparison between two clocks: the sensor's (`header.stamp`) and the
+/// recorder's (the bag's log time, which becomes [`Frame::ts`]). A rig whose clocks are disciplined
+/// together produces a small, steady offset — the sensor's pipeline latency. The faults are a stamp
+/// that was never set, a stamp that runs backwards, and an offset that says the two clocks are not
+/// measuring the same time at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeaderStamps {
+    /// Messages whose `header.stamp` was decoded (the denominator for `unset`).
+    pub message_count: u64,
+    /// How many of them carried a stamp of exactly zero — the epoch, which is what a driver that
+    /// never stamped its messages publishes and no recording ever legitimately holds.
+    pub unset: u64,
+    /// The smallest `log_time − header.stamp` over the stamped messages, in nanoseconds. Signed: a
+    /// negative offset is a sensor clock running ahead of the recorder's.
+    pub min_offset_ns: i64,
+    /// The largest such offset. With `min_offset_ns` it brackets the two clocks' disagreement: the
+    /// pair being far from zero *together* is a clock difference, while a wide spread between them is
+    /// recording jitter.
+    pub max_offset_ns: i64,
+    /// How many stamped messages carried a stamp earlier than the message recorded before them —
+    /// the sensor's clock stepping backwards under a recorder's that did not.
+    pub regressions: u64,
 }
 
 /// The media file backing a video stream, and what Veridex learned about it.

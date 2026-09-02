@@ -85,7 +85,12 @@ use crate::cdm::{
 /// trajectory is of. `AUTONOMY.EGO_FRAME_UNKNOWN` fails an episode on whether that frame appears in
 /// the transform tree, so two logs differing only in which frame the odometry claims are a passing
 /// dataset and a failing one. Same rule again.
-pub const CANONICAL_VERSION: u32 = 14;
+///
+/// v15 binds each stream's `observed_header_stamps` — what its messages said about their own
+/// sampling time, against the times the recorder wrote them. `autonomy.sensor-clock` fails a stream
+/// on all three of its numbers, and two bags whose frame timestamps are identical are a rig whose
+/// sensors stamped their data and one whose sensors never did. Same rule again.
+pub const CANONICAL_VERSION: u32 = 15;
 
 const DOMAIN: &[u8] = b"veridex.cdm.v1\0";
 
@@ -403,6 +408,16 @@ impl Stream {
             e.u64(c.min);
             e.u64(c.max);
             e.u64(c.empty);
+        });
+        // What the messages said about their own sampling time. Bound because `autonomy.sensor-clock`
+        // fails a stream on it: the frame timestamps are the recorder's clock either way, so a rig
+        // whose sensors stamped their data and one whose sensors never did are otherwise identical.
+        e.opt(&self.observed_header_stamps, |e, h| {
+            e.u64(h.message_count);
+            e.u64(h.unset);
+            e.i64(h.min_offset_ns);
+            e.i64(h.max_offset_ns);
+            e.u64(h.regressions);
         });
         // The sensor's coordinate frame. Bound because `autonomy.sensor-frame-resolution` fails a
         // stream on it: two rigs differing only in which frame a sensor claims are a passing dataset
