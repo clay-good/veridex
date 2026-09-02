@@ -10,6 +10,19 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A point record layout that does not fit the stride it declares.** The last unread field in the
+  CDR decoder: `PointField`'s `offset` and `count` were parsed and discarded, so a cloud whose fields
+  run past `point_step` or overlap each other — what a hand-rolled publisher writes when it adds a
+  field and forgets to widen the stride — was read as a well-formed record. Every consumer then gets
+  garbage for one field and correct values for the rest.
+
+  The point-count decode now checks the layout alongside the length invariants it already checked:
+  every field's `offset + width × count` inside the point, no two fields sharing a byte (padding
+  between them is normal, overlap is not), a non-zero element count, and no datatype tag the message
+  definition does not define. A cloud that fails any of them yields no count, so the stream reports
+  `AUTONOMY.POINT_CLOUD_UNMEASURED` — the density question could not be asked — rather than a number
+  computed over a record nothing can read.
+
 - **`STATISTICAL.UNMEASURED_VALUES` told an RLDS user to re-check their data in RLDS.** Running the
   CLI over the RLDS demo, its `language_instruction` and `observation/image` streams were named as
   carrying no statistics, beside a remedy reading "check them in a format whose values Veridex reads

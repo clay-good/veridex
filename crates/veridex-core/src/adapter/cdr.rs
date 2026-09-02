@@ -109,6 +109,20 @@ impl<'a> Reader<'a> {
 }
 
 /// The `sensor_msgs/msg/PointField` datatype enum → a CDM dtype string.
+/// The byte width of a `PointField` datatype tag, or `None` for a tag the spec does not define.
+///
+/// Used to check that a cloud's point record layout fits the stride it declares. A tag outside the
+/// eight the message defines is not a width to guess at.
+fn point_datatype_width(tag: u8) -> Option<u64> {
+    match tag {
+        1..=2 => Some(1),
+        3..=4 => Some(2),
+        5..=7 => Some(4),
+        8 => Some(8),
+        _ => None,
+    }
+}
+
 fn point_datatype(tag: u8) -> &'static str {
     match tag {
         1 => "int8",
@@ -242,11 +256,20 @@ pub fn decode_point_cloud2_point_count(data: &[u8]) -> Option<u64> {
     if field_count == 0 || field_count > MAX_POINT_FIELDS {
         return None;
     }
+    // The record layout, kept so it can be checked against the stride below. A field's extent is
+    // `offset + width × count`, and a layout whose fields run past the stride or overlap each other
+    // describes a record no consumer can read the same way twice — a hand-rolled publisher that got
+    // an offset wrong, which produces garbage for one field and correct values for the rest.
+    let mut extents: Vec<(u64, u64)> = Vec::with_capacity(field_count);
     for _ in 0..field_count {
         r.string()?; // name
-        r.u32()?; // offset
-        r.u8()?; // datatype
-        r.u32()?; // count
+        let offset = r.u32()? as u64;
+        let width = point_datatype_width(r.u8()?)?;
+        let count = r.u32()? as u64;
+        if count == 0 {
+            return None; // a field holding no elements occupies nothing and means nothing
+        }
+        extents.push((offset, offset.saturating_add(width.saturating_mul(count))));
     }
     let _is_bigendian = r.u8()?;
     let point_step = r.u32()? as u64;
@@ -256,6 +279,16 @@ pub fn decode_point_cloud2_point_count(data: &[u8]) -> Option<u64> {
     // returns still declares the stride of the point it would have published.
     if point_step == 0 {
         return None;
+    }
+    // Every field lies inside the point, and no two fields share a byte. Padding between them is
+    // normal (alignment); overlap is not, and neither is a field running past the stride.
+    extents.sort_unstable();
+    let mut prev_end = 0u64;
+    for (start, end) in &extents {
+        if *start < prev_end || *end > point_step {
+            return None;
+        }
+        prev_end = *end;
     }
     // A row holds `width` points, so it is at least `point_step × width` bytes — the message may pad
     // beyond that but cannot fall short of it.
@@ -1017,6 +1050,45 @@ mod tests {
         let mut short = cloud(1, 100, 1600);
         short.truncate(short.len() - 1);
         assert!(decode_point_cloud2_point_count(&short).is_none());
+
+        // A record layout that does not fit the stride it declares: `intensity` at offset 12 is
+        // four bytes wide, so it runs to 16 in a 12-byte point. A hand-rolled publisher that adds a
+        // field and forgets to widen `point_step` writes exactly this, and every consumer reads
+        // garbage for one field and correct values for the rest — so the count is declined rather
+        // than reported over a record nothing can read.
+        let layout = |offsets: &[(u32, u8)], point_step: u32| {
+            let mut w = W::new();
+            w.header("lidar");
+            w.u32(1);
+            w.u32(1);
+            w.u32(offsets.len() as u32);
+            for (i, (offset, datatype)) in offsets.iter().enumerate() {
+                w.string(&format!("f{i}"));
+                w.u32(*offset);
+                w.u8(*datatype);
+                w.u32(1);
+            }
+            w.u8(0);
+            w.u32(point_step);
+            w.u32(point_step);
+            w.u32(point_step);
+            w.buf.resize(w.buf.len() + point_step as usize, 0);
+            w.buf
+        };
+        // Three float32s in twelve bytes is exactly right.
+        assert_eq!(
+            decode_point_cloud2_point_count(&layout(&[(0, 7), (4, 7), (8, 7)], 12)),
+            Some(1)
+        );
+        // A fourth that runs past the stride is not.
+        assert!(
+            decode_point_cloud2_point_count(&layout(&[(0, 7), (4, 7), (8, 7), (12, 7)], 12))
+                .is_none()
+        );
+        // Nor is one that overlaps the field before it.
+        assert!(decode_point_cloud2_point_count(&layout(&[(0, 7), (2, 7), (8, 7)], 12)).is_none());
+        // Nor a datatype tag the message definition does not define — that is not a width to guess.
+        assert!(decode_point_cloud2_point_count(&layout(&[(0, 99)], 12)).is_none());
 
         // A field count past the cap is declined rather than walked: it is a `uint32` out of the
         // file, and the walk to the length invariants is a per-message cost.
