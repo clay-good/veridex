@@ -54,7 +54,7 @@
 //!   from the cadence, and **nothing else moves**: the report differs from the healthy rig's by that
 //!   one finding, so nineteen percent of a camera goes missing with every timing check passing.
 //!
-//! Usage: `cargo run -p veridex-demo --example make_demo_mcap -- <output.mcap> [clean|late-start|stuck|av|av-miscalibrated|av-ambiguous-tf|av-dead-lidar|av-unstamped|av-uncalibrated-camera|av-lossy-camera]`
+//! Usage: `cargo run -p veridex-demo --example make_demo_mcap -- <output.mcap> [skew|clean|stuck|late-start|av|av-miscalibrated|av-ambiguous-tf|av-dead-lidar|av-unstamped|av-uncalibrated-camera|av-lossy-camera]`
 
 use std::collections::BTreeMap;
 use std::io::Cursor;

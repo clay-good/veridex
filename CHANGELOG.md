@@ -35,6 +35,31 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **The demo variant lists told a reader to run commands that fail.** Every generator has one
+  authoritative list — its `VARIANTS` — and five restatements of it: the module doc's bullets, the
+  module doc's `Usage:` line, the `examples/` wrapper's `Usage:` line, the page that offers a reader
+  a variant to append, and the line the generator prints when it writes one. Nothing watched them,
+  and they had drifted apart:
+
+  - The LeRobot docs named the default variant `broken`. The generator calls it `non-monotonic` and
+    *refuses* an unknown name rather than substituting one, so the documented name printed
+    `unknown variant \`broken\``. The generator said `broken` too — `describe` opens every other
+    variant's line with the name that selects it, and opened that one with a name it would refuse.
+    That line is printed on every successful write, which makes it the restatement a reader is most
+    likely to copy.
+  - The same docs told a reader to run it out of `-p veridex-core`, where these generators have not
+    lived since they moved to `veridex-demo`; that command finds no such example target.
+  - `near-duplicate` and `stale-stats` are real variants with no bullet and no mention in
+    `docs/formats.md`, so the two faults they demonstrate looked unreproducible.
+  - The MCAP wrapper's `Usage:` line was five variants short, and the README quickstart's — the
+    first command anyone runs — was four short, including every autonomy-rig fault added since.
+
+  All of them are corrected, and `crates/veridex-demo/tests/variant_docs.rs` now holds each
+  restatement against `VARIANTS`: every variant is documented, every documented variant exists, both
+  `Usage:` lines list the whole set in order and name the crate that actually holds the example, the
+  prose offers exactly the real variants, and every printed description opens with the name that
+  selects it. Written against the old sources, all five tests fail.
+
 - **The demo rig hashed differently on macOS and Linux.** The content hash is what a certificate
   binds to, and `verify` reports a mismatch as tampering — so a hash that depends on *where* it was
   computed means a certificate issued on one machine fails against byte-identical data on another,

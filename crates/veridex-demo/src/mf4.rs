@@ -14,8 +14,7 @@
 //!   reports no change in the data, which is the point: how the bytes were stored is not what they
 //!   mean.
 //!
-//! Usage:
-//! `cargo run -p veridex-demo --example make_demo_mf4 -- <output.mf4> [saturated|clean|gap|uncompressed]`
+//! Usage: `cargo run -p veridex-demo --example make_demo_mf4 -- <output.mf4> [saturated|clean|gap|uncompressed]`
 
 use std::io::Write;
 use std::path::Path;

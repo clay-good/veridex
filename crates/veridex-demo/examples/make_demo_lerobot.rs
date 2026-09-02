@@ -1,6 +1,6 @@
 //! Write the demo LeRobot v3 dataset. See [`veridex_demo::lerobot`] for what each variant holds.
 //!
-//! Usage: `cargo run -p veridex-demo --example make_demo_lerobot -- <output-dir> [clean|truncated|…]`
+//! Usage: `cargo run -p veridex-demo --example make_demo_lerobot -- <output-dir> [non-monotonic|clean|truncated|boundary|jitter|short-episode|duplicate|near-duplicate|saturated|spike|nan|stale-stats|multi-joint|video|video-desync|video-missing|video-reencoded]`
 
 use std::path::Path;
 

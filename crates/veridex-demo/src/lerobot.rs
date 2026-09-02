@@ -2,7 +2,8 @@
 //!
 //! Writes a minimal on-disk LeRobot v3 layout (`meta/info.json` + one Parquet shard). [`VARIANTS`]:
 //!
-//! - (default) `broken` — two episodes; episode 1 has an out-of-order timestamp → `TEMPORAL.NON_MONOTONIC`.
+//! - (default) `non-monotonic` — two episodes; episode 1 has an out-of-order timestamp →
+//!   `TEMPORAL.NON_MONOTONIC`.
 //! - `clean` — a well-formed two-episode dataset with no findings.
 //! - `truncated` — the manifest declares 20 frames but episode 1 was cut short (only 6 written),
 //!   a realistic interrupted export → `STRUCTURAL.FRAME_COUNT_MISMATCH`.
@@ -15,6 +16,9 @@
 //!   `TEMPORAL.JITTER`.
 //! - `duplicate` — two episodes with byte-for-byte identical content (a re-upload) →
 //!   `STRUCTURAL.DUPLICATE_EPISODE`.
+//! - `near-duplicate` — episode 1 re-uploads 11 of episode 0's 12 frames, one value changed so the
+//!   two are not byte-identical. `duplicate` stays silent; the overlap is what fires →
+//!   `STRUCTURAL.NEAR_DUPLICATE_EPISODE`.
 //! - `short-episode` — five episodes; four are ~1 s captures and one was cut short right after it
 //!   began (~0.07 s), a duration far below the dataset median → `TEMPORAL.EPISODE_DURATION_OUTLIER`.
 //! - `saturated` — one 30-frame episode whose feature values sit pinned exactly at their maximum for
@@ -41,7 +45,7 @@
 //! - `video-reencoded` — the videos were re-encoded at 320x240 while the manifest still declares
 //!   640x480 → `VIDEO.RESOLUTION_MISMATCH`, charged once for the stream rather than once per episode.
 //!
-//! Usage: `cargo run -p veridex-core --example make_demo_lerobot -- <output-dir> [clean|truncated|boundary|jitter|short-episode|duplicate|saturated|spike|nan|multi-joint|video|video-desync|video-missing|video-reencoded]`
+//! Usage: `cargo run -p veridex-demo --example make_demo_lerobot -- <output-dir> [non-monotonic|clean|truncated|boundary|jitter|short-episode|duplicate|near-duplicate|saturated|spike|nan|stale-stats|multi-joint|video|video-desync|video-missing|video-reencoded]`
 //!
 //! Then: `veridex check <output-dir>`.
 
@@ -155,7 +159,9 @@ pub fn describe(variant: &str) -> Result<&'static str, DemoError> {
     let mode = mode_of(variant)?;
     let what = match mode {
         Mode::Clean => "clean (well-formed)",
-        Mode::NonMonotonic => "broken (episode 1 has an out-of-order timestamp → TEMPORAL.NON_MONOTONIC)",
+        Mode::NonMonotonic => {
+            "non-monotonic (episode 1 has an out-of-order timestamp → TEMPORAL.NON_MONOTONIC)"
+        }
         Mode::Truncated => {
             "truncated (manifest declares 20 frames, episode 1 cut short → STRUCTURAL.FRAME_COUNT_MISMATCH)"
         }

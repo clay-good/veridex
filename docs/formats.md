@@ -23,8 +23,8 @@ one (its second episode carries an out-of-order timestamp) and check it the same
 
 ```sh
 # generate a demo LeRobot v3 dataset; append `clean`, `truncated`, `boundary`, `jitter`,
-# `short-episode`, `duplicate`, `saturated`, `spike`, `nan`, `multi-joint`, `video`,
-# `video-desync`, `video-missing`, or `video-reencoded`
+# `short-episode`, `duplicate`, `near-duplicate`, `saturated`, `spike`, `nan`, `stale-stats`,
+# `multi-joint`, `video`, `video-desync`, `video-missing`, or `video-reencoded`
 cargo run -p veridex-demo --example make_demo_lerobot -- /tmp/demo-lerobot
 cargo run -p veridex-cli -- check /tmp/demo-lerobot   # fires TEMPORAL.NON_MONOTONIC, exits 20
 ```
