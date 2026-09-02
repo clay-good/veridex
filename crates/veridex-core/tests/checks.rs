@@ -92,6 +92,29 @@ fn duplicate_episode_index_is_a_boundary_error() {
 }
 
 #[test]
+fn an_episode_that_starts_and_ends_at_once_is_short_not_inverted() {
+    // The rule reports an *inverted* boundary — `start > end` — and a single-frame episode has
+    // `start == end`, which is short, not backwards. Unpinned: a mutation sweep flipping `>` to
+    // `>=` left the suite green, and the rule would then have called every one-frame episode a
+    // corrupt boundary. Reachable on any real dataset with a one-frame episode.
+    let mut ep = episode(0, vec![stream("s", "c", None, &[5])]);
+    ep.start_ts = Some(5);
+    ep.end_ts = Some(5);
+    assert!(structural::EpisodeBoundary
+        .run(&dataset(vec![ep]))
+        .is_empty());
+
+    // One nanosecond the wrong way round is inverted.
+    let mut bad = episode(0, vec![stream("s", "c", None, &[5])]);
+    bad.start_ts = Some(6);
+    bad.end_ts = Some(5);
+    assert_eq!(
+        structural::EpisodeBoundary.run(&dataset(vec![bad])).len(),
+        1
+    );
+}
+
+#[test]
 fn inverted_episode_bounds_are_flagged() {
     let mut ep = episode(0, vec![stream("s", "c", None, &[0, 1])]);
     ep.start_ts = Some(100);
@@ -5008,6 +5031,33 @@ fn step_stream(name: &str, clock: &str, n: i64) -> Stream {
 }
 
 #[test]
+fn one_row_apart_is_the_terminal_observation_convention_two_is_a_mismatch() {
+    // A dataset that stores one more observation than actions is following the terminal-observation
+    // convention — the last observation has no action after it — so a difference of one is expected
+    // and silent. Unpinned: the sweep's `<` → `<=` mutation left the suite green, and the rule would
+    // then have flagged that convention as a corrupt episode on every dataset that uses it. Whole
+    // rows, so the boundary is landed on exactly.
+    let pair = |a: i64, b: i64| {
+        dataset(vec![episode(
+            0,
+            vec![
+                step_stream("action", "hdf5-step-index", a),
+                step_stream("observation.state", "hdf5-step-index", b),
+            ],
+        )])
+    };
+    assert!(
+        structural::StepAlignment.run(&pair(50, 51)).is_empty(),
+        "one more observation than actions is the convention, not a fault"
+    );
+    assert_eq!(
+        structural::StepAlignment.run(&pair(50, 52)).len(),
+        1,
+        "two apart is a mismatch"
+    );
+}
+
+#[test]
 fn step_indexed_streams_that_disagree_on_the_episodes_length_are_flagged() {
     // The gap this closes: the temporal family abstains on a step index (correctly — an index is
     // flawlessly monotonic), and nothing else compared the arrays. An episode holding 100 actions
@@ -5134,6 +5184,37 @@ fn an_episode_where_nothing_moved_is_flagged() {
         f[0].location
     );
     assert!(f[0].message.contains("4 of the 5"), "{}", f[0].message);
+}
+
+#[test]
+fn frozen_in_exactly_half_the_episodes_is_the_dataset_not_a_fault() {
+    // "A minority, strictly": a stream frozen in half its episodes or more is the dataset's shape.
+    // Both halves of that sentence were unpinned — a mutation sweep flipping `>=` to `>` at the
+    // minority rule, and `<` to `<=` at the episode floor, both left the suite green. So the rule
+    // could have started reporting a dataset half of which is deliberately still, or stopped
+    // judging a dataset at exactly the episode count it needs to judge one.
+    //
+    // Two of four is exactly half and is not reported; one of four is a minority and is.
+    assert!(structural::FrozenEpisode
+        .run(&dataset_with_frozen(4, &[0, 2]))
+        .is_empty());
+    assert_eq!(
+        structural::FrozenEpisode
+            .run(&dataset_with_frozen(4, &[2]))
+            .len(),
+        1
+    );
+
+    // And the floor: three episodes is the minimum that can be judged, two is not.
+    assert_eq!(
+        structural::FrozenEpisode
+            .run(&dataset_with_frozen(3, &[1]))
+            .len(),
+        1
+    );
+    assert!(structural::FrozenEpisode
+        .run(&dataset_with_frozen(2, &[1]))
+        .is_empty());
 }
 
 #[test]

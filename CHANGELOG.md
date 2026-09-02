@@ -10,6 +10,24 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **Four more structural boundaries pinned, and one survivor found harmless.** Extending the sweep
+  to the ten comparisons that back documented structural behavior, eight survived. Triaged rather
+  than pinned wholesale — a surviving mutation is not automatically a gap:
+
+  - **`STRUCTURAL.EPISODE_BOUNDARY`** reports an *inverted* boundary, `start > end`. A single-frame
+    episode has `start == end`, which is short, not backwards — the mutation would have called every
+    one-frame episode a corrupt boundary.
+  - **`STRUCTURAL.STEP_COUNT_MISMATCH`** allows one row of difference, because a dataset storing one
+    more observation than actions is following the terminal-observation convention. The mutation
+    would have flagged that convention on every dataset that uses it.
+  - **`STRUCTURAL.FROZEN_EPISODE`**'s minority rule — "a stream frozen in half its episodes or more
+    is the dataset's shape, not a fault in it" — and its three-episode floor. Both halves of that
+    sentence were unpinned.
+
+  And `structural.stream-presence`'s `present_in.len() >= total` survived because a later
+  `missing.is_empty()` guard makes it inert: the mutation changes which branch runs and nothing a
+  reader sees. Left alone rather than pinned with a test that asserts nothing.
+
 - **Both saturation knobs were unpinned too, completing the threshold sweep.** Aimed at the four
   remaining comparisons that read a knob from `veridex.toml`, the sweep killed two —
   `statistical.outlier_z` and `structural.near_duplicate_fraction` were already pinned — and left the
