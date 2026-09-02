@@ -35,6 +35,21 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **The documented certificate hash was wrong, and the guard was excluding it.** The autonomy
+  quickstart's `certify` transcript pins a real content hash, and the test that diffs that page
+  against live CLI output deliberately skipped that one field — "shown truncated", though the CLI
+  prints exactly the sixteen characters the page does. It is also the only field that moves whenever
+  the CDM does. It went stale the same week the exclusion was written, while every other line of the
+  block stayed right, because nothing was watching it. The hash is corrected and the guard now
+  compares the whole line.
+
+- **`docs/profiles.md` states the readiness criteria twice and nothing checked either.** The page
+  lists them as a table and again inside a sample `verify` transcript; both are hand-maintained, and
+  both went stale by hand this week. A new test compares them against
+  `world_model_ready().criteria` — the table by set identity in both directions, so neither an added
+  nor a removed criterion slips past, and the transcript by identity *and* text, since its lines
+  quote each threshold verbatim. Both directions were proven to fail before they passed.
+
 - **Two storage plugins agreed about a topic neither had read the same way.** The test that gates
   the "which plugin a team picked does not change what Veridex sees" claim replays the `.db3`
   fixture's topics into an MCAP and compares the two CDMs. Its replay wrote a header-first stub for

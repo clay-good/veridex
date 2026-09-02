@@ -3062,19 +3062,23 @@ fn the_autonomy_quickstart_still_prints_what_it_says_it_does() {
     ]);
     for line in stdout.lines() {
         let trimmed = line.trim();
-        // The criterion verdicts and the certified line — not the `wrote <path>` line, which is the
-        // caller's own path, nor the bound hash, which the page shows truncated.
+        // The criterion verdicts and the whole certified line — everything but the `wrote <path>`
+        // line, which is the caller's own temp directory.
         if trimmed.starts_with('✓') || trimmed.starts_with('✗') {
             assert!(
                 quickstart.contains(trimmed),
                 "the quickstart's readiness block has drifted; it should show:\n  {trimmed}"
             );
         }
-        if let Some(head) = trimmed.strip_prefix("certified av — ") {
-            let claim = head.split(", bound to").next().unwrap_or_default();
+        if trimmed.starts_with("certified av — ") {
+            // Including the content hash the certificate is bound to. It was excluded here — as
+            // "shown truncated", though the CLI prints exactly the sixteen characters the page does
+            // — and it is the one field that moves whenever the CDM does. It went stale the same
+            // day this exclusion was written down, while every other line of the block stayed
+            // right, because nothing was watching it.
             assert!(
-                quickstart.contains(claim),
-                "the quickstart's certify line has drifted; it should show:\n  certified av — {claim}"
+                quickstart.contains(trimmed),
+                "the quickstart's certify line has drifted; it should show:\n  {trimmed}"
             );
         }
     }

@@ -157,7 +157,7 @@ cargo run -p veridex-cli -- certify /tmp/av.mcap --key /tmp/issuer \
 ```
 
 ```
-certified av — fail, grade C (76), bound to e670d87e99c8be71
+certified av — fail, grade C (76), bound to 16af998f7de0da19
   world-model-ready profile: NOT READY
     ✗ autonomy.rig-sync — rig sensors within a 20 ms cross-sensor span drift
     ✓ autonomy.sequence-complete — no rig sensor dropping more than 5% of its frames

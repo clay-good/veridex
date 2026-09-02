@@ -899,3 +899,50 @@ fn a_loosening_profile_is_refused_with_its_reason() {
         );
     }
 }
+
+/// `docs/profiles.md` states the `world-model-ready` criteria twice — once as a table, once inside a
+/// sample `verify` transcript — and nothing checked either against the code.
+///
+/// Both went stale by hand this week: adding a criterion meant remembering two edits in a file the
+/// compiler never reads, in a document whose entire value is that a reader can trust it names what
+/// the tool actually attests. A certificate that claims eight criteria beside a page that lists
+/// seven is worse than a page with no list.
+///
+/// The table is checked by *identity* — the set of check ids must match exactly, in both directions,
+/// so neither an added criterion nor a removed one can slip past. The transcript is checked by
+/// *identity and text*: its lines quote each criterion's threshold verbatim, so a reworded threshold
+/// has to be reworded here too.
+#[test]
+fn the_profiles_page_lists_exactly_the_criteria_the_profile_attests() {
+    let page = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/profiles.md"),
+    )
+    .expect("docs/profiles.md is part of the repo");
+    let criteria = veridex_core::profile::world_model_ready().criteria;
+
+    // The table: every row naming a check id, as `| … | `autonomy.x` | … |`.
+    let tabled: std::collections::BTreeSet<&str> = page
+        .lines()
+        .filter(|l| l.starts_with('|'))
+        .filter_map(|l| l.split('`').nth(1))
+        .filter(|id| id.starts_with("autonomy."))
+        .collect();
+    let expected: std::collections::BTreeSet<&str> = criteria.iter().map(|(id, _)| *id).collect();
+    assert_eq!(
+        tabled, expected,
+        "docs/profiles.md's criteria table must list exactly the profile's criteria"
+    );
+
+    // The sample `verify` transcript: `✓ autonomy.x — <threshold>`, quoting the threshold verbatim.
+    let transcript: std::collections::BTreeMap<&str, &str> = page
+        .lines()
+        .map(str::trim)
+        .filter_map(|l| l.strip_prefix('✓').or_else(|| l.strip_prefix('✗')))
+        .filter_map(|l| l.trim().split_once(" — "))
+        .collect();
+    let from_code: std::collections::BTreeMap<&str, &str> = criteria.iter().copied().collect();
+    assert_eq!(
+        transcript, from_code,
+        "docs/profiles.md's sample verify output must quote every criterion and its threshold"
+    );
+}
