@@ -2935,3 +2935,62 @@ fn a_gnss_stream_is_measured_rather_than_only_fingerprinted() {
         "and so is the IMU the demo exists to show drifting: {unmeasured}"
     );
 }
+
+#[test]
+fn the_demo_rig_hashes_the_same_on_every_machine() {
+    // The content hash is what a certificate binds to, and `verify` reports a mismatch as tampering.
+    // So a hash that depends on *where* it was computed is not a cosmetic problem: it means a
+    // certificate issued on one machine fails against byte-identical data on another, and fails by
+    // accusing the data.
+    //
+    // The demo rig did exactly that, and nothing caught it. `canonical_golden` pins the *encoding*
+    // over a fixed JSON fixture, so it cannot see a difference that enters through the data; every
+    // other hash test in the suite is relative — two datasets hash alike, or differently — and holds
+    // under any per-machine offset. This is the missing third kind: one real dataset, generated and
+    // read end to end, against a value written down.
+    //
+    // The bug it was written for: the demo's IMU body carried `phase.sin()` and `phase.cos()` as raw
+    // `f64` bytes, and Rust does not promise those are bit-identical across platforms. One unit in
+    // the last place changed a message's bytes, so its fingerprint, so the whole recording's hash —
+    // macOS and Linux disagreed about a dataset neither had modified.
+    //
+    // If this value ever needs changing, that is fine and expected — a new CDM field, a new demo
+    // sensor. What is *not* fine is it differing between two machines on one commit, which is what
+    // this pins.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("av.mcap");
+    veridex_demo::mcap::write(&path, "av").expect("write the demo rig");
+    let d = McapAdapter
+        .ingest(&Source::Local(path.clone()), &IngestOptions::default())
+        .expect("ingest")
+        .dataset;
+    assert_eq!(
+        veridex_core::content_hash(&d).to_hex(),
+        "cdc0f46ce2db1798ff299de98d2cb85f8d84a95fd93932ad0ac2518b2f593661",
+        "the demo rig's content hash must not depend on the machine that computed it"
+    );
+
+    // And the file itself is *not* byte-reproducible — the MCAP writer emits its summary section in
+    // hash-map order — which is the point worth stating: the CDM hash describes the recording, not
+    // the container's incidental layout. Two byte-different files of one recording hash alike.
+    // Same file *name*, different directory: the dataset's name is its file stem and is hashed, so
+    // writing the second copy as `again.mcap` would compare two differently-named datasets and prove
+    // nothing.
+    let other = tempfile::tempdir().expect("tempdir");
+    let second = other.path().join("av.mcap");
+    veridex_demo::mcap::write(&second, "av").expect("write it again");
+    let again = McapAdapter
+        .ingest(&Source::Local(second.clone()), &IngestOptions::default())
+        .expect("ingest")
+        .dataset;
+    assert_eq!(
+        veridex_core::content_hash(&d).to_hex(),
+        veridex_core::content_hash(&again).to_hex(),
+        "two writes of one recording must hash alike"
+    );
+    assert_ne!(
+        std::fs::read(&path).expect("read"),
+        std::fs::read(&second).expect("read"),
+        "…and this is only meaningful while the two files genuinely differ byte for byte"
+    );
+}

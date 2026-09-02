@@ -117,13 +117,13 @@ fn records(turning: bool, gap: bool) -> Vec<u8> {
         // 2048 is the sensor's positive end-stop. Pinned there for most of the drive unless the
         // wheel is actually turning.
         let steering: i16 = if turning {
-            (1800.0 * (t * 1.1).sin()) as i16
+            (1800.0 * crate::mcap::wave(t * 1.1)) as i16
         } else if i < 300 {
             2048
         } else {
             2048 - (i as i16 - 300) * 5
         };
-        let rpm = (1500.0 + 300.0 * (t * 2.3).sin()) as u16;
+        let rpm = (1500.0 + 300.0 * crate::mcap::wave(t * 2.3)) as u16;
 
         out.extend_from_slice(&t.to_le_bytes());
         out.extend_from_slice(&speed_raw.to_le_bytes());

@@ -35,6 +35,29 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **The demo rig hashed differently on macOS and Linux.** The content hash is what a certificate
+  binds to, and `verify` reports a mismatch as tampering — so a hash that depends on *where* it was
+  computed means a certificate issued on one machine fails against byte-identical data on another,
+  and fails by accusing the data. The demo rig did exactly that.
+
+  The cause was two floats. Its IMU body carried `phase.sin()` and `phase.cos()` written as raw
+  `f64` bytes, and Rust does not promise those are bit-identical across platforms — it defers them
+  to the platform's libm. One unit in the last place changed a message's bytes, so its content
+  fingerprint, so the hash of the whole recording. They are now a parabolic wave built from
+  multiplication, subtraction and `abs`, which IEEE-754 makes exact everywhere. The two `sin` calls
+  in the MF4 demo are replaced the same way.
+
+  Nothing in the suite could have caught this: the golden vector pins the *encoding* over a fixed
+  JSON fixture, so a difference entering through the data is invisible to it, and every other hash
+  test is relative — two datasets hash alike or differently — which holds under any per-machine
+  offset. A new test pins the demo rig's hash end to end, generated and read, against a written-down
+  value. It also asserts the same recording written twice hashes alike *while the two files differ
+  byte for byte*, which is the property worth stating: the hash describes the recording, not the
+  container's incidental layout.
+
+  Found because a doc guard tightened one commit earlier compared that hash and CI disagreed with
+  the developer's machine.
+
 - **The documented certificate hash was stale, and pinning it was the wrong fix.** The autonomy
   quickstart's `certify` transcript showed a content hash that no longer matched, because the test
   diffing that page against live CLI output skipped that one field. Pinning it instead turned out to

@@ -436,6 +436,26 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(
     }
 }
 
+/// A smooth periodic wave in `[-1, 1]`, built from arithmetic a machine cannot disagree about.
+///
+/// `f64::sin` and `f64::cos` are **not** guaranteed to give bit-identical results across platforms —
+/// Rust defers them to the platform's libm, and macOS and Linux differ in the last unit in the last
+/// place. That is invisible until the value is written into a message body and hashed: a
+/// one-ULP difference changes the message's bytes, so its content fingerprint, so the CDM hash of
+/// the whole recording. The demo rig then had a different content hash on every operating system,
+/// which is intolerable in a fixture for a tool whose central claim is that a certificate binds to
+/// the data and travels with it.
+///
+/// Multiplication, subtraction and `abs` are exact in IEEE-754 and identical everywhere, so this
+/// parabolic wave — zero at `t = 0`, peaking at `t = ¼`, zero again at `t = ½` — is reproducible by
+/// construction. It is not a sine, and does not need to be: its whole job is to give the IMU a
+/// smooth, varying, non-degenerate signal for the statistical family to grade.
+pub(crate) fn wave(t: f64) -> f64 {
+    let frac = t - t.floor(); // one cycle, in [0, 1)
+    let x = 2.0 * frac - 1.0; // in [-1, 1)
+    4.0 * x * (1.0 - x.abs()) // parabolic, in [-1, 1]
+}
+
 /// A real CDR `sensor_msgs/msg/Imu` body: `Header`, then orientation, angular velocity and linear
 /// acceleration, each followed by its nine-element covariance. A leading `-1` in a covariance is
 /// ROS's "not provided"; these are zero, so every value is measured.
@@ -468,8 +488,8 @@ fn imu_body(phase: f64, stamp_ns: u64) -> Vec<u8> {
         }
     };
     group(&[0.0, 0.0, 0.0, 1.0], &mut buf);
-    group(&[0.0, 0.0, 0.02 * phase.sin()], &mut buf);
-    group(&[0.1 * phase.cos(), 0.0, 9.81], &mut buf);
+    group(&[0.0, 0.0, 0.02 * wave(phase)], &mut buf);
+    group(&[0.1 * wave(phase + 0.25), 0.0, 9.81], &mut buf);
     buf
 }
 
