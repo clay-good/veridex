@@ -328,6 +328,12 @@ each depends on the one before it. The checklist, the ordering constraint, and w
 crate excludes are in [docs/releasing.md](docs/releasing.md). Nothing has shipped yet; v0.1.0 is the
 first.
 
+## Contributing
+
+[CONTRIBUTING.md](CONTRIBUTING.md) covers the parts of this codebase you cannot infer from reading
+it: what the tests enforce, and where a change has to reach that the compiler will not point at —
+adding a check, adding a configurable threshold, adding a field to the CDM.
+
 ## Build & test
 
 ```sh

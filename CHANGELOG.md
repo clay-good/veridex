@@ -10,6 +10,27 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A contributing guide, for the parts of this codebase you cannot infer from reading it.** The
+  repository is public and had no `CONTRIBUTING.md`. What a newcomer most needs here is not the
+  build command — it is the set of places a change has to reach that the compiler stays silent
+  about: registering a check and the two written-out counts that go with it, the six places a
+  configurable threshold lives, and the hand-written content-hash encoder, where a new CDM field is
+  simply absent from the hash until someone adds it, so two datasets differing only in that field
+  collide and one's certificate attests the other.
+
+  It also writes down the testing conventions that are otherwise folklore — prove red before green,
+  mutate one claim at a time because an `assert!` stops at the first failure, pin a threshold *on*
+  its boundary in both directions, and build the fixture a real recorder would write rather than
+  one the reader is already known to accept.
+
+  `crates/veridex-core/tests/contributing_guide.rs` holds the guide to two facts: every Rust
+  identifier it names still exists in the workspace, and every repository path it names is still
+  there. A guide that sends someone to a symbol that was renamed is worse than one that says
+  nothing, because they will go looking — and the first draft did exactly that, naming a hash test
+  by a name it had not had for some time. Renaming the symbol and moving a page each fail the guard
+  on their own. Where a claim could be written against a number or against the mechanism that
+  enforces it, the guide names the mechanism, which does not go stale.
+
 - **The demo dataset now ships the summary a real export ships.** Every LeRobot dataset writes
   `meta/stats.json`; the demo did not. So every run of the fixture the docs tell a reader to try
   first reported `STATISTICAL.NO_STORED_STATS` — an abstention on the one comparison this format
