@@ -1897,6 +1897,46 @@ fn stream_with_saturation(
 }
 
 #[test]
+fn the_saturation_knobs_are_boundaries_a_user_configured() {
+    // Both `saturation_fraction` and `saturation_min_samples` were unpinned: a mutation sweep
+    // flipping `<` to `<=` at each gate left the suite green, so a stream sitting exactly on the
+    // fraction a user configured, or carrying exactly the minimum sample count they set, could have
+    // been silently dropped from the check they turned it on for. Both land exactly — one is a count
+    // of whole samples, the other a ratio of two of them.
+    let check = statistical::Saturation {
+        min_fraction: 0.5,
+        min_samples: 20,
+    };
+    let judged = |sample_count: u64, at_max: u64| {
+        check
+            .run(&dataset(vec![episode(
+                0,
+                vec![stream_with_saturation(
+                    "state",
+                    sample_count,
+                    0,
+                    at_max,
+                    -1.0,
+                    1.0,
+                )],
+            )]))
+            .len()
+    };
+
+    // Exactly the minimum sample count is enough to judge, and exactly the fraction is saturated.
+    assert_eq!(judged(20, 10), 1, "20 samples, exactly half at the rail");
+    // One sample short of the minimum is not judged at all, however pinned it looks.
+    assert_eq!(
+        judged(19, 19),
+        0,
+        "below the sample floor, nothing is claimed"
+    );
+    // ...and just under the fraction is not saturation.
+    assert_eq!(judged(100, 49), 0, "49% is under a 50% threshold");
+    assert_eq!(judged(100, 50), 1, "50% is not");
+}
+
+#[test]
 fn stream_pinned_at_its_max_is_saturated() {
     // 70 of 100 samples sit exactly at the max rail → saturated.
     let d = dataset(vec![episode(

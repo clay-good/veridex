@@ -10,6 +10,18 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **Both saturation knobs were unpinned too, completing the threshold sweep.** Aimed at the four
+  remaining comparisons that read a knob from `veridex.toml`, the sweep killed two —
+  `statistical.outlier_z` and `structural.near_duplicate_fraction` were already pinned — and left the
+  two saturation gates alive. A stream sitting exactly on the `saturation_fraction` a user
+  configured, or carrying exactly the `saturation_min_samples` they set, could have been silently
+  dropped from the check they turned it on for. Both land exactly: one is a count of whole samples,
+  the other a ratio of two of them. Now pinned on both sides, each proven against its mutation.
+
+  That closes the sweep across the catalog's configurable thresholds: every knob a user can set in
+  `veridex.toml` now has a test that fails if its comparison moves by one, except the jitter CV and
+  the rate deviation, which are ratios of measured floats that no real recording lands on exactly.
+
 - **Every user-configurable temporal threshold was unpinned at its boundary — including the headline
   one.** The same sweep, aimed at the five comparisons that read a knob from `veridex.toml`, found
   all five mutations alive: `clock_skew_ns`, `gap_factor`, `jitter_cv`, `rate_deviation` and
