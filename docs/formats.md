@@ -198,6 +198,11 @@ intrinsics **plus the image dimensions they were computed for and the distortion
 belong to**, `TFMessage` the transform tree, and `Odometry` the ego trajectory. The bulk
 payload is fingerprinted, never decoded.
 
+Every header-first message also supplies its `header.stamp` — the time the **sensor** says it
+sampled, as distinct from the log time the **recorder** wrote it at, which is the only clock a bag's
+frame timestamps carry. Both are read, and `autonomy.sensor-clock` compares them: without the second
+one, every sync result on a bag is a measurement of the recording host rather than of the rig.
+
 Two exceptions, and they are what let the statistical family grade a bag at all. A
 `sensor_msgs/msg/JointState` and a `sensor_msgs/msg/Imu` each carry nothing *but* the measurement —
 a handful of joint angles, or thirty-seven doubles with no bulk blob among them — so the joint
@@ -284,6 +289,14 @@ schema, encoding, and the publisher's QoS — so the same recording through eith
 same streams, modalities, timestamps and rig calibration. What the storage does change is what the
 report *names*: an MCAP-backed bag's mapped fields speak of channels and log times, never of SQLite
 tables the bag does not have.
+
+One thing the plugin genuinely does change: an MCAP message carries the `sequence` its publisher set,
+and a `messages` row does not. Where the numbering is present, `AUTONOMY.SEQUENCE_DROPPED` **counts**
+the messages that were published and never reached the file; where it is not — a `.db3` shard, or a
+publisher that left the field at 0 — the same check falls back to estimating the loss from the
+sensor's own cadence, which needs a cadence to exist and cannot see losses scattered one message at a
+time. The same recording is therefore graded more precisely through the MCAP plugin, and the finding
+says which of the two answered.
 
 The manifest is required for a directory of `.mcap` files, and only for that case. A directory
 holding a `.db3` is unambiguously one bag; a directory of `.mcap` files could as easily be a folder

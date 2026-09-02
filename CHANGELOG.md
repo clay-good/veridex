@@ -10,6 +10,18 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **Two storage plugins agreed about a topic neither had read the same way.** The test that gates
+  the "which plugin a team picked does not change what Veridex sees" claim replays the `.db3`
+  fixture's topics into an MCAP and compares the two CDMs. Its replay wrote a header-first stub for
+  `tf2_msgs/msg/TFMessage` — a message that is *not* header-first, its body being a sequence of
+  `TransformStamped` — so the MCAP side decoded a capture stamp and a coordinate frame the real bag
+  does not have. The comparison passed because it compared neither field.
+
+  The replay now writes a real `TFMessage`, mirroring the fixture generator, and every other message
+  carries a real `header.stamp` taken from its own log time (the `.db3` generator has always written
+  one, so the replay's zeros were a divergence in themselves). The comparison now covers each
+  stream's capture-stamp summary, which is what caught this.
+
 - **A transform tree was reported as a measurement nobody read.** A `CameraInfo` channel and a
   `tf2_msgs/msg/TFMessage` were both typed `ScalarState` — the joint-position modality — so
   `STATISTICAL.UNMEASURED_VALUES` named them among the streams that might hold "a saturated

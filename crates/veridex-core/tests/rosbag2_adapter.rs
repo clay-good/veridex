@@ -867,7 +867,12 @@ fn the_same_bag_read_twice_produces_the_same_content_hash() {
 // ---- cross-format neutrality ----
 
 /// (stream name, modality, frame timestamps).
-type StreamSig = (String, Modality, Vec<i64>);
+type StreamSig = (
+    String,
+    Modality,
+    Vec<i64>,
+    Option<veridex_core::cdm::HeaderStamps>,
+);
 /// Per-episode structural signature: (episode index, its streams).
 type EpisodeSig = (u64, Vec<StreamSig>);
 
@@ -888,6 +893,9 @@ fn signature(d: &veridex_core::cdm::Dataset) -> Vec<EpisodeSig> {
                         s.name.clone(),
                         s.modality,
                         s.frames.iter().map(|f| f.ts).collect(),
+                        // The sensor's own clock, not just the recorder's. Left out, the two
+                        // plugins could disagree about every capture time and still "agree".
+                        s.observed_header_stamps,
                     )
                 })
                 .collect();
@@ -907,11 +915,16 @@ type Channel = (String, String, Vec<u64>);
 ///
 /// A one-byte payload decodes to nothing, which makes any claim that the two plugins "see the same
 /// thing" vacuous — two read paths that both read nothing agree trivially. Every ROS message here is
-/// header-first, so every one of them yields a `frame_id`; a `PointCloud2` gets a whole cloud,
-/// tail included, so the point layout and the per-message point count are decoded too. Those are
-/// the fields wired separately into each plugin's reader, and so the ones a divergence would hide
-/// in.
-fn cdr_body(schema: &str, seq: u32) -> Vec<u8> {
+/// header-first, so every one of them yields a `frame_id` **and a real `header.stamp`**; a
+/// `PointCloud2` gets a whole cloud, tail included, so the point layout and the per-message point
+/// count are decoded too. Those are the fields wired separately into each plugin's reader, and so
+/// the ones a divergence would hide in.
+///
+/// The stamp matters for the same reason the cloud does. The `.db3` fixtures stamp their headers
+/// from each message's own time (`generate_fixtures.py`'s `header`), so writing zeros here would
+/// have made the two plugins disagree about every sensor's capture time while the equivalence
+/// assertion — which compares the fields it names — went on passing.
+fn cdr_body(schema: &str, seq: u32, stamp_ns: u64) -> Vec<u8> {
     let frame_id = match schema {
         "sensor_msgs/msg/PointCloud2" => "lidar_link",
         "sensor_msgs/msg/Imu" => "imu_link",
@@ -933,8 +946,31 @@ fn cdr_body(schema: &str, seq: u32) -> Vec<u8> {
         buf.extend_from_slice(s.as_bytes());
         buf.push(0);
     };
-    u32v(&mut buf, 0); // stamp.sec
-    u32v(&mut buf, 0); // stamp.nanosec
+    // A `TFMessage` is the one message here that is *not* header-first: its body is a sequence of
+    // `TransformStamped`, each with its own header. Writing a header-first stub for it instead —
+    // which this fixture did — made the replay decode a capture stamp and a frame the real bag does
+    // not have, so the two plugins disagreed about `/tf_static` while the equivalence assertion,
+    // which then compared neither, went on passing. Mirrors `generate_fixtures.py`'s `tf_message`.
+    if schema == "tf2_msgs/msg/TFMessage" {
+        u32v(&mut buf, 3); // three edges, as the bag's TF_EDGES has
+        for (parent, child, t) in [
+            ("base_link", "lidar_link", [0.0, 0.0, 1.8f64]),
+            ("base_link", "camera_front", [1.2, 0.0, 1.5]),
+            ("base_link", "imu_link", [0.0, 0.0, 0.4]),
+        ] {
+            u32v(&mut buf, (stamp_ns / 1_000_000_000) as u32);
+            u32v(&mut buf, (stamp_ns % 1_000_000_000) as u32);
+            strv(&mut buf, parent);
+            strv(&mut buf, child);
+            for v in [t[0], t[1], t[2], 0.0, 0.0, 0.0, 1.0] {
+                align(&mut buf, 8);
+                buf.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        return buf;
+    }
+    u32v(&mut buf, (stamp_ns / 1_000_000_000) as u32); // stamp.sec
+    u32v(&mut buf, (stamp_ns % 1_000_000_000) as u32); // stamp.nanosec
     strv(&mut buf, frame_id);
     if schema != "sensor_msgs/msg/PointCloud2" {
         // Enough to name the frame; the body varies per message so frames stay content-distinct.
@@ -977,7 +1013,7 @@ fn write_mcap(path: &std::path::Path, channels: &[Channel]) {
                         log_time: t,
                         publish_time: t,
                     },
-                    &cdr_body(schema, seq as u32),
+                    &cdr_body(schema, seq as u32, t),
                 )
                 .unwrap();
             }
