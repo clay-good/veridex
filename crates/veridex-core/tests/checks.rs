@@ -2628,6 +2628,42 @@ fn a_rig_with_a_drifting_sensor_is_flagged_once() {
     assert!(f[0].message.contains("imu"), "names the drifted sensor");
 }
 
+#[test]
+fn the_rig_sync_allowance_is_a_boundary_the_profile_promises() {
+    // `world-model-ready` attests "rig sensors within a 20 ms cross-sensor span drift", and the rule
+    // is `spread > allowance` — so a spread of exactly the allowance is *within* it and passes.
+    // Nothing pinned that: a mutation sweep flipping `>` to `>=` left the suite green, and the
+    // tolerance could have been silently tightened to fail a rig that meets the criterion the
+    // certificate names.
+    //
+    // The allowance is the configured tolerance widened by the slowest sensor's sampling period,
+    // because a rig is multi-rate by construction and each span quantizes to its own period. Every
+    // sensor here runs at 100 Hz, so the quantum is exactly 10 ms and the allowance is exactly
+    // 60 ms at the default 50 ms tolerance. Spans are whole 10 ms ticks, so 60 ms is reachable
+    // exactly rather than approached.
+    let rig = |imu_span: i64| {
+        dataset(vec![episode(
+            0,
+            vec![
+                rig_stream("lidar", Modality::PointCloud, 1_000_000_000),
+                rig_stream("gnss", Modality::Gnss, 1_000_000_000),
+                rig_stream("imu", Modality::Imu, imu_span),
+            ],
+        )])
+    };
+    assert!(
+        autonomy::RigSync::default()
+            .run(&rig(940_000_000))
+            .is_empty(),
+        "a 60 ms spread is within a 60 ms allowance"
+    );
+    assert_eq!(
+        autonomy::RigSync::default().run(&rig(930_000_000)).len(),
+        1,
+        "one tick past it, the rig is out of sync"
+    );
+}
+
 /// A rig sensor shifted whole by a constant latency: the same span, starting and ending later.
 fn rig_stream_shifted(name: &str, modality: Modality, span_ns: i64, shift_ns: i64) -> Stream {
     const STEP_NS: i64 = 10_000_000; // 100 Hz
@@ -2840,6 +2876,50 @@ fn a_dropped_frame_sensor_is_flagged_incomplete() {
 }
 
 #[test]
+fn the_drop_fraction_threshold_is_a_boundary_the_wording_promises() {
+    // `world-model-ready` attests "no rig sensor dropping more than 5% of its frames", and the rule
+    // is `drop_fraction > max_drop_fraction` — so exactly 5% passes, which is what "more than" means.
+    // Nothing pinned that: a mutation sweep flipping `>` to `>=` left the suite green, and the
+    // threshold could have been silently tightened to reject a sensor that meets the criterion the
+    // certificate names. Reachable exactly, because the fraction is a ratio of whole frames.
+    //
+    // 19 frames present of 20 nominal ticks: `missing` is 1, `expected` 20, so the fraction is
+    // exactly 0.05.
+    let full: Vec<i64> = (0..20).map(|i| i * 100_000_000).collect();
+    let dropped_one: Vec<i64> = full
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != 7)
+        .map(|(_, t)| *t)
+        .collect();
+    let rig = |imu: &[i64]| {
+        episode(
+            0,
+            vec![
+                rig_stream_ts("lidar", Modality::PointCloud, &full),
+                rig_stream_ts("gnss", Modality::Gnss, &full),
+                rig_stream_ts("imu", Modality::Imu, imu),
+            ],
+        )
+    };
+    let judged = |imu: &[i64]| {
+        autonomy::SequenceComplete::default()
+            .run(&dataset(vec![rig(imu)]))
+            .len()
+    };
+    assert_eq!(judged(&dropped_one), 0, "exactly 5% is not more than 5%");
+
+    // Two of twenty is 10%, and past the threshold.
+    let dropped_two: Vec<i64> = full
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != 7 && *i != 13)
+        .map(|(_, t)| *t)
+        .collect();
+    assert_eq!(judged(&dropped_two), 1, "past it, the sensor is flagged");
+}
+
+#[test]
 fn a_complete_rig_sequence_is_clean() {
     let full: Vec<i64> = (0..20).map(|i| i * 100_000_000).collect();
     let ep = episode(
@@ -2924,6 +3004,35 @@ fn a_smooth_ego_trajectory_is_clean() {
     assert!(autonomy::EgoPoseContinuity::default()
         .run(&dataset(vec![rig_episode_with_ego(poses)]))
         .is_empty());
+}
+
+#[test]
+fn the_ego_speed_ceiling_is_a_ceiling_not_a_limit_to_reach() {
+    // `world-model-ready` attests "no step above 100 m/s implied speed", and the rule is
+    // `speed > max_speed_mps` — so exactly 100 m/s passes, which is what "above" means. Nothing
+    // pinned that: a mutation sweep flipping `>` to `>=` left the suite green, and the ceiling
+    // could have been silently tightened to fail a trajectory that meets the criterion the
+    // certificate names.
+    //
+    // 10 m in 100 ms is exactly 100 m/s, and both are exact in binary floating point, so the
+    // comparison really does land on the boundary rather than near it.
+    let at_ceiling = vec![ego(0, 0.0, 0.0), ego(100_000_000, 10.0, 0.0)];
+    assert!(
+        autonomy::EgoPoseContinuity::default()
+            .run(&dataset(vec![rig_episode_with_ego(at_ceiling)]))
+            .is_empty(),
+        "exactly 100 m/s is not above 100 m/s"
+    );
+
+    // 10.5 m in the same 100 ms is 105 m/s, and past it.
+    let past_ceiling = vec![ego(0, 0.0, 0.0), ego(100_000_000, 10.5, 0.0)];
+    assert_eq!(
+        autonomy::EgoPoseContinuity::default()
+            .run(&dataset(vec![rig_episode_with_ego(past_ceiling)]))
+            .len(),
+        1,
+        "past it, the step is a teleport"
+    );
 }
 
 #[test]
@@ -5902,6 +6011,55 @@ fn a_gnss_coordinate_outside_the_possible_range_is_flagged() {
 
     // An ordinary fix says nothing.
     assert!(run(gnss((37.4, 37.5), (-122.2, -122.1))).is_empty());
+}
+
+#[test]
+fn the_poles_and_the_antimeridian_are_places() {
+    // The bound is inclusive, and nothing pinned it: a mutation sweep flipping `<` to `<=` at both
+    // GNSS comparisons left the whole suite green, so the rule could have been silently narrowed to
+    // reject exactly ±90° and ±180° — a drive over the pole or across the antimeridian, which are
+    // real places a receiver reports. Pinned on both sides of both bounds: the extreme itself is
+    // fine, and one ulp past it is not.
+    let span = |min: f64, max: f64| stats(min, max, (min + max) / 2.0, 0.0);
+    let gnss = |lat: (f64, f64), lon: (f64, f64)| {
+        let mut s = rig_stream("/gps/fix", Modality::Gnss, 1_000_000_000);
+        s.dim_names = Some(vec!["latitude".into(), "longitude".into()]);
+        s.observed_dim_stats = Some(vec![
+            veridex_core::cdm::DimStats {
+                dim: 0,
+                stats: span(lat.0, lat.1),
+            },
+            veridex_core::cdm::DimStats {
+                dim: 1,
+                stats: span(lon.0, lon.1),
+            },
+        ]);
+        autonomy::GnssPlausibility
+            .run(&dataset(vec![episode(0, vec![s])]))
+            .iter()
+            .filter(|f| f.code == "AUTONOMY.GNSS_IMPLAUSIBLE")
+            .count()
+    };
+
+    // Exactly at the bounds: the South Pole, the North Pole, and both ends of the antimeridian.
+    assert_eq!(gnss((-90.0, 90.0), (-180.0, 180.0)), 0);
+    // One representable step past any of them is not a place.
+    assert_eq!(
+        gnss((f64::from_bits((-90.0f64).to_bits() + 1), 0.0), (0.0, 0.0)),
+        1
+    );
+    assert_eq!(
+        gnss((0.0, f64::from_bits(90.0f64.to_bits() + 1)), (0.0, 0.0)),
+        1
+    );
+    assert_eq!(
+        gnss((0.0, 0.0), (f64::from_bits((-180.0f64).to_bits() + 1), 0.0)),
+        1
+    );
+    assert_eq!(
+        gnss((0.0, 0.0), (0.0, f64::from_bits(180.0f64.to_bits() + 1))),
+        1
+    );
 }
 
 #[test]

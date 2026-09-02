@@ -10,6 +10,24 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A mutation sweep over the autonomy checks: four documented thresholds were unpinned.** Flipping
+  every comparison in `checks/autonomy.rs` to its neighbour — `>` to `>=`, `<` to `<=`, `==` to `!=`
+  — and running the suite against each, 26 of 56 mutations survived. Most are inert (a guard, a
+  plural, a modality test whose branch does not change), but four sit on thresholds the
+  `world-model-ready` certificate names to a reader, and each could have been silently tightened to
+  fail a rig that meets the criterion it attests:
+
+  - **"within a 20 ms cross-sensor span drift"** — a spread of exactly the allowance is *within* it.
+  - **"no rig sensor dropping more than 5% of its frames"** — exactly 5% is not more than 5%, and the
+    fraction is a ratio of whole frames, so it lands there exactly.
+  - **"no step above 100 m/s implied speed"** — 10 m in 100 ms is exactly 100 m/s, exact in binary
+    floating point too.
+  - **latitude ±90°, longitude ±180°** — the poles and the antimeridian are places a receiver
+    reports, and the bound is inclusive.
+
+  Each is now pinned on both sides, at the boundary rather than near it, and each test was proven
+  against the mutation that survived without it.
+
 - **The README's sensor-rig row was four rules behind the catalog.** It enumerated finding codes —
   `RIG_SYNC`, `SEQUENCE_COMPLETE`, `EGO_POSE_CONTINUITY`, `CALIBRATION_INCOMPLETE`, the two
   `SENSOR_FRAME_*` — and an enumeration goes stale the moment the list grows. It named neither the
