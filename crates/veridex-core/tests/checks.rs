@@ -2235,6 +2235,32 @@ fn the_readme_names_every_check_family_the_engine_runs() {
             "the README's engine node does not name the `{family}` family:\n  {engine_node}"
         );
     }
+
+    // ...and the count the status table commits to. The sensor-rig row used to enumerate finding
+    // codes and had silently fallen four rules behind the catalog; it is a summary now, and a
+    // summary that counts is only useful while the count is right. Words rather than digits,
+    // because that is how the row reads.
+    let autonomy = engine
+        .catalog()
+        .iter()
+        .filter(|c| c.category == veridex_core::Category::Autonomy)
+        .count();
+    let spelled = [
+        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+        "eleven", "twelve",
+    ];
+    let claim = format!(
+        "{} checks over an autonomy rig",
+        spelled.get(autonomy).copied().unwrap_or("?")
+    );
+    let row = readme
+        .lines()
+        .find(|l| l.contains("**Sensor-rig checks**"))
+        .expect("the README's status table has a sensor-rig row");
+    assert!(
+        row.to_ascii_lowercase().contains(&claim),
+        "the README's sensor-rig row should read `{claim}`:\n  {row}"
+    );
 }
 
 #[test]

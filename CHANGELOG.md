@@ -10,6 +10,18 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **The README's sensor-rig row was four rules behind the catalog.** It enumerated finding codes —
+  `RIG_SYNC`, `SEQUENCE_COMPLETE`, `EGO_POSE_CONTINUITY`, `CALIBRATION_INCOMPLETE`, the two
+  `SENSOR_FRAME_*` — and an enumeration goes stale the moment the list grows. It named neither the
+  GNSS checks nor anything added since: the point-cloud density family, the ego body frame, and the
+  three new ways calibration can be present and arithmetically unusable. The existing doc guard
+  catches a page naming a *dead* code and says nothing about a page omitting a live one.
+
+  The row is now a summary that says it is one, organized by what the family catches (time, space,
+  calibration, data) and pointing at the catalog for the list — so there is no enumeration left to
+  rot. The one number it commits to, how many checks the family has, is asserted against the live
+  catalog.
+
 - **A metadata-only MF4 run said what it skipped, not how much.** `declare_channel_group` took the
   `##CG` cycle count and threw it away (`let _ = cycle_count;`) under a doc comment claiming the run
   reports "how many samples each declares". So `inspect --metadata-only` showed three streams and
