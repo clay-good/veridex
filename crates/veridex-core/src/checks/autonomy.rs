@@ -363,6 +363,89 @@ impl SequenceComplete {
     /// two constants were measured over 40 honest jittery streams (CV 0.1 to 0.45, no drops) with no
     /// false positive, while still catching a real 10% drop rate.
     const MULTIPLE_TOLERANCE: f64 = 0.15;
+
+    /// Grade a stream from the publisher's own per-message counter, rather than from its timing.
+    ///
+    /// This is the same question `AUTONOMY.SEQUENCE_COMPLETE` estimates — did this sensor's frames
+    /// all make it into the file — answered by counting instead of inferring. It needs no cadence,
+    /// so it works on the event-driven streams the estimate abstains on, and no minimum frame count,
+    /// so it works on the short ones; and it does not care whether the losses were scattered, which
+    /// is precisely the shape the estimate cannot see (a drop spread one frame at a time leaves
+    /// intervals near `2·T`, but so does ordinary jitter).
+    ///
+    /// A counter that ran backwards or stalled makes the numbering below it unreadable — a hole
+    /// after a restart is a difference between two unrelated counts, not a loss — so that is
+    /// reported on its own and no drop fraction is derived from the stream.
+    fn grade_numbering(
+        &self,
+        episode: u64,
+        stream: &Stream,
+        q: &crate::cdm::SequenceNumbers,
+    ) -> Vec<Finding> {
+        let at = || Location::Stream {
+            episode,
+            stream: stream.name.clone(),
+        };
+        if q.non_increasing > 0 {
+            return vec![Finding::new(
+                self.id(),
+                Category::Autonomy,
+                Severity::Warning,
+                at(),
+                "AUTONOMY.SEQUENCE_RENUMBERED",
+                format!(
+                    "episode {}: sensor `{}` re-used or rewound its message numbering {} time(s) \
+                     across {} message(s) — the publisher restarted, or a message was delivered \
+                     twice",
+                    episode, stream.name, q.non_increasing, q.message_count
+                ),
+            )
+            .with_risk(
+                "The numbering is what says whether this sensor's messages all arrived, and a \
+                 counter that restarts mid-recording makes every hole below it unreadable: a gap \
+                 after a restart is the distance between two unrelated counts, not a loss. \
+                 Completeness for this stream is unverified, which a clean result would not say.",
+            )
+            .with_remedy(
+                "Check whether the publisher was restarted during the recording, and cut the \
+                 segment at the restart rather than treating it as one continuous stream.",
+            )];
+        }
+        if q.missing == 0 {
+            return Vec::new();
+        }
+        let expected = q.message_count.saturating_add(q.missing) as f64;
+        let drop_fraction = q.missing as f64 / expected;
+        if drop_fraction <= self.max_drop_fraction {
+            return Vec::new();
+        }
+        vec![Finding::new(
+            self.id(),
+            Category::Autonomy,
+            Severity::Warning,
+            at(),
+            "AUTONOMY.SEQUENCE_DROPPED",
+            format!(
+                "episode {}: sensor `{}` lost {:.0}% of its messages — the publisher numbered {} \
+                 and the recording holds {}",
+                episode,
+                stream.name,
+                drop_fraction * 100.0,
+                q.missing + q.message_count,
+                q.message_count,
+            ),
+        )
+        .with_risk(
+            "This is a count, not an estimate: the messages were published and are not in the \
+             file. The timeline hides it — scattered losses leave a cadence that still looks \
+             regular — so the rig has incomplete per-tick snapshots while every timing check on \
+             this stream passes.",
+        )
+        .with_remedy(
+            "Investigate the transport and the recorder for that sensor (bandwidth, QoS depth, \
+             buffer overruns, disk throughput); re-record or mark the affected segments.",
+        )]
+    }
 }
 
 impl Check for SequenceComplete {
@@ -370,7 +453,11 @@ impl Check for SequenceComplete {
         "autonomy.sequence-complete"
     }
     fn finding_codes(&self) -> &'static [&'static str] {
-        &["AUTONOMY.SEQUENCE_COMPLETE"]
+        &[
+            "AUTONOMY.SEQUENCE_COMPLETE",
+            "AUTONOMY.SEQUENCE_DROPPED",
+            "AUTONOMY.SEQUENCE_RENUMBERED",
+        ]
     }
     fn title(&self) -> &'static str {
         "Rig sequence completeness"
@@ -394,6 +481,15 @@ impl Check for SequenceComplete {
                 continue;
             }
             for stream in &ep.streams {
+                // A publisher that numbers its messages has already counted them, so where the
+                // numbering survived the recording there is nothing left to estimate. The estimate
+                // and the measurement are answers to the same question, and an inference must not be
+                // allowed to contradict a count — so the measurement takes the stream and the
+                // cadence rule below never sees it.
+                if let Some(q) = &stream.observed_sequence {
+                    findings.extend(self.grade_numbering(ep.index, stream, q));
+                    continue;
+                }
                 if stream.frames.len() < Self::MIN_FRAMES {
                     continue;
                 }

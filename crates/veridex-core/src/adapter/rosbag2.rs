@@ -418,6 +418,10 @@ struct StreamBuilder {
     /// What this topic's messages said about their own sampling time, against the log times they
     /// were recorded at. Empty for a topic whose bodies are not header-first.
     header_stamps: super::cdr::HeaderStampAccum,
+    /// What this topic's publisher said about how many messages it sent. Only the MCAP storage
+    /// plugin records it — a `.db3` message table has no such column, so a bag stored that way
+    /// leaves it empty and the check says so rather than reading the absence as completeness.
+    sequence: super::mcap::SequenceAccum,
     frame_id: Option<String>,
     /// Values decoded from this topic's `JointState` or `Imu` messages, with the joint set they
     /// belong to. Empty for every other topic, whose payload stays opaque.
@@ -740,6 +744,7 @@ fn read_shard(
             .or_insert_with(|| StreamBuilder {
                 point_counts: Default::default(),
                 header_stamps: Default::default(),
+                sequence: Default::default(),
                 modality: super::mcap::infer_modality(&topic.ros_type, &topic.name),
                 ros_type: topic.ros_type.clone(),
                 frames: Vec::new(),
@@ -895,6 +900,7 @@ fn read_mcap_shard(
             .or_insert_with(|| StreamBuilder {
                 point_counts: Default::default(),
                 header_stamps: Default::default(),
+                sequence: Default::default(),
                 modality: super::mcap::infer_modality(&ros_type, &topic),
                 ros_type: ros_type.clone(),
                 frames: Vec::new(),
@@ -924,6 +930,9 @@ fn read_mcap_shard(
         if let Some(stamp) = super::cdr::decode_header_stamp(data) {
             builder.header_stamps.observe(ts, stamp);
         }
+        // The publisher's own count of what it sent — carried by the MCAP storage plugin only. A
+        // `.db3` shard has no such column, so the same bag recorded the other way leaves it empty.
+        builder.sequence.observe(message.sequence);
         if super::mcap::schema_is(&ros_type, "PointCloud2") {
             if builder.point_fields.is_none() {
                 builder.point_fields = super::cdr::decode_point_cloud2_fields(data);
@@ -1071,6 +1080,7 @@ fn ingest_metadata_only(
             point_fields: None,
             observed_point_counts: None,
             observed_header_stamps: None,
+            observed_sequence: None,
             media: None,
             frame_id: None,
         })
@@ -1478,6 +1488,7 @@ impl Adapter for Rosbag2Adapter {
                     point_fields: b.point_fields,
                     observed_point_counts: b.point_counts.finish(),
                     observed_header_stamps: b.header_stamps.finish(),
+                    observed_sequence: b.sequence.finish(),
                     media: None,
                     frame_id: b.frame_id,
                 }

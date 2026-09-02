@@ -576,33 +576,45 @@ fn different_frame_content_changes_the_cdm_hash() {
 #[test]
 fn a_frame_dropping_sensor_is_flagged_incomplete_end_to_end() {
     // A rig where LiDAR and GNSS record 20 steady 100 ms ticks, but the IMU (nominally 100 ms too)
-    // drops 5 of its 20 frames — a 25% aggregate drop with no single huge gap. The completeness check
-    // must flag the IMU by name, through the real MCAP adapter.
-    let full: Vec<u64> = (0..20).map(|i| i * 100_000_000).collect();
-    let dropped: Vec<u64> = full
+    // loses 5 of its 20 messages — a 25% aggregate drop with no single huge gap. The messages that
+    // did arrive keep the numbers the publisher gave them, holes and all, which is what a real
+    // dropping transport leaves behind: renumbering them 0..14 would describe a publisher that never
+    // sent those five, which is a different thing entirely and the one shape no recorder produces.
+    let full: Vec<(u32, u64)> = (0..20u32).map(|i| (i, i as u64 * 100_000_000)).collect();
+    let dropped: Vec<(u32, u64)> = full
         .iter()
-        .enumerate()
-        .filter(|(i, _)| ![3usize, 7, 11, 15, 17].contains(i))
-        .map(|(_, t)| *t)
+        .filter(|(i, _)| ![3u32, 7, 11, 15, 17].contains(i))
+        .copied()
         .collect();
-    let bytes = build_mcap(&[
-        Chan {
-            schema: "sensor_msgs/msg/PointCloud2",
-            topic: "/lidar/points",
-            times: full.clone(),
-        },
-        Chan {
-            schema: "sensor_msgs/msg/NavSatFix",
-            topic: "/gps/fix",
-            times: full,
-        },
-        Chan {
-            schema: "sensor_msgs/msg/Imu",
-            topic: "/imu/data",
-            times: dropped,
-        },
-    ]);
-    let path = write_temp_mcap(&bytes);
+    let mut out = Vec::new();
+    {
+        let mut writer = mcap::Writer::new(Cursor::new(&mut out)).expect("writer");
+        for (schema, topic, msgs) in [
+            ("sensor_msgs/msg/PointCloud2", "/lidar/points", &full),
+            ("sensor_msgs/msg/NavSatFix", "/gps/fix", &full),
+            ("sensor_msgs/msg/Imu", "/imu/data", &dropped),
+        ] {
+            let schema_id = writer.add_schema(schema, "ros2msg", b"").expect("schema");
+            let channel_id = writer
+                .add_channel(schema_id, topic, "cdr", &BTreeMap::new())
+                .expect("channel");
+            for (seq, t) in msgs {
+                writer
+                    .write_to_known_channel(
+                        &mcap::records::MessageHeader {
+                            channel_id,
+                            sequence: *seq,
+                            log_time: *t,
+                            publish_time: *t,
+                        },
+                        b"payload",
+                    )
+                    .expect("write");
+            }
+        }
+        writer.finish().expect("finish");
+    }
+    let path = write_temp_mcap(&out);
     let ingested = McapAdapter
         .ingest(
             &Source::Local(path.to_path_buf()),
@@ -610,7 +622,71 @@ fn a_frame_dropping_sensor_is_flagged_incomplete_end_to_end() {
         )
         .expect("ingest");
     let f = SequenceComplete::default().run(&ingested.dataset);
-    assert_eq!(f.len(), 1, "only the dropping sensor is flagged");
+    assert_eq!(f.len(), 1, "only the dropping sensor is flagged: {f:?}");
+    // Counted from the publisher's numbering, not estimated from the cadence: the numbers are
+    // there, so the estimate never runs on this stream.
+    assert_eq!(f[0].code, "AUTONOMY.SEQUENCE_DROPPED");
+    assert!(
+        f[0].message.contains("/imu/data"),
+        "names the incomplete sensor: {}",
+        f[0].message
+    );
+    assert!(
+        f[0].message.contains("numbered 20") && f[0].message.contains("holds 15"),
+        "reports the count, not a fraction alone: {}",
+        f[0].message
+    );
+}
+
+#[test]
+fn without_a_publishers_numbering_the_cadence_estimate_still_answers() {
+    // The same rig from a publisher that never used `sequence`. Nothing counted the messages, so the
+    // check falls back to what the timing implies — which is the whole reason that estimate exists,
+    // and why it must not be removed now that a measurement is available for some sources.
+    let full: Vec<u64> = (0..20).map(|i| i * 100_000_000).collect();
+    let dropped: Vec<u64> = full
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| ![3usize, 7, 11, 15, 17].contains(i))
+        .map(|(_, t)| *t)
+        .collect();
+    let mut out = Vec::new();
+    {
+        let mut writer = mcap::Writer::new(Cursor::new(&mut out)).expect("writer");
+        for (schema, topic, times) in [
+            ("sensor_msgs/msg/PointCloud2", "/lidar/points", &full),
+            ("sensor_msgs/msg/NavSatFix", "/gps/fix", &full),
+            ("sensor_msgs/msg/Imu", "/imu/data", &dropped),
+        ] {
+            let schema_id = writer.add_schema(schema, "ros2msg", b"").expect("schema");
+            let channel_id = writer
+                .add_channel(schema_id, topic, "cdr", &BTreeMap::new())
+                .expect("channel");
+            for t in times {
+                writer
+                    .write_to_known_channel(
+                        &mcap::records::MessageHeader {
+                            channel_id,
+                            sequence: 0, // the field left at its default
+                            log_time: *t,
+                            publish_time: *t,
+                        },
+                        b"payload",
+                    )
+                    .expect("write");
+            }
+        }
+        writer.finish().expect("finish");
+    }
+    let path = write_temp_mcap(&out);
+    let ingested = McapAdapter
+        .ingest(
+            &Source::Local(path.to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest");
+    let f = SequenceComplete::default().run(&ingested.dataset);
+    assert_eq!(f.len(), 1, "only the dropping sensor is flagged: {f:?}");
     assert_eq!(f[0].code, "AUTONOMY.SEQUENCE_COMPLETE");
     assert!(
         f[0].message.contains("/imu/data"),
@@ -762,6 +838,85 @@ fn a_lidar_that_published_only_empty_clouds_is_caught_end_to_end() {
         "{}",
         empty[0].message
     );
+}
+
+/// Build a one-channel MCAP whose messages carry the given `(sequence, log_time)` pairs — so a test
+/// can punch holes in the publisher's numbering while leaving the timeline evenly spaced.
+fn build_mcap_numbered(schema: &str, topic: &str, msgs: &[(u32, u64)]) -> Vec<u8> {
+    let mut out = Vec::new();
+    {
+        let mut writer = mcap::Writer::new(Cursor::new(&mut out)).expect("writer");
+        let schema_id = writer.add_schema(schema, "ros2msg", b"").expect("schema");
+        let channel_id = writer
+            .add_channel(schema_id, topic, "cdr", &BTreeMap::new())
+            .expect("channel");
+        for (seq, t) in msgs {
+            writer
+                .write_to_known_channel(
+                    &mcap::records::MessageHeader {
+                        channel_id,
+                        sequence: *seq,
+                        log_time: *t,
+                        publish_time: *t,
+                    },
+                    b"payload",
+                )
+                .expect("write");
+        }
+        writer.finish().expect("finish");
+    }
+    out
+}
+
+#[test]
+fn a_hole_in_the_publishers_numbering_is_read_as_the_messages_it_lost() {
+    // Every fifth message never reached the file, and the recorder wrote what did arrive on an
+    // exactly even 10 Hz timeline — which is what a real dropping transport looks like once the
+    // frames are buffered and flushed. The timing carries no trace of the loss at all; the
+    // publisher's own counter carries all of it.
+    let msgs: Vec<(u32, u64)> = (0..50u32)
+        .filter(|i| i % 5 != 0)
+        .enumerate()
+        .map(|(n, i)| (i, n as u64 * 100_000_000))
+        .collect();
+    let path = write_temp_mcap(&build_mcap_numbered(
+        "sensor_msgs/msg/PointCloud2",
+        "/lidar/points",
+        &msgs,
+    ));
+    let d = McapAdapter
+        .ingest(
+            &Source::Local(path.to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest")
+        .dataset;
+    let q = d.episodes[0].streams[0]
+        .observed_sequence
+        .expect("the publisher numbered its messages");
+    assert_eq!(q.message_count, 40);
+    assert_eq!(q.missing, 9, "nine holes between the forty that arrived");
+    assert_eq!(q.non_increasing, 0);
+}
+
+#[test]
+fn a_publisher_that_never_used_the_counter_is_not_a_publisher_that_lost_everything() {
+    // The other convention: `sequence` left at its default on every message. Reading that as
+    // "n − 1 messages went missing" would invent a total loss out of an unused field.
+    let msgs: Vec<(u32, u64)> = (0..10u64).map(|n| (0, n * 100_000_000)).collect();
+    let path = write_temp_mcap(&build_mcap_numbered(
+        "sensor_msgs/msg/PointCloud2",
+        "/lidar/points",
+        &msgs,
+    ));
+    let d = McapAdapter
+        .ingest(
+            &Source::Local(path.to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest")
+        .dataset;
+    assert!(d.episodes[0].streams[0].observed_sequence.is_none());
 }
 
 #[test]

@@ -405,6 +405,11 @@
             "min_offset_ns": 5000000,
             "max_offset_ns": -2000000,
             "regressions": 1
+          },
+          "observed_sequence": {
+            "message_count": 540,
+            "missing": 60,
+            "non_increasing": 2
           }
         }
       ],

@@ -29,12 +29,12 @@ fn the_canonical_encoding_has_not_changed_without_a_version_bump() {
     let d: Dataset = serde_json::from_str(GOLDEN).expect("the golden fixture parses");
 
     assert_eq!(
-        CANONICAL_VERSION, 15,
+        CANONICAL_VERSION, 16,
         "the encoding version changed; re-pin the hash below in the same commit"
     );
     assert_eq!(
         content_hash(&d).to_hex(),
-        "c9b7792a8c30bb1039c6bfc30b353b38da4cc58222e57523000e776a15cd7c92",
+        "38f3c8d7f1420d08b86c35ffdf06c90c738c86cb5d508df53573266678ed5d5d",
         "the canonical encoding changed. If that was deliberate, bump CANONICAL_VERSION and \
          re-pin this vector in the same commit — a hash change without a version bump means two \
          builds disagree about byte-identical data while both claiming the same encoding, and \
@@ -103,6 +103,13 @@ fn the_golden_fixture_still_covers_what_it_claims_to() {
                 && h.max_offset_ns != 0)
         ),
         "capture-stamp summary — the vector must reach the encoding with a non-zero value in \
+         every field, not the `None` arm and not a summary of zeros"
+    );
+    assert!(
+        streams.iter().any(|s| s
+            .observed_sequence
+            .is_some_and(|q| q.message_count > 0 && q.missing > 0 && q.non_increasing > 0)),
+        "publisher sequence summary — the vector must reach the encoding with a non-zero value in \
          every field, not the `None` arm and not a summary of zeros"
     );
     assert!(streams.iter().any(|s| s.stats.is_some()), "stats arm");

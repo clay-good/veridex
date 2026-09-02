@@ -46,6 +46,7 @@ fn stream(name: &str, clock: &str, rate: Option<f64>, ts: &[i64]) -> Stream {
         point_fields: None,
         observed_point_counts: None,
         observed_header_stamps: None,
+        observed_sequence: None,
         media: None,
         frame_id: None,
         frames: frames_at(ts),
@@ -342,6 +343,7 @@ fn stream_hashed(name: &str, clock: &str, ts: &[i64], contents: &[u8]) -> Stream
         point_fields: None,
         observed_point_counts: None,
         observed_header_stamps: None,
+        observed_sequence: None,
         media: None,
         frame_id: None,
         frames,
@@ -433,6 +435,7 @@ fn stream_with_content(name: &str, modality: Modality, contents: &[u8]) -> Strea
         point_fields: None,
         observed_point_counts: None,
         observed_header_stamps: None,
+        observed_sequence: None,
         media: None,
         frame_id: None,
         frames,
@@ -512,6 +515,7 @@ fn shaped(name: &str, dtype: Option<&str>, shape: Option<Vec<u64>>, ts: &[i64]) 
         point_fields: None,
         observed_point_counts: None,
         observed_header_stamps: None,
+        observed_sequence: None,
         media: None,
         frame_id: None,
         dim_names: None,
@@ -3340,6 +3344,7 @@ fn a_bus_only_measurement_is_not_treated_as_a_sensor_rig() {
                 point_fields: None,
                 observed_point_counts: None,
                 observed_header_stamps: None,
+                observed_sequence: None,
                 media: None,
                 frame_id: None,
             })
@@ -3424,6 +3429,7 @@ fn one_shared_timeline_reports_once_and_an_event_driven_signal_is_not_called_inc
         point_fields: None,
         observed_point_counts: None,
         observed_header_stamps: None,
+        observed_sequence: None,
         media: None,
         frame_id: None,
     };
@@ -5662,6 +5668,90 @@ fn a_trajectory_for_a_frame_the_tree_does_name_is_the_rig_it_claims_to_be() {
     };
     assert_eq!(ego_findings(Some("base_link")), 0);
     assert_eq!(ego_findings(None), 0);
+}
+
+// ---- AUTONOMY.SEQUENCE_DROPPED / _RENUMBERED ----
+
+/// A rig whose LiDAR carries the given publisher-numbering summary.
+fn rig_with_numbering(q: Option<veridex_core::cdm::SequenceNumbers>) -> Dataset {
+    let mut ep = episode(
+        0,
+        vec![
+            rig_stream("lidar", Modality::PointCloud, 1_000_000_000),
+            rig_stream("gnss", Modality::Gnss, 1_000_000_000),
+            rig_stream("imu", Modality::Imu, 1_000_000_000),
+        ],
+    );
+    ep.streams[0].observed_sequence = q;
+    dataset(vec![ep])
+}
+
+#[test]
+fn a_hole_in_the_publishers_numbering_is_a_count_not_an_estimate() {
+    let f = autonomy::SequenceComplete::default().run(&rig_with_numbering(Some(
+        veridex_core::cdm::SequenceNumbers {
+            message_count: 900,
+            missing: 100,
+            non_increasing: 0,
+        },
+    )));
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "AUTONOMY.SEQUENCE_DROPPED");
+    assert_eq!(f[0].severity, Severity::Warning);
+    assert!(
+        f[0].message.contains("numbered 1000") && f[0].message.contains("holds 900"),
+        "{}",
+        f[0].message
+    );
+}
+
+#[test]
+fn the_measured_drop_rule_is_pinned_at_its_boundary() {
+    // Exactly at the configured fraction is not a departure from it; one message past is. Pinned
+    // because the threshold is what the check promises, and `>=` and `>` differ by one message.
+    let at = |missing: u64, kept: u64| {
+        autonomy::SequenceComplete::default()
+            .run(&rig_with_numbering(Some(
+                veridex_core::cdm::SequenceNumbers {
+                    message_count: kept,
+                    missing,
+                    non_increasing: 0,
+                },
+            )))
+            .len()
+    };
+    assert_eq!(at(50, 950), 0, "5% of 1000 is exactly the default");
+    assert_eq!(at(51, 949), 1);
+}
+
+#[test]
+fn a_counter_that_restarts_makes_every_hole_below_it_unreadable() {
+    // A gap after a restart is the distance between two unrelated counts. Reporting a drop fraction
+    // from it would be arithmetic on numbers that are not comparable, so the restart is reported
+    // instead — and completeness for the stream is left explicitly unverified.
+    let f = autonomy::SequenceComplete::default().run(&rig_with_numbering(Some(
+        veridex_core::cdm::SequenceNumbers {
+            message_count: 900,
+            missing: 100,
+            non_increasing: 1,
+        },
+    )));
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "AUTONOMY.SEQUENCE_RENUMBERED");
+    assert!(f[0].message.contains("1 time(s)"), "{}", f[0].message);
+}
+
+#[test]
+fn a_publisher_that_lost_nothing_says_nothing() {
+    assert!(autonomy::SequenceComplete::default()
+        .run(&rig_with_numbering(Some(
+            veridex_core::cdm::SequenceNumbers {
+                message_count: 1000,
+                missing: 0,
+                non_increasing: 0,
+            },
+        )))
+        .is_empty());
 }
 
 // ---- AUTONOMY.SENSOR_CLOCK_UNSET / _REGRESSION / _OFFSET / _UNREAD ----

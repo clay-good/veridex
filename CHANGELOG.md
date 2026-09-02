@@ -10,6 +10,31 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A dropped message the timeline could not show.** `AUTONOMY.SEQUENCE_COMPLETE` estimated a rig
+  sensor's lost frames from its median cadence — which needs a cadence to exist (it abstains on
+  anything event-driven), needs eight frames to establish one, and cannot see the one shape that
+  matters most: losses scattered one message at a time leave intervals near twice the cadence, and so
+  does ordinary jitter. Meanwhile every MCAP message carries a `sequence` its publisher set, and the
+  adapter recorded that field as *unmapped*. A hole in it is direct evidence that a message was
+  published and never reached the file.
+
+  `autonomy.sequence-complete` now counts where it used to estimate. New
+  `AUTONOMY.SEQUENCE_DROPPED` reports the loss from the publisher's own numbering and takes the
+  stream whenever that numbering is present — an inference must never be allowed to contradict a
+  count — while the cadence estimate stays for every source that carries no counter. New
+  `AUTONOMY.SEQUENCE_RENUMBERED` reports a counter that restarted or repeated, where a hole is the
+  distance between two unrelated counts rather than a loss, and leaves completeness explicitly
+  unverified instead of clean. A publisher that never used the field (every message left at 0)
+  summarizes to nothing: an unused counter is not a stream whose every message went missing.
+
+  Needed a new `Stream.observed_sequence` CDM field and so `CANONICAL_VERSION` 15 → 16, with the
+  golden vector re-pinned. Read from MCAP and from rosbag2's MCAP storage plugin; a `.db3` message
+  table has no such column, so the same bag recorded the other way falls back to the estimate.
+
+  Fixing the check also fixed its fixture: the end-to-end drop test built its "dropping" sensor by
+  deleting timestamps and renumbering the rest 0..n, which describes a publisher that never sent
+  those messages — the one shape no dropping transport produces. It now leaves the holes.
+
 - **A bag has two clocks, and only one of them was ever read.** Every frame timestamp Veridex takes
   from an MCAP or rosbag2 recording is the *recorder's* clock — the instant a message arrived at the
   bag. The sensor states when it actually **sampled**, in its message's own `header.stamp`, and that

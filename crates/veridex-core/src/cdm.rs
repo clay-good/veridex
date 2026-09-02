@@ -462,6 +462,16 @@ pub struct Stream {
     /// that agrees with it — or for one that was never set.
     #[serde(default)]
     pub observed_header_stamps: Option<HeaderStamps>,
+    /// What the publisher's own per-message counter said about this stream — how many messages it
+    /// numbered, against how many the recording holds. `None` for every source that carries no such
+    /// counter, and for a run that did not open the messages. Extension for `autonomy-sensor-data`.
+    ///
+    /// The difference between this and [`Stream::frames`]'s timing is the difference between a
+    /// measurement and an inference. `AUTONOMY.SEQUENCE_COMPLETE` estimates lost frames from a
+    /// stream's median cadence, which needs a cadence to exist at all and abstains on anything
+    /// event-driven. A publisher that numbers its messages has already counted them.
+    #[serde(default)]
+    pub observed_sequence: Option<SequenceNumbers>,
     /// The coordinate frame this sensor's data is expressed in (a ROS `header.frame_id`, e.g.
     /// `lidar_top` or `camera_front`), when the source records one. This is the name that has to
     /// appear in [`Calibration::transforms`] for the sensor to be relatable to any other — the
@@ -557,6 +567,26 @@ pub struct HeaderStamps {
     /// How many stamped messages carried a stamp earlier than the message recorded before them —
     /// the sensor's clock stepping backwards under a recorder's that did not.
     pub regressions: u64,
+}
+
+/// What a publisher's own per-message counter said about a stream, summarized over the episode.
+///
+/// An MCAP message carries a `sequence` its publisher set: a counter that increments once per
+/// message on that channel. A hole in the numbering is direct evidence that a message was published
+/// and never reached the file — the transport dropped it, or the recorder could not keep up. No
+/// cadence is assumed and no minimum frame count is needed, which is what makes it answerable on the
+/// event-driven streams the timing estimate has to abstain on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SequenceNumbers {
+    /// Messages carrying a number (the denominator).
+    pub message_count: u64,
+    /// How many numbers the publisher used that the recording does not hold — the sum of the holes
+    /// between consecutive messages.
+    pub missing: u64,
+    /// Messages whose number did not advance past the one before it: a message delivered twice, or a
+    /// publisher restarting its counter mid-recording. Either way the numbering below it no longer
+    /// means what a hole in it would mean.
+    pub non_increasing: u64,
 }
 
 /// The media file backing a video stream, and what Veridex learned about it.

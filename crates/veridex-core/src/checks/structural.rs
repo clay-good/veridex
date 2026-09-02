@@ -1888,6 +1888,7 @@ mod tests {
             point_fields: None,
             observed_point_counts: None,
             observed_header_stamps: None,
+            observed_sequence: None,
             media: None,
             declared_range: None,
             latched: None,

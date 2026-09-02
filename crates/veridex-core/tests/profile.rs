@@ -71,6 +71,15 @@ fn sensor_in_frame(name: &str, modality: Modality, ts: &[i64], frame_id: Option<
                 max_offset_ns: 6_000_000,
                 regressions: 0,
             }),
+        // A publisher that numbered every message it sent, with no holes: the sensor lost nothing,
+        // which is what a fixture standing in for a healthy rig has to say.
+        observed_sequence: modality
+            .is_sensor()
+            .then_some(veridex_core::cdm::SequenceNumbers {
+                message_count: ts.len() as u64,
+                missing: 0,
+                non_increasing: 0,
+            }),
         media: None,
         frame_id,
     }

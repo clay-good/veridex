@@ -90,7 +90,12 @@ use crate::cdm::{
 /// sampling time, against the times the recorder wrote them. `autonomy.sensor-clock` fails a stream
 /// on all three of its numbers, and two bags whose frame timestamps are identical are a rig whose
 /// sensors stamped their data and one whose sensors never did. Same rule again.
-pub const CANONICAL_VERSION: u32 = 15;
+///
+/// v16 binds each stream's `observed_sequence` — what the publisher's own per-message counter said
+/// about how many messages it sent. `AUTONOMY.SEQUENCE_DROPPED` fails a stream on it, and a
+/// recording that lost a tenth of a sensor's messages carries no trace of the loss in its frame
+/// timestamps when the drops were scattered. Same rule again.
+pub const CANONICAL_VERSION: u32 = 16;
 
 const DOMAIN: &[u8] = b"veridex.cdm.v1\0";
 
@@ -418,6 +423,15 @@ impl Stream {
             e.i64(h.min_offset_ns);
             e.i64(h.max_offset_ns);
             e.u64(h.regressions);
+        });
+        // What the publisher's own counter said. Bound because `autonomy.sequence-complete` fails a
+        // stream on it: scattered drops leave the frame timestamps looking like an ordinary cadence,
+        // so a recording that lost a tenth of a sensor's messages and one that lost none are
+        // otherwise identical.
+        e.opt(&self.observed_sequence, |e, q| {
+            e.u64(q.message_count);
+            e.u64(q.missing);
+            e.u64(q.non_increasing);
         });
         // The sensor's coordinate frame. Bound because `autonomy.sensor-frame-resolution` fails a
         // stream on it: two rigs differing only in which frame a sensor claims are a passing dataset

@@ -142,6 +142,7 @@ mod tests {
                         point_fields: None,
                         observed_point_counts: None,
                         observed_header_stamps: None,
+                        observed_sequence: None,
                         media: None,
                         frame_id: None,
                         frames: vec![
@@ -185,6 +186,7 @@ mod tests {
                         point_fields: None,
                         observed_point_counts: None,
                         observed_header_stamps: None,
+                        observed_sequence: None,
                         media: None,
                         frame_id: None,
                         frames: vec![Frame {
@@ -396,7 +398,7 @@ mod tests {
         };
         let base = content_hash(&sample_dataset());
         type Mutator = fn(&mut Stream);
-        let mutate: [(&str, Mutator); 32] = [
+        let mutate: [(&str, Mutator); 33] = [
             // The fields the encoder has carried from the beginning. Absent from this table until a
             // mutation audit deleted `clock_kind` from `encode` and watched 692 tests pass: a
             // stream's frames are a synchronized rig under one value and an unmeasurable timeline
@@ -578,6 +580,17 @@ mod tests {
                     regressions: 0,
                 })
             }),
+            // What the publisher's own counter said about how many messages it sent.
+            // `AUTONOMY.SEQUENCE_DROPPED` fails a stream on it, and scattered losses leave the
+            // frame timestamps looking like an ordinary cadence — so a stream that lost a tenth of
+            // its messages and one that lost none are otherwise identical.
+            ("observed_sequence", |s| {
+                s.observed_sequence = Some(crate::cdm::SequenceNumbers {
+                    message_count: 90,
+                    missing: 10,
+                    non_increasing: 0,
+                })
+            }),
         ];
 
         // A compile-time census. Adding a field to `Stream` breaks this destructuring, which is the
@@ -607,6 +620,7 @@ mod tests {
                 point_fields: _,
                 observed_point_counts: _,
                 observed_header_stamps: _,
+                observed_sequence: _,
                 media: _,
                 frame_id: _,
             } = s;
@@ -719,6 +733,7 @@ mod proptests {
                 point_fields: None,
                 observed_point_counts: None,
                 observed_header_stamps: None,
+                observed_sequence: None,
                 media: None,
                 frame_id: None,
             })

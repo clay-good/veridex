@@ -1294,6 +1294,7 @@ fn build_stream(
             point_fields: None,
             observed_point_counts: None,
             observed_header_stamps: None,
+            observed_sequence: None,
             media: None,
             frame_id: None,
         }));
@@ -1409,6 +1410,7 @@ fn build_stream(
         point_fields: None,
         observed_point_counts: None,
         observed_header_stamps: None,
+        observed_sequence: None,
         media: None,
         frame_id: None,
     }))

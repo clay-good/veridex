@@ -115,6 +115,9 @@ struct StreamBuilder {
     /// What this topic's messages said about their own sampling time, against the log times they
     /// were recorded at. Empty for a topic whose bodies are not header-first.
     header_stamps: super::cdr::HeaderStampAccum,
+    /// What this channel's publisher said about how many messages it sent, from the `sequence` it
+    /// set on each one. Empty for a publisher that never used the field.
+    sequence: SequenceAccum,
     /// The coordinate frame this topic's messages declare, from the first message whose body starts
     /// with a `std_msgs/Header`. First one wins: a topic that changes frame mid-recording is a rig
     /// fault, but recording the last one seen would hide it behind whichever message came last.
@@ -122,6 +125,50 @@ struct StreamBuilder {
     /// Values decoded from this topic's `JointState` or `Imu` messages, with the joint set they
     /// belong to. Empty for every other topic, whose payload stays opaque.
     values: super::stats::StreamValues,
+}
+
+/// Accumulates a channel's publisher-set `sequence` numbers into a [`SequenceNumbers`].
+///
+/// The counter is a `u32` the publisher owns. Two conventions have to be told apart before a hole in
+/// it means anything: a publisher that uses the field numbers its messages 0, 1, 2, …, while one
+/// that does not leaves every message at 0. Reading the second as "n−1 messages went missing" would
+/// invent a fault out of an unused field, so a channel whose numbers never advance summarizes to
+/// nothing at all.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct SequenceAccum {
+    messages: u64,
+    missing: u64,
+    non_increasing: u64,
+    advanced: bool,
+    last: Option<u32>,
+}
+
+impl SequenceAccum {
+    /// Fold in one message's sequence number, in recording order.
+    pub(crate) fn observe(&mut self, sequence: u32) {
+        self.messages += 1;
+        if let Some(prev) = self.last {
+            if sequence > prev {
+                self.advanced = true;
+                // The hole between two consecutive numbers: how many the publisher used and the file
+                // does not hold. A step of 1 is the normal case and contributes nothing.
+                self.missing += u64::from(sequence - prev) - 1;
+            } else {
+                self.non_increasing += 1;
+            }
+        }
+        self.last = Some(sequence);
+    }
+
+    /// The summary, or `None` when the channel's numbers never advanced — a publisher that leaves
+    /// `sequence` at its default is not a publisher whose every message went missing.
+    pub(crate) fn finish(self) -> Option<crate::cdm::SequenceNumbers> {
+        self.advanced.then_some(crate::cdm::SequenceNumbers {
+            message_count: self.messages,
+            missing: self.missing,
+            non_increasing: self.non_increasing,
+        })
+    }
 }
 
 /// Match a ROS message schema name (e.g. `sensor_msgs/msg/PointCloud2`) by its final type segment,
@@ -504,6 +551,7 @@ impl Adapter for McapAdapter {
                 .or_insert_with(|| StreamBuilder {
                     point_counts: Default::default(),
                     header_stamps: Default::default(),
+                    sequence: Default::default(),
                     modality: infer_modality(schema_name, &topic),
                     frames: Vec::new(),
                     // rosbag2's MCAP writer carries each publisher's QoS on the channel, so a bag
@@ -548,6 +596,10 @@ impl Adapter for McapAdapter {
             if let Some(stamp) = super::cdr::decode_header_stamp(&message.data) {
                 builder.header_stamps.observe(ts, stamp);
             }
+
+            // The publisher's own count of what it sent. A hole in it is the one direct evidence of
+            // a dropped message a recording can hold: everything else in this file is what arrived.
+            builder.sequence.observe(message.sequence);
 
             // Decode the AV message header (never the bulk payload) to populate the autonomy CDM.
             if schema_is(schema_name, "PointCloud2") {
@@ -654,6 +706,7 @@ impl Adapter for McapAdapter {
                     observed_point_counts: b.point_counts.finish(),
                     // What the messages said about their own sampling time, against the recorder's.
                     observed_header_stamps: b.header_stamps.finish(),
+                    observed_sequence: b.sequence.finish(),
                     // The coordinate frame the sensor declares, from its message headers.
                     media: None,
                     frame_id: b.frame_id,
@@ -946,16 +999,10 @@ impl Adapter for McapAdapter {
                 m
             },
             unmapped_fields: {
-                let mut u = vec![
-                    UnmappedField {
-                        source_path: "message.publish_time".into(),
-                        note: "the CDM frame carries a single timestamp (log_time)".into(),
-                    },
-                    UnmappedField {
-                        source_path: "message.sequence".into(),
-                        note: "per-channel sequence numbers are not represented in the CDM".into(),
-                    },
-                ];
+                let mut u = vec![UnmappedField {
+                    source_path: "message.publish_time".into(),
+                    note: "the CDM frame carries a single timestamp (log_time)".into(),
+                }];
                 u.extend(count_note);
                 u
             },
@@ -1028,6 +1075,7 @@ fn ingest_summary_only(path: &Path, summary: McapSummary) -> Result<Ingested, In
             point_fields: None,
             observed_point_counts: None,
             observed_header_stamps: None,
+            observed_sequence: None,
             media: None,
             frame_id: None,
         })
