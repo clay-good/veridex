@@ -2361,9 +2361,14 @@ fn a_joint_pinned_at_its_limit_in_a_bag_is_caught_end_to_end() {
 }
 
 #[test]
-fn a_topic_whose_payload_stays_opaque_is_still_reported_unmeasured() {
+fn a_topic_whose_payload_stays_opaque_is_still_reported() {
     // Reading JointState must not turn into a claim about every other topic. A bag carrying an
     // arm beside a camera measures the arm and says so about the camera.
+    //
+    // The camera is reported as **unmeasurable**, not merely unmeasured: its payload is imagery,
+    // and Veridex reads container headers and fingerprints bytes without ever decoding a pixel. No
+    // re-run and no other format changes that, so the finding that names it must not carry the
+    // remedy that says to go and check it somewhere the values are read.
     let arm: Vec<Vec<u8>> = (0..40)
         .map(|i: i32| joint_state_body(&["elbow"], &[i as f64 * 0.01]))
         .collect();
@@ -2408,15 +2413,23 @@ fn a_topic_whose_payload_stays_opaque_is_still_reported_unmeasured() {
     let engine = veridex_core::checks::default_engine().unwrap();
     let hash = veridex_core::content_hash(&ingested.dataset);
     let verdict = engine.run(&ingested.dataset, hash, &veridex_core::RunConfig::default());
-    let unmeasured = verdict
+    let reported = verdict
         .findings
         .iter()
-        .find(|f| f.code == "STATISTICAL.UNMEASURED_VALUES")
+        .find(|f| f.code == "STATISTICAL.UNMEASURABLE_VALUES")
         .expect("the camera's payload is still opaque");
     assert!(
-        unmeasured.message.contains("/cam") && !unmeasured.message.contains("/joint_states"),
+        reported.message.contains("/cam") && !reported.message.contains("/joint_states"),
         "only the opaque topic should be named: {}",
-        unmeasured.message
+        reported.message
+    );
+    // And the arm, which *was* measured, raises neither code.
+    assert!(
+        !verdict
+            .findings
+            .iter()
+            .any(|f| f.code == "STATISTICAL.UNMEASURED_VALUES"),
+        "nothing here is unmeasured — the arm was read and the camera never can be"
     );
 }
 

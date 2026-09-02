@@ -10,6 +10,19 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **`STATISTICAL.UNMEASURED_VALUES` told an RLDS user to re-check their data in RLDS.** Running the
+  CLI over the RLDS demo, its `language_instruction` and `observation/image` streams were named as
+  carrying no statistics, beside a remedy reading "check them in a format whose values Veridex reads
+  (LeRobot, **RLDS/TFDS**, HDF5, …)" — the format already in use. The finding was collapsing two
+  silences that lead a reader to opposite actions.
+
+  A numeric stream this run did not summarize is *unmeasured*: read it again where the values are
+  read. A text feature has no minimum, and imagery is pixels Veridex never decodes by design — those
+  are **unmeasurable**, here and in every other format, and no re-run changes it. Now
+  `STATISTICAL.UNMEASURABLE_VALUES` (info), judged from what the source declares (its dtype and the
+  modality the adapter mapped it to) and never guessed from a name, with a remedy that says there is
+  nothing to do and points at the families that do own text and imagery.
+
 - **The sweep finished clean on the last two families, and the rule it taught is written down.**
   `semantic`'s three boundary comparisons — the episode-span construction and both ends of the
   annotation-alignment window — were all killed, so that family was already pinned; `video`'s one

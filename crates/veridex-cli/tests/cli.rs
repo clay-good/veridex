@@ -2134,7 +2134,9 @@ fn a_label_says_what_the_certificate_says_and_nothing_more() {
         "## Veridex trust label",
         "Grade C — 76/100",
         "| Dataset | `demo` |",
-        "| Findings | 1 error · 1 warning · 4 info |",
+        // Five info, not four: `statistical.value-measurability` separates a stream this run did
+        // not summarize from one whose values are not numbers at all, and the demo carries both.
+        "| Findings | 1 error · 1 warning · 5 info |",
         "| Provenance |",
         "veridex verify",
     ] {

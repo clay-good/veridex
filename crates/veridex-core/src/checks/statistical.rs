@@ -699,6 +699,35 @@ fn is_degenerate(stats: &StreamStats) -> bool {
 /// Whether a stream's declared dtype is a boolean — a channel with two states and nothing between
 /// them. Matched against the spellings the adapters carry through from their sources (`bool` from
 /// TFDS `features.json` and LeRobot `info.json`, `boolean` from an Arrow-derived schema).
+/// Whether a stream's values can never be summarized as numbers, in any format.
+///
+/// Distinct from "this run did not read them". A **string** feature (an RLDS
+/// `language_instruction`, a text column) has no minimum, maximum, mean or standard deviation — the
+/// statistical family has nothing to say about it and never will. **Imagery** is the same by design:
+/// Veridex reads container headers and fingerprints bytes, and never decodes a pixel, so an inline
+/// image feature's values are not summarizable here or anywhere else it could be re-checked.
+///
+/// Judged from what the source declares — the dtype it wrote and the modality the adapter mapped it
+/// to — never guessed from a name.
+fn never_numeric(stream: &crate::cdm::Stream) -> bool {
+    if matches!(stream.modality, crate::cdm::Modality::Video) {
+        return true;
+    }
+    matches!(
+        stream
+            .dtype
+            .as_deref()
+            .map(|d| d.trim().to_ascii_lowercase())
+            .as_deref(),
+        Some("string")
+            | Some("str")
+            | Some("utf8")
+            | Some("utf-8")
+            | Some("bytes")
+            | Some("object")
+    )
+}
+
 fn is_boolean_dtype(dtype: Option<&str>) -> bool {
     matches!(
         dtype.map(|d| d.trim().to_ascii_lowercase()).as_deref(),
@@ -1060,6 +1089,7 @@ impl Check for ValueMeasurability {
     fn finding_codes(&self) -> &'static [&'static str] {
         &[
             "STATISTICAL.UNMEASURED_VALUES",
+            "STATISTICAL.UNMEASURABLE_VALUES",
             "STATISTICAL.NO_STORED_STATS",
         ]
     }
@@ -1101,6 +1131,7 @@ impl Check for ValueMeasurability {
         // Reported once for the dataset: whether values are read is a property of the source format,
         // so one finding per episode would repeat the same fact for every episode.
         let mut unread: std::collections::BTreeSet<&str> = Default::default();
+        let mut unmeasurable: std::collections::BTreeSet<&str> = Default::default();
         let mut no_stored: std::collections::BTreeSet<&str> = Default::default();
         for ep in &dataset.episodes {
             for s in &ep.streams {
@@ -1109,7 +1140,19 @@ impl Check for ValueMeasurability {
                     || s.observed_non_finite.is_some()
                     || s.observed_dim_stats.is_some();
                 if !recomputed && s.stats.is_none() && s.dim_stats.is_none() {
-                    unread.insert(s.name.as_str());
+                    // Two different silences, and they lead a reader to two different actions. A
+                    // numeric stream a fuller read would summarize is *unmeasured*: check it again
+                    // where the values are read. A string has no minimum, and imagery is pixels
+                    // Veridex never decodes by design — those are *unmeasurable*, in this format and
+                    // in every other, and telling their reader to re-check them somewhere else sends
+                    // them after a summary that does not exist. That misdirection was live: an RLDS
+                    // dataset's `language_instruction` was named as unread beside a remedy listing
+                    // RLDS among the formats whose values Veridex reads.
+                    if never_numeric(s) {
+                        unmeasurable.insert(s.name.as_str());
+                    } else {
+                        unread.insert(s.name.as_str());
+                    }
                 } else if recomputed && s.stats.is_none() && s.dim_stats.is_none() {
                     no_stored.insert(s.name.as_str());
                 }
@@ -1144,6 +1187,35 @@ impl Check for ValueMeasurability {
                      integrity matters, check them in a format whose values Veridex reads \
                      (LeRobot, RLDS/TFDS, HDF5, Zarr, CAN+DBC, MF4, and a bag's JointState and \
                      Imu topics).",
+                ),
+            );
+        }
+        if !unmeasurable.is_empty() {
+            let names: Vec<&str> = unmeasurable.into_iter().collect();
+            findings.push(
+                Finding::new(
+                    self.id(),
+                    Category::Statistical,
+                    Severity::Info,
+                    Location::Dataset,
+                    "STATISTICAL.UNMEASURABLE_VALUES",
+                    format!(
+                        "{} stream(s) hold values that are not numbers — a text feature has no \
+                         minimum, and imagery is pixels Veridex never decodes — so the statistical \
+                         checks have nothing to say about them in any format ({})",
+                        names.len(),
+                        list_a_few(&names),
+                    ),
+                )
+                .with_risk(
+                    "A clean statistical result says nothing about these streams, and no re-run \
+                     will change that. What can go wrong in them — an empty instruction, a video \
+                     whose frame count no longer matches the actions it is paired with — is the \
+                     semantic and video families' to report, not this one's.",
+                )
+                .with_remedy(
+                    "Nothing to do here: this is the shape of the data, not a gap in the run. Read \
+                     the semantic findings for text and the video findings for imagery.",
                 ),
             );
         }

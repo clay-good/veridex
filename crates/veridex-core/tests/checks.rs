@@ -5218,6 +5218,49 @@ fn frozen_in_exactly_half_the_episodes_is_the_dataset_not_a_fault() {
 }
 
 #[test]
+fn a_string_has_no_minimum_and_that_is_not_a_gap_in_the_run() {
+    // Two silences the statistical family used to report as one. A numeric stream this run did not
+    // summarize is *unmeasured*: read it again where the values are read. A text feature has no
+    // minimum and imagery is pixels Veridex never decodes — those are *unmeasurable*, here and in
+    // every other format, so the remedy that says "check them in a format whose values Veridex
+    // reads" sends their reader after a summary that does not exist.
+    //
+    // Live misdirection, found by running the CLI on the RLDS demo: its `language_instruction` was
+    // named as unread beside a remedy listing RLDS among the formats whose values Veridex reads.
+    let mut text = stream("language_instruction", "c", None, &[0, 1]);
+    text.dtype = Some("string".into());
+    let mut image = stream("observation/image", "c", None, &[0, 1]);
+    image.modality = Modality::Video;
+    image.dtype = Some("uint8".into());
+    let numeric = stream("observation/state", "c", None, &[0, 1]);
+
+    let f =
+        statistical::ValueMeasurability.run(&dataset(vec![episode(0, vec![text, image, numeric])]));
+    let by_code = |code: &str| -> Option<String> {
+        f.iter().find(|x| x.code == code).map(|x| x.message.clone())
+    };
+
+    let unmeasurable = by_code("STATISTICAL.UNMEASURABLE_VALUES").expect("{f:?}");
+    assert!(
+        unmeasurable.contains("language_instruction"),
+        "{unmeasurable}"
+    );
+    assert!(unmeasurable.contains("observation/image"), "{unmeasurable}");
+    assert!(
+        !unmeasurable.contains("observation/state"),
+        "a numeric stream is not unmeasurable: {unmeasurable}"
+    );
+
+    // ...and the numeric one is still reported as unmeasured, with the remedy that fits it.
+    let unmeasured = by_code("STATISTICAL.UNMEASURED_VALUES").expect("{f:?}");
+    assert!(unmeasured.contains("observation/state"), "{unmeasured}");
+    assert!(
+        !unmeasured.contains("language_instruction") && !unmeasured.contains("observation/image"),
+        "the two causes must not be mixed: {unmeasured}"
+    );
+}
+
+#[test]
 fn a_stream_frozen_in_most_episodes_is_how_the_dataset_is_built() {
     // Frozen in three of five is not an anomaly in the dataset, it is the dataset. The same
     // reasoning as comparing an episode's duration against the dataset's own median.

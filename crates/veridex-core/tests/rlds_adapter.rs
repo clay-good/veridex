@@ -1098,13 +1098,15 @@ fn a_clean_rlds_dataset_passes_the_standard_checks_without_false_findings() {
         .map(|f| f.code.as_str())
         .filter(|code| !code.starts_with("PROVENANCE."))
         .filter(|code| *code != "TEMPORAL.UNMEASURED_CLOCK")
-        // The other half of the same disclosure, in both its forms: TFDS stores no summary
-        // statistics of its own (so the stored-vs-observed comparison has nothing to compare to),
-        // and a `bytes_list` leaf — an image, an instruction string — is fingerprinted rather than
-        // interpreted (so nothing measured it). Both say what a passing statistical result is
-        // evidence of; neither accuses the data of anything.
+        // The other half of the same disclosure, in all three of its forms: TFDS stores no summary
+        // statistics of its own (so the stored-vs-observed comparison has nothing to compare to); a
+        // numeric leaf this run did not summarize is *unmeasured*; and a `bytes_list` leaf — an
+        // image, an instruction string — holds values that are not numbers at all, which no format
+        // and no re-run makes summarizable. Each says what a passing statistical result is evidence
+        // of; none accuses the data of anything.
         .filter(|code| *code != "STATISTICAL.NO_STORED_STATS")
         .filter(|code| *code != "STATISTICAL.UNMEASURED_VALUES")
+        .filter(|code| *code != "STATISTICAL.UNMEASURABLE_VALUES")
         // And the third form: this fixture is a single episode, so the checks that answer by
         // comparing episodes had nothing to compare. A statement about the run's evidence, not
         // about the data.
