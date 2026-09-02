@@ -139,6 +139,38 @@ fn the_av_message_headers_populate_the_rig_cdm() {
     // Every header-first message names the frame its data is expressed in.
     assert_eq!(lidar.frame_id.as_deref(), Some("lidar_link"));
 
+    // The IMU's *values*, not just its header. An `Imu` body is decoded in full — orientation,
+    // angular velocity and linear acceleration, each gated on its covariance's ROS "not provided"
+    // sentinel — so the statistical family grades the sensor rather than abstaining on it. The
+    // fixture wrote a stub body here for as long as the helper's docstring said Veridex did not
+    // decode `Imu`, which stopped being true when the decoder landed: the bag path's Imu decode was
+    // reachable, unexercised, and would have gone on being both.
+    let imu = out.dataset.episodes[0]
+        .streams
+        .iter()
+        .find(|s| s.name == "/imu/data")
+        .expect("the imu stream");
+    assert!(
+        imu.observed_dim_stats.is_some(),
+        "the bag's IMU carries measured values, per dimension"
+    );
+    let dims = imu.observed_dim_stats.as_ref().unwrap();
+    assert!(
+        dims.len() >= 10,
+        "ten scalars: four orientation, three angular, three linear — got {}",
+        dims.len()
+    );
+    // Level and driving straight: the linear-acceleration z dimension sits at ~1 g.
+    let z = dims
+        .iter()
+        .find(|d| d.dim == 9)
+        .expect("linear_acceleration.z");
+    assert!(
+        (z.stats.mean - 9.81).abs() < 0.2,
+        "1 g down, not a fingerprint: {:?}",
+        z.stats
+    );
+
     // TFMessage -> the transform tree; CameraInfo -> intrinsics.
     let calib = out
         .dataset

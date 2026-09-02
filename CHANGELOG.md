@@ -10,6 +10,19 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A bag's IMU was a stub, so the decoder written for it never ran on one.** The rosbag2 fixture
+  generator wrote `/imu/data` through a helper documented as "any header-first message whose body
+  Veridex does not decode (Image, **Imu**, …)" — true when it was written, and false since the `Imu`
+  decoder landed. So the bag path's Imu decode was reachable, unexercised, and would have gone on
+  being both: a fixture named `clean_rig` reported its IMU under `STATISTICAL.UNMEASURED_VALUES`,
+  and the statistical family abstained on the one sensor in that recording whose values it can grade.
+
+  The generator now writes a real `sensor_msgs/msg/Imu` body — orientation, angular velocity and
+  linear acceleration, each with its covariance — and the fixtures are regenerated. The IMU carries
+  measured values per dimension, `linear_acceleration.z` sits at 1 g, and a test pins both. The
+  pinned golden payload hashes are over LiDAR and overflow-page messages and are unchanged. Found by
+  running the CLI on the bag fixture the docs tell a reader to try.
+
 - **A point record layout that does not fit the stride it declares.** The last unread field in the
   CDR decoder: `PointField`'s `offset` and `count` were parsed and discarded, so a cloud whose fields
   run past `point_step` or overlap each other — what a hand-rolled publisher writes when it adds a

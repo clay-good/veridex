@@ -163,10 +163,41 @@ def joint_state(ts_ns, names, positions):
 
 
 def header_only(frame_id, ts_ns, filler=64):
-    """Any header-first message whose body Veridex does not decode (Image, Imu, …)."""
+    """Any header-first message whose body Veridex does not decode (Image, …).
+
+    Not for `Imu` or `JointState` any more: Veridex decodes both in full, so a stub body there
+    leaves the bag path's decoder unexercised and the statistical family abstaining on a sensor the
+    fixture calls clean. See `imu()`.
+    """
     c = Cdr()
     c.header(frame_id, ts_ns)
     c.raw(bytes(filler))
+    return c.bytes()
+
+
+def imu(frame_id, ts_ns, phase):
+    """A real `sensor_msgs/msg/Imu` body: orientation, angular velocity and linear acceleration,
+    each followed by its 9-element covariance.
+
+    Veridex decodes this in full, so the bag's IMU carries measured values and the statistical
+    family grades it — which is the point of a fixture called `clean_rig`. A leading `-1` in a
+    covariance is ROS's "not provided"; these are zero, so every value is measured.
+    """
+    import math
+
+    c = Cdr()
+    c.header(frame_id, ts_ns)
+    # Level and driving straight: identity orientation, a little sway, 1 g down.
+    groups = [
+        [0.0, 0.0, 0.0, 1.0],
+        [0.0, 0.0, 0.02 * math.sin(phase)],
+        [0.0, 0.0, 9.81 + 0.05 * math.sin(phase * 2.0)],
+    ]
+    for values in groups:
+        for v in values:
+            c.f64(v)
+        for _ in range(9):
+            c.f64(0.0)
     return c.bytes()
 
 
@@ -288,7 +319,7 @@ def rig_messages(n_lidar=20, camera_end_scale=1.0):
         msgs.append((3, ts, camera_info("camera_front", ts)))
     for i in range(n_lidar * 10):
         ts = START + i * 10_000_000
-        msgs.append((4, ts, header_only("imu_link", ts, 96)))
+        msgs.append((4, ts, imu("imu_link", ts, i * 0.05)))
     for i in range(n_lidar * 5):
         ts = START + i * 20_000_000
         msgs.append((5, ts, odometry("odom", ts, i * 0.2, 0.0)))
