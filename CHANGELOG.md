@@ -35,13 +35,13 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
-- **The documented certificate hash was wrong, and the guard was excluding it.** The autonomy
-  quickstart's `certify` transcript pins a real content hash, and the test that diffs that page
-  against live CLI output deliberately skipped that one field — "shown truncated", though the CLI
-  prints exactly the sixteen characters the page does. It is also the only field that moves whenever
-  the CDM does. It went stale the same week the exclusion was written, while every other line of the
-  block stayed right, because nothing was watching it. The hash is corrected and the guard now
-  compares the whole line.
+- **The documented certificate hash was stale, and pinning it was the wrong fix.** The autonomy
+  quickstart's `certify` transcript showed a content hash that no longer matched, because the test
+  diffing that page against live CLI output skipped that one field. Pinning it instead turned out to
+  be wrong twice over: the value goes stale whenever the CDM gains a field *or* a dependency changes
+  what the container records about itself, and it is not a claim a reader can check — it is an opaque
+  digest. The page now elides it, and the guard compares the verdict and grade exactly while checking
+  the hash for shape only (sixteen hex characters).
 
 - **`docs/profiles.md` states the readiness criteria twice and nothing checked either.** The page
   lists them as a table and again inside a sample `verify` transcript; both are hand-maintained, and

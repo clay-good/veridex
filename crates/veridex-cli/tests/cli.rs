@@ -3070,15 +3070,27 @@ fn the_autonomy_quickstart_still_prints_what_it_says_it_does() {
                 "the quickstart's readiness block has drifted; it should show:\n  {trimmed}"
             );
         }
-        if trimmed.starts_with("certified av — ") {
-            // Including the content hash the certificate is bound to. It was excluded here — as
-            // "shown truncated", though the CLI prints exactly the sixteen characters the page does
-            // — and it is the one field that moves whenever the CDM does. It went stale the same
-            // day this exclusion was written down, while every other line of the block stayed
-            // right, because nothing was watching it.
+        if let Some(head) = trimmed.strip_prefix("certified av — ") {
+            // Everything up to the content hash, which the page deliberately elides rather than
+            // pinning. Pinning it was tried and was wrong twice over: the value went stale within
+            // days, and it is not a *claim* a reader can check — it is an opaque digest that moves
+            // whenever the CDM gains a field or a dependency changes what the container records
+            // about itself. What the page promises is the verdict and the grade, and those are
+            // compared exactly. The hash is checked for shape only, below.
+            let claim = head.split(", bound to").next().unwrap_or_default();
             assert!(
-                quickstart.contains(trimmed),
-                "the quickstart's certify line has drifted; it should show:\n  {trimmed}"
+                quickstart.contains(claim),
+                "the quickstart's certify line has drifted; it should show:\n  certified av — {claim}"
+            );
+            let printed = head.split(", bound to ").nth(1).unwrap_or_default();
+            assert_eq!(
+                printed.len(),
+                16,
+                "certify prints a 16-character content hash; the page describes one"
+            );
+            assert!(
+                printed.chars().all(|c| c.is_ascii_hexdigit()),
+                "the bound value must be a hex digest, got `{printed}`"
             );
         }
     }
