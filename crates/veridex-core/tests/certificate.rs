@@ -826,3 +826,47 @@ fn a_certificate_issued_before_this_field_existed_still_verifies() {
         other => panic!("expected a hash mismatch, got {other:?}"),
     }
 }
+
+#[test]
+fn the_label_does_not_call_a_guess_an_attestation() {
+    // `Asserted` provenance is not attested provenance. Most `Asserted` elements in practice come
+    // from an adapter's name heuristic — the MCAP reader classes an attachment called
+    // `calibration.yaml` as `Asserted` because the *filename* contains "calib", having read no
+    // calibration content and seen no signature. Attestation is the other thing entirely: a
+    // producer signing for a value with their own key, which the certificate records separately and
+    // the label prints in its own `Attested` row.
+    //
+    // The label is the artifact that travels furthest — it is pasted into a public dataset card —
+    // so it is the one place that must not overstate. Every other renderer says "asserted".
+    let mut d = dataset(vec![stream("s", "c", &[0, 1_000_000, 2_000_000])]);
+    d.provenance.push(veridex_core::cdm::Provenance {
+        scope: veridex_core::cdm::ProvenanceScope::Dataset,
+        elements: vec![veridex_core::cdm::ProvenanceElement {
+            key: "calibration".into(),
+            value: Some("calibration.yaml".into()),
+            class: veridex_core::cdm::ProvenanceClass::Asserted,
+        }],
+    });
+    let (cert, _) = issue_cert(&d);
+    assert_eq!(
+        cert.provenance_coverage.asserted, 1,
+        "fixture must carry exactly one asserted element"
+    );
+    assert!(
+        cert.attestation.is_none(),
+        "and nothing signed for it: {:?}",
+        cert.attestation
+    );
+
+    let signed = sign(cert, &keypair());
+    let label = veridex_core::render_label(&signed, true);
+
+    assert!(
+        label.contains("1 asserted"),
+        "the label must count the element the way every other renderer names it: {label}"
+    );
+    assert!(
+        !label.to_ascii_lowercase().contains("attest"),
+        "a label with no signed attestation must not claim one: {label}"
+    );
+}

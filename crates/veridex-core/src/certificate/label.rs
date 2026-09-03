@@ -60,9 +60,15 @@ pub fn render_label(signed: &SignedCertificate, issuer_verified: bool) -> String
         "| Findings | {} error · {} warning · {} info |",
         counts.error, counts.warning, counts.info
     );
+    // `asserted`, not `attested`. An `Asserted` element is usually an adapter's honest guess — the
+    // MCAP reader classes an attachment named `calibration.yaml` from the "calib" in its filename,
+    // having read no calibration content — while *attestation* is a producer signing for a value
+    // with their own key, which gets its own row below. The label is the artifact that travels
+    // furthest, into public dataset cards, so it is the one place that must not promote a guess into
+    // a signature. Every other renderer already says "asserted".
     let _ = writeln!(
         out,
-        "| Provenance | {} known · {} attested · {} unknown |",
+        "| Provenance | {} known · {} asserted · {} unknown |",
         coverage.known, coverage.asserted, coverage.unknown
     );
     if !cert.findings_summary.by_category.is_empty() {

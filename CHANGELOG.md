@@ -8,6 +8,24 @@ All notable changes to Veridex are recorded here. The format follows
 The first shippable slice of the [`bootstrap-veridex-mvp`](openspec/changes/bootstrap-veridex-mvp/)
 change. Runs end-to-end: ingest → validate → score → report → sign.
 
+### Fixed
+
+- **The nutrition label promoted a filename guess into a signature.** The label's provenance line
+  read `3 known · 1 attested · 2 unknown`, printing the `asserted` count under the word *attested*.
+  Those are different claims. `Asserted` is usually an adapter being honest about a guess — the MCAP
+  reader classes an attachment named `calibration.yaml` as `asserted` because the *filename* contains
+  "calib", having read no calibration content and seen no signature. *Attestation* is a producer
+  signing for a value with their own key, and the label already prints that in its own `Attested`
+  row, naming the elements and the key.
+
+  So the demo dataset's label claimed one attested element with nothing attested and no `Attested`
+  row — and the label is the artifact that travels furthest, pasted into public dataset cards, where
+  the caveat cannot be recovered from the terminal that produced it. The line now says `1 asserted`,
+  matching `inspect`, the report, the certificate JSON and [docs/rubric-v1.md](docs/rubric-v1.md);
+  only the dedicated row claims a signature. Two tests hold it: a label with an asserted element and
+  no attestation must not contain the word at all, and the end-to-end attestation test now asserts
+  the count and the signed row separately, so one can no longer stand in for the other.
+
 ### Added
 
 - **Every tolerance now has to reach the two places the compiler cannot check.** Adding a

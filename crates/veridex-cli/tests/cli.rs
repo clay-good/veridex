@@ -2674,12 +2674,12 @@ fn a_certificate_does_not_contradict_itself_about_attested_provenance() {
         &issuer_pub,
     ]);
     assert!(
-        label.contains("1 attested"),
-        "the label's provenance line must count it: {label}"
+        label.contains("1 asserted"),
+        "the label's provenance line must count it, in the class every renderer names: {label}"
     );
     assert!(
-        label.contains("Attested"),
-        "and name what came from a signature: {label}"
+        label.contains("| Attested | clock —"),
+        "and only the dedicated row claims a signature, naming what it covers: {label}"
     );
 }
 
