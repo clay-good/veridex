@@ -674,6 +674,18 @@ fn report_ingest_error(
     error: &veridex_core::adapter::IngestError,
 ) -> ExitCode {
     eprintln!("veridex: {error}");
+    // A zero-byte file, whatever the adapter made of it. This is what a crashed or killed recorder
+    // leaves behind, and every format's parser describes it in that format's own terms — MCAP calls
+    // it a record that ended early, which sends a reader hunting for a truncation in a file with no
+    // bytes in it. The empty *directory* below already gets this treatment; the file was the case
+    // that was missed. Stated before the format-specific hint, because it explains the error rather
+    // than qualifying it.
+    if let Source::Local(path) = source {
+        if std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() == 0) {
+            eprintln!("       the file is empty (0 bytes)");
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
+    }
     if let (veridex_core::adapter::IngestError::UnsupportedFormat { .. }, Source::Local(path)) =
         (error, source)
     {

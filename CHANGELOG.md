@@ -51,6 +51,13 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **A zero-byte recording was described as a truncated record.** A crashed or killed recorder leaves
+  an empty file behind, and it is one of the most common real files a first-time user points Veridex
+  at. Every format's parser described it in that format's own terms — MCAP as `ended in the middle of
+  a record`, which is true (it ended before the first one) and sends a reader hunting for a
+  truncation in a file with no bytes in it. The failure now carries `the file is empty (0 bytes)`,
+  which is the treatment an empty *directory* already got; the file was the case that was missed.
+
 - **`VIDEO.MEDIA_UNREADABLE` was declared an abstention and documented as not one, at the same
   time.** The previous release note recorded it as a deliberate exception — the media was reached and
   would not parse, which is a defect in the file rather than a gap in what Veridex looked at — while

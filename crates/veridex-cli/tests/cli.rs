@@ -3323,3 +3323,24 @@ fn the_checks_listing_marks_which_findings_mean_could_not_measure() {
         "the JSON catalog must carry the declaration: {entry}"
     );
 }
+
+#[test]
+fn an_empty_file_says_so_rather_than_describing_a_truncated_record() {
+    // A zero-byte recording is what a crashed or killed recorder leaves behind, and it is one of the
+    // most common real files a first-time user points Veridex at. The parser is correct that the
+    // file "ended in the middle of a record" — it ended before the first one — but that sentence
+    // sends a reader looking for a truncation in a file that has no bytes at all.
+    //
+    // The empty *directory* already gets this treatment for the same reason, so the file is simply
+    // the case that was missed.
+    let dir = temp_dir("empty-file");
+    let empty = dir.join("recording.mcap");
+    std::fs::write(&empty, b"").unwrap();
+
+    let (code, _, stderr) = run(&["check", empty.to_str().unwrap()]);
+    assert_eq!(code, 2, "a file Veridex cannot read is a tool error");
+    assert!(
+        stderr.contains("the file is empty"),
+        "the reader must be told the file has no bytes: {stderr}"
+    );
+}
