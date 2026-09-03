@@ -11,9 +11,9 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 ### Fixed
 
 - **Two finding messages were sized by the file, not by the catalog.** A finding message is not a
-  debug print — it reaches the terminal, the JSON, the SARIF *and the signed certificate* — and
-  nothing caps how many streams a file declares or how many labels it stamps on one instant. Two
-  checks in the semantic family joined the whole list in:
+  debug print — it reaches the terminal, the JSON report, the SARIF and the HTML — and nothing caps
+  how many streams a file declares or how many labels it stamps on one instant. Two checks in the
+  semantic family joined the whole list in:
 
   `SEMANTIC.AMBIGUOUS_STREAM_KEY` reports one finding per member of a colliding group, each naming
   every *other* member, which is quadratic in the bytes. 2,000 streams that normalize to the same key

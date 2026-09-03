@@ -401,10 +401,11 @@ impl Check for StreamKeyClarity {
 ///
 /// Nothing caps how many streams a file declares or how many labels it carries, so a list joined
 /// verbatim here is sized by the input rather than by the catalog. That is not a cosmetic limit: a
-/// finding message reaches the terminal, the JSON, the SARIF **and the signed certificate**, and
+/// finding message reaches the terminal, the JSON report, the SARIF and the HTML, and
 /// `SEMANTIC.AMBIGUOUS_STREAM_KEY` emits one finding per member of a colliding group while listing
 /// every *other* member — quadratic in the bytes. 2,000 streams that normalize alike produced 263 KB
-/// per message and roughly half a gigabyte of report from a legal file.
+/// per message and roughly half a gigabyte of report from a legal file. (A certificate carries only
+/// counts, never message text, so it is the one output shape this could not reach.)
 ///
 /// The count is always stated in full by the callers; only the enumeration is abbreviated, so
 /// nothing a reader needs to size the problem is lost. (`statistical.rs`, `structural.rs`,

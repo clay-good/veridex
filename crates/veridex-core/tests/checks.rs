@@ -6741,9 +6741,9 @@ fn the_unfixed_fraction_threshold_is_a_boundary_the_wording_promises() {
 //
 // Nothing caps how many streams a file declares or how many labels it carries, so any list joined
 // verbatim into a finding message is sized by the input. A finding message is not a debug print: it
-// reaches the terminal, the JSON, the SARIF *and the signed certificate*, so an unbounded one is a
-// legal file turning a report into hundreds of megabytes. Every other family already names a few and
-// counts the rest; these two were joining the whole list.
+// reaches the terminal, the JSON report, the SARIF and the HTML, so an unbounded one is a legal file
+// turning a report into hundreds of megabytes. Every other family already names a few and counts the
+// rest; these two were joining the whole list.
 
 /// Streams that all normalize to the same key, so they form one ambiguous group.
 fn ambiguous_stream_group(n: usize) -> Vec<veridex_core::cdm::Stream> {
