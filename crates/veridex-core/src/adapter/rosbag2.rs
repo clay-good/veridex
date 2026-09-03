@@ -529,7 +529,7 @@ impl Rosbag2Adapter {
     /// recording came back with two `TEMPORAL.NON_MONOTONIC` **errors** and two `TEMPORAL.GAP`
     /// warnings, and split recordings are the ordinary shape of any long bag.
     ///
-    /// So the shards are ordered by [`natural_key`] — digit runs compared as numbers — and the
+    /// So the shards are ordered by [`super::natural_key`] — digit runs compared as numbers — and the
     /// caller then reorders by what the manifest lists, which is the bag's own record of the order
     /// it wrote them in. Taking an *ordering* from the manifest follows no path anywhere; only the
     /// file names already found by listing are ever opened.

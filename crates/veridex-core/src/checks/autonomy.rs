@@ -2107,7 +2107,7 @@ fn distortion_coefficient_count_wrong(k: &CameraIntrinsics) -> Option<String> {
 /// Every way a dataset's transform tree is present, connected, and still not a tree — as sentences
 /// naming the frames.
 ///
-/// [`tf_component_count`] and [`tf_reachable_from`] both walk the frame graph **undirected**, which
+/// [`tf_component_count`] and [`tf_reachable_from_any`] both walk the frame graph **undirected**, which
 /// answers "can these two sensors be related at all" and nothing about whether the relation is
 /// *unique*. A transform tree is a tree: every frame has exactly one parent, and there are no
 /// cycles. Two shapes break that while leaving the graph connected, so every existing calibration
@@ -2364,7 +2364,7 @@ fn parents_claiming_at_once<'a>(edges: &[&'a Transform]) -> Vec<&'a str> {
 
 /// The frames reachable from *any* of `starts`, in one walk.
 ///
-/// [`tf_reachable_from`] visits a whole connected component per call, so asking it once per camera
+/// [`tf_reachable_from_any`] visits a whole connected component per call, so asking it once per camera
 /// re-walks the same tree for every camera on the rig — the product of two counts the input file
 /// chooses. A multi-source breadth-first walk answers the same question in one pass over the tree.
 fn tf_reachable_from_any<'a>(

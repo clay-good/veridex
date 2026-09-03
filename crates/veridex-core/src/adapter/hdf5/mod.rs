@@ -88,7 +88,7 @@ const TASK_ATTRS: &[&str] = &["language_instruction", "task"];
 /// the same question `provenance.annotator` asks (who labelled the data), so it stays its own
 /// element rather than inheriting the recording-metadata reading; and `date` is kept as `created`,
 /// which the shared table has no row for. Everything else — `sensor`, `device`, `derived_from`,
-/// `calibration`, the rig-lineage keys — now resolves through [`provenance_key_for`], so a key
+/// `calibration`, the rig-lineage keys — now resolves through [`super::provenance_key_for`], so a key
 /// called `sensor` means the same thing in a store attribute as in an MCAP `Metadata` record.
 const PROVENANCE_ATTRS: &[(&str, &str)] = &[
     ("license", "license"),

@@ -134,7 +134,7 @@ struct StreamBuilder {
     values: super::stats::StreamValues,
 }
 
-/// Accumulates a channel's publisher-set `sequence` numbers into a [`SequenceNumbers`].
+/// Accumulates a channel's publisher-set `sequence` numbers into a [`crate::cdm::SequenceNumbers`].
 ///
 /// The counter is a `u32` the publisher owns. Two conventions have to be told apart before a hole in
 /// it means anything: a publisher that uses the field numbers its messages 0, 1, 2, …, while one

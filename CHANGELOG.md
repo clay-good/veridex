@@ -82,6 +82,17 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **The docs gate could not see the modules the code lives in.** CI builds the documentation with
+  `-D warnings` so that a broken intra-doc link is caught here rather than shipping to docs.rs as a
+  page that never renders. It was building public items only — and most of this crate is
+  crate-private: the adapters, the decoders, the check internals. rustdoc resolves links only in
+  what it documents, so none of those were checked.
+
+  Nine intra-doc links were broken, and the gate was green over every one. Two named a function
+  deleted in the commit before this one, two named `tf_reachable_from` after it became
+  `tf_reachable_from_any`, and the rest pointed at items that had moved module. All nine are fixed,
+  and the gate now runs `--document-private-items`, which fails on all nine as written.
+
 - **Two spelled-out counts in the docs were held to nothing.** "Seven formats support
   `--metadata-only`" and "the seven checks that answer by comparing episodes against each other" are
   numbers the registry and the catalog own, restated across the README, `docs/partial-runs.md`,

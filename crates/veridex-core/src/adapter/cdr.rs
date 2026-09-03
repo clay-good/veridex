@@ -258,7 +258,7 @@ pub fn decode_point_cloud2_fields(data: &[u8]) -> Option<Vec<PointField>> {
     Some(fields)
 }
 
-/// Accumulates what a receiver said about its own fix into a [`FixAvailability`].
+/// Accumulates what a receiver said about its own fix into a [`crate::cdm::FixAvailability`].
 ///
 /// Only `NavSatFix` bodies that decoded reach this: a body that could not be parsed is not the
 /// receiver saying anything, and counting it as a no-fix would report a decode failure as an
@@ -591,7 +591,7 @@ pub fn decode_imu_values(data: &[u8]) -> Option<Vec<Option<f64>>> {
     values.iter().any(Option::is_some).then_some(values)
 }
 
-/// The name of each scalar [`decode_nav_sat_fix_values`] returns, in the same order.
+/// The name of each scalar [`decode_nav_sat_fix`] returns for a fix, in the same order.
 pub const NAV_SAT_FIX_DIM_NAMES: [&str; 3] = ["latitude", "longitude", "altitude"];
 
 /// The `NavSatStatus.status` value a receiver publishes when it has no fix at all.
@@ -604,7 +604,7 @@ const NAV_SAT_STATUS_NO_FIX: i8 = -1;
 
 /// What one `NavSatFix` body turned out to be.
 ///
-/// The distinction the value decode cannot express: [`decode_nav_sat_fix_values`] answers `None` for
+/// The distinction a plain value decode cannot express: one `Option` answers `None` for
 /// a body that is not a `NavSatFix` at all *and* for one whose receiver declared no fix, and those
 /// are opposite facts. The first is a message Veridex could not read; the second is a message that
 /// read perfectly and says the sensor had nothing to report. Counting the second is the only way a

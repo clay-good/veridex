@@ -52,8 +52,13 @@ jobs:
       # `--all-features` because that is what docs.rs is configured to build (see
       # `[package.metadata.docs.rs]`), and the default-feature build does not compile the remote
       # reader at all — a broken link inside it would ship to docs.rs unseen.
+      # `--document-private-items` because most of this crate is crate-private — the adapters, the
+      # decoders, the check internals — and rustdoc only resolves links in what it documents. Nine
+      # intra-doc links were broken, including two naming a function that had been deleted and two
+      # naming one that had been renamed, and the public-only build was green over every one of
+      # them. A gate that cannot see the modules the code lives in is not gating them.
       - name: Docs
-        run: cargo doc --no-deps --all-features -p veridex-core -p veridex-cli
+        run: cargo doc --no-deps --all-features --document-private-items -p veridex-core -p veridex-cli
         env:
           RUSTDOCFLAGS: -D warnings
 
