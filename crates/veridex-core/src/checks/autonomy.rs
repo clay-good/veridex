@@ -1318,7 +1318,12 @@ impl Check for SensorFrameResolution {
             "AUTONOMY.SENSOR_FRAME_UNKNOWN",
             "AUTONOMY.SENSOR_FRAME_UNRELATED",
             "AUTONOMY.EGO_FRAME_UNKNOWN",
+            "AUTONOMY.SENSOR_FRAME_UNCHECKED",
         ]
+    }
+
+    fn abstention_codes(&self) -> &'static [&'static str] {
+        &["AUTONOMY.SENSOR_FRAME_UNCHECKED"]
     }
     fn title(&self) -> &'static str {
         "Sensor frame resolves through the rig calibration"
@@ -1342,8 +1347,46 @@ impl Check for SensorFrameResolution {
             .map(|c| c.transforms.as_slice())
             .unwrap_or(&[]);
         if transforms.is_empty() {
-            // No tree at all is one defect, reported once by `autonomy.calibration-completeness`.
-            return Vec::new();
+            // No tree at all is one defect, and `autonomy.calibration-completeness` reports it —
+            // this check must not accuse the rig a second time for the same missing document.
+            //
+            // But returning nothing was not the same as saying nothing: a criterion is judged by its
+            // own check's findings, so `world-model-ready` signed "✓ every sensor's own frame
+            // resolves through the tree to a camera" beside the failing calibration criterion, over
+            // a rig with no tree to resolve through. `ready` was already false from the other
+            // criterion, so nothing was certified that should not have been — but the sentence was
+            // untrue about the run, and a reader deciding what to fix was told the spatial wiring
+            // was sound. So: abstain out loud, which is a statement about this check rather than a
+            // second accusation about the data.
+            // ...and only for a rig. This check's *faults* are per stream and self-limiting — a
+            // dataset with no sensors declaring frames produces none — but an abstention is
+            // dataset-scoped and fires on the absence of a tree, which almost nothing outside an
+            // autonomy rig carries. Ungated, it told every LeRobot arm recording and every
+            // ordinary MCAP file that it "declares no transform tree", which is true and not a
+            // gap in anything they were being measured for.
+            if !dataset.episodes.iter().any(is_rig_episode) {
+                return Vec::new();
+            }
+            return vec![Finding::new(
+                self.id(),
+                Category::Autonomy,
+                Severity::Info,
+                Location::Dataset,
+                "AUTONOMY.SENSOR_FRAME_UNCHECKED",
+                "the dataset declares no transform tree, so no sensor's frame could be resolved \
+                 through one"
+                    .to_string(),
+            )
+            .with_risk(
+                "Nothing in this run can tell you where these sensors sit relative to one another. \
+                 A clean frame-resolution result here is the absence of a check, not evidence that \
+                 the rig can be spatially fused.",
+            )
+            .with_remedy(
+                "Record the rig's transform tree alongside the data (a `/tf_static` topic, or the \
+                 calibration document the recorder was configured with). The missing tree itself is \
+                 reported by `autonomy.calibration-completeness`.",
+            )];
         }
 
         // Every frame the tree names. Built once for the whole dataset: it depends only on the

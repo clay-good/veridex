@@ -51,6 +51,26 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **A rig with no transform tree reported its sensors resolved.** Completing the audit the entry
+  below started: `autonomy.sensor-frame-resolution` returned early when the dataset carries no
+  calibration, deferring to `autonomy.calibration-completeness` — "No tree at all is one defect,
+  reported once." That is right about the *report* and wrong about the criteria, which are per check.
+  The certificate carried `✗ autonomy.calibration-completeness` beside
+  `✓ autonomy.sensor-frame-resolution — every sensor's own frame resolves through the tree to a
+  camera`, over a rig with no tree to resolve through. `ready` was already false from the first, so
+  nothing was certified that should not have been, but the sentence was untrue about the run it
+  described and a reader deciding what to fix was told the spatial wiring was sound.
+
+  The check now abstains out loud (`AUTONOMY.SENSOR_FRAME_UNCHECKED`), which is a statement about the
+  check rather than a second accusation about the data — and **only for a rig**. This check's faults
+  are per stream and self-limiting, but the abstention fires on the *absence* of a tree, which almost
+  nothing outside an autonomy rig carries; ungated it told every LeRobot arm recording and every
+  ordinary MCAP file that it declares no transform tree, which is true and not a gap in anything they
+  were being measured for. With this, all nine `world-model-ready`
+  criteria either measure or abstain: `autonomy.sequence-complete` was the last one audited and needs
+  no change, because it falls back to the sensor's own median inter-frame interval when a publisher's
+  message numbering is absent, so it measures wherever there are frames to measure.
+
 - **Two readiness criteria were met over a satellite receiver whose data was never decoded.**
   `autonomy.point-cloud-density` already gets this right: a LiDAR whose per-message point counts were
   never read makes it abstain out loud, which refuses its criterion, because "every point-cloud

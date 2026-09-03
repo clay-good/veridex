@@ -1145,3 +1145,41 @@ fn a_receiver_whose_positions_were_never_decoded_does_not_pass_its_criteria() {
         );
     }
 }
+
+#[test]
+fn a_rig_with_no_transform_tree_does_not_report_its_sensors_resolved() {
+    // `autonomy.sensor-frame-resolution` returns early when the dataset carries no calibration at
+    // all, deferring to `autonomy.calibration-completeness`: "No tree at all is one defect, reported
+    // once." That is right about the *report* — one defect, named once — and wrong about the
+    // criteria, which are per check. The certificate then carries
+    //
+    //     ✗ autonomy.calibration-completeness — a connected, unambiguous transform (TF) tree …
+    //     ✓ autonomy.sensor-frame-resolution — every sensor's own frame resolves through the tree to a camera
+    //
+    // and the second sentence is false: no sensor's frame resolves through a tree that does not
+    // exist. `ready` is already false from the first, so nothing is certified that should not be —
+    // but a reader deciding what to fix is told the spatial wiring is sound, and a signed document
+    // should not contain a sentence that is untrue about the run it describes.
+    let p = profile::world_model_ready();
+    let mut d = healthy_rig();
+    d.calibration = None;
+    assert!((p.applies_to)(&d), "still a world-model candidate");
+
+    let verdict = verdict_for(&d, &p);
+    let r = ReadinessReport::evaluate(&p, &verdict, &d);
+    let by = |id: &str| {
+        r.criteria
+            .iter()
+            .find(|c| c.check_id == id)
+            .unwrap_or_else(|| panic!("{id} is a criterion"))
+            .passed
+    };
+    assert!(
+        !by("autonomy.calibration-completeness"),
+        "the missing tree is a defect and is reported"
+    );
+    assert!(
+        !by("autonomy.sensor-frame-resolution"),
+        "and no sensor resolves through a tree that does not exist"
+    );
+}

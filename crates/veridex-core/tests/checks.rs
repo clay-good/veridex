@@ -3928,10 +3928,22 @@ fn a_sensor_that_declares_no_frame_is_named_not_passed_over() {
 #[test]
 fn a_rig_that_declares_no_frames_at_all_is_not_flagged_per_sensor() {
     // MF4 and CAN rigs record no coordinate frames *and* no transform tree. With no tree there is
-    // no calibration to be missing from, so this check stays silent and
-    // `autonomy.calibration-completeness` reports the one real defect once.
+    // no calibration to be missing from, so no sensor is accused — `autonomy.calibration-completeness`
+    // reports the one real defect once. What this check owes the reader is the single dataset-scoped
+    // note that it could not run, so a `world-model-ready` criterion is not met by its silence.
     let d = rig_with_frames(None, &[]);
-    assert!(autonomy::SensorFrameResolution.run(&d).is_empty());
+    let f = autonomy::SensorFrameResolution.run(&d);
+    assert_eq!(
+        f.iter().map(|x| x.code.as_str()).collect::<Vec<_>>(),
+        vec!["AUTONOMY.SENSOR_FRAME_UNCHECKED"],
+        "one note about the check, and no accusation about any sensor"
+    );
+    assert_eq!(f[0].severity, Severity::Info);
+    assert!(
+        matches!(f[0].location, veridex_core::Location::Dataset),
+        "dataset-scoped, so it cannot be charged once per sensor: {:?}",
+        f[0].location
+    );
 }
 
 #[test]
@@ -3950,9 +3962,25 @@ fn connectivity_abstains_when_no_camera_names_a_known_frame() {
 #[test]
 fn a_rig_with_no_transform_tree_is_left_to_the_calibration_check() {
     // "No tree at all" is one defect. `autonomy.calibration-completeness` reports it; charging it
-    // again, once per sensor, would bury the single actionable line under five copies.
+    // again, once per sensor, would bury the single actionable line under five copies. That is the
+    // rule, and it still holds — this check names no sensor here.
+    //
+    // What it may not do is stay *entirely* silent, because a readiness criterion is judged by its
+    // own check's findings: `world-model-ready` signed "✓ every sensor's own frame resolves through
+    // the tree to a camera" beside the failing calibration criterion, over a rig with no tree to
+    // resolve through. One dataset-scoped note is not a second accusation.
     let d = rig_with_frames(None, &[("lidar", "lidar_top"), ("cam", "camera_front")]);
-    assert!(autonomy::SensorFrameResolution.run(&d).is_empty());
+    let f = autonomy::SensorFrameResolution.run(&d);
+    assert_eq!(
+        f.iter().map(|x| x.code.as_str()).collect::<Vec<_>>(),
+        vec!["AUTONOMY.SENSOR_FRAME_UNCHECKED"],
+        "exactly one note, not one per sensor"
+    );
+    assert!(
+        !f[0].message.contains("lidar") && !f[0].message.contains("cam"),
+        "and it accuses no sensor: {}",
+        f[0].message
+    );
     assert!(autonomy::CalibrationCompleteness
         .run(&d)
         .iter()
