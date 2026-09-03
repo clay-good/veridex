@@ -1,5 +1,8 @@
 //! Tests for the `world-model-ready` policy profile and its per-criterion readiness report (A4).
 
+use std::collections::BTreeSet;
+use std::path::PathBuf;
+
 use veridex_core::cdm::{
     Calibration, ClockKind, Dataset, Episode, Frame, Modality, Pose, Stream, Transform, ValueRef,
 };
@@ -996,4 +999,67 @@ fn a_rig_with_no_satellite_receiver_is_not_a_world_model_candidate() {
     let r = ReadinessReport::evaluate(&p, &verdict, &d);
     assert!(!r.applicable, "reported N/A");
     assert!(!r.ready, "and never ready");
+}
+
+#[test]
+fn the_documented_verify_output_prints_the_lines_the_renderer_prints() {
+    // `docs/profiles.md` shows a real `verify` over a readiness certificate. A sample that has
+    // drifted is worse than none: it reads as a transcript. This one had already gone stale once —
+    // the `findings:` line was added to the renderer and the page kept showing the output from
+    // before it existed, which is exactly the failure `docs: the headline report was a sketch the
+    // tool has never printed` was about.
+    //
+    // Held on the *labels*, not the values: the hash, timestamp and key are properties of one run,
+    // while the set of lines is a property of the renderer. A line added to `render_verified` or
+    // removed from it fails this until the page is updated.
+    let page = std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("docs/profiles.md"),
+    )
+    .expect("docs/profiles.md is readable");
+    let sample = page
+        .split("✓ certificate verified")
+        .nth(1)
+        .expect("the page shows a verify transcript")
+        .split("```")
+        .next()
+        .expect("the transcript is fenced");
+
+    let documented: BTreeSet<String> = labels_in(sample);
+
+    // The same shape of certificate the sample is of: a rig, judged against the profile.
+    let p = profile::world_model_ready();
+    let d = healthy_rig();
+    let signed = certify_with(&d, &p);
+    let verified = veridex_core::certificate::verify(&signed, None, None).expect("verifies");
+    let rendered = veridex_core::certificate::render_verified(&signed, &verified, true, false);
+    let actual: BTreeSet<String> = labels_in(&rendered);
+
+    assert!(
+        !actual.is_empty() && actual.contains("findings"),
+        "the fixture must exercise the renderer's lines: {actual:?}"
+    );
+    assert_eq!(
+        documented, actual,
+        "docs/profiles.md shows a different set of `verify` lines than the renderer prints — \
+         update the transcript on the page"
+    );
+}
+
+/// The `  label:` prefixes of an indented transcript, which are the renderer's lines rather than one
+/// run's values. Criterion rows (`✓ …`, `✗ …`) and warning lines (`⚠ …`) carry no label and are skipped.
+fn labels_in(text: &str) -> BTreeSet<String> {
+    text.lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            let (label, _) = line.split_once(':')?;
+            let label = label.trim();
+            (!label.is_empty()
+                && label
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c == ' ' || c == '_'))
+            .then(|| label.to_string())
+        })
+        .collect()
 }

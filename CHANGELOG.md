@@ -51,6 +51,16 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **The documented `verify` transcript showed output the tool no longer prints, and nothing held
+  it.** [docs/profiles.md](docs/profiles.md) shows a `verify` over a readiness certificate; adding
+  the `findings:` line to the renderer left the page showing the output from before it existed. A
+  sample that has drifted is worse than none — it reads as a transcript. It is now real output over
+  the `av-lossy-camera` demo rig, and a test holds the *set of lines* on the page to the set
+  `render_verified` produces, so a line added to the renderer or removed from it fails until the page
+  is updated. Held on the labels rather than the values: the hash, timestamp and key belong to one
+  run, while the lines belong to the renderer. Proven by deleting the `findings:` line from the page
+  and watching it fail.
+
 - **A rig with no satellite receiver certified as `world-model-ready` on two criteria it never
   had the data for.** A readiness criterion is judged by "the check ran and found nothing", and a
   check with nothing to examine finds nothing. `autonomy.gnss-plausibility` and
