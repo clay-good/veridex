@@ -6655,12 +6655,25 @@ fn a_receiver_that_never_acquired_a_fix_is_flagged_but_a_real_place_is_not() {
 
 #[test]
 fn a_gnss_stream_nobody_measured_is_not_reported_plausible() {
-    // A check that cannot see the values must not report them sound. The absence is
-    // `STATISTICAL.UNMEASURED_VALUES`'s to report, and it does.
+    // A check that cannot see the values must not report them sound — and must not stay quiet about
+    // it either. The absence used to be left to `STATISTICAL.UNMEASURED_VALUES`, which does report
+    // it, but that finding belongs to `statistical.value-measurability`: a different check id, so
+    // `world-model-ready` still counted *this* check as passed and attested "every satellite fix is
+    // a possible place" over coordinates nobody decoded. A criterion is judged by its own check's
+    // findings, so the disclosure has to come from here.
     let s = rig_stream("/gps/fix", Modality::Gnss, 1_000_000_000);
-    assert!(autonomy::GnssPlausibility
-        .run(&dataset(vec![episode(0, vec![s])]))
-        .is_empty());
+    let f = autonomy::GnssPlausibility.run(&dataset(vec![episode(0, vec![s])]));
+    assert_eq!(
+        f.iter().map(|x| x.code.as_str()).collect::<Vec<_>>(),
+        vec!["AUTONOMY.GNSS_UNMEASURED"],
+        "the abstention, and no verdict about the coordinates"
+    );
+    assert_eq!(f[0].severity, Severity::Info, "not a fault in the data");
+    assert!(
+        f[0].message.contains("/gps/fix"),
+        "and it names the stream: {}",
+        f[0].message
+    );
 }
 
 /// A receiver that reported no fix is not a receiver that reported a plausible one.
@@ -6688,18 +6701,26 @@ fn a_receiver_that_reported_no_fix_for_most_of_a_drive_is_flagged() {
     assert!(f[0].message.contains("80 of 100"), "{}", f[0].message);
     assert!(f[0].message.contains("80%"), "{}", f[0].message);
 
-    // A receiver that never lost the sky says nothing, and neither does a stream that carried no
-    // `NavSatFix` at all — the absence of the summary is not an absence of fixes.
+    // A receiver that never lost the sky says nothing.
     assert!(autonomy::GnssFixAvailability::default()
         .run(&with(0))
         .is_empty());
+
+    // A stream that carried no `NavSatFix` at all is still not accused of losing its fix — the
+    // absence of the summary is not an absence of fixes — but it is disclosed rather than passed
+    // over, because this check's silence is the exact shape of the fault it exists to catch: an
+    // outage leaves the frame count, the cadence and the span intact.
     let no_summary = dataset(vec![episode(
         0,
         vec![rig_stream_ts("gnss", Modality::Gnss, &ts)],
     )]);
-    assert!(autonomy::GnssFixAvailability::default()
-        .run(&no_summary)
-        .is_empty());
+    let f = autonomy::GnssFixAvailability::default().run(&no_summary);
+    assert_eq!(
+        f.iter().map(|x| x.code.as_str()).collect::<Vec<_>>(),
+        vec!["AUTONOMY.GNSS_STATUS_UNREAD"],
+        "the abstention, never AUTONOMY.GNSS_NO_FIX"
+    );
+    assert_eq!(f[0].severity, Severity::Info, "not a fault in the data");
 }
 
 /// The unfixed-fraction threshold is a boundary its wording promises.

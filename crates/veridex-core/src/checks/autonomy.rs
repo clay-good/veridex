@@ -219,7 +219,11 @@ impl Check for GnssFixAvailability {
         "autonomy.gnss-fix-availability"
     }
     fn finding_codes(&self) -> &'static [&'static str] {
-        &["AUTONOMY.GNSS_NO_FIX"]
+        &["AUTONOMY.GNSS_NO_FIX", "AUTONOMY.GNSS_STATUS_UNREAD"]
+    }
+
+    fn abstention_codes(&self) -> &'static [&'static str] {
+        &["AUTONOMY.GNSS_STATUS_UNREAD"]
     }
     fn title(&self) -> &'static str {
         "GNSS fix availability"
@@ -289,13 +293,82 @@ impl Check for GnssFixAvailability {
                 );
             }
         }
+        // The same rule the plausibility check follows, on the other half of the message: a `Gnss`
+        // stream with no decoded status is one this check never asked its question about. It matters
+        // more here than almost anywhere, because the fault this check exists to catch is invisible
+        // to every other one — an outage leaves the frames, the cadence and the span intact — so its
+        // silence over an undecoded receiver is the exact shape of the defect it is meant to report.
+        if let Some((count, listed)) =
+            undecoded_receivers(dataset, |s| s.observed_fix_availability.is_some())
+        {
+            findings.push(
+                Finding::new(
+                    self.id(),
+                    Category::Autonomy,
+                    Severity::Info,
+                    Location::Dataset,
+                    "AUTONOMY.GNSS_STATUS_UNREAD",
+                    format!(
+                        "{count} satellite receiver stream(s) carry no decoded fix status, so the \
+                         availability rule had nothing to measure on them ({listed})"
+                    ),
+                )
+                .with_risk(
+                    "Nothing in this run can tell you whether these receivers ever had a fix. The \
+                     outage this check exists to catch leaves the frame count, the cadence and the \
+                     span intact, so every other check reads such a stream as healthy — and \
+                     `world-model-ready` judges that criterion on this check.",
+                )
+                .with_remedy(
+                    "Treat the availability result as unverified for these streams. The status is \
+                     a field of the receiver's own `NavSatFix` messages, so it is available \
+                     wherever those bodies are decoded rather than only fingerprinted.",
+                ),
+            );
+        }
         findings
     }
 }
 
+/// Names of `Gnss` streams for which `have` reports no decoded evidence, deduplicated across
+/// episodes and rendered as a `list_a_few` phrase with the count.
+///
+/// Both receiver checks read something the adapter decoded out of `NavSatFix` — the coordinate
+/// dimension statistics, or the receiver's own status — and a stream carrying neither is one the
+/// check never asked its question about. That silence is indistinguishable in the report from a
+/// receiver that was asked and came back clean, which is the whole value of the result. Named by the
+/// *property* rather than by a list of formats, which goes stale the moment an adapter reads more.
+fn undecoded_receivers<F>(dataset: &Dataset, have: F) -> Option<(usize, String)>
+where
+    F: Fn(&crate::cdm::Stream) -> bool,
+{
+    let mut names: std::collections::BTreeSet<&str> = Default::default();
+    for ep in &dataset.episodes {
+        for s in ep.streams.iter().filter(|s| s.modality == Modality::Gnss) {
+            if !have(s) {
+                names.insert(s.name.as_str());
+            }
+        }
+    }
+    if names.is_empty() {
+        return None;
+    }
+    let names: Vec<&str> = names.into_iter().collect();
+    let shown = names.iter().take(4).copied().collect::<Vec<_>>().join(", ");
+    let listed = match names.len().saturating_sub(4) {
+        0 => shown,
+        rest => format!("{shown} and {rest} more"),
+    };
+    Some((names.len(), listed))
+}
+
 /// Reads the per-dimension statistics the `NavSatFix` decode produces, so it needs no per-frame
-/// join. Silent on a rig whose GNSS was never decoded — `STATISTICAL.UNMEASURED_VALUES` says that,
-/// and a check that cannot see the values must not report them plausible.
+/// join. A rig whose GNSS was never decoded raises `AUTONOMY.GNSS_UNMEASURED` here rather than
+/// relying on `STATISTICAL.UNMEASURED_VALUES`, which was the original arrangement and left a gap:
+/// that finding belongs to `statistical.value-measurability`, a different check id, so it disclosed
+/// the silence in the report while `world-model-ready` still counted *this* check as passed —
+/// "every satellite fix is a possible place" attested over coordinates nobody decoded. A criterion
+/// is judged by its own check's findings, so a deferral cannot carry it.
 pub struct GnssPlausibility;
 
 /// Where the `NavSatFix` decode puts each coordinate. Matched by name, not by position, so a future
@@ -307,7 +380,15 @@ impl Check for GnssPlausibility {
         "autonomy.gnss-plausibility"
     }
     fn finding_codes(&self) -> &'static [&'static str] {
-        &["AUTONOMY.GNSS_IMPLAUSIBLE", "AUTONOMY.GNSS_UNSET"]
+        &[
+            "AUTONOMY.GNSS_IMPLAUSIBLE",
+            "AUTONOMY.GNSS_UNSET",
+            "AUTONOMY.GNSS_UNMEASURED",
+        ]
+    }
+
+    fn abstention_codes(&self) -> &'static [&'static str] {
+        &["AUTONOMY.GNSS_UNMEASURED"]
     }
     fn title(&self) -> &'static str {
         "GNSS coordinate plausibility"
@@ -420,6 +501,39 @@ impl Check for GnssPlausibility {
                     );
                 }
             }
+        }
+        // A check that measured nothing must say so, or its silence reads as a pass. This is the
+        // same rule `AUTONOMY.POINT_CLOUD_UNMEASURED` follows for a LiDAR whose point counts were
+        // never read, and the receiver is that situation one sensor over: a `Gnss` stream with no
+        // decoded coordinate statistics is one the plausibility rules never asked their question
+        // about, and it came back as clean as a receiver that was asked.
+        if let Some((count, listed)) = undecoded_receivers(dataset, |s| {
+            s.dim_names.is_some() && s.observed_dim_stats.is_some()
+        }) {
+            findings.push(
+                Finding::new(
+                    self.id(),
+                    Category::Autonomy,
+                    Severity::Info,
+                    Location::Dataset,
+                    "AUTONOMY.GNSS_UNMEASURED",
+                    format!(
+                        "{count} satellite receiver stream(s) carry no decoded coordinates, so the \
+                         plausibility rules had nothing to measure on them ({listed})"
+                    ),
+                )
+                .with_risk(
+                    "Nothing in this run can tell you whether these receivers recorded a possible \
+                     place. A clean result here is the absence of a measurement, not evidence that \
+                     the trajectory can be geo-referenced — and `world-model-ready` judges that \
+                     criterion on this check.",
+                )
+                .with_remedy(
+                    "Treat the plausibility result as unverified for these streams. The \
+                     coordinates are read from the receiver's own `NavSatFix` messages, so they \
+                     are available wherever those bodies are decoded rather than only fingerprinted.",
+                ),
+            );
         }
         findings
     }

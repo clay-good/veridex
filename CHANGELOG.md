@@ -51,6 +51,28 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **Two readiness criteria were met over a satellite receiver whose data was never decoded.**
+  `autonomy.point-cloud-density` already gets this right: a LiDAR whose per-message point counts were
+  never read makes it abstain out loud, which refuses its criterion, because "every point-cloud
+  sensor actually recorded points" cannot be attested over counts nobody read. The receiver is that
+  situation one sensor over, and got the opposite treatment — a `Gnss` stream carrying no decoded
+  coordinates and no fix status made both `autonomy.gnss-*` checks skip it and report nothing, so
+  both criteria came back **met**.
+
+  The cause is a deferral. The source comment recorded the reasoning: *"Silent on a rig whose GNSS
+  was never decoded — `STATISTICAL.UNMEASURED_VALUES` says that."* That disclosure is real, but it
+  belongs to `statistical.value-measurability` — a **different check id** — and a readiness criterion
+  is judged by its own check's findings. So the silence was disclosed in the report while
+  `world-model-ready` counted the check as passed. "X is Y's concern" is not coverage.
+
+  Both checks now raise their own abstention (`AUTONOMY.GNSS_UNMEASURED`,
+  `AUTONOMY.GNSS_STATUS_UNREAD`), mirroring the point-cloud pattern, which makes the criteria refuse.
+  Neither is an accusation: the absence of a status is not an absence of fixes, and
+  `AUTONOMY.GNSS_NO_FIX` is never raised from it. The `world-model-ready` fixture gained a decoded
+  receiver for the same reason it already carried point counts — a stand-in for a healthy rig has to
+  carry what a healthy rig carries. Both codes are documented in [docs/checks.md](docs/checks.md),
+  and the stale source comment now records why the deferral was insufficient.
+
 - **A zero-byte recording was described as a truncated record.** A crashed or killed recorder leaves
   an empty file behind, and it is one of the most common real files a first-time user points Veridex
   at. Every format's parser described it in that format's own terms — MCAP as `ended in the middle of

@@ -29,6 +29,19 @@ fn sensor(name: &str, modality: Modality, ts: &[i64]) -> Stream {
     sensor_in_frame(name, modality, ts, Some(format!("{name}_frame")))
 }
 
+/// One decoded GNSS coordinate dimension, spanning `[lo, hi]`.
+fn gnss_dim(dim: u64, lo: f64, hi: f64) -> veridex_core::cdm::DimStats {
+    veridex_core::cdm::DimStats {
+        dim,
+        stats: veridex_core::cdm::StreamStats {
+            min: lo,
+            max: hi,
+            mean: (lo + hi) / 2.0,
+            std: (hi - lo) / 4.0,
+        },
+    }
+}
+
 fn sensor_in_frame(name: &str, modality: Modality, ts: &[i64], frame_id: Option<String>) -> Stream {
     Stream {
         name: name.into(),
@@ -38,14 +51,39 @@ fn sensor_in_frame(name: &str, modality: Modality, ts: &[i64], frame_id: Option<
         clock_kind: ClockKind::Measured,
         dtype: None,
         shape: None,
-        dim_names: None,
+        // A receiver read in full carries its decoded coordinates and its own fix status, and a
+        // healthy one's coordinates are a possible place with every message fixed. Left absent, the
+        // two `autonomy.gnss-*` checks abstain out loud and rightly refuse their `world-model-ready`
+        // criteria — "every satellite fix is a possible place, and the receiver actually had one"
+        // cannot be attested over a receiver nobody decoded. Same reasoning as the point counts
+        // below: a fixture standing in for a healthy rig has to carry what a healthy rig carries.
+        dim_names: (modality == Modality::Gnss).then(|| {
+            vec![
+                "latitude".to_string(),
+                "longitude".to_string(),
+                "altitude".to_string(),
+            ]
+        }),
         frames: frames(ts),
         stats: None,
         dim_stats: None,
         observed_stats: None,
         observed_saturation: None,
         observed_non_finite: None,
-        observed_dim_stats: None,
+        observed_dim_stats: (modality == Modality::Gnss).then(|| {
+            // A short stretch of road near Palo Alto: a real place, and moving.
+            vec![
+                gnss_dim(0, 37.4419, 37.4425),
+                gnss_dim(1, -122.1430, -122.1425),
+                gnss_dim(2, 9.5, 11.0),
+            ]
+        }),
+        observed_fix_availability: (modality == Modality::Gnss).then_some(
+            veridex_core::cdm::FixAvailability {
+                message_count: ts.len() as u64,
+                unfixed: 0,
+            },
+        ),
         latched: None,
         declared_range: None,
         point_fields: None,
@@ -83,7 +121,6 @@ fn sensor_in_frame(name: &str, modality: Modality, ts: &[i64], frame_id: Option<
                 missing: 0,
                 non_increasing: 0,
             }),
-        observed_fix_availability: None,
         media: None,
         frame_id,
     }
@@ -1062,4 +1099,49 @@ fn labels_in(text: &str) -> BTreeSet<String> {
             .then(|| label.to_string())
         })
         .collect()
+}
+
+#[test]
+fn a_receiver_whose_positions_were_never_decoded_does_not_pass_its_criteria() {
+    // `autonomy.point-cloud-density` already gets this right: a LiDAR whose per-message point counts
+    // were never read makes it abstain out loud (`AUTONOMY.POINT_CLOUD_UNMEASURED`), which refuses
+    // the criterion — "every point-cloud sensor actually recorded points" cannot be attested over
+    // counts nobody read. The fixture below carries point counts for exactly that reason.
+    //
+    // The receiver is the same situation one sensor over, and gets the opposite treatment.
+    // `autonomy.gnss-plausibility` reads decoded lat/lon/alt dimension statistics and
+    // `autonomy.gnss-fix-availability` reads the receiver's own status; a `Gnss` stream carrying
+    // neither — an adapter that never decoded `NavSatFix`, which is any format that does not model
+    // it — makes both `continue` and report nothing, so both criteria come back met over a receiver
+    // whose data was never read.
+    let p = profile::world_model_ready();
+    let mut d = healthy_rig();
+    let gnss = d.episodes[0]
+        .streams
+        .iter_mut()
+        .find(|s| s.modality == Modality::Gnss)
+        .expect("the rig has a receiver");
+    assert!(
+        gnss.observed_dim_stats.is_some() && gnss.observed_fix_availability.is_some(),
+        "the healthy rig's receiver is decoded, so this test isolates the decode"
+    );
+    // The receiver is still there, still stamping frames on time — an adapter simply never read
+    // `NavSatFix` bodies, which is every format that does not model them.
+    gnss.dim_names = None;
+    gnss.observed_dim_stats = None;
+    gnss.observed_fix_availability = None;
+
+    let verdict = verdict_for(&d, &p);
+    let r = ReadinessReport::evaluate(&p, &verdict, &d);
+    for c in r
+        .criteria
+        .iter()
+        .filter(|c| c.check_id.starts_with("autonomy.gnss"))
+    {
+        assert!(
+            !c.passed,
+            "`{}` must not be met over a receiver nothing decoded: {c:?}",
+            c.check_id
+        );
+    }
 }
