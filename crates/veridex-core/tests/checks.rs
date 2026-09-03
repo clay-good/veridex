@@ -6884,6 +6884,23 @@ fn every_abstention_code_in_the_catalog_is_declared_as_one() {
         }
     }
 
+    // The converse of the exception list, which is the direction that catches a contradiction
+    // between the code and the reason recorded beside it: an entry here claims a code is *not* an
+    // abstention, so nothing may declare it as one. `VIDEO.MEDIA_UNREADABLE` was listed here as a
+    // fault and declared as an abstention at the same time, and without this the guard was happy —
+    // the entry only exempted it from the check above. The label would then have offered "could not
+    // measure" for a video container that was read and would not parse, at error severity.
+    for code in NOT_ABSTENTIONS {
+        for check in engine.catalog() {
+            assert!(
+                !check.abstention_codes.contains(code),
+                "`{code}` is recorded as a fault rather than an abstention, but {} declares it as \
+                 one — the code and the reason disagree",
+                check.id
+            );
+        }
+    }
+
     assert!(
         undeclared.is_empty(),
         "these read as abstentions and are not declared — add them to the check's \

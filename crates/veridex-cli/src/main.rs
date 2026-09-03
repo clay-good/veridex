@@ -1319,8 +1319,28 @@ fn cmd_checks(rest: &[String]) -> ExitCode {
             c.scope.tag(),
             c.title,
         );
-        // The finding codes this check can emit, indented under it.
-        println!("  {:<id_w$} {}", "", c.finding_codes.join(", "));
+        // The finding codes this check can emit, indented under it. A code marked `†` means the
+        // check could not measure, rather than that it measured something wrong — the difference a
+        // reader most needs from this listing, since a clean run and an unmeasured one produce the
+        // same silence.
+        let codes: Vec<String> = c
+            .finding_codes
+            .iter()
+            .map(|code| {
+                if c.abstention_codes.contains(code) {
+                    format!("{code}†")
+                } else {
+                    (*code).to_string()
+                }
+            })
+            .collect();
+        println!("  {:<id_w$} {}", "", codes.join(", "));
+    }
+    if catalog.iter().any(|c| !c.abstention_codes.is_empty()) {
+        println!();
+        println!(
+            "† this finding reports that the check could not measure, not that the data is wrong."
+        );
     }
     ExitCode::SUCCESS
 }

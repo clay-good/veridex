@@ -18,9 +18,10 @@ veridex check my-dataset/
 ```
 
 This is a real run, against the demo recording the [Quickstart](#quickstart) builds — every finding
-with its location and message, worst episodes first, and the training *risk* and the *remedy* for
-anything at warning or error. Four informational findings are elided here; the terminal prints them,
-and `--full` adds their risk and remedy too.
+with its location and message, and the training *risk* and the *remedy* for anything at warning or
+error. Trimmed to fit: the terminal also prints the CDM content hash and a per-episode rollup with
+the worst episode first, and the four informational findings are elided here, `--full` adding their
+risk and remedy too.
 
 ```
 Veridex report

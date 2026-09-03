@@ -3286,3 +3286,40 @@ fn the_readmes_headline_report_is_what_the_tool_prints() {
         );
     }
 }
+
+#[test]
+fn the_checks_listing_marks_which_findings_mean_could_not_measure() {
+    // `veridex checks` is the discovery surface: it is where someone learns what the tool asks of
+    // their data. The difference it most has to carry is between "this finding means your data is
+    // wrong" and "this finding means I could not look" — because a clean run and an unmeasured one
+    // produce the same silence, which is the failure this whole catalog exists to prevent.
+    let (code, stdout, _) = run(&["checks"]);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("STATISTICAL.UNMEASURED_VALUES†"),
+        "an abstention code must be marked: {stdout}"
+    );
+    assert!(
+        !stdout.contains("STATISTICAL.SATURATED†"),
+        "a fault code must not be: {stdout}"
+    );
+    assert!(
+        stdout.contains("† this finding reports that the check could not measure"),
+        "and the mark must be explained on the page that uses it: {stdout}"
+    );
+
+    // Machines get the same distinction as a field, not a glyph.
+    let (code, json, _) = run(&["checks", "--json"]);
+    assert_eq!(code, 0);
+    let catalog: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+    let entry = catalog
+        .as_array()
+        .expect("an array")
+        .iter()
+        .find(|c| c["id"] == "statistical.value-measurability")
+        .expect("the measurability check is in the catalog");
+    assert_eq!(
+        entry["abstention_codes"][0], "STATISTICAL.UNMEASURED_VALUES",
+        "the JSON catalog must carry the declaration: {entry}"
+    );
+}

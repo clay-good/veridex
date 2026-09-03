@@ -46,9 +46,6 @@ impl Check for MediaReadable {
         ]
     }
 
-    fn abstention_codes(&self) -> &'static [&'static str] {
-        &["VIDEO.MEDIA_UNREADABLE"]
-    }
     fn title(&self) -> &'static str {
         "Media file present and readable"
     }

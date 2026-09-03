@@ -51,6 +51,25 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **`VIDEO.MEDIA_UNREADABLE` was declared an abstention and documented as not one, at the same
+  time.** The previous release note recorded it as a deliberate exception — the media was reached and
+  would not parse, which is a defect in the file rather than a gap in what Veridex looked at — while
+  the check declared it in `abstention_codes` regardless. The trust label would then have offered
+  "could not measure" for a video container that was read, at error severity. The declaration is
+  removed, and the guard gained the direction that would have caught it: an entry in the test's
+  exception list may not be declared as an abstention by anything. Without it the list only exempted
+  a code from the *other* check, so the code and the reason beside it could disagree in silence.
+
+- **`veridex checks` now marks which findings mean "could not measure".** The listing is the
+  discovery surface — where someone learns what the tool asks of their data — and the difference it
+  most has to carry is between a finding that says the data is wrong and one that says Veridex could
+  not look, since a clean run and an unmeasured one produce the same silence. Abstention codes are
+  suffixed `†` with a legend; `--json` carries `abstention_codes` as a field rather than a glyph.
+
+- **The README's report sample named a section it did not show.** The prose promised findings
+  "worst episodes first" while the sample omitted the per-episode rollup and the CDM hash line,
+  disclosing only the elided informational findings. The note now names everything trimmed.
+
 - **The documented `verify` transcript showed output the tool no longer prints, and nothing held
   it.** [docs/profiles.md](docs/profiles.md) shows a `verify` over a readiness certificate; adding
   the `findings:` line to the renderer left the page showing the output from before it existed. A
