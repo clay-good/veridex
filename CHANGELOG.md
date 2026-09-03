@@ -8,6 +8,31 @@ All notable changes to Veridex are recorded here. The format follows
 The first shippable slice of the [`bootstrap-veridex-mvp`](openspec/changes/bootstrap-veridex-mvp/)
 change. Runs end-to-end: ingest → validate → score → report → sign.
 
+### Added
+
+- **A certificate now names its findings by code, so an abstention survives into the signed
+  document.** The certificate carried findings rolled up by severity and by *family*, which cannot
+  express the one thing it most has to: **which checks measured nothing**. A single-episode dataset
+  whose streams hold no summarizable values signed as 46 checks run, no family skipped,
+  `statistical: 1` and `structural: 1` — while all five statistical checks had nothing to measure and
+  seven cross-episode checks had nothing to compare. Twelve of the forty-six presented as clean
+  executed checks.
+
+  The abstention findings exist so a pass cannot mean "nothing was asked", and
+  [CONTRIBUTING.md](CONTRIBUTING.md) states that such a finding "travels into the JSON, the SARIF,
+  the HTML and the certificate". The first three were true. The certificate flattened them into a
+  family count, where `STATISTICAL.UNMEASURED_VALUES` is indistinguishable from a real statistical
+  fault — and the offline reader is the one person who cannot re-run Veridex to find out.
+
+  `findings_summary.by_code` is now signed alongside the coarser rollups; `verify` prints a
+  `findings:` line naming each code and count, and `--json` carries `findings_by_code`. Python
+  reaches it through the same shared renderer, so parity holds by construction. Codes are declared by
+  checks, so the map is bounded by the catalog and never by the dataset — finding *messages* are
+  deliberately not carried, being sized by the input. A certificate issued before the field existed
+  carries no map, still verifies byte-identically, and the readers print no line rather than an empty
+  one: absent means unknown, not none. Documented in
+  [docs/trust-chain.md](docs/trust-chain.md).
+
 ### Fixed
 
 - **Two finding messages were sized by the file, not by the catalog.** A finding message is not a

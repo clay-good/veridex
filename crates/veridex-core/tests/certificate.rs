@@ -870,3 +870,125 @@ fn the_label_does_not_call_a_guess_an_attestation() {
         "a label with no signed attestation must not claim one: {label}"
     );
 }
+
+#[test]
+fn a_certificate_names_the_checks_that_measured_nothing() {
+    // The invariant this whole tool exists to serve, in CONTRIBUTING.md's words: "A run that could
+    // not measure something says so", and that disclosure "travels into the JSON, the SARIF, the
+    // HTML and the certificate."
+    //
+    // The first three were true; the certificate was not. It carried counts by severity and by
+    // *category*, so a single-episode dataset whose streams hold no summarizable values signed as:
+    // 46 checks run, no category skipped, `statistical: 1` and `structural: 1` informational
+    // findings. Nothing in the signed document said that all five statistical checks had nothing to
+    // measure and seven cross-episode checks had nothing to compare — twelve of the forty-six
+    // presented as clean executed checks. A pass that means "nothing was asked" is the exact failure
+    // mode the abstention findings were introduced to prevent, and the certificate was flattening
+    // them back out.
+    let d = dataset(vec![stream("s", "c", &[0, 1_000_000, 2_000_000])]);
+    let (cert, _) = issue_cert(&d);
+
+    let abstentions: Vec<&String> = cert
+        .findings_summary
+        .by_code
+        .keys()
+        .filter(|code| {
+            code.contains("UNMEASURED") || code.contains("UNCOMPARED") || code.contains("UNCHECKED")
+        })
+        .collect();
+    assert!(
+        !abstentions.is_empty(),
+        "the certificate must name what the run could not measure; by_code = {:?}",
+        cert.findings_summary.by_code
+    );
+    assert!(
+        cert.findings_summary
+            .by_code
+            .contains_key("STRUCTURAL.UNCOMPARED_EPISODES"),
+        "one episode is too few for the cross-episode checks, and the certificate must say so: {:?}",
+        cert.findings_summary.by_code
+    );
+
+    // The code map is a finer grain of the same rollup, so it must agree with the coarser ones it
+    // sits beside — a certificate that contradicts itself about its own findings is worse than one
+    // that omits them.
+    let total: u64 = cert.findings_summary.by_code.values().sum();
+    let by_severity = &cert.findings_summary.by_severity;
+    assert_eq!(
+        total,
+        by_severity.error + by_severity.warning + by_severity.info,
+        "by_code must total the same findings as by_severity"
+    );
+    assert_eq!(
+        total,
+        cert.findings_summary.by_category.values().sum::<u64>(),
+        "and the same findings as by_category"
+    );
+
+    // Bounded by the catalog, not by the dataset: codes are declared by checks.
+    assert!(
+        cert.findings_summary.by_code.len() <= 200,
+        "the code map is catalog-bounded"
+    );
+}
+
+#[test]
+fn the_certificate_readers_surface_what_the_run_could_not_measure() {
+    // Carrying the codes in the document is half of it. `checks_errored` was signed into the
+    // document for exactly this reason and then wired into neither renderer, so a crashed check sat
+    // under `checks_run` and the certificate read as a clean, complete verdict — the comments in
+    // `render.rs` record that gap. The offline reader is the whole point of a certificate; they
+    // cannot re-run Veridex to find out what abstained.
+    let d = dataset(vec![stream("s", "c", &[0, 1_000_000, 2_000_000])]);
+    let (cert, _) = issue_cert(&d);
+    let signed = sign(cert, &keypair());
+    let verified = verify(&signed, None, None).expect("verifies");
+
+    let text = veridex_core::certificate::render_verified(&signed, &verified, true, false);
+    assert!(
+        text.contains("STRUCTURAL.UNCOMPARED_EPISODES"),
+        "the terminal reader must name the abstention: {text}"
+    );
+
+    let json = veridex_core::certificate::verified_json(&signed, &verified, true, false);
+    let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+    assert!(
+        parsed["findings_by_code"]["STRUCTURAL.UNCOMPARED_EPISODES"].is_number(),
+        "and so must the machine reader: {json}"
+    );
+}
+
+#[test]
+fn a_certificate_without_a_code_map_still_verifies() {
+    // The field is defaulted and skipped when empty, so a certificate issued before it existed has
+    // unchanged bytes and therefore an unchanged signature over them. Getting this wrong would
+    // invalidate every certificate already issued, which is the one thing a portable trust document
+    // must never do.
+    let d = dataset(vec![stream("s", "c", &[0, 1_000_000, 2_000_000])]);
+    let (mut cert, h) = issue_cert(&d);
+    assert!(
+        !cert.findings_summary.by_code.is_empty(),
+        "the fixture must have a code map to clear"
+    );
+    cert.findings_summary.by_code.clear();
+    let signed = sign(cert, &keypair());
+
+    // Re-serializing must not put the field back: if it did, an old certificate's signature would
+    // fail against its own bytes.
+    let round: serde_json::Value = serde_json::to_value(&signed).unwrap();
+    assert!(
+        round["certificate"]["findings_summary"]
+            .get("by_code")
+            .is_none(),
+        "an absent code map must stay absent: {round}"
+    );
+    verify(&signed, Some(&h.to_hex()), None).expect("an older certificate still verifies");
+
+    // And the readers print no line rather than an empty one, which would imply no findings.
+    let verified = verify(&signed, None, None).expect("verifies");
+    let text = veridex_core::certificate::render_verified(&signed, &verified, true, false);
+    assert!(
+        !text.contains("findings:"),
+        "absent means unknown, not none: {text}"
+    );
+}

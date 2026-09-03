@@ -250,6 +250,24 @@ pub fn render_verified(
     // nowhere. The terminal reader has the same need: a certificate from an older Veridex, whose
     // catalog lacked today's checks, otherwise reads as current.
     let _ = writeln!(out, "  issued by:  veridex {}", cert.veridex_version);
+    // Findings by code, because the coarser rollups cannot say *what* a run could not measure.
+    // `statistical: 1` beside "46 checks run, no categories skipped" is what a dataset whose streams
+    // hold no summarizable values signed as — while all five statistical checks had nothing to
+    // measure and seven cross-episode checks had nothing to compare. The abstention findings exist
+    // so a pass cannot mean "nothing was asked", and every renderer of `check` surfaces them by
+    // code; the certificate reader, who cannot re-run Veridex, was the one who got the rollup.
+    //
+    // Codes are declared by checks, so this line is bounded by the catalog. An older certificate
+    // carries no code map and prints no line, rather than an empty one implying no findings.
+    if !cert.findings_summary.by_code.is_empty() {
+        let codes: Vec<String> = cert
+            .findings_summary
+            .by_code
+            .iter()
+            .map(|(code, n)| format!("{code} {n}"))
+            .collect();
+        let _ = writeln!(out, "  findings:   {}", codes.join(", "));
+    }
     if let Some(readiness) = &cert.readiness {
         out.push_str(&render_readiness(readiness, "  "));
     }
@@ -301,6 +319,11 @@ pub fn verified_json(
         // coverage. Null for an ordinary certificate. A machine gate that trusts only its own
         // producers has no other way to see that a third of the score came from someone else's key.
         "attestation": cert.attestation,
+        // Findings by code — what the run found, and equally what it could not measure. A gate
+        // keying on `status` alone cannot tell a clean statistical family from one where every
+        // statistical check had nothing to measure, which is the difference between evidence and
+        // silence. Catalog-bounded, and empty for a certificate issued before the field existed.
+        "findings_by_code": cert.findings_summary.by_code,
     });
     if let Some(readiness) = &cert.readiness {
         doc["readiness"] = serde_json::to_value(readiness).expect("readiness serializes");

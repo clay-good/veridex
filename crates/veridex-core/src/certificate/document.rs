@@ -38,7 +38,7 @@ pub struct Issuance {
     pub timestamp: String,
 }
 
-/// Findings rolled up by severity and by category.
+/// Findings rolled up by severity, by category, and by finding code.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FindingsSummary {
@@ -46,6 +46,24 @@ pub struct FindingsSummary {
     pub by_severity: SeverityCounts,
     /// Counts by category (only categories with findings appear).
     pub by_category: BTreeMap<String, u64>,
+    /// Counts by finding code (only codes with findings appear).
+    ///
+    /// The rollups above cannot express the one thing a certificate most has to carry: **which
+    /// checks measured nothing**. A single-episode dataset whose streams hold no summarizable values
+    /// signed as 46 checks run, no category skipped, `statistical: 1` and `structural: 1` — while
+    /// five statistical checks had nothing to measure and seven cross-episode checks had nothing to
+    /// compare. Twelve of the forty-six presented as clean executed checks. The abstention findings
+    /// exist precisely so a pass cannot mean "nothing was asked", and the coarser rollups flattened
+    /// them back out; `STATISTICAL.UNMEASURED_VALUES` and `STRUCTURAL.UNCOMPARED_EPISODES` are only
+    /// distinguishable from a real statistical or structural fault at code granularity.
+    ///
+    /// Codes are declared by checks, so this map is bounded by the catalog and never by the dataset —
+    /// unlike a finding *message*, which is why messages are not carried here.
+    ///
+    /// Defaulted and omitted when empty, so a certificate issued before this field existed still
+    /// deserializes and re-serializes byte-identically, and therefore still verifies.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub by_code: BTreeMap<String, u64>,
 }
 
 /// The unsigned certificate content. (Not `Eq`: the effective config's tolerances carry floats.)
@@ -291,10 +309,12 @@ impl Certificate {
         issuance: Issuance,
     ) -> Certificate {
         let mut by_category: BTreeMap<String, u64> = BTreeMap::new();
+        let mut by_code: BTreeMap<String, u64> = BTreeMap::new();
         for f in &verdict.findings {
             *by_category
                 .entry(category_tag(f.category).to_string())
                 .or_insert(0) += 1;
+            *by_code.entry(f.code.clone()).or_insert(0) += 1;
         }
 
         let ran: std::collections::BTreeSet<Category> =
@@ -335,6 +355,7 @@ impl Certificate {
             findings_summary: FindingsSummary {
                 by_severity: verdict.counts,
                 by_category,
+                by_code,
             },
             trust_score,
             provenance_coverage,

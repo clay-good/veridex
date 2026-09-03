@@ -22,6 +22,29 @@ attests — the hash it is bound to, the trust score, and, for a certificate iss
 form). Every line printed is covered by the signature that just verified, so a doctored readiness
 block fails verification rather than being read back.
 
+## What the run could not measure
+
+A certificate names its findings **by code**, not only by severity and family. That distinction is
+the whole point: `statistical: 1` beside "46 checks run, no families skipped" is what a
+single-episode dataset whose streams hold no summarizable values used to sign as — while all five
+statistical checks had nothing to measure and seven cross-episode checks had nothing to compare.
+Twelve of the forty-six presented as clean executed checks.
+
+Veridex emits an informational finding whenever a check had no evidence to work on
+(`STATISTICAL.UNMEASURED_VALUES`, `STRUCTURAL.UNCOMPARED_EPISODES`, `TEMPORAL.UNMEASURED_CLOCK`, and
+the rest — see [docs/checks.md](checks.md)), precisely so a pass cannot mean "nothing was asked". The
+family rollup flattened those back out, and the offline reader is the one person who cannot re-run
+Veridex to find out. So `verify` prints a `findings:` line naming each code and its count, `--json`
+carries the same map as `findings_by_code`, and both come from the signed document.
+
+Finding *codes* are declared by checks, so the map is bounded by the catalog and never by the
+dataset. Finding *messages* are not carried: a message is sized by the input — a colliding stream
+group can name thousands of streams — and a signed document must not be.
+
+A certificate issued before this field existed carries no code map, and the readers print no line
+rather than an empty one: absent means unknown, not "no findings". Its bytes, and the signature over
+them, are unchanged.
+
 A content hash only means something within one **canonical encoding**, and that encoding changes
 when Veridex starts binding a field it did not before. So a certificate records the encoding version
 its hash was computed under, and `verify` uses it to tell two failures apart that look identical
