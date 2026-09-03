@@ -33,6 +33,22 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   one: absent means unknown, not none. Documented in
   [docs/trust-chain.md](docs/trust-chain.md).
 
+- **The trust label discloses what the run could not measure.** The label already disclosed the two
+  neighbouring cases — a check that *crashed* (`Checks that failed to run`) and a family that ran
+  nothing (`Families not run`). The third is the one a clean result hides best: a check that ran,
+  measured nothing, and therefore found nothing, which is byte-for-byte what a flawless dataset
+  produces. A grade earned over checks that could not measure is a different grade, and a reader of a
+  dataset card cannot re-run Veridex to discover the difference.
+
+  Telling an abstention from a fault needs the catalog's judgement, not a name pattern, so each check
+  now declares its own (`Check::abstention_codes`, empty by default, also surfaced on `CheckInfo`).
+  A test holds the declaration to the catalog in **both** directions: a finding code that reads like
+  an abstention and is not declared fails it, and so does a declared code outside the naming
+  vocabulary — because that would mean the guard could no longer find its siblings. Proven by
+  deleting one declaration and watching it name the omission. `VIDEO.MEDIA_UNREADABLE` is recorded as
+  a deliberate exception with its reason: the media was reached and did not parse, which is a defect
+  in the file, not a gap in what Veridex looked at.
+
 ### Fixed
 
 - **Two finding messages were sized by the file, not by the catalog.** A finding message is not a

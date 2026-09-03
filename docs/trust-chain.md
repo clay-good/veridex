@@ -41,6 +41,19 @@ Finding *codes* are declared by checks, so the map is bounded by the catalog and
 dataset. Finding *messages* are not carried: a message is sized by the input — a colliding stream
 group can name thousands of streams — and a signed document must not be.
 
+The **label** names them in a `Could not measure` row, beside the two neighbouring cases it already
+disclosed — a check that *crashed* (`Checks that failed to run`) and a family that ran nothing
+(`Families not run`). This third case is the one a clean result hides best: a check with no evidence
+produces byte-for-byte what a flawless dataset produces.
+
+| Could not measure | STATISTICAL.UNMEASURED_VALUES (1), STRUCTURAL.UNCOMPARED_EPISODES (1) |
+
+Which codes those are is declared per check (`Check::abstention_codes`) and held to the catalog by a
+test, so a new abstention code cannot be added without something able to recognize it. The row is
+classified from the reading build's catalog rather than from the signed document: the codes are in
+the document, but what they *mean* is the catalog's to say — so a code this build does not know is
+left unnamed rather than guessed at, and the row never claims to be exhaustive.
+
 A certificate issued before this field existed carries no code map, and the readers print no line
 rather than an empty one: absent means unknown, not "no findings". Its bytes, and the signature over
 them, are unchanged.

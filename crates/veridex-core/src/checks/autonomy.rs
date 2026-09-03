@@ -1482,6 +1482,10 @@ impl Check for PointCloudDensity {
             "AUTONOMY.POINT_CLOUD_UNMEASURED",
         ]
     }
+
+    fn abstention_codes(&self) -> &'static [&'static str] {
+        &["AUTONOMY.POINT_CLOUD_UNMEASURED"]
+    }
     fn title(&self) -> &'static str {
         "Point-cloud density"
     }
@@ -1688,6 +1692,10 @@ impl Check for SensorClock {
             "AUTONOMY.SENSOR_CLOCK_OFFSET",
             "AUTONOMY.SENSOR_CLOCK_UNREAD",
         ]
+    }
+
+    fn abstention_codes(&self) -> &'static [&'static str] {
+        &["AUTONOMY.SENSOR_CLOCK_UNREAD"]
     }
     fn title(&self) -> &'static str {
         "Sensor clock"

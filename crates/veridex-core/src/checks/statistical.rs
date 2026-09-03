@@ -1097,6 +1097,13 @@ impl Check for ValueMeasurability {
             "STATISTICAL.NO_STORED_STATS",
         ]
     }
+
+    fn abstention_codes(&self) -> &'static [&'static str] {
+        &[
+            "STATISTICAL.UNMEASURED_VALUES",
+            "STATISTICAL.UNMEASURABLE_VALUES",
+        ]
+    }
     fn title(&self) -> &'static str {
         "Values were read at all"
     }

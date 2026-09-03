@@ -53,8 +53,15 @@ scope by design; a verifier that edits is not a neutral one.
 **A run that could not measure something says so.** The failure mode this whole tool exists to
 prevent is a clean result that means "nothing was asked". A check with no evidence to work on emits
 an informational finding naming what it could not measure, and that finding travels into the JSON,
-the SARIF, the HTML and the certificate. If you add a path where a check quietly does nothing,
-you have added the bug, not avoided it.
+the SARIF, the HTML and the certificate — the certificate names findings by code for exactly this
+reason, since a family count cannot tell an abstention from a fault. If you add a path where a check
+quietly does nothing, you have added the bug, not avoided it.
+
+Declare any such code in your check's `abstention_codes` as well as its `finding_codes`. Nothing
+downstream can tell "I could not measure this" from "I measured this and it is wrong" by name alone,
+and the trust label's `Could not measure` row is built from that declaration. A test holds the
+declaration to the catalog in both directions, so an undeclared abstention code fails the suite
+rather than travelling silently.
 
 **Coverage and narrowing are refused, not disclosed away.** A sampled run, a `--metadata-only` run,
 or a run narrowed by config cannot support a claim about the whole dataset, so the score gate refuses

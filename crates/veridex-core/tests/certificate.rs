@@ -992,3 +992,40 @@ fn a_certificate_without_a_code_map_still_verifies() {
         "absent means unknown, not none: {text}"
     );
 }
+
+#[test]
+fn the_label_discloses_what_the_run_could_not_measure() {
+    // The label is the form most people meet a certificate in — pasted into a Hugging Face dataset
+    // card — and it already discloses the two neighbouring cases: a check that *crashed*
+    // (`Checks that failed to run`) and a family that ran nothing (`Families not run`). The third
+    // is a check that ran, measured nothing, and therefore found nothing, which is the one this
+    // tool exists to prevent being read as a clean result.
+    //
+    // A grade earned over checks that could not measure is not the same grade, and a reader of a
+    // dataset card cannot re-run Veridex to discover the difference.
+    let d = dataset(vec![stream("s", "c", &[0, 1_000_000, 2_000_000])]);
+    let (cert, _) = issue_cert(&d);
+    assert!(
+        cert.findings_summary
+            .by_code
+            .contains_key("STRUCTURAL.UNCOMPARED_EPISODES"),
+        "fixture must abstain somewhere: {:?}",
+        cert.findings_summary.by_code
+    );
+    let signed = sign(cert, &keypair());
+    let label = veridex_core::render_label(&signed, true);
+
+    assert!(
+        label.contains("STRUCTURAL.UNCOMPARED_EPISODES"),
+        "the label must name the abstention: {label}"
+    );
+    assert!(
+        label.to_ascii_lowercase().contains("could not measure"),
+        "and say what naming it means: {label}"
+    );
+    // A real fault must not be swept into that row — it is a different claim about the dataset.
+    assert!(
+        !label.contains("PROVENANCE.MISSING_CLOCK"),
+        "only abstentions belong in the row: {label}"
+    );
+}

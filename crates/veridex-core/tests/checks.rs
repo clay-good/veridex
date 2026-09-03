@@ -6829,3 +6829,81 @@ fn conflicting_annotations_at_one_timestamp_do_not_all_reach_the_message() {
         conflict[0].message
     );
 }
+
+// ---------------------------------------------------------------------------
+// Abstention codes are declared, and the declaration cannot drift
+// ---------------------------------------------------------------------------
+
+#[test]
+fn every_abstention_code_in_the_catalog_is_declared_as_one() {
+    // `Check::abstention_codes` is what lets a summarizer tell "I could not measure this" apart from
+    // "I measured this and it is wrong". A new abstention code that nobody declares is a disclosure
+    // nothing can recognize, which is the same silence the abstention finding was introduced to
+    // break — so this holds the declaration to the catalog in both directions.
+    //
+    // The vocabulary is the naming convention the catalog already uses for these codes. It is a
+    // heuristic for *finding* them, not the definition: the declaration is authoritative, and a code
+    // that reads like an abstention but is not gets an entry in the exceptions below with a reason.
+    const VOCABULARY: &[&str] = &[
+        "UNMEASURED",
+        "UNMEASURABLE",
+        "UNCOMPARED",
+        "UNCHECKED",
+        "UNREAD",
+        "UNFINGERPRINTED",
+    ];
+    // Codes whose name matches the vocabulary but which report a *fault*, not an abstention.
+    const NOT_ABSTENTIONS: &[&str] = &[
+        // The media is present and does not parse. That is a defect in the file, not a gap in what
+        // Veridex looked at — the check reached the bytes and they were wrong.
+        "VIDEO.MEDIA_UNREADABLE",
+    ];
+
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let mut undeclared: Vec<String> = Vec::new();
+    let mut misdeclared: Vec<String> = Vec::new();
+
+    for check in engine.catalog() {
+        let declared = check.abstention_codes;
+        for code in declared {
+            assert!(
+                check.finding_codes.contains(code),
+                "{} declares abstention `{code}` that is not one of its finding codes",
+                check.id
+            );
+        }
+        for code in check.finding_codes {
+            let looks_like = VOCABULARY.iter().any(|v| code.contains(v));
+            let is_declared = declared.contains(code);
+            if looks_like && !is_declared && !NOT_ABSTENTIONS.contains(code) {
+                undeclared.push(format!("{} / {code}", check.id));
+            }
+            if !looks_like && is_declared {
+                misdeclared.push(format!("{} / {code}", check.id));
+            }
+        }
+    }
+
+    assert!(
+        undeclared.is_empty(),
+        "these read as abstentions and are not declared — add them to the check's \
+         `abstention_codes`, or to NOT_ABSTENTIONS with a reason: {undeclared:?}"
+    );
+    // A code declared as an abstention that does not read like one is fine in principle, but it
+    // means the vocabulary above no longer finds every abstention, so the guard has gone soft.
+    assert!(
+        misdeclared.is_empty(),
+        "declared as abstentions but outside the naming vocabulary, so this guard can no longer \
+         find their siblings — extend VOCABULARY: {misdeclared:?}"
+    );
+    // And the guard must actually be guarding something.
+    let total: usize = engine
+        .catalog()
+        .iter()
+        .map(|c| c.abstention_codes.len())
+        .sum();
+    assert!(
+        total >= 8,
+        "the catalog's abstentions should all be declared; found {total}"
+    );
+}

@@ -1191,6 +1191,10 @@ impl Check for ClockMeasurability {
     fn finding_codes(&self) -> &'static [&'static str] {
         &["TEMPORAL.UNMEASURED_CLOCK", "TEMPORAL.UNCOMPARED_STREAMS"]
     }
+
+    fn abstention_codes(&self) -> &'static [&'static str] {
+        &["TEMPORAL.UNMEASURED_CLOCK", "TEMPORAL.UNCOMPARED_STREAMS"]
+    }
     fn title(&self) -> &'static str {
         "Timestamps are measured time"
     }

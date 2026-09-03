@@ -271,6 +271,24 @@ pub trait Check: Send + Sync {
     /// the doc catalog — so a code can't silently drift from its documentation. Every code a check's
     /// [`Check::run`] emits must appear here.
     fn finding_codes(&self) -> &'static [&'static str];
+
+    /// Which of this check's [`Check::finding_codes`] mean *"I could not measure this"* rather than
+    /// *"I measured this and it is wrong"*.
+    ///
+    /// The distinction is the one this tool exists to make. A check with no evidence to work on
+    /// produces no fault findings, which is byte-for-byte what a flawless dataset produces, so each
+    /// such check emits an informational finding naming what it could not measure. Those findings
+    /// then have to be *told apart* from real faults by anything that summarizes them — the trust
+    /// label is the case in point, where "grade B" over a family that measured nothing is a
+    /// different claim from "grade B" over a family that measured everything.
+    ///
+    /// Empty by default: a check that always measures declares nothing. Every code listed here must
+    /// also appear in [`Check::finding_codes`], and the catalog guard in `tests/checks.rs` holds
+    /// both directions — a new abstention code that is not declared here is caught there, because a
+    /// disclosure nothing can recognize is a disclosure that does not travel.
+    fn abstention_codes(&self) -> &'static [&'static str] {
+        &[]
+    }
     /// Inspect the dataset and emit findings. Findings should use [`Check::default_severity`]
     /// unless the check intentionally varies severity by finding.
     fn run(&self, dataset: &Dataset) -> Vec<Finding>;

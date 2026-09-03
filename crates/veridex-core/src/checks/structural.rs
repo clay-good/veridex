@@ -1077,6 +1077,10 @@ impl Check for NearDuplicateEpisode {
             "STRUCTURAL.NEAR_DUPLICATE_UNCHECKED",
         ]
     }
+
+    fn abstention_codes(&self) -> &'static [&'static str] {
+        &["STRUCTURAL.NEAR_DUPLICATE_UNCHECKED"]
+    }
     fn title(&self) -> &'static str {
         "Near-duplicate episodes"
     }
@@ -1435,6 +1439,13 @@ impl Check for ContentMeasurability {
         "structural.content-measurability"
     }
     fn finding_codes(&self) -> &'static [&'static str] {
+        &[
+            "STRUCTURAL.UNFINGERPRINTED_CONTENT",
+            "STRUCTURAL.UNCOMPARED_EPISODES",
+        ]
+    }
+
+    fn abstention_codes(&self) -> &'static [&'static str] {
         &[
             "STRUCTURAL.UNFINGERPRINTED_CONTENT",
             "STRUCTURAL.UNCOMPARED_EPISODES",

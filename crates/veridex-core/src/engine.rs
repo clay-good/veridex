@@ -394,6 +394,9 @@ pub struct CheckInfo {
     pub version: &'static str,
     /// Every finding `code` this check can emit.
     pub finding_codes: &'static [&'static str],
+    /// Which of `finding_codes` mean the check could not measure, rather than that it measured
+    /// something wrong. See [`Check::abstention_codes`].
+    pub abstention_codes: &'static [&'static str],
 }
 
 /// A registry of checks that can validate a CDM.
@@ -425,6 +428,7 @@ impl Engine {
                 scope: c.scope(),
                 version: c.version(),
                 finding_codes: c.finding_codes(),
+                abstention_codes: c.abstention_codes(),
             })
             .collect()
     }

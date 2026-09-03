@@ -94,6 +94,19 @@ pub fn render_label(signed: &SignedCertificate, issuer_verified: bool) -> String
         let skipped: Vec<&str> = cert.categories_skipped.iter().map(|c| c.tag()).collect();
         let _ = writeln!(out, "| Families not run | {} |", skipped.join(", "));
     }
+    // The third case, beside the two above: a check that ran, measured nothing, and therefore found
+    // nothing. It is the one this tool exists to keep out of a clean result, because a check with no
+    // evidence produces byte-for-byte what a flawless dataset produces. A grade earned over checks
+    // that could not measure is a different grade, and a reader of a dataset card cannot re-run
+    // Veridex to discover the difference.
+    //
+    // Classified from this build's catalog rather than the signed document: the codes are in the
+    // document, what they *mean* is the catalog's to say. A code this build does not recognize is
+    // simply not named here, which is why the row never claims to be exhaustive.
+    let abstained = abstentions_in(&cert.findings_summary.by_code);
+    if !abstained.is_empty() {
+        let _ = writeln!(out, "| Could not measure | {} |", abstained.join(", "));
+    }
     if let Some(record) = &cert.attestation {
         let _ = writeln!(
             out,
@@ -171,4 +184,24 @@ fn abbreviate(hex: &str) -> String {
         return hex.to_string();
     }
     format!("{}…{}", &hex[..8], &hex[hex.len() - 8..])
+}
+
+/// The finding codes in `by_code` that this build's catalog declares as abstentions.
+///
+/// Sorted, because `by_code` is a `BTreeMap` and the label has to render identically for the same
+/// certificate every time.
+fn abstentions_in(by_code: &std::collections::BTreeMap<String, u64>) -> Vec<String> {
+    let Ok(engine) = crate::checks::default_engine() else {
+        return Vec::new();
+    };
+    let declared: std::collections::BTreeSet<&str> = engine
+        .catalog()
+        .iter()
+        .flat_map(|c| c.abstention_codes.iter().copied())
+        .collect();
+    by_code
+        .iter()
+        .filter(|(code, _)| declared.contains(code.as_str()))
+        .map(|(code, n)| format!("{code} ({n})"))
+        .collect()
 }
