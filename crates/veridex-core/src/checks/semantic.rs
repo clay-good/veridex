@@ -247,11 +247,7 @@ impl Check for AnnotationIntegrity {
                             ep.index,
                             values.len(),
                             ts,
-                            values
-                                .iter()
-                                .map(|v| format!("`{v}`"))
-                                .collect::<Vec<_>>()
-                                .join(", "),
+                            list_a_few(values.iter().copied()),
                         ),
                     )
                     .with_risk(
@@ -382,11 +378,7 @@ impl Check for StreamKeyClarity {
                                 "stream `{}` in episode {} is ambiguous with {} (differs only by case/whitespace)",
                                 name,
                                 ep.index,
-                                others
-                                    .iter()
-                                    .map(|o| format!("`{o}`"))
-                                    .collect::<Vec<_>>()
-                                    .join(", "),
+                                list_a_few(others.iter().copied()),
                             ),
                         )
                         .with_risk(
@@ -402,5 +394,34 @@ impl Check for StreamKeyClarity {
             }
         }
         findings
+    }
+}
+
+/// Name a few of a list and count the rest, each name quoted.
+///
+/// Nothing caps how many streams a file declares or how many labels it carries, so a list joined
+/// verbatim here is sized by the input rather than by the catalog. That is not a cosmetic limit: a
+/// finding message reaches the terminal, the JSON, the SARIF **and the signed certificate**, and
+/// `SEMANTIC.AMBIGUOUS_STREAM_KEY` emits one finding per member of a colliding group while listing
+/// every *other* member — quadratic in the bytes. 2,000 streams that normalize alike produced 263 KB
+/// per message and roughly half a gigabyte of report from a legal file.
+///
+/// The count is always stated in full by the callers; only the enumeration is abbreviated, so
+/// nothing a reader needs to size the problem is lost. (`statistical.rs`, `structural.rs`,
+/// `temporal.rs` and `autonomy.rs` each carry their own copy of this four-and-the-rest shape.)
+fn list_a_few<'a>(names: impl Iterator<Item = &'a str>) -> String {
+    let mut shown: Vec<String> = Vec::new();
+    let mut rest = 0usize;
+    for name in names {
+        if shown.len() < 4 {
+            shown.push(format!("`{name}`"));
+        } else {
+            rest += 1;
+        }
+    }
+    let shown = shown.join(", ");
+    match rest {
+        0 => shown,
+        rest => format!("{shown} and {rest} more"),
     }
 }

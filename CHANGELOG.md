@@ -10,6 +10,23 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **Two finding messages were sized by the file, not by the catalog.** A finding message is not a
+  debug print — it reaches the terminal, the JSON, the SARIF *and the signed certificate* — and
+  nothing caps how many streams a file declares or how many labels it stamps on one instant. Two
+  checks in the semantic family joined the whole list in:
+
+  `SEMANTIC.AMBIGUOUS_STREAM_KEY` reports one finding per member of a colliding group, each naming
+  every *other* member, which is quadratic in the bytes. 2,000 streams that normalize to the same key
+  produced a 263 KB message apiece and roughly half a gigabyte of report — from a legal file.
+  `SEMANTIC.ANNOTATION_CONFLICT` joined every conflicting value at a timestamp, each of them free
+  text of any length.
+
+  Both now name four and count the rest, the shape the statistical, structural, temporal and autonomy
+  families already use; the full count is still stated, so nothing a reader needs to size the problem
+  is lost. Tests hold each message under 400 bytes and the whole report linear in the stream count,
+  and both fail when the cap is reverted. Documented per-check in
+  [docs/checks.md](docs/checks.md).
+
 - **The nutrition label promoted a filename guess into a signature.** The label's provenance line
   read `3 known · 1 attested · 2 unknown`, printing the `asserted` count under the word *attested*.
   Those are different claims. `Asserted` is usually an adapter being honest about a guess — the MCAP

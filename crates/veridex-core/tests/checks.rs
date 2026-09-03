@@ -6734,3 +6734,98 @@ fn the_unfixed_fraction_threshold_is_a_boundary_the_wording_promises() {
     assert_eq!(judged(0.05, 5), 0, "exactly 5% is not more than 5%");
     assert_eq!(judged(0.05, 6), 1, "6% is");
 }
+
+// ---------------------------------------------------------------------------
+// Finding messages must be bounded by the catalog, never by the file
+// ---------------------------------------------------------------------------
+//
+// Nothing caps how many streams a file declares or how many labels it carries, so any list joined
+// verbatim into a finding message is sized by the input. A finding message is not a debug print: it
+// reaches the terminal, the JSON, the SARIF *and the signed certificate*, so an unbounded one is a
+// legal file turning a report into hundreds of megabytes. Every other family already names a few and
+// counts the rest; these two were joining the whole list.
+
+/// Streams that all normalize to the same key, so they form one ambiguous group.
+fn ambiguous_stream_group(n: usize) -> Vec<veridex_core::cdm::Stream> {
+    // Case permutations of one base name: `observation_camera`, `Observation_camera`,
+    // `oBservation_camera`, … — distinct names, one normalized form, and all exactly the same length,
+    // so the byte counts below measure the code rather than the fixture. The check emits one finding
+    // per member of the group, each of which was listing every *other* member: quadratic in bytes.
+    assert!(n <= 1 << 17, "18 letters gives 2^18 case permutations");
+    (0..n)
+        .map(|i| {
+            let mut bit = 0;
+            let name: String = "observation_camera"
+                .chars()
+                .map(|c| {
+                    if !c.is_ascii_alphabetic() {
+                        return c;
+                    }
+                    let upper = i >> bit & 1 == 1;
+                    bit += 1;
+                    if upper {
+                        c.to_ascii_uppercase()
+                    } else {
+                        c
+                    }
+                })
+                .collect();
+            stream(&name, "c", None, &[0, 1])
+        })
+        .collect()
+}
+
+#[test]
+fn an_ambiguous_stream_group_does_not_name_every_member_in_every_message() {
+    let n = 2_000;
+    let d = dataset(vec![episode(0, ambiguous_stream_group(n))]);
+    let f = semantic::StreamKeyClarity.run(&d);
+    assert_eq!(f.len(), n, "one finding per member of the group");
+
+    let longest = f.iter().map(|x| x.message.len()).max().unwrap();
+    assert!(
+        longest < 400,
+        "a message must be bounded by the catalog, not by the file: longest is {longest} bytes \
+         across {n} streams"
+    );
+    // Linear, not quadratic. Each message names at most four of the group, so the whole report is
+    // bounded by a per-finding constant — with the unpatched check this was 497 MB.
+    let total: usize = f.iter().map(|x| x.message.len()).sum();
+    assert!(
+        total < 400 * n,
+        "and the report as a whole must stay linear in the stream count, not quadratic: \
+         {total} bytes across {n} streams"
+    );
+    // Still says what it found: the count of the others, and at least one of their names.
+    assert!(
+        f[0].message.contains("more") || f[0].message.matches('`').count() >= 4,
+        "the message must still name some of the group: {}",
+        f[0].message
+    );
+}
+
+#[test]
+fn conflicting_annotations_at_one_timestamp_do_not_all_reach_the_message() {
+    let n = 2_000;
+    let labels: Vec<veridex_core::cdm::Label> = (0..n)
+        .map(|i| lang(&format!("instruction number {i}"), Some(5)))
+        .collect();
+    let d = dataset(vec![episode_with_labels(0, labels)]);
+    let f = semantic::AnnotationIntegrity.run(&d);
+    let conflict: Vec<_> = f
+        .iter()
+        .filter(|x| x.code == "SEMANTIC.ANNOTATION_CONFLICT")
+        .collect();
+    assert_eq!(conflict.len(), 1, "one conflict finding for the timestamp");
+    assert!(
+        conflict[0].message.len() < 400,
+        "a message must be bounded by the catalog, not by the file: {} bytes for {n} annotations",
+        conflict[0].message.len()
+    );
+    // The count is the part that must survive: 2000 conflicting instructions is the headline.
+    assert!(
+        conflict[0].message.contains(&n.to_string()),
+        "the full count must still be stated: {}",
+        conflict[0].message
+    );
+}
