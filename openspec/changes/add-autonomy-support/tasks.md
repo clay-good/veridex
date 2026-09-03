@@ -176,10 +176,22 @@ No code until this change is approved; this is the build plan.
       MCAP adapter extracts recognized scenario metadata keys into episode labels; `veridex inspect`
       shows a "scenario coverage" section. The `av` demo carries scenario tags. Unit + e2e tests.
 
+- [x] A receiver's own `NavSatStatus.STATUS_NO_FIX` is counted, not only dropped
+      (`Stream.observed_fix_availability`, `CANONICAL_VERSION` 17). The decode already declined to
+      record a no-fix message's coordinates — they are what the driver left behind — and that is what
+      made the outage invisible: the message still produced a frame, on time, so the stream kept its
+      frame count, cadence and span, and the fixes that did land were plausible. A rig whose receiver
+      had no fix for 80% of a drive reported identically to a clean one and certified
+      `world-model-ready` on GNSS. `autonomy.gnss-fix-availability` → `AUTONOMY.GNSS_NO_FIX` judges
+      the share against `gnss_unfixed_fraction`, because a brief outage is a tunnel and not a fault.
+      Demo: `make_demo_mcap -- <out> av-no-fix`, whose report differs from the healthy rig's by
+      exactly that one finding.
+
 ## A4 — World-model readiness
 - [x] `world-model-ready` policy profile bundling sync/calibration/ego-pose/sequence thresholds
-      (`crate::profile`): tightens cross-sensor sync to 20 ms and names the autonomy criteria (seven as of
-      `autonomy.point-cloud-density`).
+      (`crate::profile`): tightens cross-sensor sync to 20 ms — and, since
+      `autonomy.gnss-fix-availability`, the tolerated share of a receiver's messages declaring no fix
+      from a half to 5% — and names the autonomy criteria (nine as of that check).
       Applied via `veridex certify --profile world-model-ready`.
 - [x] Certificate reports per-criterion pass/fail against that profile. A `readiness` block
       (`ReadinessReport`) records profile name, `applicable` (a rig that also carries a

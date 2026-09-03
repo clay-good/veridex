@@ -29,6 +29,10 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   outage is a fact about the road, a tunnel or an underpass, and not a fault in the data. What is a
   fault is a trajectory that is mostly absence.
 
+  Recorded in `openspec/` as a ratified requirement rather than only as code: where a sensor states
+  its own confidence in a sample, Veridex reports how much of the stream the sensor disclaimed, and
+  does not let a disclaimed sample stand as a measurement.
+
   Demonstrated by new variant `av-no-fix`: the rig with a receiver that loses the sky a fifth of the
   way in while its driver keeps publishing the last position it had. Its report differs from the
   healthy rig's by exactly one finding — a test pins that difference rather than asserting the

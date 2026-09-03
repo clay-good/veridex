@@ -97,12 +97,22 @@ measured error.
 ### Requirement: Ego-motion and pose consistency checks
 Veridex SHALL check ego-state coherence: GNSS, IMU, wheel-odometry, and ego-pose agree within
 tolerance; the pose trajectory is continuous (no impossible jumps or teleports); and GNSS values are
-geospatially sane (within valid bounds, no discontinuities beyond configured limits).
+geospatially sane (within valid bounds, no discontinuities beyond configured limits). Where a sensor
+states its own confidence in a sample, Veridex SHALL report how much of the stream the sensor
+disclaimed, and SHALL NOT let a disclaimed sample stand as a measurement.
 
 #### Scenario: Ego-pose teleports between frames
 - **WHEN** the ego-pose trajectory contains a discontinuity implying an impossible velocity
 - **THEN** a check fails and reports the frames and the implied motion
 - **AND** the finding notes the risk to prediction and world-model training
+
+#### Scenario: The receiver reports no fix for much of a drive
+- **WHEN** a satellite receiver marks more than the configured share of its messages as having no fix
+- **THEN** a check fails and reports the share, the count, and the stream
+- **AND** the coordinates in those messages are not recorded as positions, so no other check reads
+  them as a trajectory
+- **AND** the finding states that the frames remain present and on time, so no timing check can see
+  the outage
 
 #### Scenario: GNSS and odometry disagree
 - **WHEN** GNSS-derived motion and wheel-odometry disagree beyond tolerance over a window
