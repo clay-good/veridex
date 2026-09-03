@@ -17,16 +17,24 @@ portable, signed **trust certificate** you can hand to anyone.
 veridex check my-dataset/
 ```
 
-An illustrative summary of what a run tells you (the real terminal report lists every finding with
-its location and message, worst episodes first, and the risk and remedy for anything at warning or
-error — `--full` adds those for the informational ones too):
+This is a real run, against the demo recording the [Quickstart](#quickstart) builds — every finding
+with its location and message, worst episodes first, and the training *risk* and the *remedy* for
+anything at warning or error. Four informational findings are elided here; the terminal prints them,
+and `--full` adds their risk and remedy too.
 
 ```
-Veridex Trust Report
-  Score      82 / 100   (B)
-  Structure  ✓ episodes intact, timestamps monotonic
-  Temporal   ⚠ TEMPORAL.CLOCK_SKEW  camera vs. arm drift 41ms  → resync before training
-  Provenance ⚠ missing sensor + license metadata
+Veridex report
+  Status:   FAIL   Trust: 76 (C)  [data 81 · provenance 66%]
+  Findings: 1 error · 1 warning · 4 info
+  By category: provenance 2 · statistical 1 · structural 1 · temporal 2
+
+Findings:
+  [error] TEMPORAL.CLOCK_SKEW  episode 0
+      episode 0: streams `/camera/image` (clock `mcap-log`, span 990.0 ms) and `/joint_states` (clock `mcap-log`, span 1200.0 ms) drift by 210.0 ms
+      risk:   Clock drift mis-aligns observations and actions: the policy learns to act on stale or future observations.
+      remedy: Re-synchronize the streams against a common time base, or record and apply per-stream latency offsets.
+  [warning] TEMPORAL.END_OFFSET  episode 0
+      episode 0: on clock `mcap-log`, stream `/camera/image` ends 210.0 ms before `/joint_states`
 ```
 
 ## Why it's useful

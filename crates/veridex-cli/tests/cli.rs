@@ -3240,3 +3240,49 @@ fn every_documented_cargo_install_is_one_that_works_today() {
         "expected the install commands in the README and docs/ci-recipes.md, found {checked}"
     );
 }
+
+/// The README's headline report is a real run, and stays one.
+///
+/// It used to be an invented sketch — a "Veridex Trust Report" with a layout and a score the tool
+/// has never printed. It was labelled illustrative, so it was not a lie, but it was the one block on
+/// the front page that nothing could check, on a tool whose whole argument is that a report should
+/// say exactly what was measured. It is the real output now, so it can rot, so it is pinned: every
+/// line of the fenced block must appear in a live run of `veridex check` on the demo the Quickstart
+/// builds.
+#[test]
+fn the_readmes_headline_report_is_what_the_tool_prints() {
+    let readme = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../README.md"),
+    )
+    .expect("README.md is readable");
+
+    // The first fenced block after the headline paragraph.
+    let block: Vec<&str> = readme
+        .lines()
+        .skip_while(|l| !l.starts_with("This is a real run"))
+        .skip_while(|l| *l != "```")
+        .skip(1)
+        .take_while(|l| *l != "```")
+        .collect();
+    assert!(
+        block.len() > 8,
+        "the README still opens with a fenced report block, found {} lines",
+        block.len()
+    );
+
+    let dir = temp_dir("headline");
+    let demo = dir.join("demo.mcap");
+    veridex_demo::mcap::write(&demo, "skew").expect("write the demo recording");
+    let (code, stdout, _) = run(&["check", demo.to_str().unwrap()]);
+    assert_eq!(code, 20, "the demo fails, which is the point of showing it");
+
+    // Every line the README shows is a line the tool printed. Compared trimmed, because the README
+    // carries the block at its own indentation and the point is the text, not the margin.
+    let printed: Vec<&str> = stdout.lines().map(str::trim_end).collect();
+    for line in &block {
+        assert!(
+            printed.contains(&line.trim_end()),
+            "the README's headline report shows a line `veridex check` does not print:\n  {line}"
+        );
+    }
+}

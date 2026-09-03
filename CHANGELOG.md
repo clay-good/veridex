@@ -82,6 +82,19 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **The README's headline report was a sketch the tool has never printed.** The first code block on
+  the front page showed a "Veridex Trust Report" with a layout, a score line and a set of one-line
+  family summaries that do not exist in any output path. It was labelled illustrative, so it was not
+  a lie — but it was the one block on the page nothing could check, on a tool whose whole argument is
+  that a report should say exactly what was measured, and a reader's first impression of the product
+  was of a thing that does not run.
+
+  It is now the real output of `veridex check` on the demo the Quickstart builds — the status line,
+  the counts, the category rollup, and the clock-skew error with the training risk and the remedy it
+  actually carries, with the four informational findings elided and said to be elided. A guard in
+  `crates/veridex-cli/tests/cli.rs` holds every line of the block against a live run, and fails on
+  the old sketch.
+
 - **The docs gate could not see the modules the code lives in.** CI builds the documentation with
   `-D warnings` so that a broken intra-doc link is caught here rather than shipping to docs.rs as a
   page that never renders. It was building public items only — and most of this crate is
