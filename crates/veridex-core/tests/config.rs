@@ -478,3 +478,74 @@ fn every_configurable_key_is_documented_in_the_example() {
         );
     }
 }
+
+/// Every tolerance reaches the two places the compiler cannot check.
+///
+/// Adding a configurable threshold touches several places, and most of them the compiler does catch:
+/// the field on `Tolerances`, the field on `TolerancesConfig`, its `resolve()`, and — verified by
+/// deleting one and watching `E0063` — `profile.rs`'s `pick!` list, which builds a `Tolerances`
+/// literal and so cannot omit a field. `docs/veridex.toml.example` and the `VERIDEX_TOLERANCE_*`
+/// twins have guards of their own (`every_configurable_key_is_documented_in_the_example`, and
+/// `config_env.rs`).
+///
+/// Two places fail silently, and neither had anything watching it:
+///
+/// - `effective.rs`'s table — a field left out is never printed by `--print-config`, so the one
+///   command for "what will this run actually use" answers incompletely.
+/// - `report.rs::tolerance_departures` — a field left out is **not disclosed as a narrowing**, which
+///   is the one that matters: loosening it would then not raise `SCOPE.NARROWED`, and `--min-score`
+///   would gate on a run that measured the data less hard than the catalog asks. Refusing exactly
+///   that is why the score gate exists.
+///
+/// Source-walked rather than reflected over, the way this repo's other source guards are, because
+/// Rust has no field reflection.
+#[test]
+fn every_tolerance_reaches_the_printout_and_the_narrowing_disclosure() {
+    let read = |rel: &str| {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("{} is readable: {e}", path.display()))
+    };
+    let engine = read("src/engine.rs");
+    let effective = read("src/effective.rs");
+    // Whitespace-collapsed: rustfmt wraps a long `departure!(` call so the macro and its first
+    // argument land on different lines, and a line-bound match reads that as an absent field.
+    let report = read("src/report.rs")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    // The `pub <name>: <type>,` fields of `Tolerances`.
+    let start = engine
+        .find("pub struct Tolerances {")
+        .expect("`Tolerances` is declared in engine.rs");
+    let body = &engine[start..];
+    let fields: Vec<&str> = body[..body.find("\n}").expect("the struct closes")]
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("pub "))
+        .filter_map(|l| l.split_once(": "))
+        .map(|(name, _)| name)
+        .collect();
+    assert!(
+        fields.len() >= 15,
+        "expected the tolerance fields, found {fields:?}"
+    );
+
+    for field in &fields {
+        // `--print-config` renames the nanosecond fields to milliseconds for display, and that is
+        // the only rewriting it does.
+        let displayed = field.strip_suffix("_ns").map(|s| format!("{s}_ms"));
+        let shown = effective.contains(&format!("\"{field}\""))
+            || displayed.is_some_and(|d| effective.contains(&format!("\"{d}\"")));
+        assert!(
+            shown,
+            "`{field}` is missing from `effective.rs`'s table, so `--print-config` never prints it"
+        );
+        assert!(
+            report.contains(&format!("departure!( {field},"))
+                || report.contains(&format!("departure!({field},")),
+            "`{field}` is missing from `report.rs::tolerance_departures`, so loosening it is not \
+             disclosed as a narrowing and `--min-score` would gate a run that measured less"
+        );
+    }
+}

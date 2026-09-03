@@ -10,6 +10,22 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **Every tolerance now has to reach the two places the compiler cannot check.** Adding a
+  configurable threshold touches several places, and most are compiler-enforced — including
+  `profile.rs`'s `pick!` list, which builds a `Tolerances` literal and so cannot omit a field
+  (verified by deleting one and watching `E0063`; the checklist had it recorded as a silent failure,
+  which it is not).
+
+  Two are genuinely silent, and neither had anything watching it. A field missing from
+  `effective.rs`'s table is never printed by `--print-config`, so the one command for "what will this
+  run actually use" answers incompletely. A field missing from `report.rs::tolerance_departures` is
+  not disclosed as a narrowing — and that is the one that matters: loosening it would not raise
+  `SCOPE.NARROWED`, so `--min-score` would gate a run that measured the data less hard than the
+  catalog asks, which is precisely what the score gate exists to refuse.
+
+  Both lists are complete today; the guard is so they stay that way. Deleting either entry for one
+  tolerance fails it, each on its own.
+
 - **A satellite receiver that said it had no fix, and a report that did not.** `NavSatFix` carries
   the receiver's own verdict in `NavSatStatus.status`, and `STATUS_NO_FIX` means the coordinates
   beside it are not a position — whatever the driver last had, or zero. Veridex already declined to
