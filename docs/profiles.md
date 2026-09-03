@@ -64,9 +64,18 @@ criterion's check **ran cleanly and found nothing**.
 Three rules keep that honest:
 
 - **Applicability demands the data the criteria are about.** The profile applies to a sensor rig that
-  carries a perception sensor (LiDAR or camera) *and* an ego trajectory. A bus-only measurement (a
-  CAN or MF4 log) is a rig by sensor count, but calibration completeness and ego-pose continuity have
-  nothing to examine there, so it is reported `N/A` rather than passing on empty criteria.
+  carries a perception sensor (LiDAR or camera), an ego trajectory, *and* a satellite receiver. A
+  criterion is judged by "the check ran and found nothing", and a check with nothing to examine finds
+  nothing — so any criterion whose evidence the dataset does not carry would be a green tick over an
+  empty set. A bus-only measurement (a CAN or MF4 log) is a rig by sensor count, but calibration
+  completeness and ego-pose continuity have nothing to examine there. A rig with no receiver — a
+  LiDAR + IMU + CAN + camera setup, ordinary indoors or on a closed course — likewise passed both
+  GNSS criteria on a stream that does not exist, signing "every satellite fix is a possible place,
+  and the receiver actually had one" over a drive that never had one. Georeferencing is not incidental
+  to this profile: those two criteria are bundled precisely because a drive that cannot be placed
+  cannot be aligned to a map or to another drive, and a drive with no receiver cannot be placed
+  either. All of these are reported `N/A` rather than passing on empty criteria. `N/A` is not a
+  judgement that the rig is bad — it says this profile has nothing to say about it.
 - **Silence is not a pass.** A check that was disabled in `veridex.toml`, filtered out of the run, or
   that failed internally produces no findings — so each criterion records whether its check actually
   ran, and one that didn't blocks `ready` and prints as `? … [check did not run]`. A dataset cannot

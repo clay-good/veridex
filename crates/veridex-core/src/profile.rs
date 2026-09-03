@@ -195,12 +195,27 @@ pub fn world_model_ready() -> Profile {
 
 /// Whether `world-model-ready` has anything to say about a dataset.
 ///
-/// Being a sensor rig is not enough. Several criteria — calibration completeness, per-sensor frame
-/// resolution, and ego-pose continuity — abstain when the dataset has no spatial sensor and no ego
-/// trajectory, so a
-/// bus-only measurement (a CAN or MF4 log, which is a "rig" by sensor count alone) would satisfy them
-/// with nothing examined. The profile therefore applies only to a rig that actually carries what a
-/// world model is built from: a perception sensor **and** an ego trajectory.
+/// Being a sensor rig is not enough. A criterion is judged by "the check ran and found nothing", and
+/// a check with nothing to examine finds nothing — so every criterion whose evidence the dataset does
+/// not carry is a green tick over an empty set. The profile therefore applies only to a rig that
+/// actually carries what a world model is built from, and each clause below buys out a specific set
+/// of vacuous passes:
+///
+/// - **A perception sensor** (LiDAR or camera) and **an ego trajectory** — without them, calibration
+///   completeness, per-sensor frame resolution and ego-pose continuity all abstain, so a bus-only
+///   measurement (a CAN or MF4 log, a "rig" by sensor count alone) satisfied three criteria with
+///   nothing examined.
+/// - **A satellite receiver** — without one, `autonomy.gnss-plausibility` and
+///   `autonomy.gnss-fix-availability` have no stream to read and pass, signing "every satellite fix
+///   is a possible place, and the receiver actually had one" over a drive that never had a receiver.
+///   That is not a technicality here: the profile bundles those two criteria precisely because "a
+///   drive whose fix is impossible or never acquired cannot be aligned to a map or to another drive,
+///   which is what a world model built from more than one of them requires" — and a drive with no
+///   receiver cannot be aligned either. A LiDAR + IMU + CAN + camera rig, which is an ordinary thing
+///   to record indoors or on a closed course, hit exactly this.
+///
+/// `N/A` is not a judgement that the rig is bad. It says this profile has nothing to say about it,
+/// which is the honest answer and the one a certificate can carry without misleading anyone.
 fn is_world_model_candidate(dataset: &crate::cdm::Dataset) -> bool {
     use crate::cdm::Modality;
     dataset.episodes.iter().any(|ep| {
@@ -209,6 +224,10 @@ fn is_world_model_candidate(dataset: &crate::cdm::Dataset) -> bool {
                 .streams
                 .iter()
                 .any(|s| matches!(s.modality, Modality::PointCloud | Modality::Video))
+            && ep
+                .streams
+                .iter()
+                .any(|s| matches!(s.modality, Modality::Gnss))
             && ep.ego_poses.as_ref().is_some_and(|p| !p.is_empty())
     })
 }

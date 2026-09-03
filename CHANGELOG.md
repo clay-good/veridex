@@ -51,6 +51,27 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **A rig with no satellite receiver certified as `world-model-ready` on two criteria it never
+  had the data for.** A readiness criterion is judged by "the check ran and found nothing", and a
+  check with nothing to examine finds nothing. `autonomy.gnss-plausibility` and
+  `autonomy.gnss-fix-availability` read a GNSS stream; over a rig that carries none they produced no
+  findings and the report signed `✓ every satellite fix is a possible place, and the receiver
+  actually had one` and `✓ no satellite receiver reporting no fix for more than 5% of its messages`
+  for a drive that never had a receiver. Two vacuously true sentences in the document's strongest
+  claim.
+
+  Reachable from an ordinary recording, not a contrived one: a LiDAR + IMU + CAN + camera rig with an
+  ego trajectory — indoors or on a closed course — is a rig, perceives, and is a world-model
+  candidate, and it passed both.
+
+  `world-model-ready` now requires a receiver to apply at all, which is the same answer the profile
+  already gives a rig with no ego trajectory, and for the same reason. Georeferencing is not
+  incidental to it: those two criteria are bundled precisely because a drive that cannot be placed
+  cannot be aligned to a map or to another drive, and a drive with no receiver cannot be placed
+  either. Such a rig is now reported `N/A` — not a judgement that it is bad, but a statement that
+  this profile has nothing to say about it. Documented in
+  [docs/profiles.md](docs/profiles.md).
+
 - **Two finding messages were sized by the file, not by the catalog.** A finding message is not a
   debug print — it reaches the terminal, the JSON report, the SARIF and the HTML — and nothing caps
   how many streams a file declares or how many labels it stamps on one instant. Two checks in the

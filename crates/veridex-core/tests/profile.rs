@@ -947,3 +947,53 @@ fn the_profiles_page_lists_exactly_the_criteria_the_profile_attests() {
         "docs/profiles.md's sample verify output must quote every criterion and its threshold"
     );
 }
+
+#[test]
+fn a_rig_with_no_satellite_receiver_is_not_a_world_model_candidate() {
+    // Two of the nine criteria are about the satellite receiver, and the profile's own rationale
+    // says why: "a drive whose fix is impossible or never acquired cannot be aligned to a map or to
+    // another drive, which is what a world model built from more than one of them requires."
+    //
+    // A rig with no receiver at all cannot be aligned either — and both checks produce no findings
+    // over a stream that does not exist, so the report signed "✓ every satellite fix is a possible
+    // place, and the receiver actually had one" and "✓ no satellite receiver reporting no fix for
+    // more than 5% of its messages" for a drive that never had one. Two vacuously true sentences in
+    // the document's strongest claim.
+    //
+    // Same shape, and same answer, as the rig with no ego trajectory: the profile abstains rather
+    // than passing on nothing. `N/A` is not a judgement that the rig is bad — it says this profile
+    // has nothing to say about it.
+    let p = profile::world_model_ready();
+
+    // LiDAR + IMU + CAN + camera, with an ego trajectory and no receiver — an indoor or
+    // closed-course rig, which is an ordinary thing to record rather than a contrived one. Three rig
+    // sensors of two modalities, so it is a rig; a camera, so it perceives; an ego trajectory, so it
+    // would otherwise be a world-model candidate.
+    let ticks: Vec<i64> = (0..20).map(|i| i * 100_000_000).collect();
+    let mut d = healthy_rig();
+    assert!(
+        (p.applies_to)(&d),
+        "the rig with a receiver is a candidate, so the fixture isolates the receiver"
+    );
+    d.episodes[0].streams.retain(|s| s.name != "gnss");
+    d.episodes[0]
+        .streams
+        .push(sensor("can", Modality::CanSignal, &ticks));
+    let xfs = &mut d.calibration.as_mut().unwrap().transforms;
+    xfs.retain(|t| t.child_frame != "gnss_frame");
+    xfs.push(xf("base_link", "can_frame"));
+
+    assert!(
+        veridex_core::checks::autonomy::is_rig_episode(&d.episodes[0]),
+        "it is still a rig — this is about the receiver, not about rig detection"
+    );
+    assert!(
+        !(p.applies_to)(&d),
+        "without a receiver the profile must abstain, not vacuously pass its two GNSS criteria"
+    );
+
+    let verdict = verdict_for(&d, &p);
+    let r = ReadinessReport::evaluate(&p, &verdict, &d);
+    assert!(!r.applicable, "reported N/A");
+    assert!(!r.ready, "and never ready");
+}
