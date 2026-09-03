@@ -490,6 +490,13 @@ pub(crate) fn tolerance_departures(t: &crate::Tolerances) -> Vec<ToleranceDepart
         )
     );
     departure!(
+        gnss_unfixed_fraction,
+        format!(
+            "GNSS unfixed {}%",
+            trim_num(t.gnss_unfixed_fraction * 100.0)
+        )
+    );
+    departure!(
         ego_max_speed_mps,
         format!("ego max speed {} m/s", t.ego_max_speed_mps)
     );

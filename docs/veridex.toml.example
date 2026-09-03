@@ -42,6 +42,7 @@ disabled_checks = []
 # saturation_min_samples = 20     # STATISTICAL.SATURATED: minimum recomputed samples before the check applies
 # outlier_z = 10.0                # STATISTICAL.OUTLIER: standard deviations from the mean at which a value is flagged (must be > 1.0)
 # sequence_drop_fraction = 0.05   # AUTONOMY.SEQUENCE_COMPLETE: tolerated fraction of a rig sensor's implied frames that may be missing (in [0.0, 1.0))
+# gnss_unfixed_fraction = 0.5     # AUTONOMY.GNSS_NO_FIX: tolerated share of a satellite receiver's messages that may declare no fix (in [0.0, 1.0))
 # ego_max_speed_mps = 100.0       # AUTONOMY.EGO_POSE_CONTINUITY: maximum plausible ego speed; a step implying more is a teleport
 # near_duplicate_fraction = 0.80  # STRUCTURAL.NEAR_DUPLICATE_EPISODE: shared fraction of frames at which two episodes are near-duplicates (in (0.0, 1.0])
 # sensor_clock_offset_ms = 1000.0 # AUTONOMY.SENSOR_CLOCK_OFFSET: how far a rig sensor's own capture stamps may sit from the recorder's clock

@@ -182,6 +182,117 @@ impl Check for RigSync {
 /// hold six decimal places of zero for an entire log. That is the same reasoning
 /// `STATISTICAL.SATURATED` rests on, and it is what keeps this free of false positives.
 ///
+/// A satellite receiver that told you it had no fix, for a share of the recording nothing else can
+/// see.
+///
+/// `sensor_msgs/msg/NavSatFix` carries the receiver's own verdict in `NavSatStatus.status`, and
+/// `STATUS_NO_FIX` means the latitude and longitude beside it are whatever the driver left behind —
+/// the last known position, or zero. Veridex does not record those as measurements, which is right:
+/// a vehicle is not parked at Null Island because its receiver lost the sky. But it made the outage
+/// vanish. The message still produced a frame, with a timestamp and nothing in it, so the stream
+/// keeps its frame count, its cadence and its span, and every temporal check reads it as continuous.
+/// The surviving fixes are all `autonomy.gnss-plausibility` sees, and they are plausible.
+///
+/// A recording whose receiver had no fix for four fifths of the drive was, in a report, identical to
+/// one that never lost it — same findings, same score, same grade — and certified `world-model-ready`
+/// on GNSS. This is the count that separates them.
+///
+/// The threshold is a *fraction* rather than any outage at all, because a brief one is a fact about
+/// the road and not a fault in the data: a tunnel, an underpass, an urban canyon. What is a fault is
+/// a trajectory that is mostly absence.
+pub struct GnssFixAvailability {
+    /// Maximum tolerated share of a receiver's messages that may declare no fix before the stream is
+    /// flagged.
+    pub max_unfixed_fraction: f64,
+}
+
+impl Default for GnssFixAvailability {
+    fn default() -> Self {
+        GnssFixAvailability {
+            max_unfixed_fraction: 0.5, // half
+        }
+    }
+}
+
+impl Check for GnssFixAvailability {
+    fn id(&self) -> &'static str {
+        "autonomy.gnss-fix-availability"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["AUTONOMY.GNSS_NO_FIX"]
+    }
+    fn title(&self) -> &'static str {
+        "GNSS fix availability"
+    }
+    fn category(&self) -> Category {
+        Category::Autonomy
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Error
+    }
+    fn scope(&self) -> Scope {
+        Scope::Stream
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        for ep in &dataset.episodes {
+            for stream in &ep.streams {
+                // Every stream that carried a `NavSatFix`. Keyed on the summary rather than on the
+                // modality: the summary exists exactly when the decode read `NavSatFix` bodies, so a
+                // stream without one had nothing to disclaim and is not silently passed as fixed.
+                let Some(fix) = stream.observed_fix_availability else {
+                    continue;
+                };
+                let fraction = fix.unfixed_fraction();
+                if fraction <= self.max_unfixed_fraction {
+                    continue;
+                }
+                findings.push(
+                    Finding::new(
+                        self.id(),
+                        Category::Autonomy,
+                        Severity::Error,
+                        Location::Stream {
+                            episode: ep.index,
+                            stream: stream.name.clone(),
+                        },
+                        "AUTONOMY.GNSS_NO_FIX",
+                        format!(
+                            "episode {}: receiver `{}` reported no fix for {:.0}% of its messages \
+                             ({} of {}) — that share of the trajectory has a timestamp and no \
+                             position",
+                            ep.index,
+                            stream.name,
+                            fraction * 100.0,
+                            fix.unfixed,
+                            fix.message_count,
+                        ),
+                    )
+                    .with_risk(
+                        "The receiver said so itself, and nothing else in the recording does: a \
+                         no-fix message still arrives on time, so the stream keeps its frame count, \
+                         its cadence and its span, and every timing check reads it as continuous. \
+                         The fixes that did land are plausible, so the plausibility check passes on \
+                         them. A world model or a map association built from this trajectory is \
+                         built from the fraction that exists, with the gaps interpolated over as \
+                         though they were measured.",
+                    )
+                    .with_remedy(
+                        "Check the antenna, its placement and the receiver's sky view for the \
+                         affected segment, and confirm the route was not mostly enclosed. Where the \
+                         outage is real, drop the segment or mark the unfixed spans so downstream \
+                         use does not interpolate across them.",
+                    ),
+                );
+            }
+        }
+        findings
+    }
+}
+
 /// Reads the per-dimension statistics the `NavSatFix` decode produces, so it needs no per-frame
 /// join. Silent on a rig whose GNSS was never decoded — `STATISTICAL.UNMEASURED_VALUES` says that,
 /// and a check that cannot see the values must not report them plausible.

@@ -60,6 +60,8 @@ pub struct TolerancesConfig {
     /// `AUTONOMY.SEQUENCE_COMPLETE` tolerated fraction of a rig sensor's implied frames that may be
     /// missing (0.05 = 5%). Must be within [0.0, 1.0).
     pub sequence_drop_fraction: Option<f64>,
+    /// `AUTONOMY.GNSS_NO_FIX`: the share of a satellite receiver's messages that may declare no fix.
+    pub gnss_unfixed_fraction: Option<f64>,
     /// `AUTONOMY.EGO_POSE_CONTINUITY` maximum plausible ego speed, in metres per second; a step
     /// implying more than this is a teleport.
     pub ego_max_speed_mps: Option<f64>,
@@ -233,6 +235,13 @@ impl TolerancesConfig {
                 )));
             }
         }
+        if let Some(f) = self.gnss_unfixed_fraction {
+            if !f.is_finite() || !(0.0..1.0).contains(&f) {
+                return Err(ConfigError::Parse(format!(
+                    "gnss_unfixed_fraction must be a finite number in [0.0, 1.0), got {f}"
+                )));
+            }
+        }
         if let Some(v) = self.ego_max_speed_mps {
             if !v.is_finite() || v <= 0.0 {
                 return Err(ConfigError::Parse(format!(
@@ -281,6 +290,9 @@ impl TolerancesConfig {
             sequence_drop_fraction: self
                 .sequence_drop_fraction
                 .unwrap_or(d.sequence_drop_fraction),
+            gnss_unfixed_fraction: self
+                .gnss_unfixed_fraction
+                .unwrap_or(d.gnss_unfixed_fraction),
             ego_max_speed_mps: self.ego_max_speed_mps.unwrap_or(d.ego_max_speed_mps),
             near_duplicate_fraction: self
                 .near_duplicate_fraction
@@ -332,6 +344,7 @@ pub mod env {
         "saturation_min_samples",
         "outlier_z",
         "sequence_drop_fraction",
+        "gnss_unfixed_fraction",
         "ego_max_speed_mps",
         "near_duplicate_fraction",
         "sensor_clock_offset_ms",
@@ -510,6 +523,7 @@ pub mod env {
             }
             "outlier_z" => t.outlier_z = Some(number()?),
             "sequence_drop_fraction" => t.sequence_drop_fraction = Some(number()?),
+            "gnss_unfixed_fraction" => t.gnss_unfixed_fraction = Some(number()?),
             "ego_max_speed_mps" => t.ego_max_speed_mps = Some(number()?),
             "near_duplicate_fraction" => t.near_duplicate_fraction = Some(number()?),
             "sensor_clock_offset_ms" => t.sensor_clock_offset_ms = Some(number()?),

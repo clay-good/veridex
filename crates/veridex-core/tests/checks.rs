@@ -47,6 +47,7 @@ fn stream(name: &str, clock: &str, rate: Option<f64>, ts: &[i64]) -> Stream {
         observed_point_counts: None,
         observed_header_stamps: None,
         observed_sequence: None,
+        observed_fix_availability: None,
         media: None,
         frame_id: None,
         frames: frames_at(ts),
@@ -344,6 +345,7 @@ fn stream_hashed(name: &str, clock: &str, ts: &[i64], contents: &[u8]) -> Stream
         observed_point_counts: None,
         observed_header_stamps: None,
         observed_sequence: None,
+        observed_fix_availability: None,
         media: None,
         frame_id: None,
         frames,
@@ -436,6 +438,7 @@ fn stream_with_content(name: &str, modality: Modality, contents: &[u8]) -> Strea
         observed_point_counts: None,
         observed_header_stamps: None,
         observed_sequence: None,
+        observed_fix_availability: None,
         media: None,
         frame_id: None,
         frames,
@@ -516,6 +519,7 @@ fn shaped(name: &str, dtype: Option<&str>, shape: Option<Vec<u64>>, ts: &[i64]) 
         observed_point_counts: None,
         observed_header_stamps: None,
         observed_sequence: None,
+        observed_fix_availability: None,
         media: None,
         frame_id: None,
         dim_names: None,
@@ -1667,7 +1671,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 45);
+    assert_eq!(verdict.executed_checks.len(), 46);
 }
 
 #[test]
@@ -3345,6 +3349,7 @@ fn a_bus_only_measurement_is_not_treated_as_a_sensor_rig() {
                 observed_point_counts: None,
                 observed_header_stamps: None,
                 observed_sequence: None,
+                observed_fix_availability: None,
                 media: None,
                 frame_id: None,
             })
@@ -3430,6 +3435,7 @@ fn one_shared_timeline_reports_once_and_an_event_driven_signal_is_not_called_inc
         observed_point_counts: None,
         observed_header_stamps: None,
         observed_sequence: None,
+        observed_fix_availability: None,
         media: None,
         frame_id: None,
     };
@@ -6655,4 +6661,76 @@ fn a_gnss_stream_nobody_measured_is_not_reported_plausible() {
     assert!(autonomy::GnssPlausibility
         .run(&dataset(vec![episode(0, vec![s])]))
         .is_empty());
+}
+
+/// A receiver that reported no fix is not a receiver that reported a plausible one.
+///
+/// The values half of a `NavSatFix` is what every other GNSS rule reads, and a no-fix message
+/// contributes none — so the outage leaves no trace anywhere else: the message still arrived, so the
+/// frame count, the cadence and the span are a healthy receiver's, and the fixes that did land are
+/// ordinary coordinates that `autonomy.gnss-plausibility` passes. Only the count says otherwise.
+#[test]
+fn a_receiver_that_reported_no_fix_for_most_of_a_drive_is_flagged() {
+    let ts: Vec<i64> = (0..100).map(|i| i * 100_000_000).collect();
+    let with = |unfixed: u64| {
+        let mut s = rig_stream_ts("gnss", Modality::Gnss, &ts);
+        s.observed_fix_availability = Some(veridex_core::cdm::FixAvailability {
+            message_count: 100,
+            unfixed,
+        });
+        dataset(vec![episode(0, vec![s])])
+    };
+
+    let f = autonomy::GnssFixAvailability::default().run(&with(80));
+    assert_eq!(f.len(), 1, "80 of 100 unfixed is past the default half");
+    assert_eq!(f[0].code, "AUTONOMY.GNSS_NO_FIX");
+    assert_eq!(f[0].severity, Severity::Error);
+    assert!(f[0].message.contains("80 of 100"), "{}", f[0].message);
+    assert!(f[0].message.contains("80%"), "{}", f[0].message);
+
+    // A receiver that never lost the sky says nothing, and neither does a stream that carried no
+    // `NavSatFix` at all — the absence of the summary is not an absence of fixes.
+    assert!(autonomy::GnssFixAvailability::default()
+        .run(&with(0))
+        .is_empty());
+    let no_summary = dataset(vec![episode(
+        0,
+        vec![rig_stream_ts("gnss", Modality::Gnss, &ts)],
+    )]);
+    assert!(autonomy::GnssFixAvailability::default()
+        .run(&no_summary)
+        .is_empty());
+}
+
+/// The unfixed-fraction threshold is a boundary its wording promises.
+///
+/// `world-model-ready` attests "no satellite receiver reporting no fix for more than 5% of its
+/// messages", and the rule is `fraction > max_unfixed_fraction` — so exactly the threshold passes,
+/// which is what "more than" means. Reachable exactly, because the fraction is a ratio of whole
+/// messages. Pinned in both directions: the largest share that passes and the smallest that does
+/// not, so flipping the comparison fails here rather than silently turning an honest tunnel into a
+/// finding.
+#[test]
+fn the_unfixed_fraction_threshold_is_a_boundary_the_wording_promises() {
+    let ts: Vec<i64> = (0..100).map(|i| i * 100_000_000).collect();
+    let judged = |limit: f64, unfixed: u64| {
+        let mut s = rig_stream_ts("gnss", Modality::Gnss, &ts);
+        s.observed_fix_availability = Some(veridex_core::cdm::FixAvailability {
+            message_count: 100,
+            unfixed,
+        });
+        autonomy::GnssFixAvailability {
+            max_unfixed_fraction: limit,
+        }
+        .run(&dataset(vec![episode(0, vec![s])]))
+        .len()
+    };
+
+    // The catalog default, one half.
+    assert_eq!(judged(0.5, 50), 0, "exactly 50% is not more than 50%");
+    assert_eq!(judged(0.5, 51), 1, "51% is");
+
+    // The threshold `world-model-ready` tightens to, and the number its criterion prints.
+    assert_eq!(judged(0.05, 5), 0, "exactly 5% is not more than 5%");
+    assert_eq!(judged(0.05, 6), 1, "6% is");
 }

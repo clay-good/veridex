@@ -122,6 +122,9 @@ struct StreamBuilder {
     /// What this channel's publisher said about how many messages it sent, from the `sequence` it
     /// set on each one. Empty for a publisher that never used the field.
     sequence: SequenceAccum,
+    /// What this topic's satellite receiver said about its own fix, message by message. Empty for
+    /// every topic that carries no `NavSatFix`.
+    fix_availability: super::cdr::FixAvailabilityAccum,
     /// The coordinate frame this topic's messages declare, from the first message whose body starts
     /// with a `std_msgs/Header`. First one wins: a topic that changes frame mid-recording is a rig
     /// fault, but recording the last one seen would hide it behind whichever message came last.
@@ -556,6 +559,7 @@ impl Adapter for McapAdapter {
                     point_counts: Default::default(),
                     header_stamps: Default::default(),
                     sequence: Default::default(),
+                    fix_availability: Default::default(),
                     modality: infer_modality(schema_name, &topic),
                     frames: Vec::new(),
                     // rosbag2's MCAP writer carries each publisher's QoS on the channel, so a bag
@@ -652,10 +656,13 @@ impl Adapter for McapAdapter {
                 // coordinate limit reported nothing — while the same faults on the IMU beside it
                 // were caught. A message declaring no fix carries fields the driver left behind, not
                 // a position, and contributes none.
-                if let Some(values) = super::cdr::decode_nav_sat_fix_values(&message.data) {
-                    builder
-                        .values
-                        .push_fixed(&values, &super::cdr::NAV_SAT_FIX_DIM_NAMES);
+                if let Some(sample) = super::cdr::decode_nav_sat_fix(&message.data) {
+                    builder.fix_availability.observe(&sample);
+                    if let super::cdr::NavSatSample::Fix(values) = sample {
+                        builder
+                            .values
+                            .push_fixed(&values, &super::cdr::NAV_SAT_FIX_DIM_NAMES);
+                    }
                 }
             } else if schema_is(schema_name, "TFMessage") {
                 if let Some(edges) = super::cdr::decode_tf_message(&message.data) {
@@ -711,6 +718,7 @@ impl Adapter for McapAdapter {
                     // What the messages said about their own sampling time, against the recorder's.
                     observed_header_stamps: b.header_stamps.finish(),
                     observed_sequence: b.sequence.finish(),
+                    observed_fix_availability: b.fix_availability.finish(),
                     // The coordinate frame the sensor declares, from its message headers.
                     media: None,
                     frame_id: b.frame_id,
@@ -1080,6 +1088,7 @@ fn ingest_summary_only(path: &Path, summary: McapSummary) -> Result<Ingested, In
             observed_point_counts: None,
             observed_header_stamps: None,
             observed_sequence: None,
+            observed_fix_availability: None,
             media: None,
             frame_id: None,
         })

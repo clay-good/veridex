@@ -296,6 +296,13 @@ pub fn settings(inputs: &Inputs<'_>) -> Vec<Setting> {
             trim(c.sequence_drop_fraction),
         ),
         (
+            "gnss_unfixed_fraction",
+            t.gnss_unfixed_fraction.is_some(),
+            f.gnss_unfixed_fraction == c.gnss_unfixed_fraction,
+            trim(f.gnss_unfixed_fraction),
+            trim(c.gnss_unfixed_fraction),
+        ),
+        (
             "ego_max_speed_mps",
             t.ego_max_speed_mps.is_some(),
             f.ego_max_speed_mps == c.ego_max_speed_mps,

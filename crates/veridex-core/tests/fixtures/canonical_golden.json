@@ -166,6 +166,10 @@
           "observed_saturation": null,
           "observed_non_finite": 2,
           "observed_dim_stats": null,
+          "observed_fix_availability": {
+            "message_count": 120,
+            "unfixed": 84
+          },
           "point_fields": null,
           "media": {
             "uri": "videos/ep0.mp4",

@@ -422,6 +422,9 @@ struct StreamBuilder {
     /// plugin records it — a `.db3` message table has no such column, so a bag stored that way
     /// leaves it empty and the check says so rather than reading the absence as completeness.
     sequence: super::mcap::SequenceAccum,
+    /// What this topic's satellite receiver said about its own fix, message by message. Empty for
+    /// every topic that carries no `NavSatFix`.
+    fix_availability: super::cdr::FixAvailabilityAccum,
     frame_id: Option<String>,
     /// Values decoded from this topic's `JointState` or `Imu` messages, with the joint set they
     /// belong to. Empty for every other topic, whose payload stays opaque.
@@ -745,6 +748,7 @@ fn read_shard(
                 point_counts: Default::default(),
                 header_stamps: Default::default(),
                 sequence: Default::default(),
+                fix_availability: Default::default(),
                 modality: super::mcap::infer_modality(&topic.ros_type, &topic.name),
                 ros_type: topic.ros_type.clone(),
                 frames: Vec::new(),
@@ -814,10 +818,13 @@ fn read_shard(
             // measured, so a receiver frozen at one fix, publishing NaNs, or railed at a coordinate
             // limit reported nothing — while the same faults on the IMU beside it were caught. A
             // message declaring no fix carries fields the driver left behind, not a position.
-            if let Some(values) = super::cdr::decode_nav_sat_fix_values(data) {
-                builder
-                    .values
-                    .push_fixed(&values, &super::cdr::NAV_SAT_FIX_DIM_NAMES);
+            if let Some(sample) = super::cdr::decode_nav_sat_fix(data) {
+                builder.fix_availability.observe(&sample);
+                if let super::cdr::NavSatSample::Fix(values) = sample {
+                    builder
+                        .values
+                        .push_fixed(&values, &super::cdr::NAV_SAT_FIX_DIM_NAMES);
+                }
             }
         } else if super::mcap::schema_is(ty, "TFMessage") {
             if let Some(edges) = super::cdr::decode_tf_message(data) {
@@ -901,6 +908,7 @@ fn read_mcap_shard(
                 point_counts: Default::default(),
                 header_stamps: Default::default(),
                 sequence: Default::default(),
+                fix_availability: Default::default(),
                 modality: super::mcap::infer_modality(&ros_type, &topic),
                 ros_type: ros_type.clone(),
                 frames: Vec::new(),
@@ -973,10 +981,13 @@ fn read_mcap_shard(
             // measured, so a receiver frozen at one fix, publishing NaNs, or railed at a coordinate
             // limit reported nothing — while the same faults on the IMU beside it were caught. A
             // message declaring no fix carries fields the driver left behind, not a position.
-            if let Some(values) = super::cdr::decode_nav_sat_fix_values(data) {
-                builder
-                    .values
-                    .push_fixed(&values, &super::cdr::NAV_SAT_FIX_DIM_NAMES);
+            if let Some(sample) = super::cdr::decode_nav_sat_fix(data) {
+                builder.fix_availability.observe(&sample);
+                if let super::cdr::NavSatSample::Fix(values) = sample {
+                    builder
+                        .values
+                        .push_fixed(&values, &super::cdr::NAV_SAT_FIX_DIM_NAMES);
+                }
             }
         } else if super::mcap::schema_is(&ros_type, "TFMessage") {
             if let Some(edges) = super::cdr::decode_tf_message(data) {
@@ -1081,6 +1092,7 @@ fn ingest_metadata_only(
             observed_point_counts: None,
             observed_header_stamps: None,
             observed_sequence: None,
+            observed_fix_availability: None,
             media: None,
             frame_id: None,
         })
@@ -1489,6 +1501,7 @@ impl Adapter for Rosbag2Adapter {
                     observed_point_counts: b.point_counts.finish(),
                     observed_header_stamps: b.header_stamps.finish(),
                     observed_sequence: b.sequence.finish(),
+                    observed_fix_availability: b.fix_availability.finish(),
                     media: None,
                     frame_id: b.frame_id,
                 }

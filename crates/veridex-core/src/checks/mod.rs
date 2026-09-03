@@ -75,6 +75,9 @@ pub fn standard_checks_with(t: &Tolerances) -> Vec<Box<dyn Check>> {
             max_speed_mps: t.ego_max_speed_mps,
         }),
         Box::new(autonomy::GnssPlausibility),
+        Box::new(autonomy::GnssFixAvailability {
+            max_unfixed_fraction: t.gnss_unfixed_fraction,
+        }),
         Box::new(autonomy::CalibrationCompleteness),
         Box::new(autonomy::SensorFrameResolution),
         Box::new(autonomy::PointCloudDensity),

@@ -95,7 +95,12 @@ use crate::cdm::{
 /// about how many messages it sent. `AUTONOMY.SEQUENCE_DROPPED` fails a stream on it, and a
 /// recording that lost a tenth of a sensor's messages carries no trace of the loss in its frame
 /// timestamps when the drops were scattered. Same rule again.
-pub const CANONICAL_VERSION: u32 = 16;
+/// v17 binds each stream's `observed_fix_availability` — how many of a satellite receiver's
+/// messages the receiver itself stamped as having no fix. `AUTONOMY.GNSS_NO_FIX` fails a stream on
+/// it, and a no-fix message contributes no values, so it leaves a frame with a timestamp and nothing
+/// in it: a receiver that lost the sky for most of a drive and one that never did have identical
+/// frame counts, cadences and spans. Same rule again.
+pub const CANONICAL_VERSION: u32 = 17;
 
 const DOMAIN: &[u8] = b"veridex.cdm.v1\0";
 
@@ -432,6 +437,13 @@ impl Stream {
             e.u64(q.message_count);
             e.u64(q.missing);
             e.u64(q.non_increasing);
+        });
+        // What the receiver said about its own fix. Bound because `autonomy.gnss-fix-availability`
+        // fails a stream on it, and because a no-fix message is invisible to every other field here:
+        // it contributes no values, so the two recordings differ in nothing a frame records.
+        e.opt(&self.observed_fix_availability, |e, q| {
+            e.u64(q.message_count);
+            e.u64(q.unfixed);
         });
         // The sensor's coordinate frame. Bound because `autonomy.sensor-frame-resolution` fails a
         // stream on it: two rigs differing only in which frame a sensor claims are a passing dataset

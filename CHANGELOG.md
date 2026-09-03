@@ -10,6 +10,32 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A satellite receiver that said it had no fix, and a report that did not.** `NavSatFix` carries
+  the receiver's own verdict in `NavSatStatus.status`, and `STATUS_NO_FIX` means the coordinates
+  beside it are not a position — whatever the driver last had, or zero. Veridex already declined to
+  record those as measurements, which is right. But that is what made the outage vanish: the message
+  still produced a frame, on time, so the stream kept its frame count, its cadence and its span, and
+  every temporal check read it as continuous. The fixes that did land were plausible, so
+  `autonomy.gnss-plausibility` passed on them.
+
+  A rig whose receiver reported no fix for **80% of a drive** produced a report byte-identical to a
+  clean one — same findings, same score, same grade — and certified `world-model-ready` on GNSS. The
+  frames were all there; four fifths of the trajectory was not.
+
+  New check `autonomy.gnss-fix-availability` → `AUTONOMY.GNSS_NO_FIX`, reading a new CDM field
+  (`Stream.observed_fix_availability`, `CANONICAL_VERSION` 17) that counts what the receiver
+  disclaimed against what it published. Judged as a *fraction* — `gnss_unfixed_fraction`, default
+  0.5, which `world-model-ready` tightens to 0.05 and names in its ninth criterion — because a brief
+  outage is a fact about the road, a tunnel or an underpass, and not a fault in the data. What is a
+  fault is a trajectory that is mostly absence.
+
+  Demonstrated by new variant `av-no-fix`: the rig with a receiver that loses the sky a fifth of the
+  way in while its driver keeps publishing the last position it had. Its report differs from the
+  healthy rig's by exactly one finding — a test pins that difference rather than asserting the
+  claim, and with the adapter wiring reverted it reports the outage adds nothing at all. The
+  threshold is pinned on its boundary in both directions, at the default and at the one the
+  certificate's criterion prints.
+
 - **A contributing guide, for the parts of this codebase you cannot infer from reading it.** The
   repository is public and had no `CONTRIBUTING.md`. What a newcomer most needs here is not the
   build command — it is the set of places a change has to reach that the compiler stays silent

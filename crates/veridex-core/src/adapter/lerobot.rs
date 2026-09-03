@@ -1194,6 +1194,7 @@ fn ingest_metadata_only(
                     observed_point_counts: None,
                     observed_header_stamps: None,
                     observed_sequence: None,
+                    observed_fix_availability: None,
                     frame_id: None,
                 })
                 .collect(),
@@ -1867,6 +1868,7 @@ impl Adapter for LeRobotAdapter {
                         observed_point_counts: None,
                         observed_header_stamps: None,
                         observed_sequence: None,
+                        observed_fix_availability: None,
                         // LeRobot declares no sensor coordinate frames (it is not a spatially-calibrated rig).
                         frame_id: None,
                     })

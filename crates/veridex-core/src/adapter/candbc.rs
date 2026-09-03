@@ -589,6 +589,7 @@ impl Adapter for CanDbcAdapter {
                     observed_point_counts: None,
                     observed_header_stamps: None,
                     observed_sequence: None,
+                    observed_fix_availability: None,
                     // A CAN log has no coordinate frame; signals are scalars, not spatial observations.
                     media: None,
                     frame_id: None,

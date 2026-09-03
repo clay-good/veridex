@@ -486,6 +486,19 @@ pub struct Stream {
     /// event-driven. A publisher that numbers its messages has already counted them.
     #[serde(default)]
     pub observed_sequence: Option<SequenceNumbers>,
+    /// What this stream's satellite receiver said about **its own** ability to fix a position — how
+    /// many messages it published, and how many of those it stamped as having no fix at all. `None`
+    /// for every non-GNSS stream, for a source that carries no such status, and for a run that did
+    /// not open the message bodies. Extension for `autonomy-sensor-data`.
+    ///
+    /// A `NavSatFix` whose `status` is `STATUS_NO_FIX` still carries latitude, longitude and
+    /// altitude — whatever the driver last had, or zero — so those fields are not recorded as a
+    /// position, and the message contributes no values. That leaves a frame with a timestamp and
+    /// nothing in it, which every timing check reads as a continuous stream. This is the count that
+    /// says otherwise: without it a receiver that lost the sky for most of a drive is
+    /// indistinguishable, in a report, from one that never did.
+    #[serde(default)]
+    pub observed_fix_availability: Option<FixAvailability>,
     /// The coordinate frame this sensor's data is expressed in (a ROS `header.frame_id`, e.g.
     /// `lidar_top` or `camera_front`), when the source records one. This is the name that has to
     /// appear in [`Calibration::transforms`] for the sensor to be relatable to any other — the
@@ -601,6 +614,32 @@ pub struct SequenceNumbers {
     /// publisher restarting its counter mid-recording. Either way the numbering below it no longer
     /// means what a hole in it would mean.
     pub non_increasing: u64,
+}
+
+/// What a satellite receiver said about its own fix, summarized over the episode.
+///
+/// `sensor_msgs/msg/NavSatFix` carries a `NavSatStatus.status`, and `STATUS_NO_FIX` (-1) is the
+/// receiver stating that the coordinates beside it are not a position. Those messages contribute no
+/// values, so a stream of them looks — to every check that reads timestamps — exactly like a healthy
+/// one: same frame count, same cadence, same span. Only this pair says how much of the recording the
+/// receiver disclaimed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FixAvailability {
+    /// Messages decoded on this stream (the denominator).
+    pub message_count: u64,
+    /// How many of those the receiver stamped `STATUS_NO_FIX`.
+    pub unfixed: u64,
+}
+
+impl FixAvailability {
+    /// The share of messages the receiver disclaimed, in `[0.0, 1.0]`. Zero when it published none,
+    /// so a stream with no messages is not reported as wholly unfixed.
+    pub fn unfixed_fraction(&self) -> f64 {
+        if self.message_count == 0 {
+            return 0.0;
+        }
+        self.unfixed as f64 / self.message_count as f64
+    }
 }
 
 /// The media file backing a video stream, and what Veridex learned about it.

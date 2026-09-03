@@ -98,6 +98,7 @@ Three rules keep that honest:
 | Calibration completeness | `autonomy.calibration-completeness` | a connected, unambiguous transform (TF) tree and camera intrinsics present, and arithmetically usable |
 | Sensor frame resolution | `autonomy.sensor-frame-resolution` | every sensor's own frame resolves through the tree to a camera |
 | GNSS plausibility | `autonomy.gnss-plausibility` | every satellite fix is a possible place, and the receiver actually had one — a drive whose fix is impossible or never acquired cannot be aligned to a map or to another drive |
+| GNSS fix availability | `autonomy.gnss-fix-availability` | no satellite receiver reporting no fix for more than 5% of its messages — the receiver's own `STATUS_NO_FIX` is the only record of an outage, because a no-fix message still arrives on time and contributes no position, so the stream keeps its frame count, cadence and span |
 | Point-cloud density | `autonomy.point-cloud-density` | every point-cloud sensor actually recorded points — a LiDAR whose driver lost its sensor keeps publishing well-formed empty clouds at the right rate, and satisfies every criterion above |
 | Sensor clock | `autonomy.sensor-clock` | every rig sensor stamped its own capture time, on a clock that agrees with the recorder's — the 20 ms sync above is measured from the recorder's clock, and a sensor that never stamped its data has no second clock for that result to be about |
 
@@ -131,6 +132,7 @@ veridex verify my-rig.mcap --certificate my-rig.veridex.json --key issuer.pub
     ✓ autonomy.calibration-completeness — a connected, unambiguous transform (TF) tree and camera intrinsics present, and arithmetically usable
     ✓ autonomy.sensor-frame-resolution — every sensor's own frame resolves through the tree to a camera
     ✓ autonomy.gnss-plausibility — every satellite fix is a possible place, and the receiver actually had one
+    ✓ autonomy.gnss-fix-availability — no satellite receiver reporting no fix for more than 5% of its messages
     ✓ autonomy.point-cloud-density — every point-cloud sensor actually recorded points
     ✓ autonomy.sensor-clock — every rig sensor stamped its own capture time, on a clock that agrees with the recorder's
 ```

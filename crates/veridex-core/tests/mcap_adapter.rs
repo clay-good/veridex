@@ -2966,7 +2966,7 @@ fn the_demo_rig_hashes_the_same_on_every_machine() {
         .dataset;
     assert_eq!(
         veridex_core::content_hash(&d).to_hex(),
-        "cdc0f46ce2db1798ff299de98d2cb85f8d84a95fd93932ad0ac2518b2f593661",
+        "4f26897dad9db59d6bb1bcf7745e59abb548c4cb12d8ec28d11e4ccc1dfb5dd6",
         "the demo rig's content hash must not depend on the machine that computed it"
     );
 
@@ -2992,5 +2992,55 @@ fn the_demo_rig_hashes_the_same_on_every_machine() {
         std::fs::read(&path).expect("read"),
         std::fs::read(&second).expect("read"),
         "…and this is only meaningful while the two files genuinely differ byte for byte"
+    );
+}
+
+#[test]
+fn a_receiver_that_lost_the_sky_moves_nothing_but_its_own_status() {
+    // The demo rig twice: as recorded, and with a satellite receiver that lost its fix a fifth of
+    // the way in and said so, while its driver kept publishing the last position it had.
+    //
+    // The assertion is the whole claim. The two reports differ by exactly one finding, because the
+    // outage leaves no trace anywhere else: a no-fix message still arrives on time, so rate, gap,
+    // jitter, rig sync and the start/end offsets all see a healthy stream, and the coordinates that
+    // did land are ordinary ones that `autonomy.gnss-plausibility` passes. Before this check, a
+    // recording whose receiver had no fix for four fifths of a drive was, in a report, identical to
+    // one that never lost it — and certified `world-model-ready` on GNSS.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let codes = |variant: &str| -> Vec<String> {
+        let path = dir.path().join(format!("{variant}.mcap"));
+        veridex_demo::mcap::write(&path, variant).expect("write the demo rig");
+        let d = McapAdapter
+            .ingest(&Source::Local(path), &IngestOptions::default())
+            .expect("ingest")
+            .dataset;
+        let engine = veridex_core::checks::default_engine().expect("the standard catalog");
+        let hash = veridex_core::content_hash(&d);
+        let mut codes: Vec<String> = engine
+            .run(&d, hash, &veridex_core::RunConfig::default())
+            .findings
+            .into_iter()
+            .map(|f| f.code)
+            .collect();
+        codes.sort();
+        codes
+    };
+
+    let healthy = codes("av");
+    let lost = codes("av-no-fix");
+    let added: Vec<&String> = lost.iter().filter(|c| !healthy.contains(c)).collect();
+    let removed: Vec<&String> = healthy.iter().filter(|c| !lost.contains(c)).collect();
+    assert_eq!(
+        added,
+        ["AUTONOMY.GNSS_NO_FIX"].iter().collect::<Vec<_>>(),
+        "losing the fix must add exactly the finding that counts it"
+    );
+    assert!(
+        removed.is_empty(),
+        "and must not silence anything else: {removed:?}"
+    );
+    assert!(
+        !healthy.contains(&"AUTONOMY.GNSS_NO_FIX".to_string()),
+        "the healthy rig must not be flagged"
     );
 }

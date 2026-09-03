@@ -258,6 +258,36 @@ pub fn decode_point_cloud2_fields(data: &[u8]) -> Option<Vec<PointField>> {
     Some(fields)
 }
 
+/// Accumulates what a receiver said about its own fix into a [`FixAvailability`].
+///
+/// Only `NavSatFix` bodies that decoded reach this: a body that could not be parsed is not the
+/// receiver saying anything, and counting it as a no-fix would report a decode failure as an
+/// outage.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct FixAvailabilityAccum {
+    messages: u64,
+    unfixed: u64,
+}
+
+impl FixAvailabilityAccum {
+    /// Fold in one decoded `NavSatFix`.
+    pub fn observe(&mut self, sample: &NavSatSample) {
+        self.messages += 1;
+        if matches!(sample, NavSatSample::NoFix) {
+            self.unfixed += 1;
+        }
+    }
+
+    /// The summary, or `None` for a stream that carried no `NavSatFix` at all — which is every
+    /// stream but a GNSS one, and is not the same fact as a receiver with no fix.
+    pub fn finish(self) -> Option<crate::cdm::FixAvailability> {
+        (self.messages > 0).then_some(crate::cdm::FixAvailability {
+            message_count: self.messages,
+            unfixed: self.unfixed,
+        })
+    }
+}
+
 /// Accumulates the point counts of a stream's `PointCloud2` messages into a [`PointCounts`].
 ///
 /// Kept as a running summary rather than a `Vec` of counts: the number of messages on a topic is
@@ -572,18 +602,31 @@ pub const NAV_SAT_FIX_DIM_NAMES: [&str; 3] = ["latitude", "longitude", "altitude
 /// position, as a fact about the drive. It is not one.
 const NAV_SAT_STATUS_NO_FIX: i8 = -1;
 
-/// Decode a `sensor_msgs/msg/NavSatFix` body into `[latitude, longitude, altitude]`.
+/// What one `NavSatFix` body turned out to be.
+///
+/// The distinction the value decode cannot express: [`decode_nav_sat_fix_values`] answers `None` for
+/// a body that is not a `NavSatFix` at all *and* for one whose receiver declared no fix, and those
+/// are opposite facts. The first is a message Veridex could not read; the second is a message that
+/// read perfectly and says the sensor had nothing to report. Counting the second is the only way a
+/// report can distinguish a receiver that lost the sky from one that never did.
+#[derive(Debug, Clone, PartialEq)]
+pub enum NavSatSample {
+    /// A fix: `[latitude, longitude, altitude]`.
+    Fix(Vec<Option<f64>>),
+    /// The receiver stamped `STATUS_NO_FIX`. The coordinates in the body are what the driver left
+    /// behind, so they are deliberately not returned.
+    NoFix,
+}
+
+/// Decode a `sensor_msgs/msg/NavSatFix` body, keeping the receiver's own verdict on it.
 ///
 /// Layout: `Header`, `NavSatStatus { int8 status, uint16 service }`, `float64 latitude`,
 /// `float64 longitude`, `float64 altitude`, `float64[9] position_covariance`,
 /// `uint8 position_covariance_type`. Fixed size, no bulk payload to decline.
 ///
-/// This is the one AV message body the decoder did not read, so a rig's GNSS stream was
-/// fingerprinted rather than measured: a receiver frozen at one fix, one publishing NaNs, or one
-/// railed at a coordinate limit reported nothing at all, while the same faults on the IMU beside it
-/// were caught. `None` when the message declares no fix, so the fields it leaves behind are not
-/// recorded as a position.
-pub fn decode_nav_sat_fix_values(data: &[u8]) -> Option<Vec<Option<f64>>> {
+/// The coordinates are read before the status is judged, so a truncated body is `None` — not a
+/// no-fix. A message that cannot be parsed is not the receiver saying anything.
+pub fn decode_nav_sat_fix(data: &[u8]) -> Option<NavSatSample> {
     let mut r = Reader::new(data)?;
     r.header()?;
     // `NavSatStatus`: int8 then uint16. The uint16 is 2-aligned, and the f64 that follows is
@@ -595,9 +638,13 @@ pub fn decode_nav_sat_fix_values(data: &[u8]) -> Option<Vec<Option<f64>>> {
     let longitude = r.f64()?;
     let altitude = r.f64()?;
     if status == NAV_SAT_STATUS_NO_FIX {
-        return None;
+        return Some(NavSatSample::NoFix);
     }
-    Some(vec![Some(latitude), Some(longitude), Some(altitude)])
+    Some(NavSatSample::Fix(vec![
+        Some(latitude),
+        Some(longitude),
+        Some(altitude),
+    ]))
 }
 
 /// Decode a `tf2_msgs/msg/TFMessage` body: a sequence of `TransformStamped`
@@ -1054,7 +1101,7 @@ mod tests {
             let _ = decode_odometry(b);
             let _ = decode_joint_state(b);
             let _ = decode_imu_values(b);
-            let _ = decode_nav_sat_fix_values(b);
+            let _ = decode_nav_sat_fix(b);
             let _ = decode_tf_message(b);
         };
 
@@ -1096,8 +1143,12 @@ mod tests {
         }
         w.u8(0); // position_covariance_type
         assert_eq!(
-            super::decode_nav_sat_fix_values(&w.buf),
-            Some(vec![Some(37.4), Some(-122.1), Some(12.5)])
+            super::decode_nav_sat_fix(&w.buf),
+            Some(super::NavSatSample::Fix(vec![
+                Some(37.4),
+                Some(-122.1),
+                Some(12.5)
+            ]))
         );
     }
 
@@ -1114,7 +1165,12 @@ mod tests {
         for v in [0.0, 0.0, 0.0] {
             w.f64(v);
         }
-        assert_eq!(super::decode_nav_sat_fix_values(&w.buf), None);
+        // Read as the receiver's own verdict, not as an unreadable message: those are opposite
+        // facts, and only the first can be counted.
+        assert_eq!(
+            super::decode_nav_sat_fix(&w.buf),
+            Some(super::NavSatSample::NoFix)
+        );
     }
 
     #[test]
@@ -1125,7 +1181,7 @@ mod tests {
         w.align(2);
         w.buf.extend_from_slice(&1u16.to_le_bytes());
         w.f64(37.4); // latitude only
-        assert_eq!(super::decode_nav_sat_fix_values(&w.buf), None);
+        assert_eq!(super::decode_nav_sat_fix(&w.buf), None);
     }
 
     #[test]

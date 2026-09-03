@@ -32,14 +32,15 @@ fn every_config_key_has_an_environment_twin() {
         ("VERIDEX_DISABLED_CHECKS", "semantic.task-quality"),
         ("VERIDEX_SEVERITY_OVERRIDES", "temporal.gaps=error"),
     ];
-    // A value each key accepts: the two fractions are bounded below 1, the rest take 2.
+    // A value each key accepts: the fractions are bounded below 1, the rest take 2.
     let tolerance_vars: Vec<(String, &str)> = env::TOLERANCE_KEYS
         .iter()
         .map(|k| {
             let value = match *k {
-                "saturation_fraction" | "sequence_drop_fraction" | "near_duplicate_fraction" => {
-                    "0.5"
-                }
+                "saturation_fraction"
+                | "sequence_drop_fraction"
+                | "gnss_unfixed_fraction"
+                | "near_duplicate_fraction" => "0.5",
                 _ => "2",
             };
             (format!("VERIDEX_TOLERANCE_{}", k.to_uppercase()), value)

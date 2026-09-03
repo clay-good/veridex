@@ -49,6 +49,7 @@ fn video_stream(rows: usize, media: Media) -> Stream {
         observed_point_counts: None,
         observed_header_stamps: None,
         observed_sequence: None,
+        observed_fix_availability: None,
         media: Some(media),
         frame_id: None,
         frames: frames(rows),

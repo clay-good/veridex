@@ -53,8 +53,14 @@
 //!   `AUTONOMY.SEQUENCE_DROPPED`, counted from the publisher's own `sequence` rather than estimated
 //!   from the cadence, and **nothing else moves**: the report differs from the healthy rig's by that
 //!   one finding, so nineteen percent of a camera goes missing with every timing check passing.
+//! - `av-no-fix` — the same rig with a satellite receiver that lost the sky a fifth of the way in
+//!   and said so: every message after that carries `NavSatStatus.STATUS_NO_FIX`, while the driver
+//!   keeps publishing the last position it had. The messages arrive on time, so the stream's frame
+//!   count, cadence and span are a healthy receiver's, and the fixes that did land are ordinary
+//!   coordinates — `autonomy.gnss-plausibility` passes on them. Only the status byte says four
+//!   fifths of the trajectory is not measured → `AUTONOMY.GNSS_NO_FIX`.
 //!
-//! Usage: `cargo run -p veridex-demo --example make_demo_mcap -- <output.mcap> [skew|clean|stuck|late-start|av|av-miscalibrated|av-ambiguous-tf|av-dead-lidar|av-unstamped|av-uncalibrated-camera|av-lossy-camera]`
+//! Usage: `cargo run -p veridex-demo --example make_demo_mcap -- <output.mcap> [skew|clean|stuck|late-start|av|av-miscalibrated|av-ambiguous-tf|av-dead-lidar|av-unstamped|av-uncalibrated-camera|av-lossy-camera|av-no-fix]`
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
@@ -75,6 +81,7 @@ pub const VARIANTS: &[&str] = &[
     "av-unstamped",
     "av-uncalibrated-camera",
     "av-lossy-camera",
+    "av-no-fix",
 ];
 
 /// Write the demo MCAP recording to `path`, replacing anything already there.
@@ -104,13 +111,17 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
     // `av-lossy-camera` is the same rig with a camera whose messages did not all reach the file: the
     // publisher numbered them and the recording holds fewer.
     let lossy_camera = variant == "av-lossy-camera";
+    // `av-no-fix` is the same rig with a receiver that lost the sky partway through and stamped every
+    // message after it `STATUS_NO_FIX`, while still publishing the last position it had.
+    let no_fix = variant == "av-no-fix";
     let av = variant == "av"
         || miscalibrated
         || ambiguous_tf
         || dead_lidar
         || unstamped_lidar
         || uncalibrated_camera
-        || lossy_camera;
+        || lossy_camera
+        || no_fix;
 
     let mut buf = Vec::new();
     {
@@ -119,12 +130,15 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
         if av {
             write_av_rig(
                 &mut w,
-                miscalibrated,
-                ambiguous_tf,
-                dead_lidar,
-                unstamped_lidar,
-                uncalibrated_camera,
-                lossy_camera,
+                RigFaults {
+                    miscalibrated,
+                    ambiguous_tf,
+                    dead_lidar,
+                    unstamped_lidar,
+                    uncalibrated_camera,
+                    lossy_camera,
+                    no_fix,
+                },
             );
         } else {
             write_manipulation(&mut w, stuck, clean, late_start);
@@ -244,17 +258,31 @@ const SENSOR_LATENCY_NS: u64 = 5_000_000; // 5 ms
 
 /// Write a five-sensor autonomy rig (camera + its `CameraInfo`, LiDAR, IMU, GNSS, ego-odometry) over
 /// ~1.0 s. Every
-/// sensor spans ~1.0 s from a shared start except the IMU, whose span is deliberately cut to ~0.70 s
-/// — a single-sensor sync drift of ~0.30 s that the duration-based `TEMPORAL.CLOCK_SKEW` flags.
-fn write_av_rig<W: std::io::Write + std::io::Seek>(
-    w: &mut mcap::Writer<W>,
+/// The one fault an `av` variant injects, if any. Each field is a variant name; at most one is set,
+/// and all-false is the healthy rig.
+#[derive(Debug, Clone, Copy, Default)]
+struct RigFaults {
     miscalibrated: bool,
     ambiguous_tf: bool,
     dead_lidar: bool,
     unstamped_lidar: bool,
     uncalibrated_camera: bool,
     lossy_camera: bool,
-) {
+    no_fix: bool,
+}
+
+/// sensor spans ~1.0 s from a shared start except the IMU, whose span is deliberately cut to ~0.70 s
+/// — a single-sensor sync drift of ~0.30 s that the duration-based `TEMPORAL.CLOCK_SKEW` flags.
+fn write_av_rig<W: std::io::Write + std::io::Seek>(w: &mut mcap::Writer<W>, faults: RigFaults) {
+    let RigFaults {
+        miscalibrated,
+        ambiguous_tf,
+        dead_lidar,
+        unstamped_lidar,
+        uncalibrated_camera,
+        lossy_camera,
+        no_fix,
+    } = faults;
     // (schema, topic, message count, inter-message interval ns, coordinate frame). The IMU runs the
     // same 100 msg count as a healthy 100 Hz sensor but at a compressed 7 ms interval, so it finishes
     // ~0.30 s early.
@@ -376,13 +404,30 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(
                 // abstained on the one sensor whose failure mode (a frozen or unset fix) is the
                 // easiest to have and the hardest to see.
                 let drive = i as f64 * 10.0 * (*interval as f64 / 1e9);
+                // The `av-no-fix` fault: after the first fifth of the drive the receiver loses the
+                // sky and says so, while the driver keeps publishing the last position it had. Every
+                // message still arrives on time, so the stream's frame count, cadence and span are
+                // those of a healthy receiver, and the fixes that did land are ordinary coordinates.
+                let lost_sky = no_fix && i * 5 >= *count;
+                let held = if lost_sky {
+                    // Frozen where the fix was lost, which is what a driver leaves behind.
+                    (*count / 5) as f64 * 10.0 * (*interval as f64 / 1e9)
+                } else {
+                    drive
+                };
                 write_msg(
                     w,
                     channel,
                     i as u32,
                     t,
                     // ~37.4°N, 122.1°W, moving north at the odometry's 10 m/s (1 m ≈ 9e-6°).
-                    &nav_sat_fix_body(37.4 + drive * 9.0e-6, -122.1, 12.0, stamp),
+                    &nav_sat_fix_body(
+                        if lost_sky { -1 } else { 0 },
+                        37.4 + held * 9.0e-6,
+                        -122.1,
+                        12.0,
+                        stamp,
+                    ),
                 );
             } else if *schema == "sensor_msgs/msg/CameraInfo" {
                 write_msg(
@@ -495,7 +540,17 @@ fn imu_body(phase: f64, stamp_ns: u64) -> Vec<u8> {
 
 /// A real CDR `sensor_msgs/msg/NavSatFix` body: `Header`, `NavSatStatus { int8, uint16 }`, then
 /// latitude, longitude and altitude as doubles, the covariance, and its type.
-fn nav_sat_fix_body(latitude: f64, longitude: f64, altitude: f64, stamp_ns: u64) -> Vec<u8> {
+///
+/// `status` is the receiver's own verdict — `0` is `STATUS_FIX`, `-1` is `STATUS_NO_FIX`. A driver
+/// with no fix still fills the coordinate fields, with the last position it had, which is what makes
+/// the outage invisible to everything but the status byte.
+fn nav_sat_fix_body(
+    status: i8,
+    latitude: f64,
+    longitude: f64,
+    altitude: f64,
+    stamp_ns: u64,
+) -> Vec<u8> {
     let mut buf: Vec<u8> = vec![0x00, 0x01, 0x00, 0x00]; // encapsulation: CDR_LE
     let align = |buf: &mut Vec<u8>, n: usize| {
         while (buf.len() - 4) % n != 0 {
@@ -515,8 +570,8 @@ fn nav_sat_fix_body(latitude: f64, longitude: f64, altitude: f64, stamp_ns: u64)
     u32v(&mut buf, (stamp_ns % 1_000_000_000) as u32); // stamp.nanosec
     u32v(&mut buf, 5);
     buf.extend_from_slice(b"gnss\0");
-    // NavSatStatus { int8 status = STATUS_FIX (0), uint16 service = SERVICE_GPS (1) }
-    buf.push(0);
+    // NavSatStatus { int8 status, uint16 service = SERVICE_GPS (1) }
+    buf.push(status as u8);
     align(&mut buf, 2);
     buf.extend_from_slice(&1u16.to_le_bytes());
     for v in [latitude, longitude, altitude] {

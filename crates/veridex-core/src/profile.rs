@@ -113,6 +113,7 @@ impl Profile {
             saturation_min_samples,
             outlier_z,
             sequence_drop_fraction,
+            gnss_unfixed_fraction,
             ego_max_speed_mps,
             near_duplicate_fraction,
             sensor_clock_offset_ns,
@@ -152,6 +153,10 @@ const WORLD_MODEL_READY_CRITERIA: &[(&str, &str)] = &[
         "every satellite fix is a possible place, and the receiver actually had one",
     ),
     (
+        "autonomy.gnss-fix-availability",
+        "no satellite receiver reporting no fix for more than 5% of its messages",
+    ),
+    (
         "autonomy.point-cloud-density",
         "every point-cloud sensor actually recorded points",
     ),
@@ -165,7 +170,9 @@ const WORLD_MODEL_READY_CRITERIA: &[(&str, &str)] = &[
 /// criteria a world-model training set needs (rig sync, sequence completeness, ego-pose continuity,
 /// calibration completeness, per-sensor frame resolution, GNSS plausibility — a drive whose fix
 /// is impossible or never acquired cannot be aligned to a map or to another drive, which is what a
-/// world model built from more than one of them requires — point-cloud density, because a LiDAR
+/// world model built from more than one of them requires — GNSS fix availability, because a
+/// receiver that reported no fix for most of a drive leaves a trajectory that every timing check
+/// still reads as continuous — point-cloud density, because a LiDAR
 /// that published nothing but empty sweeps satisfies every one of the others, and sensor clock,
 /// because the 20 ms sync above is measured from the recorder's clock, and a sensor that never
 /// stamped its own data has no second clock for that result to be about).
@@ -175,6 +182,10 @@ pub fn world_model_ready() -> Profile {
         kind: ProfileKind::Readiness,
         tolerances: Tolerances {
             clock_skew_ns: 20_000_000, // 20 ms — stricter than the 50 ms default
+            // 5%, stricter than the 50% default, and the number the criterion promises. A world
+            // model is built from the trajectory: one message in twenty without a fix is a tunnel,
+            // and more than that means the ego path is being inferred rather than measured.
+            gnss_unfixed_fraction: 0.05,
             ..Tolerances::default()
         },
         criteria: WORLD_MODEL_READY_CRITERIA,

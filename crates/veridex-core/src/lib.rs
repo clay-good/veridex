@@ -143,6 +143,7 @@ mod tests {
                         observed_point_counts: None,
                         observed_header_stamps: None,
                         observed_sequence: None,
+                        observed_fix_availability: None,
                         media: None,
                         frame_id: None,
                         frames: vec![
@@ -187,6 +188,7 @@ mod tests {
                         observed_point_counts: None,
                         observed_header_stamps: None,
                         observed_sequence: None,
+                        observed_fix_availability: None,
                         media: None,
                         frame_id: None,
                         frames: vec![Frame {
@@ -398,7 +400,7 @@ mod tests {
         };
         let base = content_hash(&sample_dataset());
         type Mutator = fn(&mut Stream);
-        let mutate: [(&str, Mutator); 33] = [
+        let mutate: [(&str, Mutator); 34] = [
             // The fields the encoder has carried from the beginning. Absent from this table until a
             // mutation audit deleted `clock_kind` from `encode` and watched 692 tests pass: a
             // stream's frames are a synchronized rig under one value and an unmeasurable timeline
@@ -591,6 +593,12 @@ mod tests {
                     non_increasing: 0,
                 })
             }),
+            ("observed_fix_availability", |s| {
+                s.observed_fix_availability = Some(crate::cdm::FixAvailability {
+                    message_count: 90,
+                    unfixed: 30,
+                })
+            }),
         ];
 
         // A compile-time census. Adding a field to `Stream` breaks this destructuring, which is the
@@ -621,6 +629,7 @@ mod tests {
                 observed_point_counts: _,
                 observed_header_stamps: _,
                 observed_sequence: _,
+                observed_fix_availability: _,
                 media: _,
                 frame_id: _,
             } = s;
@@ -734,6 +743,7 @@ mod proptests {
                 observed_point_counts: None,
                 observed_header_stamps: None,
                 observed_sequence: None,
+                observed_fix_availability: None,
                 media: None,
                 frame_id: None,
             })
