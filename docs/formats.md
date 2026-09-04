@@ -500,13 +500,39 @@ That is exactly the question `provenance.sensor` asks, so Veridex extracts it �
 or path the file gives, because two ECUs called `Gateway` on different buses are two sources:
 
 ```
-#   provenance: 1/6 covered (16% — known 1, asserted 0, unknown 5)
 #       sensor: Powertrain ECU (CAN) [known]
 ```
 
 `known`, never asserted: it was read out of the measurement, not claimed by whoever handed it over.
 A file that names no source claims none — and the report does not list the `##SI` mapping either,
 because a mapped field is a statement that this run read something.
+
+**And the file already says what the run was.** The header (`##HD`) links a comment, and that is
+where a recorder writes the rest: CANape, INCA and the fleet loggers fill it with an XML
+`<common_properties>` list of name/value pairs beside a free-text description. Veridex reads those
+and routes each name through the same table every other adapter's free-form metadata goes through,
+so `time_source`, `operator`, `license` and their accepted spellings mean the same thing whatever
+format they arrive in:
+
+```
+#   provenance: 4/6 covered (66% — known 4, asserted 0, unknown 2)
+#       license: CC-BY-4.0 [known]
+#       sensor: Powertrain ECU (CAN) [known]
+#       clock: PTP grandmaster [known]
+#       calibration: missing
+#       annotator: A. Operator [known]
+#       upstream: missing
+```
+
+Until this landed, MF4 had the lowest provenance coverage of any format — `1/6` — on files that
+stated five of the six, because the one standardized place for them was the one place not read. The
+description is kept as metadata rather than guessed into an element: nothing says which of the six a
+free-text sentence would be. An element read from a more specific block wins over a comment property
+naming the same thing, so a comment cannot talk Veridex out of what the `##SI` blocks actually said.
+
+The comment is file-controlled like everything else here, so it is bounded: at most 64 properties of
+512 bytes each, only the five standard XML entities expanded, and a malformed comment yields nothing
+rather than a guess.
 
 MF4 records one continuous measurement rather than episodes, and its channels declare no nominal
 sample rate — so `inspect` says both out loud rather than letting the checks that need them come back

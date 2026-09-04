@@ -68,8 +68,8 @@ use crate::cdm::{
 };
 
 use super::{
-    Adapter, Coverage, DecompressionBudget, Detection, IngestError, IngestOptions, IngestReport,
-    Ingested, Source, UnmappedField,
+    provenance_key_for, Adapter, Coverage, DecompressionBudget, Detection, IngestError,
+    IngestOptions, IngestReport, Ingested, Source, UnmappedField,
 };
 
 const FORMAT_ID: &str = "mf4";
@@ -162,6 +162,87 @@ fn text_block(bytes: &[u8], at: u64) -> Option<String> {
     let data = data_section(bytes, at, &header)?;
     let end = data.iter().position(|&b| b == 0).unwrap_or(data.len());
     Some(String::from_utf8_lossy(&data[..end]).trim().to_string())
+}
+
+/// The text of a comment block: `##MD` (XML) or `##TX` (plain), trimmed at its terminating NUL.
+///
+/// MDF lets any comment link point at either, so a reader that accepts only one silently ignores
+/// half the files that carry the thing it is looking for.
+fn comment_text(bytes: &[u8], at: u64) -> Option<String> {
+    let header = block_header(bytes, at)?;
+    if &header.id != b"##MD" && &header.id != b"##TX" {
+        return None;
+    }
+    let data = data_section(bytes, at, &header)?;
+    let end = data.iter().position(|&b| b == 0).unwrap_or(data.len());
+    Some(String::from_utf8_lossy(&data[..end]).trim().to_string())
+}
+
+/// The most a header comment may contribute: name/value pairs, and the length of each.
+///
+/// The comment is file-controlled, and everything read out of it reaches a finding message, the
+/// report and the metadata list. A recorder writes a handful of properties; these ceilings sit far
+/// above that and far below anything that could turn a legal file into an unbounded read.
+const MAX_COMMENT_PROPERTIES: usize = 64;
+const MAX_COMMENT_VALUE_LEN: usize = 512;
+
+/// The `<common_properties>` name/value pairs of an MDF comment, and its free `<TX>` description.
+///
+/// MDF comments are XML, and this reads the two parts of the schema that carry provenance rather
+/// than parsing the document: `<e name="X">V</e>` entries inside `<common_properties>`, which is
+/// where CANape, INCA and the fleet loggers write what a run was, and the `<TX>` description beside
+/// them. Nested `<tree>` groupings and every other element are skipped — an unrecognized shape
+/// yields nothing rather than a guess.
+///
+/// Deliberately not a general XML parser: a hand-rolled reader over a fixed shape cannot be talked
+/// into entity expansion or unbounded nesting by a file, which a general one has to be configured
+/// out of.
+fn comment_properties(xml: &str) -> (Vec<(String, String)>, Option<String>) {
+    let mut props: Vec<(String, String)> = Vec::new();
+    let description = between(xml, "<TX>", "</TX>")
+        .map(|t| unescape_xml(t.trim()))
+        .filter(|t| !t.is_empty());
+
+    if let Some(block) = between(xml, "<common_properties>", "</common_properties>") {
+        let mut rest = block;
+        while props.len() < MAX_COMMENT_PROPERTIES {
+            let Some(open) = rest.find("<e ") else { break };
+            let after = &rest[open + 3..];
+            let Some(name) = between(after, "name=\"", "\"") else {
+                break;
+            };
+            let Some(gt) = after.find('>') else { break };
+            let Some(close) = after[gt..].find("</e>") else {
+                break;
+            };
+            let value = unescape_xml(after[gt + 1..gt + close].trim());
+            let name = unescape_xml(name.trim());
+            if !name.is_empty() && !value.is_empty() && value.len() <= MAX_COMMENT_VALUE_LEN {
+                props.push((name, value));
+            }
+            rest = &after[gt + close + 4..];
+        }
+    }
+    (props, description)
+}
+
+/// The text between the first `open` and the next `close` after it.
+fn between<'a>(hay: &'a str, open: &str, close: &str) -> Option<&'a str> {
+    let start = hay.find(open)? + open.len();
+    let rest = hay.get(start..)?;
+    let end = rest.find(close)?;
+    rest.get(..end)
+}
+
+/// The five XML entities, expanded. Nothing else is: a numeric character reference in a provenance
+/// value is not something a recorder writes, and expanding arbitrary entities is how an XML reader
+/// becomes a file-controlled amplifier.
+fn unescape_xml(s: &str) -> String {
+    s.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
 }
 
 /// A channel's value conversion: the rule that turns the raw bits in a record into the physical
@@ -893,6 +974,39 @@ impl Adapter for Mdf4Adapter {
                         sources.len()
                     ),
                 });
+            }
+        }
+        // The header's comment: where a recorder writes what the run *was*. CANape, INCA and the
+        // fleet loggers fill it with an XML `<common_properties>` list, and Veridex read the
+        // identification block's program string and the acquisition sources and then stopped — so a
+        // file stating its time source, its operator and its licence in the one standardized place
+        // for them scored `clock: missing`, `annotator: missing`, `license: missing`, and MF4 came
+        // out with the lowest provenance coverage of any format on files that carried five of the
+        // six elements.
+        //
+        // Routed through `provenance_key_for`, the same table every other adapter's free-form
+        // metadata goes through, so the spellings a producer may use are decided in one place.
+        // `Known`, because it is read from the file — this is not inference, it is reading what the
+        // file says. First writer wins, so an element already read from a *more specific* place (the
+        // program string, an acquisition source) is never overwritten by a comment property.
+        if let Some(md_at) = opt_link(&bytes, hd_at, &hd, 5) {
+            if let Some(xml) = comment_text(&bytes, md_at) {
+                let (props, description) = comment_properties(&xml);
+                if let Some(text) = description {
+                    metadata.push(("mdf_comment".into(), text));
+                }
+                for (name, value) in props {
+                    metadata.push((format!("mdf_comment.{name}"), value.clone()));
+                    if let Some(pk) = provenance_key_for(&name) {
+                        if !elements.iter().any(|e| e.key == pk) {
+                            elements.push(ProvenanceElement {
+                                key: pk.into(),
+                                value: Some(value),
+                                class: ProvenanceClass::Known,
+                            });
+                        }
+                    }
+                }
             }
         }
         metadata.push(("mdf_version".into(), version.clone()));

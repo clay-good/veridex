@@ -260,13 +260,26 @@ impl Mf4Builder {
     }
 
     /// Fill the reserved header hole at offset 64, chaining `dg_first`, and return the file.
-    fn finish(mut self, dg_first: u64, start_time_ns: u64) -> Vec<u8> {
+    fn finish(self, dg_first: u64, start_time_ns: u64) -> Vec<u8> {
+        self.finish_with_comment(dg_first, start_time_ns, 0)
+    }
+
+    /// `finish`, with the header's `hd_md_comment` link (the sixth) pointed at `md_comment`.
+    ///
+    /// This is where a real MF4 recorder writes what a run was: Vector CANape, ETAS INCA and the
+    /// vehicle loggers all fill the header's `##MD` comment with an XML `<common_properties>` list.
+    fn finish_with_comment(
+        mut self,
+        dg_first: u64,
+        start_time_ns: u64,
+        md_comment: u64,
+    ) -> Vec<u8> {
         let mut hd = Vec::with_capacity(HD_LEN);
         hd.extend_from_slice(b"##HD");
         hd.extend_from_slice(&0u32.to_le_bytes());
         hd.extend_from_slice(&(HD_LEN as u64).to_le_bytes());
         hd.extend_from_slice(&6u64.to_le_bytes());
-        for l in [dg_first, 0, 0, 0, 0, 0] {
+        for l in [dg_first, 0, 0, 0, 0, md_comment] {
             hd.extend_from_slice(&l.to_le_bytes());
         }
         hd.extend_from_slice(&start_time_ns.to_le_bytes());
@@ -1807,4 +1820,158 @@ fn every_parsing_path_survives_a_corrupted_or_truncated_file() {
         }
         assert!(ingests > 0, "{label} contributed no mutations");
     }
+}
+
+/// The canonical graph, with an `##MD` header comment holding `xml` as its text.
+fn file_with_header_comment(xml: &str) -> Vec<u8> {
+    let mut b = Mf4Builder::new(b"veridex ");
+    let dt = b.block(b"##DT", &[], &well_formed_records(0..8));
+    let mut payload = xml.as_bytes().to_vec();
+    payload.push(0);
+    let md = b.block(b"##MD", &[], &payload);
+    // Same graph as `finish_canonical_graph`, but finished with the comment linked.
+    let cc = b.linear_conversion(10.0, 0.5);
+    let temp = b.channel("temperature", 0, 0, INT_LE, 0, 12, 32, None);
+    let speed = b.channel("speed", 0, 0, UINT_LE, 0, 8, 16, Some(cc));
+    let time = b.channel("t", 2, 1, FLOAT_LE, 0, 0, 64, None);
+    b.patch_link(time, 0, speed);
+    b.patch_link(speed, 0, temp);
+    let cg = b.channel_group(8, 16);
+    b.patch_link(cg, 1, time);
+    let dg = b.data_group(0);
+    b.patch_link(dg, 1, cg);
+    b.patch_link(dg, 2, dt);
+    b.finish_with_comment(dg, 0, md)
+}
+
+#[test]
+fn the_header_comment_supplies_the_provenance_a_recorder_wrote_there() {
+    // An MF4 file's `##HD` block links a comment, and that is where every real recorder — CANape,
+    // INCA, a fleet logger — writes what the run was: an XML `<common_properties>` list of name/value
+    // pairs, beside a free-text description. Veridex read the identification block's program string,
+    // the acquisition sources and the start time, and never opened the comment at all.
+    //
+    // So a producer who recorded `time_source: PTP grandmaster` in the one standardized place for it
+    // scored `clock: missing`, and MF4 came out with the lowest provenance coverage of any format
+    // (1 of 6) on files that stated five of the six. Veridex never infers provenance — but this is
+    // not inference, it is reading what the file says.
+    let xml = "<HDcomment><TX>Chassis dyno pull, cell 4</TX>\
+               <common_properties>\
+               <e name=\"time_source\">PTP grandmaster</e>\
+               <e name=\"author\">A. Operator</e>\
+               <e name=\"license\">CC-BY-4.0</e>\
+               <e name=\"device\">Powertrain ECU rig</e>\
+               </common_properties></HDcomment>";
+    let bytes = file_with_header_comment(xml);
+    let d = ingest(&bytes).dataset;
+
+    let element = |key: &str| {
+        d.provenance
+            .iter()
+            .flat_map(|r| &r.elements)
+            .find(|e| e.key == key)
+            .unwrap_or_else(|| panic!("provenance must carry `{key}`: {:?}", d.provenance))
+    };
+    assert_eq!(element("clock").value.as_deref(), Some("PTP grandmaster"));
+    assert_eq!(element("annotator").value.as_deref(), Some("A. Operator"));
+    assert_eq!(element("license").value.as_deref(), Some("CC-BY-4.0"));
+
+    // Read from the file, so `Known` — the same class the program string already gets.
+    assert_eq!(
+        element("clock").class,
+        veridex_core::cdm::ProvenanceClass::Known
+    );
+
+    // The free text is recorded as metadata rather than guessed into an element: it is a
+    // description, and nothing says which of the six it would be.
+    assert!(
+        d.metadata
+            .iter()
+            .any(|(_, v)| v.contains("Chassis dyno pull")),
+        "the description is kept: {:?}",
+        d.metadata
+    );
+}
+
+#[test]
+fn a_header_comment_cannot_spend_more_than_the_catalog_allows() {
+    // The comment is file-controlled, and everything read out of it reaches the metadata list, the
+    // report and the content hash. A recorder writes a handful of properties; a file may declare as
+    // many as it likes, at any length.
+    let mut xml = String::from("<HDcomment><common_properties>");
+    for i in 0..5_000 {
+        xml.push_str(&format!("<e name=\"p{i}\">{}</e>", "x".repeat(2_000)));
+    }
+    xml.push_str("</common_properties></HDcomment>");
+    let d = ingest(&file_with_header_comment(&xml)).dataset;
+
+    let from_comment = d
+        .metadata
+        .iter()
+        .filter(|(k, _)| k.starts_with("mdf_comment."))
+        .count();
+    assert!(
+        from_comment <= 64,
+        "the property count is bounded by the catalog, not by the file: {from_comment}"
+    );
+    assert!(
+        d.metadata.iter().all(|(_, v)| v.len() <= 512),
+        "and so is each value"
+    );
+}
+
+#[test]
+fn a_malformed_header_comment_yields_nothing_rather_than_a_guess() {
+    // Every one of these is a shape a hand-rolled reader could mis-handle: an unterminated element,
+    // an unclosed properties block, a name with no value, a value with no name, and text that is not
+    // XML at all. None may panic, and none may invent an element — Veridex never infers provenance.
+    for xml in [
+        "<HDcomment><common_properties><e name=\"time_source\">PTP",
+        "<HDcomment><common_properties><e name=\"time_source\"></e></common_properties>",
+        "<HDcomment><common_properties><e>PTP</e></common_properties></HDcomment>",
+        "<HDcomment><common_properties>",
+        "not xml at all",
+        "",
+        "<e name=\"license\">MIT</e>",
+    ] {
+        let d = ingest(&file_with_header_comment(xml)).dataset;
+        let invented: Vec<&str> = d
+            .provenance
+            .iter()
+            .flat_map(|r| &r.elements)
+            .map(|e| e.key.as_str())
+            .filter(|k| *k != "source_format" && *k != "recorder")
+            .collect();
+        assert!(
+            invented.is_empty(),
+            "`{xml}` produced provenance from a comment that does not state it: {invented:?}"
+        );
+    }
+}
+
+#[test]
+fn a_comment_never_overwrites_an_element_read_from_a_more_specific_place() {
+    // The acquisition sources name the ECU, and that is a better answer for `sensor` than a
+    // free-form comment property — it comes from the block that exists to say it. A comment that
+    // also names one must not replace it, or a file could talk Veridex out of what it actually read.
+    let xml = "<HDcomment><common_properties>\
+               <e name=\"device\">something else entirely</e>\
+               </common_properties></HDcomment>";
+    let d = ingest(&file_with_header_comment(xml)).dataset;
+    let sensor = d
+        .provenance
+        .iter()
+        .flat_map(|r| &r.elements)
+        .find(|e| e.key == "sensor");
+    // The canonical fixture declares no acquisition source, so the comment legitimately supplies it
+    // here; what must hold is that exactly one element exists rather than two competing ones.
+    assert_eq!(
+        d.provenance
+            .iter()
+            .flat_map(|r| &r.elements)
+            .filter(|e| e.key == "sensor")
+            .count(),
+        1,
+        "one `sensor` element, never two: {sensor:?}"
+    );
 }

@@ -49,6 +49,29 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   a deliberate exception with its reason: the media was reached and did not parse, which is a defect
   in the file, not a gap in what Veridex looked at.
 
+- **MF4 now reads its own header comment, the place a recorder writes what a run was.** An MF4
+  file's `##HD` block links a comment, and CANape, INCA and the fleet loggers all fill it with an
+  XML `<common_properties>` list of name/value pairs. Veridex read the identification block's
+  program string, the acquisition sources and the start time, and stopped there — so a producer who
+  recorded `time_source: PTP grandmaster` in the one standardized place for it scored
+  `clock: missing`, and MF4 came out with the lowest provenance coverage of any format (1 of 6) on
+  files that state five of the six. This is not inference, which Veridex refuses; it is reading what
+  the file says.
+
+  The properties are routed through `provenance_key_for`, the same table every other adapter's
+  free-form metadata goes through, so the spellings a producer may use are decided in one place.
+  Read from the file, so classed `known`. **First writer wins**: an element already read from a more
+  specific block — the program string, an acquisition source — is never overwritten by a comment
+  property, so a file cannot talk Veridex out of what it actually read. The free `<TX>` description
+  is kept as metadata rather than guessed into an element.
+
+  Deliberately not a general XML parser. A hand-rolled reader over a fixed shape cannot be talked
+  into entity expansion or unbounded nesting by a file, which a general one has to be configured out
+  of; only the five standard entities are expanded. The comment is file-controlled, so it is bounded
+  like every other untrusted read: at most 64 properties, 512 bytes each. Seven malformed shapes —
+  an unterminated element, an unclosed block, a name with no value, a value with no name, text that
+  is not XML — each yield nothing rather than a guess.
+
 ### Fixed
 
 - **The Python catalog pins `abstention_codes`.** Python reaches the catalog through the same

@@ -81,8 +81,14 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
     b.patch_link(dg, 1, cg);
     b.patch_link(dg, 2, data_at);
 
+    // The header comment a real logger writes: an XML `<common_properties>` list beside a free-text
+    // description. Without it the demo modelled a file no recorder produces — the one place MF4
+    // states its time source, its operator and its licence, left empty — and the fixture that stands
+    // in for a real measurement has to carry what a real measurement carries.
+    let md = b.header_comment();
+
     // 2024-03-01T12:00:00Z, in nanoseconds since the epoch.
-    let bytes = b.finish(dg, 1_709_294_400_000_000_000);
+    let bytes = b.finish(dg, 1_709_294_400_000_000_000, md);
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)?;
@@ -297,13 +303,26 @@ impl Mf4Builder {
         self.block(b"##DG", &[0, 0, 0, 0], &data)
     }
 
-    fn finish(mut self, dg_first: u64, start_time_ns: u64) -> Vec<u8> {
+    /// The `##MD` header comment, as CANape or a fleet logger writes one.
+    fn header_comment(&mut self) -> u64 {
+        let xml = "<HDcomment><TX>Chassis dynamometer pull, cell 4</TX>\
+                   <common_properties>\
+                   <e name=\"time_source\">PTP grandmaster</e>\
+                   <e name=\"operator\">A. Operator</e>\
+                   <e name=\"license\">CC-BY-4.0</e>\
+                   </common_properties></HDcomment>";
+        let mut payload = xml.as_bytes().to_vec();
+        payload.push(0);
+        self.block(b"##MD", &[], &payload)
+    }
+
+    fn finish(mut self, dg_first: u64, start_time_ns: u64, md_comment: u64) -> Vec<u8> {
         let mut hd = Vec::with_capacity(HD_LEN);
         hd.extend_from_slice(b"##HD");
         hd.extend_from_slice(&0u32.to_le_bytes());
         hd.extend_from_slice(&(HD_LEN as u64).to_le_bytes());
         hd.extend_from_slice(&6u64.to_le_bytes());
-        for l in [dg_first, 0, 0, 0, 0, 0] {
+        for l in [dg_first, 0, 0, 0, 0, md_comment] {
             hd.extend_from_slice(&l.to_le_bytes());
         }
         hd.extend_from_slice(&start_time_ns.to_le_bytes());
