@@ -51,6 +51,14 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **The Python catalog pins `abstention_codes`.** Python reaches the catalog through the same
+  `render_catalog_json` the CLI uses, so the field flowed through the moment it existed and the
+  parity suite's `py == cli` assertion already covered it. What was not pinned is the *contract* a
+  Python consumer relies on: the field is present on every entry, at least one check declares
+  abstentions, and what a check declares is a subset of the codes it can emit. A summarizer written
+  against the Python API needs that distinction for the same reason the trust label does — a clean
+  run and an unmeasured one produce the same silence.
+
 - **An abstention nothing recognized, and a guard that could not have found it.** The catalog guard
   finds abstention codes by a naming vocabulary (`UNMEASURED`, `UNCOMPARED`, `UNREAD`, …), which is a
   heuristic for *finding* them rather than a definition. `STATISTICAL.NO_STORED_STATS` means two

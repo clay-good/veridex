@@ -89,7 +89,25 @@ def test_cli_and_python_catalog_agree():
     # Sanity: the catalog is non-empty and every entry carries the documented fields.
     assert py, "catalog must not be empty"
     for check in py:
-        assert {"id", "category", "default_severity", "scope", "finding_codes"} <= check.keys()
+        assert {
+            "id",
+            "category",
+            "default_severity",
+            "scope",
+            "finding_codes",
+            "abstention_codes",
+        } <= check.keys()
+
+    # `abstention_codes` says which of a check's codes mean "I could not measure this" rather than
+    # "I measured this and it is wrong". A Python consumer summarizing a run needs that distinction
+    # for the same reason the trust label does: a clean run and an unmeasured one produce the same
+    # silence. It is a subset of the codes the same check declares.
+    declared = [c for c in py if c["abstention_codes"]]
+    assert declared, "the catalog declares abstentions; an empty set here means they stopped flowing"
+    for check in declared:
+        assert set(check["abstention_codes"]) <= set(check["finding_codes"]), (
+            f"{check['id']} declares an abstention that is not one of its finding codes"
+        )
 
 
 def _cli_provenance_json(path, emit):
