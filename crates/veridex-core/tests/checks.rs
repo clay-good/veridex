@@ -7166,3 +7166,110 @@ fn a_degenerate_stream_never_puts_nan_or_infinity_in_a_finding() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Every deferral is honored by the check it names
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_case_one_check_defers_is_reported_by_the_check_it_defers_to() {
+    // The catalog is full of deliberate hand-offs — "a fully constant stream is
+    // `STATISTICAL.DEGENERATE`'s concern and is left to it", "a non-positive interval is
+    // Monotonicity's concern", "an empty episode is `DegenerateEpisode`'s concern". Each is the right
+    // call: one defect reported once, by the check whose question it is.
+    //
+    // What makes them worth guarding is that a deferral is a *claim about another check*, and nothing
+    // rechecks it. `structural.frozen-episode` exists because a teleoperation session where the robot
+    // never moved fell exactly between two checks that each deferred to the other, and this session
+    // found two more where an autonomy criterion stayed green because the check that would have
+    // spoken was a different check id. A hand-off nobody catches is silence with a comment on it.
+    //
+    // So: build the deferred case, run the whole engine, and require the named code to appear.
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let report = |d: &Dataset| -> Vec<String> {
+        let hash = veridex_core::content_hash(d);
+        engine
+            .run(d, hash, &veridex_core::RunConfig::default())
+            .findings
+            .iter()
+            .map(|f| f.code.clone())
+            .collect()
+    };
+
+    // `statistical.saturation` leaves a fully constant stream to `STATISTICAL.DEGENERATE`.
+    let mut constant = stream("constant", "c", None, &[0, 1_000_000, 2_000_000, 3_000_000]);
+    let flat = veridex_core::cdm::StreamStats {
+        min: 4.0,
+        max: 4.0,
+        mean: 4.0,
+        std: 0.0,
+    };
+    constant.stats = Some(flat);
+    constant.observed_stats = Some(flat);
+    let codes = report(&dataset(vec![episode(0, vec![constant])]));
+    assert!(
+        codes.iter().any(|c| c == "STATISTICAL.DEGENERATE"),
+        "a fully constant stream is deferred to STATISTICAL.DEGENERATE, which must report it: \
+         {codes:?}"
+    );
+
+    // `temporal.jitter` leaves a non-positive interval to `temporal.monotonicity`.
+    let backwards = stream(
+        "back",
+        "c",
+        None,
+        &[0, 3_000_000, 2_000_000, 5_000_000, 9_000_000],
+    );
+    let codes = report(&dataset(vec![episode(0, vec![backwards])]));
+    assert!(
+        codes.iter().any(|c| c == "TEMPORAL.NON_MONOTONIC"),
+        "a backwards interval is deferred to monotonicity, which must report it: {codes:?}"
+    );
+
+    // `structural.stream-presence` leaves an episode with no streams to `structural.degenerate-episode`.
+    let codes = report(&dataset(vec![
+        episode(0, vec![stream("s", "c", None, &[0, 1_000_000])]),
+        episode(1, vec![]),
+    ]));
+    assert!(
+        codes.iter().any(|c| c == "STRUCTURAL.EMPTY_EPISODE"),
+        "an episode with no streams is deferred to the degenerate-episode check: {codes:?}"
+    );
+
+    // A control, so each assertion above is known to be driven by its fixture rather than by
+    // something the engine says about any dataset: healthy data produces none of these codes.
+    let mut healthy = stream("ok", "c", None, &[0, 1_000_000, 2_000_000, 3_000_000]);
+    healthy.stats = Some(veridex_core::cdm::StreamStats {
+        min: 0.0,
+        max: 9.0,
+        mean: 4.0,
+        std: 2.0,
+    });
+    healthy.observed_stats = healthy.stats;
+    let codes = report(&dataset(vec![episode(0, vec![healthy])]));
+    for bad in [
+        "STATISTICAL.DEGENERATE",
+        "TEMPORAL.NON_MONOTONIC",
+        "STRUCTURAL.EMPTY_EPISODE",
+    ] {
+        assert!(
+            !codes.iter().any(|c| c == bad),
+            "the control must not produce `{bad}`, or the assertions above prove nothing: {codes:?}"
+        );
+    }
+
+    // `statistical.saturation` leaves non-finite stored bounds to `STATISTICAL.NON_FINITE`, which
+    // reads the *stored* statistics — the CDM deserializes, so a JSON CDM can carry them.
+    let mut nonfinite = stream("nf", "c", None, &[0, 1_000_000, 2_000_000]);
+    nonfinite.stats = Some(veridex_core::cdm::StreamStats {
+        min: f64::NAN,
+        max: 1.0,
+        mean: 0.5,
+        std: 0.1,
+    });
+    let codes = report(&dataset(vec![episode(0, vec![nonfinite])]));
+    assert!(
+        codes.iter().any(|c| c.contains("NON_FINITE")),
+        "a non-finite stored bound is deferred to the non-finite rules: {codes:?}"
+    );
+}

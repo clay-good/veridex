@@ -49,6 +49,22 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   a deliberate exception with its reason: the media was reached and did not parse, which is a defect
   in the file, not a gap in what Veridex looked at.
 
+- **Deferrals between checks are guarded.** The catalog carries fourteen deliberate hand-offs — "a
+  fully constant stream is `STATISTICAL.DEGENERATE`'s concern and is left to it", "a non-positive
+  interval is Monotonicity's concern", "an empty episode is `DegenerateEpisode`'s concern". Each is
+  right: one defect reported once, by the check whose question it is.
+
+  What makes them worth guarding is that a deferral is a *claim about another check*, and nothing
+  rechecked it. `structural.frozen-episode` exists because a teleoperation session where the robot
+  never moved fell between two checks that each deferred to the other, and two more turned up this
+  release where an autonomy criterion stayed green because the check that would have spoken was a
+  different check id. A hand-off nobody catches is silence with a comment on it.
+
+  The test builds the deferred case for four hand-offs, runs the whole engine, and requires the named
+  code to appear. All four are honored. It also runs a **control** — healthy data must produce none of
+  those codes — because an assertion that a code appears passes trivially if the code appears for any
+  dataset, and that control is inside the test rather than something checked once by hand.
+
 - **The `.mp4` probe gained a sweep — the last untrusted binary parser without one.** It walks a tree
   of boxes whose every size comes out of the file: a 32-bit size, the 64-bit extension a size of `1`
   introduces, and the size of `0` that means "I run to the end". No defect was found: each length is
