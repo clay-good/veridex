@@ -49,6 +49,22 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   a deliberate exception with its reason: the media was reached and did not parse, which is a defect
   in the file, not a gap in what Veridex looked at.
 
+- **The `.mp4` probe gained a sweep — the last untrusted binary parser without one.** It walks a tree
+  of boxes whose every size comes out of the file: a 32-bit size, the 64-bit extension a size of `1`
+  introduces, and the size of `0` that means "I run to the end". No defect was found: each length is
+  already validated against the bytes actually remaining, so the walk advances by at least a header
+  and can neither stall nor read past the end. Holding that as the code changes is the point — the
+  MF4 sweep exists because an earlier version of it missed four parsing paths.
+
+  All four container shapes the fixture builder produces, because each reaches different handlers (a
+  fragmented file has a `moof` and an empty `stsz`, a compact one a `stz2`, a leading bare `trak`
+  exercises skipping a track with no media), plus the sizes that mean something special: `0`, `1`, a
+  sub-header `7`, and a `1` followed by `u64::MAX`. Confirmed to reach the box walker rather than
+  bouncing off the header.
+
+  With this, every untrusted binary parser in the workspace is swept: eight adapters and the media
+  probe.
+
 - **RLDS gained a corruption sweep, behind the frame's own checksums.** It is the format Open
   X-Embodiment ships in and was the one adapter with no systematic sweep — a handful of hand-written
   corruptions is not the same as trying every byte.

@@ -922,3 +922,101 @@ fn the_media_uri_uses_forward_slashes_whatever_the_platform() {
         findings[0].message
     );
 }
+
+// --- The container sweep -------------------------------------------------------------------------
+
+#[test]
+fn no_damaged_container_takes_the_probe_down() {
+    // `probe_mp4` walks a tree of boxes whose every size comes out of the file: a 32-bit size, the
+    // 64-bit extension a size of 1 introduces, and the size of 0 that means "I run to the end". It is
+    // careful today — each length is validated against the bytes actually remaining, so the walk
+    // always advances by at least a header and can neither stall nor read past the end — and that is
+    // exactly the property worth holding as the code changes. It was the last untrusted binary
+    // parser in the workspace with no sweep.
+    //
+    // Every shape the builder can produce, because each reaches different box handlers: a fragmented
+    // file has a `moof` and an empty `stsz`, a compact one a `stz2`, and the leading bare `trak`
+    // exercises the walk that has to skip a track carrying no media.
+    let shapes: Vec<(&str, Vec<u8>)> = vec![
+        ("progressive", build_mp4(30, 640, 480, b"avc1", 30)),
+        (
+            "fragmented",
+            build_mp4_shaped(
+                30,
+                640,
+                480,
+                b"avc1",
+                30,
+                Shape {
+                    fragmented: true,
+                    ..Shape::default()
+                },
+            ),
+        ),
+        (
+            "compact-sample-table",
+            build_mp4_shaped(
+                30,
+                640,
+                480,
+                b"avc1",
+                30,
+                Shape {
+                    compact_sample_table: true,
+                    ..Shape::default()
+                },
+            ),
+        ),
+        (
+            "leading-bare-trak",
+            build_mp4_shaped(
+                30,
+                640,
+                480,
+                b"avc1",
+                30,
+                Shape {
+                    leading_bare_trak: true,
+                    ..Shape::default()
+                },
+            ),
+        ),
+    ];
+
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let path = tmp.path().join("sweep.mp4");
+    for (shape, clean) in &shapes {
+        let mut cases: Vec<(String, Vec<u8>)> = Vec::new();
+        // Strided single-byte damage across the whole container. The stride keeps the corpus small
+        // while still landing inside every box header, which is where the sizes live.
+        for at in (0..clean.len()).step_by(5) {
+            for (tag, byte) in [("zero", 0x00u8), ("max", 0xFF), ("flip", clean[at] ^ 0xFF)] {
+                let mut m = clean.clone();
+                m[at] = byte;
+                cases.push((format!("{tag}@{at}"), m));
+            }
+        }
+        // And the sizes that mean something special, written where the first box's size lives: 0
+        // ("to the end of the file"), 1 (a 64-bit size follows), and a 64-bit size of u64::MAX.
+        for (tag, size) in [("size-0", 0u32), ("size-1", 1), ("size-7", 7)] {
+            let mut m = clean.clone();
+            m[..4].copy_from_slice(&size.to_be_bytes());
+            cases.push((tag.to_string(), m));
+        }
+        let mut huge = clean.clone();
+        huge[..4].copy_from_slice(&1u32.to_be_bytes());
+        huge.splice(8..8, u64::MAX.to_be_bytes());
+        cases.push(("size-1-then-u64-max".into(), huge));
+        cases.push(("truncated-header".into(), clean[..4].to_vec()));
+        cases.push(("empty".into(), Vec::new()));
+
+        for (what, bytes) in cases {
+            std::fs::write(&path, &bytes).unwrap();
+            // The invariant: a verdict either way, never a panic, a hang, or an unbounded read.
+            // `probe_mp4` returning `Err` is a perfectly good outcome — most of these are not
+            // containers any more.
+            let _ = std::panic::catch_unwind(|| veridex_core::media::probe_mp4(&path))
+                .unwrap_or_else(|_| panic!("`{shape}` / `{what}` panicked the probe"));
+        }
+    }
+}
