@@ -146,6 +146,19 @@ veridex label      --certificate c.json --key pub.key            # a Markdown la
 veridex keygen     issuer                                        # write issuer (secret) + issuer.pub
 ```
 
+**Exit codes.** `check` and `certify` carry the *verdict*: `0` pass · `10` pass-with-warnings ·
+`20` fail · `2` tool-error. Everything else — `inspect`, `provenance`, `label`, `verify`, `checks`,
+`diff`, `attest` — exits `0` when it did its own job, whatever the dataset's verdict, and `2` when it
+could not. Two consequences worth knowing before scripting them:
+
+- **`certify` writes the certificate and then exits `20` for a failing dataset.** The document is
+  issued — a certificate records what is true, and `fail` is a fact like any other — so
+  `veridex certify … && upload` silently uploads nothing for exactly the datasets whose certificate
+  says the most. Split the two steps, or gate on the exit code deliberately.
+- **`verify` exits `0` for a valid certificate that says `fail`.** It is answering "is this document
+  genuine and about this data", not "is the data good". A CI gate keying on `verify`'s exit code
+  alone passes a failing dataset; read `status` from `--json`.
+
 Built on a Rust core (`veridex-core`) with a `veridex` CLI and a Python package (`import veridex`,
 built locally with maturin — not yet published to PyPI) that produce identical verdicts. Pass a
 config to Python explicitly (`veridex.check(path, config=open("veridex.toml").read())`) — unlike the

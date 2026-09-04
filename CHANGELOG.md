@@ -49,6 +49,23 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   a deliberate exception with its reason: the media was reached and did not parse, which is a defect
   in the file, not a gap in what Veridex looked at.
 
+- **Two exit codes a script gets wrong in opposite directions, now documented and pinned.** `check`
+  and `certify` carry the verdict (`0`/`10`/`20`); `inspect`, `provenance`, `label`, `verify`,
+  `checks`, `diff` and `attest` exit `0` when they did their own job, whatever the dataset's verdict.
+  Neither consequence was stated anywhere:
+
+  - **`certify` writes the certificate and then exits `20` for a failing dataset**, so
+    `veridex certify … && upload` uploads nothing for exactly the datasets whose certificate says the
+    most — while [docs/autonomy-quickstart.md](docs/autonomy-quickstart.md) says a certificate is
+    issued for a failing dataset too. The behaviour and the framing pulled opposite ways.
+  - **`verify` exits `0` for a valid certificate that says `fail`**, because it answers "is this
+    document genuine and about this data", not "is the data good". A gate keying on it alone passes a
+    failing dataset; `status` in `--json` is where to read the verdict.
+
+  Both are in the README's Commands section with the scripting consequence spelled out, and pinned by
+  a test whose first version used a *passing* fixture — caught on the spot by its own "the fixture
+  must not pass, or this pins nothing" assertion.
+
 - **Deferrals between checks are guarded.** The catalog carries fourteen deliberate hand-offs — "a
   fully constant stream is `STATISTICAL.DEGENERATE`'s concern and is left to it", "a non-positive
   interval is Monotonicity's concern", "an empty episode is `DegenerateEpisode`'s concern". Each is

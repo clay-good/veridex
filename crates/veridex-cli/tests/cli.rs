@@ -3344,3 +3344,69 @@ fn an_empty_file_says_so_rather_than_describing_a_truncated_record() {
         "the reader must be told the file has no bytes: {stderr}"
     );
 }
+
+#[test]
+fn certify_carries_the_verdict_and_verify_carries_its_own() {
+    // Two exit codes a script gets wrong in opposite directions, so both are pinned.
+    //
+    // `certify` writes the certificate and *then* exits with the verdict, so
+    // `veridex certify … && upload` uploads nothing for exactly the datasets whose certificate says
+    // the most — the document is issued, and `fail` is a fact it records like any other.
+    //
+    // `verify` answers "is this document genuine and about this data", not "is the data good", so it
+    // exits 0 over a certificate that says `fail`. A gate keying on it alone passes a failing
+    // dataset.
+    let dir = temp_dir("exit-codes");
+    // The committed MCAP fixture, which fails on TEMPORAL.CLOCK_SKEW — a passing dataset would make
+    // every assertion below vacuously true.
+    let dataset = std::path::PathBuf::from(fixture_dataset());
+    let key = dir.join("issuer");
+    let (code, _, _) = run(&["keygen", key.to_str().unwrap()]);
+    assert_eq!(code, 0);
+    let issuer_pub = std::fs::read_to_string(format!("{}.pub", key.to_str().unwrap()))
+        .unwrap()
+        .trim()
+        .to_string();
+
+    let (check_code, _, _) = run(&["check", dataset.to_str().unwrap()]);
+    assert_eq!(
+        check_code, 20,
+        "the fixture must fail, or every assertion below is vacuous"
+    );
+
+    let cert = dir.join("c.json");
+    let (certify_code, _, _) = run(&[
+        "certify",
+        dataset.to_str().unwrap(),
+        "--key",
+        key.to_str().unwrap(),
+        "--out",
+        cert.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        certify_code, check_code,
+        "certify carries the verdict's exit code, exactly as check does"
+    );
+    assert!(
+        cert.is_file(),
+        "and the certificate is written regardless — the non-zero code is the verdict, not a failure \
+         to issue"
+    );
+
+    let (verify_code, stdout, _) = run(&[
+        "verify",
+        dataset.to_str().unwrap(),
+        "--certificate",
+        cert.to_str().unwrap(),
+        "--key",
+        &issuer_pub,
+    ]);
+    assert_eq!(
+        verify_code, 0,
+        "verify succeeded: the document is genuine and about this data"
+    );
+    assert!(
+        stdout.contains("status:"),
+        "and it prints the verdict it carries, which is where a gate must read it: {stdout}"
+    );
+}
