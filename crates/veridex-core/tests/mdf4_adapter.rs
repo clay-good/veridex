@@ -1755,8 +1755,19 @@ fn hostile_corpus() -> Vec<(&'static str, Vec<u8>)> {
         let hl = b.header_list(dl);
         finish_canonical_graph(b, hl, 5)
     };
+    // The header comment is a parsing path of its own — text extracted from an `##MD` block and read
+    // for `<common_properties>` entries — and every length, name and value in it comes out of the
+    // file. It was added to the reader without being added here, which is the same omission the
+    // comment above records: a corpus that does not hold a shape does not sweep it.
+    let commented = file_with_header_comment(
+        "<HDcomment><TX>Chassis dyno pull</TX><common_properties>\
+         <e name=\"time_source\">PTP grandmaster</e>\
+         <e name=\"operator\">A. Operator</e>\
+         </common_properties></HDcomment>",
+    );
     vec![
         ("uncompressed", well_formed_file(5)),
+        ("header-comment", commented),
         ("deflated", compressed),
         ("transposed", transposed),
         ("header-list", listed),

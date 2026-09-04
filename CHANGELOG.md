@@ -49,6 +49,19 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   a deliberate exception with its reason: the media was reached and did not parse, which is a defect
   in the file, not a gap in what Veridex looked at.
 
+- **The MF4 header-comment parser is in the corruption sweep.** `hostile_corpus()` is documented as
+  "one of each file shape the adapter has a distinct parsing path for", and its own comment records
+  why: an earlier sweep ran over a single uncompressed fixture and never reached the decompressor,
+  the data-list walker or the record demultiplexer. Reading the `##HD` comment added a tenth path —
+  text pulled from an `##MD` block, then scanned for `<common_properties>` entries whose every length,
+  name and value comes out of the file — and the shape was not added with it.
+
+  The targeted tests already covered *malformed XML*; corrupted *bytes* are a different attack, since
+  the text arrives through `String::from_utf8_lossy` and every offset into it is computed from a
+  mangled document. The shape survives the sweep unmodified. Because a corpus entry that is never
+  exercised proves nothing, the sweep was confirmed to reach the parser by asserting inside it that
+  it is never called with a `common_properties` document — which tripped immediately.
+
 - **MF4 now reads its own header comment, the place a recorder writes what a run was.** An MF4
   file's `##HD` block links a comment, and CANape, INCA and the fleet loggers all fill it with an
   XML `<common_properties>` list of name/value pairs. Veridex read the identification block's
