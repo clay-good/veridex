@@ -72,6 +72,27 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   an unterminated element, an unclosed block, a name with no value, a value with no name, text that
   is not XML — each yield nothing rather than a guess.
 
+- **No finding may report a number that is not a number.** Several checks divide by something the
+  data supplies — a median inter-frame interval, a mean, an episode duration — and each is guarded so
+  the degenerate case abstains. Those guards are load-bearing for the *report*, not just for
+  arithmetic: past them a division yields `inf` or `NaN`, and the finding says streams "drift by NaN
+  ms". Nothing held that invariant, so it is now a test, over five degenerate shapes a legal file
+  produces (every frame at one instant, single-frame streams sharing a clock, a rig whose sensors all
+  stopped the clock, and so on).
+
+  Its detection rule took three attempts and is worth stating, because both obvious ones are wrong:
+  a whole-word test misses `{ratio:.1}x` with an infinite ratio, which renders as `infx` and reads as
+  one word; a plain substring test flags `provenance`, which contains `nan`. The rule that separates
+  them is that a formatted number never begins in the middle of a word, so an occurrence counts only
+  when what precedes it is not a letter.
+
+  Found by a threshold mutation sweep (44 comparisons flipped one at a time, 19 surviving). The
+  survivors were then read, and **none of them is a defect**: four were the sweep's own regex matching
+  inside comments, and the rest are unreachable or benign — `duration_ns()` never returns zero, so an
+  episode-duration median cannot be; the jitter mean is guarded by the line above it, which rejects
+  any non-positive interval; `present_in.len() >= total` is redundant with an `is_empty()` check a few
+  lines down. Recorded here so the same sweep is not re-run and the same survivors re-investigated.
+
 ### Fixed
 
 - **The Python catalog pins `abstention_codes`.** Python reaches the catalog through the same

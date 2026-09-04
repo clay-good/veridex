@@ -7011,3 +7011,158 @@ fn every_abstention_code_in_the_catalog_is_declared_as_one() {
         "the catalog's abstentions should all be declared; found {total}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// No finding may report a number that is not a number
+// ---------------------------------------------------------------------------
+
+/// Whether `message` renders a non-finite float.
+///
+/// Rust formats those as `inf`, `-inf` and `NaN`, and neither a whole-word nor a plain-substring
+/// test finds them reliably. A token comparison misses `{ratio:.1}x` with an infinite ratio, which
+/// renders as `infx longer than` and reads as the single word `infx` — the real defect this test was
+/// written for. A substring test flags `provenance`, which contains `nan`.
+///
+/// The rule that separates them: a formatted number never begins in the middle of a word. So an
+/// occurrence counts only when what precedes it is not a letter.
+fn reports_a_non_number(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    let bytes = lower.as_bytes();
+    ["nan", "inf"].iter().any(|needle| {
+        lower
+            .match_indices(needle)
+            .any(|(at, _)| at == 0 || !bytes[at - 1].is_ascii_alphabetic())
+    })
+}
+
+/// A rig sensor whose frames land on `ts`, for the degenerate-timing cases.
+fn rig_stream_at(name: &str, modality: Modality, ts: &[i64]) -> Stream {
+    let mut s = stream(name, "rig", None, ts);
+    s.modality = modality;
+    s.frame_id = Some(format!("{name}_frame"));
+    s
+}
+
+/// Codes whose whole subject is a value that is not a number, so their message says so on purpose.
+/// Every other code naming one is reporting arithmetic that escaped a guard.
+const NON_FINITE_IS_THE_SUBJECT: &[&str] = &[
+    "STATISTICAL.NON_FINITE",
+    "STATISTICAL.NON_FINITE_OBSERVED",
+    "AUTONOMY.EGO_POSE_NON_FINITE",
+    "AUTONOMY.CALIBRATION_IMPLAUSIBLE",
+];
+
+#[test]
+fn a_degenerate_stream_never_puts_nan_or_infinity_in_a_finding() {
+    // Half the checks divide by something the data supplies — a median inter-frame interval, a mean,
+    // an episode duration, a standard deviation — and each is guarded by a `<= 0.0` test that sends
+    // the degenerate case down an abstain path instead. Those guards are load-bearing for the
+    // *report*, not just for arithmetic: past them, a f64 division yields `inf` or `NaN`, and the
+    // finding says the streams "drift by NaN ms" or that "inf%" of values are pinned. A reader
+    // cannot act on that, and it is signed into the run's verdict like any other sentence.
+    //
+    // A threshold mutation sweep found all five of those guards unpinned: flipping `<= 0.0` to
+    // `< 0.0` — so that exactly zero flows through — left the whole suite green. Every degenerate
+    // shape below is one a legal file produces.
+    let zero_interval: Vec<i64> = vec![0; 12]; // every frame at the same instant
+    let one_frame: Vec<i64> = vec![5_000_000];
+    let two_same: Vec<i64> = vec![7, 7];
+
+    let mut flat = stream("flat", "c", Some(100.0), &zero_interval);
+    flat.stats = Some(veridex_core::cdm::StreamStats {
+        min: 0.0,
+        max: 0.0,
+        mean: 0.0,
+        std: 0.0,
+    });
+    flat.observed_stats = Some(veridex_core::cdm::StreamStats {
+        min: 0.0,
+        max: 0.0,
+        mean: 0.0,
+        std: 0.0,
+    });
+
+    let cases: Vec<(&str, Dataset)> = vec![
+        (
+            "every frame at one instant",
+            dataset(vec![episode(
+                0,
+                vec![stream("s", "c", None, &zero_interval)],
+            )]),
+        ),
+        (
+            "a zero-rate declaration beside a zero span",
+            dataset(vec![episode(0, vec![flat.clone()])]),
+        ),
+        (
+            "single-frame streams sharing a clock",
+            dataset(vec![episode(
+                0,
+                vec![
+                    stream("a", "c", None, &one_frame),
+                    stream("b", "c", None, &one_frame),
+                ],
+            )]),
+        ),
+        (
+            // A *majority* of zero-duration episodes, so the median is zero, beside two that are
+            // not — which is what makes the division reachable. With every duration equal to the
+            // median nothing is an outlier and nothing divides; with a zero median and a non-zero
+            // episode, `d / median` is the ratio the message reports.
+            //
+            // `duration_ns()` reads the declared bounds, so an episode has to *state* its duration.
+            "a zero median duration beside episodes that are not zero",
+            dataset(
+                (0..5)
+                    .map(|i| {
+                        let mut ep = episode(i, vec![stream("s", "c", None, &two_same)]);
+                        ep.start_ts = Some(0);
+                        ep.end_ts = Some(if i < 3 { 0 } else { 5_000_000 });
+                        ep
+                    })
+                    .collect(),
+            ),
+        ),
+        (
+            // The autonomy family has its own divide-by-a-median, and it only runs on a rig: three
+            // rig sensors of two modalities. Every one of them sampling at one instant is what a
+            // recorder writing a stuck timestamp produces.
+            "a rig whose sensors all stopped the clock",
+            dataset(vec![episode(
+                0,
+                vec![
+                    rig_stream_at("lidar", Modality::PointCloud, &zero_interval),
+                    rig_stream_at("imu", Modality::Imu, &zero_interval),
+                    rig_stream_at("gnss", Modality::Gnss, &zero_interval),
+                ],
+            )]),
+        ),
+    ];
+
+    let engine = veridex_core::checks::default_engine().unwrap();
+    for (what, d) in cases {
+        let hash = veridex_core::content_hash(&d);
+        let verdict = engine.run(&d, hash, &veridex_core::RunConfig::default());
+        for f in &verdict.findings {
+            // The `message` alone: `risk` and `remedy` are authored prose and several legitimately
+            // use the word — "whether these streams hold a saturated actuator, a NaN, a stuck
+            // sensor" is advice, not a measurement. Formatted numbers only reach the message.
+            if NON_FINITE_IS_THE_SUBJECT.contains(&f.code.as_str()) {
+                continue;
+            }
+            assert!(
+                !reports_a_non_number(&f.message),
+                "`{what}` produced `{}` reporting a non-number: {}",
+                f.code,
+                f.message
+            );
+        }
+        // And nothing crashed on the way: a check that panicked would be recorded rather than
+        // reported, which is the other way this silence could look like a pass.
+        assert!(
+            verdict.errored_checks.is_empty(),
+            "`{what}` crashed a check: {:?}",
+            verdict.errored_checks
+        );
+    }
+}
