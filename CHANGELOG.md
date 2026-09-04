@@ -49,6 +49,18 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   a deliberate exception with its reason: the media was reached and did not parse, which is a defect
   in the file, not a gap in what Veridex looked at.
 
+- **Seven commands advertised exit codes they cannot return.** The `EXIT CODES:` line was one
+  constant printed under every command, so `veridex label --help` — and `inspect`, `provenance`,
+  `verify`, `keygen`, `checks` and `attest` — offered `10 pass-with-warnings` and `20 fail`, neither
+  of which any of them has a path to. A help page naming an outcome the command cannot produce is
+  worse than a silent one: it is what a reader writes their CI gate against.
+
+  Measured against a failing dataset rather than read off the source: `check`, `certify` and `watch`
+  carry the verdict; `diff` gates on `--fail-on-regression` alone (`0`/`20`, no warning tier); the
+  other seven are `0 success · 2 tool-error`. Each command's help now names only its own codes, the
+  top-level help says which commands carry the verdict, and a test pins all three groups — including
+  that `diff` must *not* mention a warning tier it does not have.
+
 - **Two exit codes a script gets wrong in opposite directions, now documented and pinned.** `check`
   and `certify` carry the verdict (`0`/`10`/`20`); `inspect`, `provenance`, `label`, `verify`,
   `checks`, `diff` and `attest` exit `0` when they did their own job, whatever the dataset's verdict.

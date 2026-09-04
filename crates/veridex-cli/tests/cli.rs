@@ -3410,3 +3410,57 @@ fn certify_carries_the_verdict_and_verify_carries_its_own() {
         "and it prints the verdict it carries, which is where a gate must read it: {stdout}"
     );
 }
+
+#[test]
+fn a_commands_help_names_only_the_exit_codes_it_can_return() {
+    // The line was one constant printed under every command, so `veridex label --help` advertised
+    // `10 pass-with-warnings` and `20 fail` — neither of which `label` has any path to. A help page
+    // that names an outcome the command cannot produce is worse than a silent one: it is what a
+    // reader writes their CI gate against.
+    //
+    // Measured, not assumed: the commands below were each run against a failing dataset, and only
+    // these three came back non-zero.
+    for command in ["check", "certify", "watch"] {
+        let (code, stdout, _) = run(&[command, "--help"]);
+        assert_eq!(code, 0, "`{command} --help` exits 0");
+        assert!(
+            stdout.contains("0 pass · 10 pass-with-warnings · 20 fail"),
+            "`{command}` carries the verdict and must say so: {stdout}"
+        );
+    }
+
+    // `diff` gates, but on its own flag and only in one direction.
+    let (_, stdout, _) = run(&["diff", "--help"]);
+    assert!(
+        stdout.contains("20 regression (with --fail-on-regression)"),
+        "diff's gate is its own: {stdout}"
+    );
+    assert!(
+        !stdout.contains("pass-with-warnings"),
+        "and it has no warning tier: {stdout}"
+    );
+
+    // Everything else does its own job or cannot; the dataset's verdict is not its answer.
+    for command in [
+        "inspect",
+        "provenance",
+        "label",
+        "verify",
+        "keygen",
+        "checks",
+        "attest",
+    ] {
+        let (code, stdout, _) = run(&[command, "--help"]);
+        assert_eq!(code, 0, "`{command} --help` exits 0");
+        assert!(
+            stdout.contains("EXIT CODES: 0 success · 2 tool-error"),
+            "`{command}` cannot return a verdict code and must not advertise one: {stdout}"
+        );
+        for cannot in ["pass-with-warnings", "20 fail"] {
+            assert!(
+                !stdout.contains(cannot),
+                "`{command}` advertises `{cannot}`, which it has no path to: {stdout}"
+            );
+        }
+    }
+}

@@ -2997,6 +2997,8 @@ fn print_help() {
     }
     println!();
     println!("EXIT CODES: 0 pass · 10 pass-with-warnings · 20 fail · 2 tool-error");
+    println!("    check, certify and watch carry the verdict; diff gates on --fail-on-regression;");
+    println!("    every other command exits 0 when it did its own job, whatever the verdict.");
 }
 
 /// Whether `command` honors `flag`, read from the same table the parser enforces.
@@ -3017,6 +3019,26 @@ fn commands_honoring(flag: &str) -> Vec<&'static str> {
 
 /// One command's help: what it does, and only the options it actually honors.
 ///
+/// The exit codes a command can actually return, for its own help.
+///
+/// The line used to be one constant printed under every command, so `veridex label --help` — and
+/// `inspect`, `provenance`, `verify`, `keygen`, `checks` and `attest` — advertised `10
+/// pass-with-warnings` and `20 fail`, neither of which any of them can return. A help page that
+/// names an outcome the command has no path to is worse than a silent one: it is what a reader
+/// writes their CI gate against.
+///
+/// Only `check`, `certify` and `watch` carry the verdict. `diff` has its own gate, and only under
+/// `--fail-on-regression`.
+fn exit_codes_for(command: &str) -> &'static str {
+    match command {
+        "check" | "certify" | "watch" => "0 pass · 10 pass-with-warnings · 20 fail · 2 tool-error",
+        "diff" => "0 no regression · 20 regression (with --fail-on-regression) · 2 tool-error",
+        // Everything else does its own job or cannot: rendering a label, reading a manifest, writing
+        // a keypair. The dataset's verdict is not this command's answer.
+        _ => "0 success · 2 tool-error",
+    }
+}
+
 /// Falls back to the whole-tool help for a name that is not a command, so a typo still gets the list
 /// it needs rather than an empty page.
 fn print_command_help(command: &str) {
@@ -3046,7 +3068,7 @@ fn print_command_help(command: &str) {
     println!();
     println!("    `veridex --help` lists every command.");
     println!();
-    println!("EXIT CODES: 0 pass · 10 pass-with-warnings · 20 fail · 2 tool-error");
+    println!("EXIT CODES: {}", exit_codes_for(name));
 }
 
 /// The bare flag at the head of a documented signature (`--out <file>` -> `--out`).
