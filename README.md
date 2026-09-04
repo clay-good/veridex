@@ -411,11 +411,20 @@ check's own abstention rules, are recorded in [docs/checks.md](docs/checks.md).
 And where a check *could not run at all*, the report says so rather than staying quiet. A source that
 records no wall clock, one whose values Veridex never interprets, one whose frames carry no content
 fingerprint, one whose video is not laid out per episode, one that offers no two streams on a shared
-clock for the alignment checks to compare, and one that holds **too few episodes** for the seven
-checks that answer by comparing episodes against each other — which is every MCAP file and every
-bare rosbag2 recording, since those are one episode by construction — each produces an informational
-finding naming the checks that had nothing to measure,
-and it travels into the JSON, the SARIF, the HTML, and the certificate. The alternative is what this
+clock for the alignment checks to compare, one whose LiDAR carries no per-message point count, one
+whose satellite receiver was never decoded, one with no transform tree to resolve a sensor through,
+and one that holds **too few episodes** for the seven checks that answer by comparing episodes
+against each other — which is every MCAP file and every bare rosbag2 recording, since those are one
+episode by construction — each produces an informational finding naming what had nothing to measure.
+Nine checks in the catalog raise one; each declares which of its codes mean *"I could not measure"*
+rather than *"I measured this and it is wrong"*, `veridex checks` marks them, and the full set is in
+[docs/checks.md](docs/checks.md).
+
+Those findings travel into the JSON, the SARIF and the HTML — and into the **certificate**, which
+names its findings *by code* for exactly this reason: a family count cannot tell an abstention from a
+fault. The trust label carries them in a `Could not measure` row, because a grade earned over checks
+that could not measure is a different grade and a reader of a dataset card cannot re-run Veridex to
+find out. The alternative is what this
 tool exists to prevent: a recording whose actuator is pinned at its rail scoring `data 100` with no
 statistical findings, over a certificate listing all five statistical checks as run with nothing
 skipped. (That example was a CAN log, and neither a CAN log nor an MF4

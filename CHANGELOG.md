@@ -72,6 +72,22 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   an unterminated element, an unclosed block, a name with no value, a value with no name, text that
   is not XML — each yield nothing rather than a guess.
 
+- **The README's abstention paragraph now reflects what the catalog does.** It enumerated six
+  situations in which a check cannot run; nine checks now raise an abstention, and the paragraph
+  predated both the certificate naming its findings by code and the label's `Could not measure` row.
+  It names the three new situations — a LiDAR with no per-message point count, a satellite receiver
+  never decoded, no transform tree to resolve a sensor through — says that each check declares which
+  of its codes mean "I could not measure", and points at `veridex checks` and
+  [docs/checks.md](docs/checks.md) for the full set rather than listing thirteen codes in a README.
+
+  Worth recording: the paragraph already claimed those findings travel "into the JSON, the SARIF, the
+  HTML, and the certificate". That was not true when written — the same overstatement corrected in
+  CONTRIBUTING — and is true now, because the certificate gained `findings_summary.by_code`. The code
+  caught up to its own documentation.
+
+  The "nine checks" count is held to the catalog by a test, the third such guard beside the two in
+  `docs/checks.md`, because a count in prose is exactly what drifted here.
+
 - **No finding may report a number that is not a number.** Several checks divide by something the
   data supplies — a median inter-frame interval, a mean, an episode duration — and each is guarded so
   the degenerate case abstains. Those guards are load-bearing for the *report*, not just for

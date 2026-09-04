@@ -217,3 +217,22 @@ fn the_abstention_check_counts_on_the_page_are_the_catalog_counts() {
          alongside real findings"
     );
 }
+
+#[test]
+fn the_readmes_abstaining_check_count_is_the_catalog_count() {
+    // The README states how many checks in the catalog raise an abstention. It is the same class of
+    // claim as the two in `docs/checks.md`, and drifts the same way: the paragraph enumerated six
+    // situations while nine checks declared one.
+    let page = flowed("README.md");
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let n = engine
+        .catalog()
+        .iter()
+        .filter(|c| !c.abstention_codes.is_empty())
+        .count();
+    let claim = format!("{} checks in the catalog raise one", spelled(n));
+    assert!(
+        page.contains(&claim),
+        "README.md must say `{claim}` — {n} checks declare an abstention code"
+    );
+}
