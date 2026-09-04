@@ -6901,12 +6901,48 @@ fn every_abstention_code_in_the_catalog_is_declared_as_one() {
         "UNREAD",
         "UNFINGERPRINTED",
     ];
-    // Codes whose name matches the vocabulary but which report a *fault*, not an abstention.
+    // Codes a signal below flags that report a *fault*, not an abstention. Each needs a reason.
     const NOT_ABSTENTIONS: &[&str] = &[
         // The media is present and does not parse. That is a defect in the file, not a gap in what
         // Veridex looked at — the check reached the bytes and they were wrong.
         "VIDEO.MEDIA_UNREADABLE",
+        // The three below are matched by the documentation signal only, because their rows explain
+        // what a *reader* loses, not what the check could not do. All three are measurements that
+        // came back wrong.
+        //
+        // The calibration is present and arithmetically unusable — a focal length of zero is a
+        // defect in the document, not an absence of one.
+        "AUTONOMY.CALIBRATION_IMPLAUSIBLE",
+        // The tree exists and the sensor is in it; no chain reaches the camera. That is a measured
+        // property of the tree, not a gap in what was read.
+        "AUTONOMY.SENSOR_FRAME_UNRELATED",
+        // The stored statistics were read and disagree with the recomputed ones. A disagreement is
+        // the strongest measurement this family makes.
+        "STATISTICAL.STATS_STALE",
     ];
+    // How an abstention row reads in `docs/checks.md`. A second, independent signal to the naming
+    // vocabulary, because the two miss different things: `STATISTICAL.NO_STORED_STATS` means
+    // "two rules had nothing to compare against" and carries none of the words above, so the name
+    // signal alone passed over it for as long as it existed. The documentation is where the meaning
+    // of a code actually lives, which is why it is worth reading here.
+    const DOC_PHRASES: &[&str] = &[
+        "had nothing to",
+        "nothing to measure",
+        "nothing to compare",
+        "could not be resolved",
+    ];
+    let doc = std::fs::read_to_string(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("docs/checks.md"),
+    )
+    .expect("docs/checks.md is readable");
+    // The row for `code`, if the page has one. Codes are documented one per table row.
+    let documented_as_abstention = |code: &str| -> bool {
+        doc.lines()
+            .find(|line| line.starts_with('|') && line.contains(&format!("`{code}`")))
+            .is_some_and(|row| DOC_PHRASES.iter().any(|p| row.contains(p)))
+    };
 
     let engine = veridex_core::checks::default_engine().unwrap();
     let mut undeclared: Vec<String> = Vec::new();
@@ -6922,7 +6958,8 @@ fn every_abstention_code_in_the_catalog_is_declared_as_one() {
             );
         }
         for code in check.finding_codes {
-            let looks_like = VOCABULARY.iter().any(|v| code.contains(v));
+            let looks_like =
+                VOCABULARY.iter().any(|v| code.contains(v)) || documented_as_abstention(code);
             let is_declared = declared.contains(code);
             if looks_like && !is_declared && !NOT_ABSTENTIONS.contains(code) {
                 undeclared.push(format!("{} / {code}", check.id));
@@ -6952,8 +6989,9 @@ fn every_abstention_code_in_the_catalog_is_declared_as_one() {
 
     assert!(
         undeclared.is_empty(),
-        "these read as abstentions and are not declared — add them to the check's \
-         `abstention_codes`, or to NOT_ABSTENTIONS with a reason: {undeclared:?}"
+        "these read as abstentions — by name or by how docs/checks.md describes them — and are not \
+         declared. Add them to the check's `abstention_codes`, or to NOT_ABSTENTIONS with a \
+         reason: {undeclared:?}"
     );
     // A code declared as an abstention that does not read like one is fine in principle, but it
     // means the vocabulary above no longer finds every abstention, so the guard has gone soft.

@@ -1102,6 +1102,11 @@ impl Check for ValueMeasurability {
         &[
             "STATISTICAL.UNMEASURED_VALUES",
             "STATISTICAL.UNMEASURABLE_VALUES",
+            // A *partial* abstention, and no less one for that: the values were read and
+            // summarized, but with no stored statistics to compare against,
+            // `statistical.stored-vs-observed` and the stored-range rules of
+            // `statistical.range-sanity` had nothing to measure. The recomputed rules still applied.
+            "STATISTICAL.NO_STORED_STATS",
         ]
     }
     fn title(&self) -> &'static str {

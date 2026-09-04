@@ -51,6 +51,25 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **An abstention nothing recognized, and a guard that could not have found it.** The catalog guard
+  finds abstention codes by a naming vocabulary (`UNMEASURED`, `UNCOMPARED`, `UNREAD`, …), which is a
+  heuristic for *finding* them rather than a definition. `STATISTICAL.NO_STORED_STATS` means two
+  rules "had nothing to compare against" and carries none of those words, so the guard passed over it
+  for as long as it existed: an abstention that no summarizer could tell from a fault, and that the
+  trust label's `Could not measure` row therefore did not name.
+
+  It is now declared, and the guard reads a second, independent signal — how the code's row in
+  [docs/checks.md](docs/checks.md) describes it, which is where a code's meaning actually lives. The
+  two signals miss different things; three codes the documentation flags are faults whose rows
+  describe what a *reader* loses, and each is now in the exception list with its reason. Proven by
+  undeclaring the code and watching the documentation signal name it.
+
+  With it declared, the page's "three checks exist only to report what their family could not do" is
+  true again, and a new guard holds *both* halves of the split to the catalog — that count and the
+  six checks that do their own work and disclose their own silence. The page had said "three" while
+  six more had since gained an abstention code, so a reader was told the disclosure surface was half
+  its size. The narrative now lists all six.
+
 - **A rig with no transform tree reported its sensors resolved.** Completing the audit the entry
   below started: `autonomy.sensor-frame-resolution` returned early when the dataset carries no
   calibration, deferring to `autonomy.calibration-completeness` — "No tree at all is one defect,

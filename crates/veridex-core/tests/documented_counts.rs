@@ -178,3 +178,42 @@ fn the_cross_episode_check_count_is_the_one_the_finding_reports() {
         "expected the count on both pages and in structural.rs, found {checked}"
     );
 }
+
+#[test]
+fn the_abstention_check_counts_on_the_page_are_the_catalog_counts() {
+    // `docs/checks.md` states both halves of the split: the checks that exist *only* to report what
+    // their family could not do, and the ones that do their own work and disclose their own silence.
+    // Both drifted before this guard existed — the page said "three checks" while six more had since
+    // gained an abstention code, and a reader was told the disclosure surface was half its size.
+    let page = flowed("docs/checks.md");
+    let engine = veridex_core::checks::default_engine().unwrap();
+    let catalog = engine.catalog();
+
+    let only = catalog
+        .iter()
+        .filter(|c| {
+            !c.abstention_codes.is_empty() && c.abstention_codes.len() == c.finding_codes.len()
+        })
+        .count();
+    let also = catalog
+        .iter()
+        .filter(|c| {
+            !c.abstention_codes.is_empty() && c.abstention_codes.len() != c.finding_codes.len()
+        })
+        .count();
+
+    let only_claim = format!(
+        "{} checks in the catalog exist only to report",
+        spelled(only)
+    );
+    assert!(
+        page.contains(&only_claim),
+        "docs/checks.md must say `{only_claim}` — {only} checks have nothing but abstention codes"
+    );
+    let also_claim = format!("{} further checks do their own work", spelled(also));
+    assert!(
+        page.contains(&also_claim),
+        "docs/checks.md must say `{also_claim}` — {also} checks disclose their own silence \
+         alongside real findings"
+    );
+}

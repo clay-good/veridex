@@ -329,6 +329,29 @@ the terminal report, the JSON, the SARIF, the HTML, and the certificate's own su
 | `statistical.value-measurability` | the adapter never read values (any MCAP or rosbag2 topic other than a `JointState` or an `Imu`, and any `bytes_list` leaf of an RLDS record), or read them but had no stored statistics to compare against (HDF5, Zarr, CAN+DBC, MF4, RLDS numeric leaves, bag `JointState` / `Imu` topics) |
 | `structural.content-measurability` | frames carry no content fingerprint, so the duplicate-episode and stuck-stream checks had no bytes to compare — and, separately, that the run covers too few episodes for the seven checks that answer by comparing one episode against another |
 
+Six further checks do their own work *and* disclose when they could not do it, rather than leaving a
+sibling to speak for them. A readiness criterion is judged by its own check's findings, so a check
+that defers its silence to another leaves that criterion green over data nobody measured — which is
+how a rig with no decoded receiver, and one with no transform tree at all, each came back with two
+and one criteria met respectively:
+
+| Check | Abstains with |
+|---|---|
+| `structural.near-duplicate-episode` | `STRUCTURAL.NEAR_DUPLICATE_UNCHECKED` |
+| `statistical.value-measurability` | `STATISTICAL.NO_STORED_STATS` (a *partial* abstention: values were read, but with no stored statistics to compare them against) |
+| `autonomy.point-cloud-density` | `AUTONOMY.POINT_CLOUD_UNMEASURED` |
+| `autonomy.sensor-clock` | `AUTONOMY.SENSOR_CLOCK_UNREAD` |
+| `autonomy.gnss-plausibility` | `AUTONOMY.GNSS_UNMEASURED` |
+| `autonomy.gnss-fix-availability` | `AUTONOMY.GNSS_STATUS_UNREAD` |
+| `autonomy.sensor-frame-resolution` | `AUTONOMY.SENSOR_FRAME_UNCHECKED` |
+
+Every abstention code is **declared** by its check (`Check::abstention_codes`, listed by
+`veridex checks` with a `†` and by `veridex checks --json` as a field), so anything summarizing a run
+can tell "I could not measure this" from "I measured this and it is wrong". The trust label's
+`Could not measure` row is built from that declaration, and a test holds the declaration to the
+catalog: a finding code that reads like an abstention — by its name, or by how its row on this page
+describes it — and is not declared fails the suite.
+
 A fourth disclosure comes from the engine rather than the catalog. When a check *crashes* instead of
 producing findings, that is neither a pass nor a defect in the data — it is a hole where a
 measurement should be. The verdict records it under `errored_checks`, the terminal, HTML and JSON
