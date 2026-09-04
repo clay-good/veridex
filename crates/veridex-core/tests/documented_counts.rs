@@ -236,3 +236,57 @@ fn the_readmes_abstaining_check_count_is_the_catalog_count() {
         "README.md must say `{claim}` — {n} checks declare an abstention code"
     );
 }
+
+#[test]
+fn the_readme_names_every_source_that_shares_the_provenance_key_table() {
+    // The README's promise is that one curated table makes `sensor` mean the same thing whatever
+    // format it arrives in, and it makes that promise by *naming* the sources. An adapter that
+    // starts using the table and is not named there shrinks the claim to a reader — which is what
+    // happened when the MF4 adapter began routing its header comment through it.
+    //
+    // Keyed on the call, not on a count: the adapters that route free-form metadata are exactly the
+    // ones that call `provenance_key_for`.
+    // The *sentence* making the promise, not the whole page: every one of these formats is named
+    // somewhere in a README this long, so a page-wide search passes however the sentence is worded
+    // and guards nothing. (Verified: deleting MF4 from the sentence left a page-wide check green,
+    // because `MF4` appears eight other times.)
+    let page = flowed("README.md");
+    const ANCHOR: &str = "one curated key table shared by every source that carries free-form";
+    let at = page
+        .find(ANCHOR)
+        .expect("README.md still makes the shared-key-table promise");
+    let sentence = &page[at..page[at..].find(" | ").map_or(page.len(), |e| at + e)];
+    let dir = root().join("crates/veridex-core/src/adapter");
+    // Adapter module → the name the README calls that format.
+    let names = [
+        ("mcap", "MCAP"),
+        ("rosbag2", "rosbag2"),
+        ("hdf5", "HDF5"),
+        ("zarr", "Zarr"),
+        ("mdf4", "MF4"),
+        ("lerobot", "LeRobot"),
+        ("rlds", "RLDS"),
+        ("candbc", "CAN+DBC"),
+    ];
+    let mut missing: Vec<&str> = Vec::new();
+    for (module, shown) in names {
+        let src = [
+            dir.join(format!("{module}.rs")),
+            dir.join(module).join("mod.rs"),
+        ]
+        .iter()
+        .find_map(|p| std::fs::read_to_string(p).ok())
+        .unwrap_or_else(|| panic!("adapter `{module}` has a source file"));
+        // `flowed` lowercases, so compare in that case — the page names these formats in their own
+        // capitalization (`MCAP`, `HDF5`, `MF4`) and a case-sensitive test reports every one of them
+        // as absent from a page that names them all.
+        if src.contains("provenance_key_for") && !sentence.contains(&shown.to_ascii_lowercase()) {
+            missing.push(shown);
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "these adapters route free-form metadata through the shared key table but the README's \
+         sentence about it does not name them: {missing:?}"
+    );
+}

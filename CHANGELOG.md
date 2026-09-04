@@ -72,6 +72,20 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   an unterminated element, an unclosed block, a name with no value, a value with no name, text that
   is not XML — each yield nothing rather than a guess.
 
+- **The README's Status table named four sources sharing the provenance key table; there are five.**
+  The table promises one curated key table makes `sensor` mean the same thing whatever format it
+  arrives in, and backs that by naming the sources. MF4 joined that list when its header comment
+  started routing through the table, and the sentence did not, shrinking the claim to a reader. The
+  Certificates row also now says findings are named by code, not only by family.
+
+  The guard is keyed on the **call** rather than a count — the adapters routing free-form metadata
+  are exactly those calling `provenance_key_for` — so it cannot drift out of sync with the code. Two
+  corrections were needed before it guarded anything: `flowed()` lowercases the page, so a
+  case-sensitive check reported every one of `MCAP`/`HDF5`/`MF4` as absent from a page naming them
+  all; and once that was fixed it still passed with MF4 deleted from the sentence, because `MF4`
+  appears eight other times in the README. It now extracts that sentence and searches within it,
+  which does catch the deletion.
+
 - **The README's abstention paragraph now reflects what the catalog does.** It enumerated six
   situations in which a check cannot run; nine checks now raise an abstention, and the paragraph
   predated both the certificate naming its findings by code and the label's `Could not measure` row.
