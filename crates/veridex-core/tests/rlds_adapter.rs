@@ -2455,3 +2455,70 @@ fn a_hostile_manifest_never_takes_the_process_down() {
         panics.join("\n")
     );
 }
+
+// --- The corruption sweep, behind the frame's own checksums ---------------------------------------
+
+#[test]
+fn no_damaged_record_takes_the_process_down() {
+    // RLDS is the format Open X-Embodiment ships in, and the one adapter with no systematic sweep:
+    // the tests above name a handful of corruptions by hand, which is not the same as trying every
+    // byte.
+    //
+    // A naive sweep over the shard would prove nothing. TFRecord frames each record as
+    // `length | crc32c(length) | data | crc32c(data)`, so a flipped byte anywhere is caught by a
+    // checksum and refused before the protobuf reader is reached — the sweep would measure the CRC,
+    // not the parser. So the mutation goes *inside* the `tf.train.Example` payload and the record is
+    // then **reframed**, recomputing both checksums, which is what puts the reader behind them under
+    // test: varints, wire types, nested message lengths and repeated-field counts, every one of them
+    // a number the file supplies.
+    let clean = episode_record(3, &["pick up the block"], "/raw/ep0.h5", 0.0);
+    assert!(clean.len() > 64, "the payload must be worth sweeping");
+
+    // Deterministic offsets across the payload, plus the shapes that break a length prefix.
+    let mut cases: Vec<(String, Vec<u8>)> = Vec::new();
+    for (i, at) in (0..clean.len()).step_by(7).enumerate() {
+        for (tag, byte) in [("zero", 0x00u8), ("max", 0xFF), ("flip", clean[at] ^ 0xFF)] {
+            let mut m = clean.clone();
+            m[at] = byte;
+            cases.push((format!("{tag}@{at}#{i}"), m));
+        }
+    }
+    cases.push(("empty".into(), Vec::new()));
+    cases.push(("one-byte".into(), vec![0x0A]));
+    cases.push(("head-only".into(), clean[..clean.len() / 2].to_vec()));
+    cases.push(("doubled".into(), [clean.clone(), clean.clone()].concat()));
+
+    let tmp = tempfile::tempdir().unwrap();
+    for (what, payload) in cases {
+        let dir = tmp.path().join("sweep");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("features.json"), features_json()).unwrap();
+        std::fs::write(
+            dir.join("dataset_info.json"),
+            dataset_info_json(Some(vec![1]), "tfrecord"),
+        )
+        .unwrap();
+        // Reframed: both checksums are recomputed over the mutated payload, so nothing is refused
+        // for being damaged in transit and the reader has to survive the content itself.
+        std::fs::write(
+            dir.join("demo_rlds-train.tfrecord-00000-of-00001"),
+            shard(&[payload]),
+        )
+        .unwrap();
+
+        // The invariant: refuse it or read it, never panic and never hang. A dataset that comes back
+        // is held to the same rule every ingest is — the frames it claims are the frames it has.
+        if let Ok(ingested) = ingest(&dir) {
+            for ep in &ingested.dataset.episodes {
+                for s in &ep.streams {
+                    assert!(
+                        s.frames.len() <= 4_096,
+                        "`{what}` produced {} frames from a 3-step record",
+                        s.frames.len()
+                    );
+                }
+            }
+        }
+    }
+}

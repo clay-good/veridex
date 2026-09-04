@@ -49,6 +49,23 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   a deliberate exception with its reason: the media was reached and did not parse, which is a defect
   in the file, not a gap in what Veridex looked at.
 
+- **RLDS gained a corruption sweep, behind the frame's own checksums.** It is the format Open
+  X-Embodiment ships in and was the one adapter with no systematic sweep — a handful of hand-written
+  corruptions is not the same as trying every byte.
+
+  A naive sweep would have proved nothing. TFRecord frames each record as
+  `length | crc32c(length) | data | crc32c(data)`, so a flipped byte anywhere is caught by a checksum
+  and refused before the protobuf reader is reached: the sweep would measure the CRC, not the parser.
+  The mutation therefore goes *inside* the `tf.train.Example` payload and the record is **reframed**,
+  recomputing both checksums, which puts the reader behind them under test — varints, wire types,
+  nested message lengths and repeated-field counts, every one of them a number the file supplies.
+
+  Around 200 cases (zero/max/flip at strided offsets, plus empty, one-byte, truncated and doubled
+  payloads); the reader survives all of them. The sweep also bounds what comes back — a mutated
+  three-step record may not yield thousands of frames — because a corrupted length prefix inflating a
+  frame count is exactly what a "does not panic" test alone would miss. Confirmed to reach
+  `parse_example` rather than bouncing off the manifest, by the same assertion trick as the MF4 shape.
+
 - **The MF4 header-comment parser is in the corruption sweep.** `hostile_corpus()` is documented as
   "one of each file shape the adapter has a distinct parsing path for", and its own comment records
   why: an earlier sweep ran over a single uncompressed fixture and never reached the decompressor,
