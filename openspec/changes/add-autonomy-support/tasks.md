@@ -75,7 +75,19 @@ No code until this change is approved; this is the build plan.
         Statistics are recomputed from the converted values, so the statistical family grades a
         measurement rather than abstaining on it.
       - **Provenance.** The identification block's program becomes `recorder`; the `##SI` acquisition
-        sources become `sensor`. An MF4 scored 0/6 on provenance coverage until they were read.
+        sources become `sensor`. An MF4 scored 0/6 on provenance coverage until they were read — and
+        1/6 until the **header comment** was, which is the place a recorder actually writes what a run
+        was: CANape, INCA and the fleet loggers fill the `##HD` block's `##MD` link with an XML
+        `<common_properties>` list beside a free-text description. A producer stating
+        `time_source: PTP grandmaster` in the one standardized place for it scored `clock: missing`.
+        Those properties now route through `provenance_key_for` — the same table every other
+        adapter's free-form metadata goes through, so a spelling means the same thing whatever format
+        it arrives in — and a realistic file reads 4/6. First writer wins, so a comment never
+        overwrites an element read from a more specific block; the `<TX>` description is kept as
+        metadata rather than guessed into an element. Not a general XML parser: a hand-rolled reader
+        over a fixed shape cannot be talked into entity expansion or unbounded nesting, and the
+        comment is bounded like every other untrusted read (64 properties, 512 bytes each).
+        `make_demo_mf4` writes one, so the fixture models a file a recorder produces.
       - **Safety.** Decompression is charged to the shared `DecompressionBudget` before a
         decompressor sees a stream, each read is capped at the declared length, and every chain walk
         is loop-guarded. Nine block-graph shapes are swept byte by byte for panics.
@@ -195,13 +207,46 @@ No code until this change is approved; this is the build plan.
       Applied via `veridex certify --profile world-model-ready`.
 - [x] Certificate reports per-criterion pass/fail against that profile. A `readiness` block
       (`ReadinessReport`) records profile name, `applicable` (a rig that also carries a
-      perception sensor and an ego trajectory — the things a world model is built from), overall
+      perception sensor, an ego trajectory **and a satellite receiver** — the things a world model is
+      built from), overall
       `ready`, and each
       criterion's check id / threshold / passed / finding count — signed like every field, honest by
       construction (a non-rig is `N/A`, never a vacuous pass). Proven end-to-end (`certify --profile`
       on the `av` rig prints and signs NOT READY) + unit tests (`tests/profile.rs`). The sequence
       and ego-pose thresholds are now config-wired like every other family (`sequence_drop_fraction`,
       `ego_max_speed_mps` in `[tolerances]`); the profile still applies its own defaults.
+
+- [x] **Every criterion either measures or abstains.** `passed = ran && findings == 0` counts only
+      *that check's* findings, so a criterion whose evidence the dataset does not carry was a green
+      tick over an empty set — "honest by construction" was true of a non-rig and not of a rig
+      missing one thing. Three were reachable from ordinary recordings, and each is now bought out at
+      the level it belongs to:
+
+      - **No satellite receiver at all.** A LiDAR + IMU + CAN + camera rig — indoors, or a closed
+        course — is a rig, perceives, and carries an ego trajectory, and it passed both GNSS criteria
+        on a stream that does not exist, signing "the receiver actually had one" over a drive that
+        never had one. `is_world_model_candidate` now requires a receiver, so such a rig is `N/A`:
+        the same answer it already gave a rig with no ego trajectory, and for the same reason.
+        Georeferencing is not incidental here — those two criteria are bundled because a drive that
+        cannot be placed cannot be aligned to a map or to another drive.
+      - **A receiver nobody decoded.** A `Gnss` stream with no decoded coordinates or fix status made
+        both checks skip it silently. The original arrangement deferred that disclosure to
+        `STATISTICAL.UNMEASURED_VALUES`, which reports it — but under a *different check id*, so the
+        criterion stayed green. A deferral cannot carry a criterion. Both checks now raise their own:
+        `AUTONOMY.GNSS_UNMEASURED` and `AUTONOMY.GNSS_STATUS_UNREAD`, neither an accusation — the
+        absence of a status is not an absence of fixes.
+      - **No transform tree.** `autonomy.sensor-frame-resolution` returned early and left "no tree at
+        all" to `autonomy.calibration-completeness`, so the certificate carried
+        `✓ every sensor's own frame resolves through the tree to a camera` beside the failing
+        calibration criterion. `ready` was already false, so nothing was certified that should not
+        have been, but the sentence was untrue about the run. `AUTONOMY.SENSOR_FRAME_UNCHECKED` is one
+        dataset-scoped note, so the "reported once" rule the deferral protected still holds. Raised
+        only for a rig: the abstention fires on the *absence* of a tree, which almost nothing outside
+        a rig carries.
+
+      `autonomy.sequence-complete` was the last audited and needs no change — it falls back to the
+      sensor's own median inter-frame interval when publisher message numbering is absent, so it
+      measures wherever there are frames.
 
 ## A5 — Proof
 - [ ] End-to-end on a real multi-sensor rig log (MF4 and/or ROS bag): LiDAR + multi-camera + CAN +
