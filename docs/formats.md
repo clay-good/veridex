@@ -399,8 +399,26 @@ unread and raise a warning:
 #       for the part that was
 ```
 
-Past eight undefined ids the remainder is counted rather than listed — still disclosed, in a sentence
-a person can read. A CAN log is one continuous timeline with no
+**A database written for the wrong variant is the same gap seen from the other side.** The DBC can
+also define a signal the bus's frames are too short to carry — bits 48–63 of a message whose frames
+arrive four bytes long, which is what happens when the database comes from a different trim of the
+same vehicle. Every frame is skipped for that signal, so it produces no stream at all: the report
+named neither the signal nor its absence, and a log whose declared signals were a third missing
+passed with a perfect data score. Those signals are now named the same way an undefined id is, worst
+first, and separated by which fault they are — a signal carried by *none* of its message's frames is
+a different thing from one that missed a few:
+
+```
+#   [warning] COVERAGE.SOURCE_UNREAD  dataset
+#       1 source(s) the dataset declares were not read (dbc signal EngineData.WheelSpeedLE), so
+#       every result below speaks for the part that was
+```
+
+Multiplexed signals are excluded from the rule: appearing in only some frames of their message is
+what a multiplexed signal *is*, and reporting that would be a finding about honest data.
+
+Past eight undefined ids — or eight short signals — the remainder is counted rather than listed —
+still disclosed, in a sentence a person can read. A CAN log is one continuous timeline with no
 episode boundaries and nothing that describes it in front of the frames, so it segments into a single
 episode and `--metadata-only` is refused by name rather than answered with a guess.
 

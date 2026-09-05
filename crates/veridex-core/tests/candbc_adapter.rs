@@ -740,3 +740,87 @@ fn a_bus_with_more_nodes_than_the_cap_says_so_rather_than_trimming_in_silence() 
         .iter()
         .any(|(k, v)| k == "dbc_transmitters" && v.contains("ECU39")));
 }
+
+#[test]
+fn a_dbc_signal_the_bus_frames_cannot_hold_is_named_rather_than_dropped() {
+    // The wrong-variant DBC, which is the ordinary way a CAN decode goes quietly wrong: the
+    // database defines a signal at bits the bus's frames do not reach, so every frame is too short
+    // to carry it. The adapter skipped the sample per frame, the signal produced no stream at all,
+    // and the report named neither -- 200 frames in, a perfect `data 100`, and a third of the
+    // declared signals silently absent. It is a declared source that was not read, so it is
+    // disclosed like one.
+    let dbc = "BO_ 256 EngineData: 8 ECU\n\
+                SG_ EngineSpeed : 0|16@1+ (0.25,0) [0|16383.75] \"rpm\" Vector__XXX\n\
+                SG_ WheelSpeedLE : 48|16@1+ (1,0) [0|65535] \"kph\" Vector__XXX\n";
+    // Four-byte frames: `EngineSpeed` (bits 0-15) fits, `WheelSpeedLE` (bits 48-63) cannot.
+    let log: String = (0..20)
+        .map(|i| format!("(1000.{:06}) can0 100#{:04X}0000\n", i * 10_000, 0x4001 + i))
+        .collect();
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("vehicle.dbc"), dbc).unwrap();
+    fs::write(dir.path().join("drive.log"), log).unwrap();
+
+    let out = CanDbcAdapter
+        .ingest(
+            &Source::Local(dir.path().to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest");
+
+    // The signal that fits is measured, and the one that does not produces no stream — which is
+    // exactly why the absence has to be stated somewhere.
+    let names: Vec<&str> = out.dataset.episodes[0]
+        .streams
+        .iter()
+        .map(|s| s.name.as_str())
+        .collect();
+    assert!(names.contains(&"EngineData.EngineSpeed"), "{names:?}");
+    assert!(!names.contains(&"EngineData.WheelSpeedLE"), "{names:?}");
+
+    {
+        let unread = &out.report.unread_sources;
+        let short = unread
+            .iter()
+            .find(|u| u.source_path.contains("WheelSpeedLE"))
+            .unwrap_or_else(|| panic!("the short signal must be disclosed: {unread:?}"));
+        // Both numbers, and which way round: none of the 20 frames could hold it.
+        assert!(short.note.contains("20 frame"), "{}", short.note);
+        assert!(short.note.contains("none of"), "{}", short.note);
+    }
+
+    // And it reaches the verdict, not just the ingest report — a coverage hole that stops at the
+    // adapter is a coverage hole nobody sees.
+    let checked = veridex_core::pipeline::check_ingested(out, &Default::default(), None);
+    assert!(
+        checked
+            .verdict
+            .findings
+            .iter()
+            .any(|f| f.code == "COVERAGE.SOURCE_UNREAD" && f.message.contains("WheelSpeedLE")),
+        "{:?}",
+        checked.verdict.findings
+    );
+}
+
+#[test]
+fn a_signal_carried_by_every_frame_is_not_reported_as_short() {
+    // The other direction, so the rule cannot fire on honest data: the stock fixture's frames are
+    // full eight bytes and every signal fits, so nothing is disclosed. Multiplexed signals are
+    // excluded from the rule entirely — decoding from only some frames is what a multiplexed
+    // signal is — and this guards the plain case.
+    let dir = write_dataset();
+    let out = CanDbcAdapter
+        .ingest(
+            &Source::Local(dir.path().to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest");
+    assert!(
+        !out.report
+            .unread_sources
+            .iter()
+            .any(|u| u.source_path.starts_with("dbc signal")),
+        "{:?}",
+        out.report.unread_sources
+    );
+}

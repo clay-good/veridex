@@ -10,6 +10,17 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A DBC signal the bus's frames cannot carry is named rather than dropped.** A `.dbc` taken from a
+  different trim of the same vehicle defines signals at bit positions the real frames never reach —
+  bits 48–63 of a message whose frames arrive four bytes long. The adapter skipped the sample per
+  frame, so the signal produced no stream at all, and the report named neither the signal nor its
+  absence: 200 frames in, a third of the declared signals silently missing, and a **passing run with
+  a perfect `data 100`**. It is a declared source that was not read, so it is now disclosed like one
+  (`COVERAGE.SOURCE_UNREAD`, a warning), named worst-first and distinguishing a signal carried by
+  *none* of its message's frames from one that missed a few. Multiplexed signals are excluded —
+  appearing in only some frames is what a multiplexed signal is. Documented in
+  [docs/formats.md](docs/formats.md).
+
 - **A stream is no longer graded on the message bodies that survived the recording.** Every typed
   decoder in the ROS readers is strict on purpose: it yields a reading only once the body's own
   invariants prove it is the message it claims to be, so a mislabelled topic, a truncated write or a

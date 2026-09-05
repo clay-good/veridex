@@ -46,6 +46,11 @@ const MAX_NAMED_TRANSMITTERS: usize = 32;
 /// of listed — the frames are still disclosed, in a sentence a person can read.
 const MAX_NAMED_UNKNOWN_IDS: usize = 8;
 
+/// The most short-framed signals named individually in the coverage disclosure, for the reason
+/// [`MAX_NAMED_UNKNOWN_IDS`] caps its own list: a database applied to the wrong bus can strand
+/// dozens of signals at once, and a finding that names every one of them is not read.
+const MAX_NAMED_SHORT_SIGNALS: usize = 8;
+
 use super::{
     Adapter, Coverage, Detection, IngestError, IngestOptions, IngestReport, Ingested, Source,
     UnmappedField,
@@ -474,6 +479,14 @@ impl Adapter for CanDbcAdapter {
         // indistinguishable from a good read.
         let mut signal_ranges: BTreeMap<String, (f64, f64)> = BTreeMap::new();
         let mut unknown_ids: BTreeMap<u32, u64> = BTreeMap::new();
+        // Per non-multiplexed signal: how many frames of its message went past, and how many of
+        // them it actually decoded from. A signal defined past the end of the frames the bus really
+        // carries decodes from none of them and produces no stream at all — so the DBC promises a
+        // measurement the report then never mentions, in either direction. That is the ordinary
+        // shape of a database taken from the wrong vehicle variant, and it used to pass with a
+        // perfect data score. Multiplexed signals are excluded: decoding from only some frames is
+        // what a multiplexed signal *is*.
+        let mut signal_coverage: BTreeMap<String, (u64, u64)> = BTreeMap::new();
         // The ECUs that actually put traffic on this bus — the transmitter of every message the log
         // carried, not every node the database declares. A `BU_` list is a claim about the network;
         // this is what produced the data in front of us.
@@ -527,7 +540,15 @@ impl Adapter for CanDbcAdapter {
                 } else {
                     format!("{}.{}", message.name, sig.name)
                 };
-                let Some(value) = decode_signal(sig, &frame.data) else {
+                let decoded = decode_signal(sig, &frame.data);
+                if !matches!(sig.mux, Mux::On(_)) {
+                    let seen = signal_coverage.entry(stream_name.clone()).or_insert((0, 0));
+                    seen.0 += 1;
+                    if decoded.is_some() {
+                        seen.1 += 1;
+                    }
+                }
+                let Some(value) = decoded else {
                     continue; // frame too short for this signal — skip this sample
                 };
                 // Fingerprint the decoded value so the CDM hash reflects signal content.
@@ -711,6 +732,49 @@ impl Adapter for CanDbcAdapter {
                      inspect` is not a bus dump, so only the {MAX_NAMED_UNKNOWN_IDS} busiest are \
                      named"
                 ),
+            });
+        }
+        // Signals the DBC defines that the bus's frames were too short to carry. The database
+        // declares a measurement, the frames went past, and it decoded from fewer of them than it
+        // saw — from none at all, in the ordinary case of a database written for a different
+        // variant of the same vehicle, which produces no stream and so no way to notice. Named
+        // here for the same reason an undefined id is: it is a declared source that was not read,
+        // and every result below speaks for the part that was.
+        let mut short_signals: Vec<(String, u64, u64)> = signal_coverage
+            .iter()
+            .filter(|(_, (seen, decoded))| decoded < seen)
+            .map(|(name, (seen, decoded))| (name.clone(), *seen, *decoded))
+            .collect();
+        // Worst first: a signal that decoded from nothing is a different fact from one that missed
+        // a few frames, and the reader wants the first ones named.
+        short_signals.sort_by(|a, b| (a.2 * b.1).cmp(&(b.2 * a.1)).then(a.0.cmp(&b.0)));
+        for (name, seen, decoded) in short_signals.iter().take(MAX_NAMED_SHORT_SIGNALS) {
+            unread_sources.push(UnmappedField {
+                source_path: format!("dbc signal {name}"),
+                note: if *decoded == 0 {
+                    format!(
+                        "defined by the DBC and carried by none of the {seen} frame(s) of \
+                         its message — every one was too short to hold it, so the signal \
+                         produced no stream at all (a database written for a different variant \
+                         of the bus)"
+                    )
+                } else {
+                    format!(
+                        "decoded from {decoded} of the {seen} frame(s) of its message; the \
+                         rest were too short to hold it, so its samples and statistics cover \
+                         only those"
+                    )
+                },
+            });
+        }
+        if short_signals.len() > MAX_NAMED_SHORT_SIGNALS {
+            unread_sources.push(UnmappedField {
+                source_path: format!(
+                    "{} further dbc signal(s)",
+                    short_signals.len() - MAX_NAMED_SHORT_SIGNALS
+                ),
+                note: "also defined by the DBC and not carried by every frame of their message;                        `veridex inspect` names each one"
+                    .into(),
             });
         }
         // Some lines parsed and some did not. That is not enough to refuse the log, but it is a
