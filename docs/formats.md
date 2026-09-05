@@ -57,6 +57,26 @@ checks scan every joint, not just element 0, which is where real robot data hide
 variant also ships a Hugging Face-style dataset card (`README.md`), so `veridex inspect` surfaces the
 extracted `license` as covered provenance rather than a `PROVENANCE.MISSING_LICENSE` gap.
 
+**The manifest and the data are reconciled in both directions.** `meta/info.json` lists the features
+and the Parquet holds the columns, and the two can disagree either way. A column the manifest never
+declared becomes no stream, so its values go unread. A feature the manifest declares and the Parquet
+does not hold is the mirror image, and the more misleading of the two: a stream is still built for
+every declared feature, so the missing one gets a frame at every row timestamp and no values at all —
+every structural and temporal check passes on it, and the statistical family's abstention reads as a
+gap in Veridex rather than in the data. A manifest promising a wrist camera the Parquet never held
+passed with a perfect `data 100`. Both are now disclosed as **unread sources**, which is what reaches
+the verdict:
+
+```
+#   [warning] COVERAGE.SOURCE_UNREAD  dataset
+#       1 source(s) the dataset declares were not read (feature `observation.wrist_image`), so
+#       every result below speaks for the part that was
+```
+
+That is deliberately *not* an "omitted" note. Omissions are what Veridex chooses not to read — video
+pixels, feature array payloads — and filing a missing feature there tells a reader Veridex declined
+to look at data the dataset does not contain.
+
 The card is read for more than the license. Two other standard Hub fields answer provenance
 questions outright: `source_datasets` says which dataset this one was derived from
 (`provenance.upstream`) and `annotations_creators` says who produced its annotations

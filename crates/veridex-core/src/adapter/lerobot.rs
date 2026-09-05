@@ -2119,10 +2119,21 @@ impl Adapter for LeRobotAdapter {
         }
         for name in &declared_names {
             if !observed.contains_key(*name) {
-                omitted_fields.push(format!(
-                    "feature `{name}` declared in meta/info.json but absent from the Parquet data \
-                     (no values ingested)"
-                ));
+                // Unread, not omitted — the same call the branch above makes, in the other
+                // direction. `omitted_fields` is for what Veridex deliberately does not read (video
+                // pixels, feature array payloads), and filing a *missing* feature there told the
+                // reader Veridex chose not to look at data the dataset does not contain. It reached
+                // no finding, so a manifest promising a wrist camera the Parquet never held passed
+                // at `data 100`: one stream is still built per declared feature, so the feature has
+                // a frame at every row timestamp and every structural and temporal check passes on
+                // it, while the statistical family abstains and reads as a gap in Veridex rather
+                // than in the data.
+                unread_sources.push(UnmappedField {
+                    source_path: format!("feature `{name}`"),
+                    note: "declared in meta/info.json and absent from the Parquet data, so its \
+                           stream carries a frame at every row timestamp and no values at all"
+                        .into(),
+                });
             }
         }
 

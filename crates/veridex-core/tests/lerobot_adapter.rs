@@ -1724,7 +1724,8 @@ fn write_v21_episode(path: &Path, episode: i64, base: f32) {
 fn parquet_columns_and_declared_features_are_reconciled_in_the_report() {
     // Desync the two column sets: the Parquet carries `observation.state`, but info.json declares
     // only `observation.phantom`. The undeclared real column must be surfaced as unmapped (not
-    // silently dropped), and the declared-but-absent feature as omitted (not a silent phantom stream).
+    // silently dropped), and the declared-but-absent feature as *unread* — both are coverage holes
+    // and both have to reach the verdict.
     let dir = tempfile::tempdir().unwrap();
     write_lerobot_with_values(
         dir.path(),
@@ -1763,15 +1764,43 @@ fn parquet_columns_and_declared_features_are_reconciled_in_the_report() {
         "an undeclared Parquet column must be reported as unread: {:?}",
         ingested.report.unread_sources
     );
+    // The same call, in the other direction — and this half used to be filed under `omitted`,
+    // which is where Veridex records what it *chooses* not to read (video pixels, feature array
+    // payloads). Filing a missing feature there told the reader Veridex declined to look at data
+    // the dataset does not contain, and it reached no finding: a manifest promising a wrist camera
+    // the Parquet never held passed at `data 100`, because one stream is still built per declared
+    // feature, so the phantom feature has a frame at every row timestamp and every structural and
+    // temporal check passes on it.
     assert!(
         ingested
+            .report
+            .unread_sources
+            .iter()
+            .any(|u| u.source_path.contains("observation.phantom")),
+        "a declared-but-absent feature must be reported as unread: {:?}",
+        ingested.report.unread_sources
+    );
+    assert!(
+        !ingested
             .report
             .omitted_fields
             .iter()
             .any(|o| o.contains("observation.phantom")),
-        "a declared-but-absent feature must be reported as omitted: {:?}",
+        "and not as an omission, which claims Veridex chose not to read it: {:?}",
         ingested.report.omitted_fields
     );
+
+    // And it reaches the verdict, which is the whole point of the distinction: an adapter note
+    // nothing reads is not a disclosure.
+    let checked = veridex_core::pipeline::check_ingested(ingested, &Default::default(), None);
+    let unread = checked
+        .verdict
+        .findings
+        .iter()
+        .find(|f| f.code == "COVERAGE.SOURCE_UNREAD")
+        .unwrap_or_else(|| panic!("{:?}", checked.verdict.findings));
+    assert!(unread.message.contains("observation.phantom"), "{unread:?}");
+    assert!(unread.message.contains("observation.state"), "{unread:?}");
 }
 
 #[test]

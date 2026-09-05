@@ -10,6 +10,17 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A LeRobot feature the manifest declares and the data lacks is a coverage hole, not an
+  omission.** The adapter already noticed the disagreement — it just filed it under `omitted`, which
+  is where Veridex records what it *chooses* not to read (video pixels, feature array payloads). So
+  it reached no finding. Meanwhile a stream is still built for every declared feature, so the missing
+  one carries a frame at every row timestamp and no values at all: every structural and temporal
+  check passes on it, and the statistical family's abstention reads as a gap in Veridex rather than
+  in the data. A manifest promising a wrist camera the Parquet never held passed with a perfect
+  `data 100`. It is now an unread source, like the undeclared column in the opposite direction — the
+  two halves of the same reconciliation had disagreed about what they meant — so it reaches
+  `COVERAGE.SOURCE_UNREAD` and the verdict. Documented in [docs/formats.md](docs/formats.md).
+
 - **A DBC signal the bus's frames cannot carry is named rather than dropped.** A `.dbc` taken from a
   different trim of the same vehicle defines signals at bit positions the real frames never reach —
   bits 48–63 of a message whose frames arrive four bytes long. The adapter skipped the sample per
