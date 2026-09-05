@@ -148,33 +148,49 @@ a mislabelled topic or a truncated write never yields a fabricated one. When onl
 empty the sensor cut out mid-recording, which is `AUTONOMY.POINT_CLOUD_DROPPED` at warning: the
 recording holds real data either side of the dropout.
 
-### A LiDAR whose sweeps did not survive the recording
+### A sensor whose messages did not survive the recording
 
-The rule above raises a question of its own: what happens to the bodies that fail it? A truncated
-write, a dropped chunk, or a publisher whose point layout disagrees with its own stride all leave a
-message that is present, on time, on the right topic and in the right frame — and is not readable as
-a point cloud. Those bodies used to be dropped without trace, so the two rules above ran on whichever
-sweeps survived and reported a verdict on the stream. The `av-truncated-lidar` variant is that
-recording: four sweeps in five cut short, and the fifth that survived are full clouds.
+The rule above raises a question of its own: what happens to the bodies that fail it? Every typed
+decoder here is strict for the same reason — it reads a value only once the message's own invariants
+prove it is the message it claims to be — and a truncated write, a dropped chunk, or a publisher
+whose layout disagrees with its own declared sizes all leave a message that is present, on time, on
+the right topic and in the right frame, and is not readable. Those bodies used to be dropped where
+they were read, so *everything* drawn from them — a stream's statistics, its point counts, its
+capture stamps, its fix availability — was computed from whichever ones survived and reported as a
+property of the whole stream.
+
+The `av-corrupt-bodies` variant is that recording: four IMU messages in five and four GNSS messages
+in five cut short. Before the fix its report was byte-identical to the healthy rig's.
 
 ```sh
-cargo run -p veridex-demo --example make_demo_mcap -- /tmp/av-trunc.mcap av-truncated-lidar
-cargo run -p veridex-cli -- check /tmp/av-trunc.mcap
+cargo run -p veridex-demo --example make_demo_mcap -- /tmp/av-corrupt.mcap av-corrupt-bodies
+cargo run -p veridex-cli -- check /tmp/av-corrupt.mcap
 ```
 
 ```
-  [error] AUTONOMY.POINT_CLOUD_UNDECODED  episode 0 · stream `/lidar/points`
-      episode 0: stream `/lidar/points` carries 8 point-cloud message(s) that could not be read as
-      point clouds, out of 11 — the bodies are present and their own length invariants do not hold
+  [error] AUTONOMY.MESSAGE_BODY_UNDECODED  episode 0 · stream `/imu/data`
+      episode 0: stream `/imu/data` carries 80 message(s) out of 101 whose body could not be
+      decoded — the bytes are present and the message's own invariants do not hold
       remedy: Check the recorder and the transport for the run (a truncated write, a dropped chunk,
-              a publisher whose point layout disagrees with its own stride); the affected sweeps
-              hold no recoverable point data.
+              a publisher whose message layout disagrees with its own declared sizes); the affected
+              messages hold no recoverable data. Until then, read every other result on this stream
+              as covering only the share that decoded.
 ```
 
-This is a fault, not an abstention: the bytes were reached and they are not a cloud, the same fact
-as `VIDEO.MEDIA_UNREADABLE` one format down. A stream whose *format* states no per-message count
-abstains instead, as `AUTONOMY.POINT_CLOUD_UNMEASURED` — the two silences are opposite verdicts and
-do not share a finding.
+The trust score falls from 76 (C) to 55 (F), and `/gps/fix` is reported the same way. It covers every
+typed decoder, so `av-truncated-lidar` — the same fault on the LiDAR's point clouds — is reported by
+this rule too.
+
+This is a fault, not an abstention: the bytes were reached and they are not the message, the same
+fact as `VIDEO.MEDIA_UNREADABLE` one format down. The neighbouring silence — a stream whose schema no
+typed decoder covers — carries no summary at all, and the families that wanted to read it say so
+(`STATISTICAL.UNMEASURED_VALUES`, `AUTONOMY.POINT_CLOUD_UNMEASURED`). "Nothing failed" and "nothing
+was tried" are opposite facts and do not share a finding.
+
+One thing it deliberately does not report: a body trimmed only at the tail, past the last field the
+decoder reads. An `Imu` message ends in covariance matrices this reader skips, so shaving them off
+changes nothing it could have concluded — and reporting it would be a finding about data that is
+whole for every purpose Veridex has.
 
 ## 4. Certify readiness
 
@@ -196,6 +212,7 @@ certified av — fail, grade C (76), bound to <the CDM content hash>
     ✓ autonomy.gnss-fix-availability — no satellite receiver reporting no fix for more than 5% of its messages
     ✓ autonomy.point-cloud-density — every point-cloud sensor actually recorded points
     ✓ autonomy.sensor-clock — every rig sensor stamped its own capture time, on a clock that agrees with the recorder's
+    ✓ autonomy.message-decode — every rig sensor's message bodies survived the recording, so the results above are about the whole stream
 ```
 
 A certificate is issued for a failing dataset too — it records what is true, and what is true here is

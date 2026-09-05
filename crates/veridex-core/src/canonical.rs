@@ -101,12 +101,13 @@ use crate::cdm::{
 /// in it: a receiver that lost the sky for most of a drive and one that never did have identical
 /// frame counts, cadences and spans. Same rule again.
 ///
-/// v18 binds each stream's `undecoded` point-cloud bodies — how many of its `PointCloud2` messages
-/// could not be read as point clouds at all. `AUTONOMY.POINT_CLOUD_UNDECODED` fails a stream on it,
-/// and an unreadable body leaves a frame with a timestamp, a schema and a coordinate frame, so a
-/// LiDAR whose sweeps were four fifths truncated by the recording and one whose sweeps all arrived
-/// whole have identical frame counts, cadences, spans, layouts and point-count summaries. Same rule
-/// again.
+/// v18 binds each stream's `observed_body_decodes` — how many of its message bodies the reader could
+/// decode. `AUTONOMY.MESSAGE_BODY_UNDECODED` fails a stream on it, and an unreadable body leaves a
+/// frame with a timestamp, a schema and a coordinate frame, so a sensor whose bodies were four
+/// fifths truncated by the recording and one whose bodies all arrived whole have identical frame
+/// counts, cadences and spans — while every summary drawn from those bodies (the statistics, the
+/// point counts, the capture stamps, the fix availability) is computed from the survivors and
+/// therefore differs *silently* between them. Same rule again.
 pub const CANONICAL_VERSION: u32 = 18;
 
 const DOMAIN: &[u8] = b"veridex.cdm.v1\0";
@@ -425,7 +426,14 @@ impl Stream {
             e.u64(c.min);
             e.u64(c.max);
             e.u64(c.empty);
-            e.u64(c.undecoded);
+        });
+        // How many of the stream's bodies decoded. Bound because `autonomy.message-decode` fails a
+        // stream on it, and because every other observed summary on this stream is drawn from the
+        // bodies that decoded: two recordings agreeing on all of them can have read a whole stream
+        // and a fifth of one.
+        e.opt(&self.observed_body_decodes, |e, b| {
+            e.u64(b.attempted);
+            e.u64(b.failed);
         });
         // What the messages said about their own sampling time. Bound because `autonomy.sensor-clock`
         // fails a stream on it: the frame timestamps are the recorder's clock either way, so a rig

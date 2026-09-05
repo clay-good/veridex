@@ -141,6 +141,7 @@ mod tests {
                         declared_range: None,
                         point_fields: None,
                         observed_point_counts: None,
+                        observed_body_decodes: None,
                         observed_header_stamps: None,
                         observed_sequence: None,
                         observed_fix_availability: None,
@@ -186,6 +187,7 @@ mod tests {
                         declared_range: None,
                         point_fields: None,
                         observed_point_counts: None,
+                        observed_body_decodes: None,
                         observed_header_stamps: None,
                         observed_sequence: None,
                         observed_fix_availability: None,
@@ -567,21 +569,17 @@ mod tests {
                     min: 0,
                     max: 0,
                     empty: 10,
-                    undecoded: 0,
                 })
             }),
-            // How many of the stream's cloud messages could not be read as clouds at all.
-            // `AUTONOMY.POINT_CLOUD_UNDECODED` fails a stream on it, and an unreadable body leaves
-            // behind a frame with a timestamp, a schema and a frame_id -- so a recording that lost
-            // four fifths of a LiDAR's payloads is otherwise identical to one that lost none, down
-            // to the point-count summary drawn from the sweeps that survived.
-            ("observed_point_counts.undecoded", |s| {
-                s.observed_point_counts = Some(crate::cdm::PointCounts {
-                    message_count: 10,
-                    min: 0,
-                    max: 0,
-                    empty: 10,
-                    undecoded: 3,
+            // How many of the stream's message bodies decoded. `AUTONOMY.MESSAGE_BODY_UNDECODED`
+            // fails a stream on it, and an unreadable body leaves behind a frame with a timestamp,
+            // a schema and a frame_id -- so a recording that lost four fifths of a sensor's bodies
+            // is otherwise identical to one that lost none, down to every summary drawn from the
+            // bodies that survived.
+            ("observed_body_decodes", |s| {
+                s.observed_body_decodes = Some(crate::cdm::BodyDecodes {
+                    attempted: 10,
+                    failed: 3,
                 })
             }),
             // What the stream's messages said about their own capture time. `autonomy.sensor-clock`
@@ -642,6 +640,7 @@ mod tests {
                 observed_dim_stats: _,
                 point_fields: _,
                 observed_point_counts: _,
+                observed_body_decodes: _,
                 observed_header_stamps: _,
                 observed_sequence: _,
                 observed_fix_availability: _,
@@ -756,6 +755,7 @@ mod proptests {
                 declared_range: None,
                 point_fields: None,
                 observed_point_counts: None,
+                observed_body_decodes: None,
                 observed_header_stamps: None,
                 observed_sequence: None,
                 observed_fix_availability: None,

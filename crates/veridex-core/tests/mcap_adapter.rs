@@ -873,11 +873,15 @@ fn a_lidar_whose_bodies_did_not_survive_the_recording_is_not_graded_on_the_survi
     let counts = d.episodes[0].streams[0]
         .observed_point_counts
         .expect("point counts decoded");
-    // What the old CDM said, and all it said: one message, full, clean.
+    // What the CDM said, and all it said: one message, full, clean.
     assert_eq!(counts.message_count, 1);
     assert_eq!(counts.empty, 0);
-    // What it now also says: four bodies were there and could not be read.
-    assert_eq!(counts.undecoded, 4);
+    // What it now also says, beside that summary: five bodies were tried and four did not decode.
+    let decodes = d.episodes[0].streams[0]
+        .observed_body_decodes
+        .expect("body decodes recorded");
+    assert_eq!(decodes.attempted, 5);
+    assert_eq!(decodes.failed, 4);
 
     let engine = veridex_core::checks::default_engine().expect("the standard catalog");
     let hash = veridex_core::content_hash(&d);
@@ -885,7 +889,7 @@ fn a_lidar_whose_bodies_did_not_survive_the_recording_is_not_graded_on_the_survi
     let undecoded: Vec<_> = verdict
         .findings
         .iter()
-        .filter(|f| f.code == "AUTONOMY.POINT_CLOUD_UNDECODED")
+        .filter(|f| f.code == "AUTONOMY.MESSAGE_BODY_UNDECODED")
         .collect();
     assert_eq!(undecoded.len(), 1, "{:?}", verdict.findings);
     assert!(
@@ -3069,7 +3073,7 @@ fn the_demo_rig_hashes_the_same_on_every_machine() {
         .dataset;
     assert_eq!(
         veridex_core::content_hash(&d).to_hex(),
-        "9850d78341564bb805bdf9d23de33a451fed8db79c2e9e0bd29788ba48eda8e3",
+        "815979eccd08de60dd4859273f09f0d4db438b08b8404378c8f4fb4b97ccc51d",
         "the demo rig's content hash must not depend on the machine that computed it"
     );
 

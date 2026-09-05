@@ -400,8 +400,11 @@
             "message_count": 2,
             "min": 0,
             "max": 24000,
-            "empty": 1,
-            "undecoded": 4
+            "empty": 1
+          },
+          "observed_body_decodes": {
+            "attempted": 6,
+            "failed": 4
           },
           "frame_id": "lidar_top",
           "observed_header_stamps": {

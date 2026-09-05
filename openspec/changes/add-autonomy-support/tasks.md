@@ -269,14 +269,18 @@ No code until this change is approved; this is the build plan.
       `AUTONOMY.POINT_CLOUD_EMPTY` naming `/lidar/points`. Nothing else moves: the structural and
       temporal families both pass, because the empty messages keep the stream's schema, rate and
       continuity intact.
-      A fourth class closes the gap that third one left open: the point count is believed only when a
-      message's own length invariants hold, and a body failing them was dropped without trace — so
-      the density rules reported a verdict on whichever sweeps survived. `make_demo_mcap -- <out>
-      av-truncated-lidar` writes the same rig with four sweeps in five cut short of the payload they
-      declare, and the survivors are full clouds, so before the fix the report said nothing at all
-      about `/lidar/points`. `AUTONOMY.POINT_CLOUD_UNDECODED` now names it, `PointCounts.undecoded`
-      carries the count into the CDM and the content hash (`CANONICAL_VERSION` 18), and the three
-      adapter call sites take the decode's `Option` so a failure cannot be dropped silently again.
+      A fourth class closes the gap the three above all left open: every typed decoder here is strict,
+      yielding a reading only once the body's own invariants hold, and the bodies that failed were
+      dropped where they were read — so every summary drawn from them described whichever messages
+      survived the recording. `make_demo_mcap -- <out> av-corrupt-bodies` writes the same rig with
+      four IMU messages in five and four GNSS messages in five cut back, and before the fix its
+      report was *byte-identical* to the healthy rig's; `av-truncated-lidar` is the same fault on the
+      point clouds. `AUTONOMY.MESSAGE_BODY_UNDECODED` now names them, `Stream.observed_body_decodes`
+      carries the ratio into the CDM and the content hash (`CANONICAL_VERSION` 18), the readiness
+      profile requires it (every criterion that reads a body is drawn from the bodies that decoded),
+      and the dispatch answers `Option<bool>` per message so a failure cannot be dropped silently
+      again. The two rosbag2 readers, which held a byte-identical copy of that dispatch each, now
+      share one.
 - [x] Issue and offline-verify a world-model-readiness certificate. `certify --profile` issues it and
       `verify` now reads it back: the bound hash, trust score, profile verdict, and each criterion,
       with `--json` for the machine-readable form. Everything reported comes from the signed

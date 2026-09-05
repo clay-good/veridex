@@ -298,21 +298,15 @@ pub struct PointCountAccum {
     min: u64,
     max: u64,
     empty: u64,
-    undecoded: u64,
 }
 
 impl PointCountAccum {
-    /// Fold in one point-cloud message: its count, or `None` for a body that did not decode.
+    /// Fold in one message's point count.
     ///
-    /// Takes the decode's own `Option` rather than a count, so a caller cannot record the successes
-    /// and drop the failures. That is the shape of the bug this replaced: three call sites each
-    /// wrote `if let Some(n) = decode(..) { observe(n) }`, and a stream whose bodies were mostly
-    /// unreadable summarized the readable few and graded clean on them.
-    pub fn observe(&mut self, points: Option<u64>) {
-        let Some(points) = points else {
-            self.undecoded += 1;
-            return;
-        };
+    /// Only counts that were *read* reach here: how many bodies failed to decode is a property of
+    /// the stream rather than of the density summary, and is recorded once for all decoders by
+    /// [`BodyDecodeAccum`].
+    pub fn observe(&mut self, points: u64) {
         if self.messages == 0 {
             self.min = points;
         } else {
@@ -325,21 +319,53 @@ impl PointCountAccum {
         }
     }
 
-    /// The summary, or `None` when the stream carried no point-cloud message at all — an empty
-    /// summary and a stream of empty clouds are opposite verdicts, so "nothing was measured" must
-    /// not render as a count.
-    ///
-    /// A stream whose every body failed to decode does yield a summary, with `message_count` of
-    /// zero: "the messages were there and none of them could be read" is a measurement, and
-    /// returning `None` for it would hand the stream to the density check's abstention, which says
-    /// the *source* carries no counts. It carries them; they did not survive the recording.
+    /// The summary, or `None` when no message's count was read — an empty summary and a stream of
+    /// empty clouds are opposite verdicts, so "nothing was measured" must not render as a count.
     pub fn finish(self) -> Option<PointCounts> {
-        (self.messages > 0 || self.undecoded > 0).then_some(PointCounts {
+        (self.messages > 0).then_some(PointCounts {
             message_count: self.messages,
             min: self.min,
             max: self.max,
             empty: self.empty,
-            undecoded: self.undecoded,
+        })
+    }
+}
+
+/// Counts how many of a stream's message bodies the reader could decode, for
+/// [`crate::cdm::BodyDecodes`].
+///
+/// One accumulator for every typed decoder on the stream, rather than one per decoder, because the
+/// fact it records is a property of the *recording* — bytes that did not survive it — and not of any
+/// one message type. It also means a decoder added later is covered by the check that reads this
+/// without any further work, which is the failure mode this exists to close: each strict decoder
+/// returns `Option` so a corrupt body cannot yield a fabricated reading, and every call site then
+/// wrote `if let Some(v) = decode(..)` and threw the failures away.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct BodyDecodeAccum {
+    attempted: u64,
+    failed: u64,
+}
+
+impl BodyDecodeAccum {
+    /// Fold in one message: `Some(true)` if its body decoded, `Some(false)` if it did not, and
+    /// `None` for a schema this reader has no typed decoder for.
+    ///
+    /// The three-way answer is deliberate. A stream the reader only fingerprints has nothing that
+    /// *could* have failed, and recording it as "zero failures" would report a question that was
+    /// never asked as an answer of "all well" — the distinction this tool exists to make.
+    pub fn observe(&mut self, decoded: Option<bool>) {
+        let Some(decoded) = decoded else { return };
+        self.attempted += 1;
+        if !decoded {
+            self.failed += 1;
+        }
+    }
+
+    /// The summary, or `None` for a stream no typed decoder was ever run against.
+    pub fn finish(self) -> Option<crate::cdm::BodyDecodes> {
+        (self.attempted > 0).then_some(crate::cdm::BodyDecodes {
+            attempted: self.attempted,
+            failed: self.failed,
         })
     }
 }

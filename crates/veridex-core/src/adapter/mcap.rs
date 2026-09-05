@@ -116,6 +116,7 @@ struct StreamBuilder {
     /// Per-point field layout, decoded from the first `PointCloud2` message on this topic (if any).
     point_fields: Option<Vec<PointField>>,
     point_counts: super::cdr::PointCountAccum,
+    body_decodes: super::cdr::BodyDecodeAccum,
     /// What this topic's messages said about their own sampling time, against the log times they
     /// were recorded at. Empty for a topic whose bodies are not header-first.
     header_stamps: super::cdr::HeaderStampAccum,
@@ -557,6 +558,7 @@ impl Adapter for McapAdapter {
                 .entry(topic.clone())
                 .or_insert_with(|| StreamBuilder {
                     point_counts: Default::default(),
+                    body_decodes: Default::default(),
                     header_stamps: Default::default(),
                     sequence: Default::default(),
                     fix_availability: Default::default(),
@@ -610,45 +612,70 @@ impl Adapter for McapAdapter {
             builder.sequence.observe(message.sequence);
 
             // Decode the AV message header (never the bulk payload) to populate the autonomy CDM.
-            if schema_is(schema_name, "PointCloud2") {
+            //
+            // Every arm answers whether the body decoded, and the answer is recorded below. The
+            // decoders are strict on purpose — a body yields a reading only once its own invariants
+            // prove it is the message it claims to be — and each arm used to drop the failures on
+            // the floor, so a stream whose bodies mostly did not survive the recording was
+            // summarized from the ones that did and reported as a property of the stream. `None` is
+            // for a schema with no typed decoder, whose body nothing tried to read.
+            let decoded: Option<bool> = if schema_is(schema_name, "PointCloud2") {
                 if builder.point_fields.is_none() {
                     builder.point_fields = super::cdr::decode_point_cloud2_fields(&message.data);
                 }
                 // Per message, unlike the layout above: the layout is a property of the stream and
                 // the first message settles it, while whether a sweep held any points is a property
                 // of each message and only the messages can settle it.
-                builder
-                    .point_counts
-                    .observe(super::cdr::decode_point_cloud2_point_count(&message.data));
-            } else if schema_is(schema_name, "CameraInfo") {
-                // First successfully-decoded intrinsics per camera topic wins.
-                if !intrinsics.contains_key(&topic) {
-                    if let Some(ci) = super::cdr::decode_camera_info(&message.data, &topic) {
-                        intrinsics.insert(topic.clone(), ci);
+                match super::cdr::decode_point_cloud2_point_count(&message.data) {
+                    Some(n) => {
+                        builder.point_counts.observe(n);
+                        Some(true)
                     }
+                    None => Some(false),
+                }
+            } else if schema_is(schema_name, "CameraInfo") {
+                match super::cdr::decode_camera_info(&message.data, &topic) {
+                    Some(ci) => {
+                        // First successfully-decoded intrinsics per camera topic wins.
+                        intrinsics.entry(topic.clone()).or_insert(ci);
+                        Some(true)
+                    }
+                    None => Some(false),
                 }
             } else if schema_is(schema_name, "Odometry") {
-                if let Some((pose, child)) = super::cdr::decode_odometry(&message.data) {
-                    ego_poses.push(EgoPose { ts, pose });
-                    if ego_frame.is_none() {
-                        ego_frame = child;
+                match super::cdr::decode_odometry(&message.data) {
+                    Some((pose, child)) => {
+                        ego_poses.push(EgoPose { ts, pose });
+                        if ego_frame.is_none() {
+                            ego_frame = child;
+                        }
+                        Some(true)
                     }
+                    None => Some(false),
                 }
             } else if schema_is(schema_name, "JointState") {
                 // The one message whose entire payload is the measurement: a handful of joint
                 // angles. Measuring them is what lets the statistical family grade an arm recorded
                 // to a bag, instead of abstaining on the stream that would show a pinned joint.
-                if let Some((names, positions)) = super::cdr::decode_joint_state(&message.data) {
-                    builder.values.push_joint_state(names, positions);
+                match super::cdr::decode_joint_state(&message.data) {
+                    Some((names, positions)) => {
+                        builder.values.push_joint_state(names, positions);
+                        Some(true)
+                    }
+                    None => Some(false),
                 }
             } else if schema_is(schema_name, "Imu") {
                 // Thirty-seven doubles and no bulk payload: an IMU message is entirely its own
                 // measurement. A driver that publishes no orientation says so through a `-1`
                 // covariance, and those slots are held out rather than summarized as zeros.
-                if let Some(values) = super::cdr::decode_imu_values(&message.data) {
-                    builder
-                        .values
-                        .push_fixed(&values, &super::cdr::IMU_DIM_NAMES);
+                match super::cdr::decode_imu_values(&message.data) {
+                    Some(values) => {
+                        builder
+                            .values
+                            .push_fixed(&values, &super::cdr::IMU_DIM_NAMES);
+                        Some(true)
+                    }
+                    None => Some(false),
                 }
             } else if schema_is(schema_name, "NavSatFix") {
                 // The last AV message body that went unread. A GNSS stream was fingerprinted rather
@@ -656,23 +683,34 @@ impl Adapter for McapAdapter {
                 // coordinate limit reported nothing — while the same faults on the IMU beside it
                 // were caught. A message declaring no fix carries fields the driver left behind, not
                 // a position, and contributes none.
-                if let Some(sample) = super::cdr::decode_nav_sat_fix(&message.data) {
-                    builder.fix_availability.observe(&sample);
-                    if let super::cdr::NavSatSample::Fix(values) = sample {
-                        builder
-                            .values
-                            .push_fixed(&values, &super::cdr::NAV_SAT_FIX_DIM_NAMES);
+                match super::cdr::decode_nav_sat_fix(&message.data) {
+                    Some(sample) => {
+                        builder.fix_availability.observe(&sample);
+                        if let super::cdr::NavSatSample::Fix(values) = sample {
+                            builder
+                                .values
+                                .push_fixed(&values, &super::cdr::NAV_SAT_FIX_DIM_NAMES);
+                        }
+                        Some(true)
                     }
+                    None => Some(false),
                 }
             } else if schema_is(schema_name, "TFMessage") {
-                if let Some(edges) = super::cdr::decode_tf_message(&message.data) {
-                    for t in edges {
-                        transforms
-                            .entry((t.parent_frame.clone(), t.child_frame.clone()))
-                            .or_insert(t);
+                match super::cdr::decode_tf_message(&message.data) {
+                    Some(edges) => {
+                        for t in edges {
+                            transforms
+                                .entry((t.parent_frame.clone(), t.child_frame.clone()))
+                                .or_insert(t);
+                        }
+                        Some(true)
                     }
+                    None => Some(false),
                 }
-            }
+            } else {
+                None
+            };
+            builder.body_decodes.observe(decoded);
         }
 
         // Topics whose values this read declined to summarize, disclosed below rather than reported
@@ -715,6 +753,7 @@ impl Adapter for McapAdapter {
                     declared_range: None,
                     point_fields: b.point_fields,
                     observed_point_counts: b.point_counts.finish(),
+                    observed_body_decodes: b.body_decodes.finish(),
                     // What the messages said about their own sampling time, against the recorder's.
                     observed_header_stamps: b.header_stamps.finish(),
                     observed_sequence: b.sequence.finish(),
@@ -1086,6 +1125,7 @@ fn ingest_summary_only(path: &Path, summary: McapSummary) -> Result<Ingested, In
             observed_dim_stats: None,
             point_fields: None,
             observed_point_counts: None,
+            observed_body_decodes: None,
             observed_header_stamps: None,
             observed_sequence: None,
             observed_fix_availability: None,

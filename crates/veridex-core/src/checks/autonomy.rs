@@ -1622,14 +1622,9 @@ impl Check for SensorFrameResolution {
 /// `AUTONOMY.POINT_CLOUD_DROPPED` reports one where some were, which is the sensor cutting out
 /// rather than never starting.
 ///
-/// `AUTONOMY.POINT_CLOUD_UNDECODED` reports the third case, which is neither: bodies that are not
-/// readable as point clouds at all. It exists because the count is believed only when a message's
-/// own length invariants hold, so an unreadable body used to be dropped silently — and the two
-/// rules above then ran on whatever survived and reported a verdict on the stream. A LiDAR whose
-/// sweeps were four fifths truncated by the recording graded exactly as clean as one that was
-/// whole. Unlike the two above it is a fault in the file rather than in the sensor, and like
-/// `VIDEO.MEDIA_UNREADABLE` it is a measurement that came back wrong, not an abstention: the bytes
-/// were reached and they are not a cloud.
+/// Both are drawn from the sweeps whose bodies *decoded*; how many did not is reported by
+/// `autonomy.message-decode`, which is what says whether these two describe the stream or a sample
+/// of it that the recording chose.
 ///
 /// Read from the messages' own `height × width`, never from the point payload — the count is stated
 /// in the header, ahead of the bulk blob. Silent for a source that carries no point counts at all
@@ -1645,7 +1640,6 @@ impl Check for PointCloudDensity {
         &[
             "AUTONOMY.POINT_CLOUD_EMPTY",
             "AUTONOMY.POINT_CLOUD_DROPPED",
-            "AUTONOMY.POINT_CLOUD_UNDECODED",
             "AUTONOMY.POINT_CLOUD_UNMEASURED",
         ]
     }
@@ -1679,53 +1673,9 @@ impl Check for PointCloudDensity {
                     episode: ep.index,
                     stream: stream.name.clone(),
                 };
-                // Reported before the density rules below, and independently of them: it is the
-                // reason to distrust whatever they conclude on this stream. The two counts are
-                // stated separately because the ratio is what a reader acts on — one bad sweep in a
-                // thousand is a blemish, and four in five means the stream's density result was
-                // drawn from a sample the file chose.
-                if counts.undecoded > 0 {
-                    let total = counts.undecoded.saturating_add(counts.message_count);
-                    findings.push(
-                        Finding::new(
-                            self.id(),
-                            Category::Autonomy,
-                            Severity::Error,
-                            at(),
-                            "AUTONOMY.POINT_CLOUD_UNDECODED",
-                            format!(
-                                "episode {}: stream `{}` carries {} point-cloud message(s) that \
-                                 could not be read as point clouds, out of {} — the bodies are \
-                                 present and their own length invariants do not hold",
-                                ep.index, stream.name, counts.undecoded, total
-                            ),
-                        )
-                        .with_risk(
-                            "The messages still carry a timestamp, a schema and a coordinate \
-                             frame, so every timing, structural and frame-resolution result \
-                             counts them as sound frames — and the density rules ran on \
-                             whichever bodies survived, reporting a verdict on a sample the \
-                             recording chose rather than on the stream.",
-                        )
-                        .with_remedy(
-                            "Check the recorder and the transport for the run (a truncated \
-                             write, a dropped chunk, a publisher whose point layout disagrees \
-                             with its own stride); the affected sweeps hold no recoverable \
-                             point data.",
-                        ),
-                    );
-                }
                 if counts.empty == 0 {
                     continue;
                 }
-                // The two rules below count only the bodies that decoded, so beside an
-                // `UNDECODED` finding stating a larger total their numbers would read as a
-                // contradiction. Naming the denominator settles which population each is about.
-                let of_readable = if counts.undecoded > 0 {
-                    " that could be read"
-                } else {
-                    ""
-                };
                 if counts.empty == counts.message_count {
                     findings.push(
                         Finding::new(
@@ -1735,11 +1685,10 @@ impl Check for PointCloudDensity {
                             at(),
                             "AUTONOMY.POINT_CLOUD_EMPTY",
                             format!(
-                                "episode {}: stream `{}` published {} point cloud(s){} and every \
-                                 one of them was empty — the messages have the schema, the rate \
-                                 and the coordinate frame of a working sensor and none of its \
-                                 data",
-                                ep.index, stream.name, counts.message_count, of_readable
+                                "episode {}: stream `{}` published {} point cloud(s) and every one \
+                                 of them was empty — the messages have the schema, the rate and \
+                                 the coordinate frame of a working sensor and none of its data",
+                                ep.index, stream.name, counts.message_count
                             ),
                         )
                         .with_risk(
@@ -1764,13 +1713,12 @@ impl Check for PointCloudDensity {
                             "AUTONOMY.POINT_CLOUD_DROPPED",
                             format!(
                                 "episode {}: stream `{}` published {} empty point cloud(s) out of \
-                                 {}{} — the sensor cut out during the recording (the fullest sweep \
+                                 {} — the sensor cut out during the recording (the fullest sweep \
                                  held {} points)",
                                 ep.index,
                                 stream.name,
                                 counts.empty,
                                 counts.message_count,
-                                of_readable,
                                 counts.max
                             ),
                         )
@@ -1857,6 +1805,99 @@ impl Check for PointCloudDensity {
             return Vec::new();
         }
         self.run(dataset)
+    }
+}
+
+/// **Message-body decode.** How much of a stream's data actually survived the recording.
+///
+/// Every typed decoder in the ROS readers is strict on purpose: it yields a reading only once the
+/// body's own invariants prove it is the message it claims to be, so a mislabelled topic, a
+/// truncated write or a stubbed payload cannot produce a fabricated number. Nothing reported the
+/// other half of that guard. A body that failed it was dropped where it was read, and it leaves
+/// behind a frame with a timestamp, a schema and a coordinate frame like any other — so the
+/// structural family sees frames, the temporal family sees a clean cadence, the frame checks place
+/// the sensor in the tree, and everything derived from the bodies is computed from whichever ones
+/// survived and reported as a property of the stream.
+///
+/// A rig recorded with four IMU messages in five and four GNSS messages in five cut short graded
+/// byte-identically to the healthy one: same trust score, same findings, and statistics on both
+/// sensors computed from the surviving fifth. `AUTONOMY.MESSAGE_BODY_UNDECODED` is the only thing
+/// that reports it.
+///
+/// A fault, not an abstention — the bytes were reached and they are not the message, the same fact
+/// as `VIDEO.MEDIA_UNREADABLE` one format down. The neighbouring silence, a stream whose schema no
+/// typed decoder covers, carries no summary at all and is disclosed by the families that wanted to
+/// read it (`STATISTICAL.UNMEASURED_VALUES`, `AUTONOMY.POINT_CLOUD_UNMEASURED`), because "nothing
+/// failed" and "nothing was tried" are opposite facts and must not share a finding.
+pub struct MessageBodyDecode;
+
+impl Check for MessageBodyDecode {
+    fn id(&self) -> &'static str {
+        "autonomy.message-decode"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["AUTONOMY.MESSAGE_BODY_UNDECODED"]
+    }
+    fn title(&self) -> &'static str {
+        "Message-body decode"
+    }
+    fn category(&self) -> Category {
+        Category::Autonomy
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Error
+    }
+    fn scope(&self) -> Scope {
+        Scope::Stream
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        for ep in &dataset.episodes {
+            for stream in &ep.streams {
+                let Some(decodes) = &stream.observed_body_decodes else {
+                    continue;
+                };
+                if decodes.failed == 0 {
+                    continue;
+                }
+                findings.push(
+                    Finding::new(
+                        self.id(),
+                        Category::Autonomy,
+                        Severity::Error,
+                        Location::Stream {
+                            episode: ep.index,
+                            stream: stream.name.clone(),
+                        },
+                        "AUTONOMY.MESSAGE_BODY_UNDECODED",
+                        format!(
+                            "episode {}: stream `{}` carries {} message(s) out of {} whose body \
+                             could not be decoded — the bytes are present and the message's own \
+                             invariants do not hold",
+                            ep.index, stream.name, decodes.failed, decodes.attempted
+                        ),
+                    )
+                    .with_risk(
+                        "The messages still carry a timestamp, a schema and a coordinate frame, so \
+                         the structural, temporal and frame-resolution results count them as sound \
+                         frames. Everything read out of the bodies — this stream's statistics, its \
+                         point counts, its capture stamps, its fix availability — was computed from \
+                         the ones that decoded and is reported as a property of the whole stream.",
+                    )
+                    .with_remedy(
+                        "Check the recorder and the transport for the run (a truncated write, a \
+                         dropped chunk, a publisher whose message layout disagrees with its own \
+                         declared sizes); the affected messages hold no recoverable data. Until \
+                         then, read every other result on this stream as covering only the share \
+                         that decoded.",
+                    ),
+                );
+            }
+        }
+        findings
     }
 }
 

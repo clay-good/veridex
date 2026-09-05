@@ -164,6 +164,10 @@ const WORLD_MODEL_READY_CRITERIA: &[(&str, &str)] = &[
         "autonomy.sensor-clock",
         "every rig sensor stamped its own capture time, on a clock that agrees with the recorder's",
     ),
+    (
+        "autonomy.message-decode",
+        "every rig sensor's message bodies survived the recording, so the results above are about the whole stream",
+    ),
 ];
 
 /// The `world-model-ready` profile: tightens cross-sensor sync to 20 ms and bundles the autonomy
@@ -175,7 +179,10 @@ const WORLD_MODEL_READY_CRITERIA: &[(&str, &str)] = &[
 /// still reads as continuous — point-cloud density, because a LiDAR
 /// that published nothing but empty sweeps satisfies every one of the others, and sensor clock,
 /// because the 20 ms sync above is measured from the recorder's clock, and a sensor that never
-/// stamped its own data has no second clock for that result to be about).
+/// stamped its own data has no second clock for that result to be about, and message decode,
+/// because every criterion above that reads a body — sequence, ego pose, GNSS, point-cloud density,
+/// sensor clock — is computed from the bodies that decoded, so a stream whose bodies mostly did not
+/// survive the recording satisfies all of them on the share that did).
 pub fn world_model_ready() -> Profile {
     Profile {
         name: "world-model-ready",

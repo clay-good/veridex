@@ -1,6 +1,6 @@
 //! Write the demo MCAP recording. See [`veridex_demo::mcap`] for what each variant holds.
 //!
-//! Usage: `cargo run -p veridex-demo --example make_demo_mcap -- <output.mcap> [skew|clean|stuck|late-start|av|av-miscalibrated|av-ambiguous-tf|av-dead-lidar|av-truncated-lidar|av-unstamped|av-uncalibrated-camera|av-lossy-camera|av-no-fix]`
+//! Usage: `cargo run -p veridex-demo --example make_demo_mcap -- <output.mcap> [skew|clean|stuck|late-start|av|av-miscalibrated|av-ambiguous-tf|av-dead-lidar|av-truncated-lidar|av-corrupt-bodies|av-unstamped|av-uncalibrated-camera|av-lossy-camera|av-no-fix]`
 
 use std::path::Path;
 

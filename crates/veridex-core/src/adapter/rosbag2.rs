@@ -415,6 +415,7 @@ struct StreamBuilder {
     latched: Option<bool>,
     point_fields: Option<Vec<PointField>>,
     point_counts: super::cdr::PointCountAccum,
+    body_decodes: super::cdr::BodyDecodeAccum,
     /// What this topic's messages said about their own sampling time, against the log times they
     /// were recorded at. Empty for a topic whose bodies are not header-first.
     header_stamps: super::cdr::HeaderStampAccum,
@@ -446,6 +447,126 @@ struct BagContents {
     /// Topic ids referenced by a message row that the `topics` table never declared, with how many
     /// messages each accounts for.
     orphan_topics: BTreeMap<i64, u64>,
+}
+
+/// The bag-wide collections a message body can contribute to, borrowed apart from the per-stream
+/// builder so [`decode_body`] can hold both at once — the builder itself lives inside
+/// [`BagContents::streams`], so the two cannot be reached through one borrow.
+struct BodySink<'a> {
+    ego_poses: &'a mut Vec<EgoPose>,
+    ego_frame: &'a mut Option<String>,
+    intrinsics: &'a mut BTreeMap<String, CameraIntrinsics>,
+    transforms: &'a mut BTreeMap<(String, String), Transform>,
+}
+
+/// Decode one message body into the autonomy CDM, returning whether the body decoded — or `None`
+/// for a schema this reader has no typed decoder for, whose body nothing tried to read.
+///
+/// Shared by the two paths that read message rows (the `.db3` reader and the MCAP-shard reader),
+/// which carried a byte-identical copy of this dispatch each. A decoder added to one and not the
+/// other made the same bag grade differently depending on which storage plugin recorded it.
+///
+/// The three-way return is what [`super::cdr::BodyDecodeAccum`] records. Each decoder here is
+/// strict — it yields a reading only once the body's own invariants prove it is the message it
+/// claims to be — and the failures have to be counted, not dropped: everything derived from the
+/// bodies is otherwise summarized from whichever ones survived the recording and reported as a
+/// property of the stream.
+fn decode_body(
+    builder: &mut StreamBuilder,
+    sink: &mut BodySink<'_>,
+    ros_type: &str,
+    topic: &str,
+    data: &[u8],
+    ts: i64,
+) -> Option<bool> {
+    if super::mcap::schema_is(ros_type, "PointCloud2") {
+        if builder.point_fields.is_none() {
+            builder.point_fields = super::cdr::decode_point_cloud2_fields(data);
+        }
+        // Per message, unlike the layout above: the layout is a property of the stream and the
+        // first message settles it, while whether a sweep held any points is a property of each
+        // message and only the messages can settle it.
+        match super::cdr::decode_point_cloud2_point_count(data) {
+            Some(n) => {
+                builder.point_counts.observe(n);
+                Some(true)
+            }
+            None => Some(false),
+        }
+    } else if super::mcap::schema_is(ros_type, "CameraInfo") {
+        match super::cdr::decode_camera_info(data, topic) {
+            Some(ci) => {
+                // First successfully-decoded intrinsics per camera topic wins.
+                sink.intrinsics.entry(topic.to_string()).or_insert(ci);
+                Some(true)
+            }
+            None => Some(false),
+        }
+    } else if super::mcap::schema_is(ros_type, "Odometry") {
+        match super::cdr::decode_odometry(data) {
+            Some((pose, child)) => {
+                sink.ego_poses.push(EgoPose { ts, pose });
+                if sink.ego_frame.is_none() {
+                    *sink.ego_frame = child;
+                }
+                Some(true)
+            }
+            None => Some(false),
+        }
+    } else if super::mcap::schema_is(ros_type, "JointState") {
+        // The one message whose entire payload is the measurement: a handful of joint angles.
+        // Measuring them is what lets the statistical family grade an arm recorded to a bag.
+        match super::cdr::decode_joint_state(data) {
+            Some((names, positions)) => {
+                builder.values.push_joint_state(names, positions);
+                Some(true)
+            }
+            None => Some(false),
+        }
+    } else if super::mcap::schema_is(ros_type, "Imu") {
+        // Thirty-seven doubles and no bulk payload: an IMU message is entirely its own
+        // measurement. Slots a `-1` covariance declares absent are held out, not read as zeros.
+        match super::cdr::decode_imu_values(data) {
+            Some(values) => {
+                builder
+                    .values
+                    .push_fixed(&values, &super::cdr::IMU_DIM_NAMES);
+                Some(true)
+            }
+            None => Some(false),
+        }
+    } else if super::mcap::schema_is(ros_type, "NavSatFix") {
+        // The last AV message body that went unread. A GNSS stream was fingerprinted rather than
+        // measured, so a receiver frozen at one fix, publishing NaNs, or railed at a coordinate
+        // limit reported nothing — while the same faults on the IMU beside it were caught. A
+        // message declaring no fix carries fields the driver left behind, not a position.
+        match super::cdr::decode_nav_sat_fix(data) {
+            Some(sample) => {
+                builder.fix_availability.observe(&sample);
+                if let super::cdr::NavSatSample::Fix(values) = sample {
+                    builder
+                        .values
+                        .push_fixed(&values, &super::cdr::NAV_SAT_FIX_DIM_NAMES);
+                }
+                Some(true)
+            }
+            None => Some(false),
+        }
+    } else if super::mcap::schema_is(ros_type, "TFMessage") {
+        match super::cdr::decode_tf_message(data) {
+            Some(edges) => {
+                for t in edges {
+                    sink.transforms
+                        .entry((t.parent_frame.clone(), t.child_frame.clone()))
+                        .or_insert(t);
+                }
+                Some(true)
+            }
+            None => Some(false),
+        }
+    } else {
+        None
+    }
 }
 
 fn parse_error(message: impl Into<String>) -> IngestError {
@@ -746,6 +867,7 @@ fn read_shard(
             .entry(topic.name.clone())
             .or_insert_with(|| StreamBuilder {
                 point_counts: Default::default(),
+                body_decodes: Default::default(),
                 header_stamps: Default::default(),
                 sequence: Default::default(),
                 fix_availability: Default::default(),
@@ -777,65 +899,20 @@ fn read_shard(
             builder.header_stamps.observe(ts, stamp);
         }
 
-        let ty = &topic.ros_type;
-        if super::mcap::schema_is(ty, "PointCloud2") {
-            if builder.point_fields.is_none() {
-                builder.point_fields = super::cdr::decode_point_cloud2_fields(data);
-            }
-            // Per message: see the same call in the MCAP reader.
-            builder
-                .point_counts
-                .observe(super::cdr::decode_point_cloud2_point_count(data));
-        } else if super::mcap::schema_is(ty, "CameraInfo") {
-            if !contents.intrinsics.contains_key(&topic.name) {
-                if let Some(ci) = super::cdr::decode_camera_info(data, &topic.name) {
-                    contents.intrinsics.insert(topic.name.clone(), ci);
-                }
-            }
-        } else if super::mcap::schema_is(ty, "Odometry") {
-            if let Some((pose, child)) = super::cdr::decode_odometry(data) {
-                contents.ego_poses.push(EgoPose { ts, pose });
-                if contents.ego_frame.is_none() {
-                    contents.ego_frame = child;
-                }
-            }
-        } else if super::mcap::schema_is(ty, "JointState") {
-            // The one message whose entire payload is the measurement: a handful of joint angles.
-            // Measuring them is what lets the statistical family grade an arm recorded to a bag.
-            if let Some((names, positions)) = super::cdr::decode_joint_state(data) {
-                builder.values.push_joint_state(names, positions);
-            }
-        } else if super::mcap::schema_is(ty, "Imu") {
-            // Thirty-seven doubles and no bulk payload: an IMU message is entirely its own
-            // measurement. Slots a `-1` covariance declares absent are held out, not read as zeros.
-            if let Some(values) = super::cdr::decode_imu_values(data) {
-                builder
-                    .values
-                    .push_fixed(&values, &super::cdr::IMU_DIM_NAMES);
-            }
-        } else if super::mcap::schema_is(ty, "NavSatFix") {
-            // The last AV message body that went unread. A GNSS stream was fingerprinted rather than
-            // measured, so a receiver frozen at one fix, publishing NaNs, or railed at a coordinate
-            // limit reported nothing — while the same faults on the IMU beside it were caught. A
-            // message declaring no fix carries fields the driver left behind, not a position.
-            if let Some(sample) = super::cdr::decode_nav_sat_fix(data) {
-                builder.fix_availability.observe(&sample);
-                if let super::cdr::NavSatSample::Fix(values) = sample {
-                    builder
-                        .values
-                        .push_fixed(&values, &super::cdr::NAV_SAT_FIX_DIM_NAMES);
-                }
-            }
-        } else if super::mcap::schema_is(ty, "TFMessage") {
-            if let Some(edges) = super::cdr::decode_tf_message(data) {
-                for t in edges {
-                    contents
-                        .transforms
-                        .entry((t.parent_frame.clone(), t.child_frame.clone()))
-                        .or_insert(t);
-                }
-            }
-        }
+        let decoded = decode_body(
+            builder,
+            &mut BodySink {
+                ego_poses: &mut contents.ego_poses,
+                ego_frame: &mut contents.ego_frame,
+                intrinsics: &mut contents.intrinsics,
+                transforms: &mut contents.transforms,
+            },
+            &topic.ros_type,
+            &topic.name,
+            data,
+            ts,
+        );
+        builder.body_decodes.observe(decoded);
         Ok(())
     });
     if let Some(e) = budget_error {
@@ -906,6 +983,7 @@ fn read_mcap_shard(
             .entry(topic.clone())
             .or_insert_with(|| StreamBuilder {
                 point_counts: Default::default(),
+                body_decodes: Default::default(),
                 header_stamps: Default::default(),
                 sequence: Default::default(),
                 fix_availability: Default::default(),
@@ -941,64 +1019,20 @@ fn read_mcap_shard(
         // The publisher's own count of what it sent — carried by the MCAP storage plugin only. A
         // `.db3` shard has no such column, so the same bag recorded the other way leaves it empty.
         builder.sequence.observe(message.sequence);
-        if super::mcap::schema_is(&ros_type, "PointCloud2") {
-            if builder.point_fields.is_none() {
-                builder.point_fields = super::cdr::decode_point_cloud2_fields(data);
-            }
-            // Per message: see the same call in the MCAP reader.
-            builder
-                .point_counts
-                .observe(super::cdr::decode_point_cloud2_point_count(data));
-        } else if super::mcap::schema_is(&ros_type, "CameraInfo") {
-            if !contents.intrinsics.contains_key(&topic) {
-                if let Some(ci) = super::cdr::decode_camera_info(data, &topic) {
-                    contents.intrinsics.insert(topic.clone(), ci);
-                }
-            }
-        } else if super::mcap::schema_is(&ros_type, "Odometry") {
-            if let Some((pose, child)) = super::cdr::decode_odometry(data) {
-                contents.ego_poses.push(EgoPose { ts, pose });
-                if contents.ego_frame.is_none() {
-                    contents.ego_frame = child;
-                }
-            }
-        } else if super::mcap::schema_is(&ros_type, "JointState") {
-            // The one message whose entire payload is the measurement: a handful of joint angles.
-            // Measuring them is what lets the statistical family grade an arm recorded to a bag.
-            if let Some((names, positions)) = super::cdr::decode_joint_state(data) {
-                builder.values.push_joint_state(names, positions);
-            }
-        } else if super::mcap::schema_is(&ros_type, "Imu") {
-            // Thirty-seven doubles and no bulk payload: an IMU message is entirely its own
-            // measurement. Slots a `-1` covariance declares absent are held out, not read as zeros.
-            if let Some(values) = super::cdr::decode_imu_values(data) {
-                builder
-                    .values
-                    .push_fixed(&values, &super::cdr::IMU_DIM_NAMES);
-            }
-        } else if super::mcap::schema_is(&ros_type, "NavSatFix") {
-            // The last AV message body that went unread. A GNSS stream was fingerprinted rather than
-            // measured, so a receiver frozen at one fix, publishing NaNs, or railed at a coordinate
-            // limit reported nothing — while the same faults on the IMU beside it were caught. A
-            // message declaring no fix carries fields the driver left behind, not a position.
-            if let Some(sample) = super::cdr::decode_nav_sat_fix(data) {
-                builder.fix_availability.observe(&sample);
-                if let super::cdr::NavSatSample::Fix(values) = sample {
-                    builder
-                        .values
-                        .push_fixed(&values, &super::cdr::NAV_SAT_FIX_DIM_NAMES);
-                }
-            }
-        } else if super::mcap::schema_is(&ros_type, "TFMessage") {
-            if let Some(edges) = super::cdr::decode_tf_message(data) {
-                for t in edges {
-                    contents
-                        .transforms
-                        .entry((t.parent_frame.clone(), t.child_frame.clone()))
-                        .or_insert(t);
-                }
-            }
-        }
+        let decoded = decode_body(
+            builder,
+            &mut BodySink {
+                ego_poses: &mut contents.ego_poses,
+                ego_frame: &mut contents.ego_frame,
+                intrinsics: &mut contents.intrinsics,
+                transforms: &mut contents.transforms,
+            },
+            &ros_type,
+            &topic,
+            data,
+            ts,
+        );
+        builder.body_decodes.observe(decoded);
     }
     Ok(())
 }
@@ -1090,6 +1124,7 @@ fn ingest_metadata_only(
             observed_dim_stats: None,
             point_fields: None,
             observed_point_counts: None,
+            observed_body_decodes: None,
             observed_header_stamps: None,
             observed_sequence: None,
             observed_fix_availability: None,
@@ -1499,6 +1534,7 @@ impl Adapter for Rosbag2Adapter {
                     declared_range: None,
                     point_fields: b.point_fields,
                     observed_point_counts: b.point_counts.finish(),
+                    observed_body_decodes: b.body_decodes.finish(),
                     observed_header_stamps: b.header_stamps.finish(),
                     observed_sequence: b.sequence.finish(),
                     observed_fix_availability: b.fix_availability.finish(),

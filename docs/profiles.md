@@ -110,6 +110,7 @@ Three rules keep that honest:
 | GNSS fix availability | `autonomy.gnss-fix-availability` | no satellite receiver reporting no fix for more than 5% of its messages — the receiver's own `STATUS_NO_FIX` is the only record of an outage, because a no-fix message still arrives on time and contributes no position, so the stream keeps its frame count, cadence and span |
 | Point-cloud density | `autonomy.point-cloud-density` | every point-cloud sensor actually recorded points — a LiDAR whose driver lost its sensor keeps publishing well-formed empty clouds at the right rate, and satisfies every criterion above |
 | Sensor clock | `autonomy.sensor-clock` | every rig sensor stamped its own capture time, on a clock that agrees with the recorder's — the 20 ms sync above is measured from the recorder's clock, and a sensor that never stamped its data has no second clock for that result to be about |
+| Message decode | `autonomy.message-decode` | every rig sensor's message bodies survived the recording, so the results above are about the whole stream — each criterion here that reads a body (sequence, ego pose, GNSS, point-cloud density, sensor clock) is computed from the bodies that decoded, so a stream whose bodies mostly did not survive satisfies all of them on the share that did |
 
 The `readiness` block on the certificate records the profile name, whether it was `applicable`, the
 overall `ready` flag, and each criterion's `check_id`, `threshold`, `passed`, and finding count — plus
@@ -149,6 +150,7 @@ Real output, over the `av-lossy-camera` rig the demo generator writes
     ✓ autonomy.gnss-fix-availability — no satellite receiver reporting no fix for more than 5% of its messages
     ✓ autonomy.point-cloud-density — every point-cloud sensor actually recorded points
     ✓ autonomy.sensor-clock — every rig sensor stamped its own capture time, on a clock that agrees with the recorder's
+    ✓ autonomy.message-decode — every rig sensor's message bodies survived the recording, so the results above are about the whole stream
 ```
 
 The `findings:` line names every finding code and its count, which is how an abstention survives into

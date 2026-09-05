@@ -460,7 +460,10 @@ def main():
             (1, base + i * 100_000_000, point_cloud2("lidar_link", base + i * 100_000_000))
             for i in range(10)
         ] + [
-            (4, base + i * 10_000_000, header_only("imu_link", base + i * 10_000_000, 96))
+            # A real `Imu` body, not a stub: `autonomy.message-decode` reports a stream whose
+            # bodies the reader could not decode, and 1200 undecodable bodies on a bag this test
+            # calls sound is the fixture being wrong, not the bag.
+            (4, base + i * 10_000_000, imu("imu_link", base + i * 10_000_000, (k * 100 + i) * 0.01))
             for i in range(100)
         ]
         msgs.sort(key=lambda m: m[1])

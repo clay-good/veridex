@@ -465,6 +465,16 @@ pub struct Stream {
     /// none of its data.
     #[serde(default)]
     pub observed_point_counts: Option<PointCounts>,
+    /// How many of this stream's message bodies the reader could decode — `None` for every stream
+    /// whose schema this reader has no typed decoder for, and for a run that did not open the
+    /// message bodies. Extension for `autonomy-sensor-data`.
+    ///
+    /// Everything else on this struct that came out of a body — the statistics, the point counts,
+    /// the capture stamps, the fix availability — is summarized over the bodies that *decoded*. This
+    /// is what says how many there were to decode, and so whether those summaries describe the
+    /// stream or a sample of it that the file chose.
+    #[serde(default)]
+    pub observed_body_decodes: Option<BodyDecodes>,
     /// What this stream's messages said about **their own** sampling time, against the times the
     /// recorder wrote them — `None` for every source that carries no such stamp, and for a run that
     /// did not open the message bodies. Extension for `autonomy-sensor-data`.
@@ -567,16 +577,28 @@ pub struct PointCounts {
     /// "the smallest sweep was empty" and "half the sweeps were empty" are different faults and a
     /// reader acts on them differently.
     pub empty: u64,
-    /// How many of the stream's point-cloud messages could not be read as point clouds at all —
-    /// bodies whose own length invariants did not hold, which is what a truncated write or a
-    /// corrupt payload leaves behind.
-    ///
-    /// Counted rather than dropped, because `message_count` is otherwise the count of the survivors
-    /// and says nothing about how many there were to survive. A stream whose bodies were four
-    /// fifths unreadable reports the same `min`, `max` and `empty` as one that was whole, so
-    /// without this the density verdict is drawn from a sample the file chose and presented as a
-    /// verdict on the stream.
-    pub undecoded: u64,
+}
+
+/// How many of a stream's message bodies the reader was able to decode, summarized over the episode.
+///
+/// Every typed decoder in the ROS readers is strict on purpose: it returns a value only once the
+/// body's own invariants prove it is the message it claims to be, so a mislabelled topic, a
+/// truncated write or a stubbed payload cannot yield a fabricated reading. That guard is only half
+/// a mechanism without this. The bodies that fail it carry a timestamp, a schema and a coordinate
+/// frame like any other, so every structural, temporal and frame-resolution result counts them as
+/// sound frames — and everything derived from the bodies (a stream's statistics, its point counts,
+/// its fix availability, its ego trajectory) is computed from whichever ones survived and reported
+/// as a property of the stream.
+///
+/// So the reader counts its own failures. `attempted` is the messages this reader has a typed
+/// decoder for; a stream of a schema it only fingerprints carries no summary at all rather than a
+/// summary of zeros, because "nothing failed" and "nothing was tried" are opposite facts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BodyDecodes {
+    /// Messages whose body this reader tried to decode into a typed reading.
+    pub attempted: u64,
+    /// How many of those did not decode — the body is present and its own invariants do not hold.
+    pub failed: u64,
 }
 
 /// What a stream's messages said about their own sampling time, against the times they were recorded

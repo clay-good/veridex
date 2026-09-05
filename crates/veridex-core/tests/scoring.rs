@@ -27,6 +27,7 @@ fn stream(name: &str, clock: &str, rate: Option<f64>, ts: &[i64]) -> Stream {
         declared_range: None,
         point_fields: None,
         observed_point_counts: None,
+        observed_body_decodes: None,
         observed_header_stamps: None,
         observed_sequence: None,
         observed_fix_availability: None,

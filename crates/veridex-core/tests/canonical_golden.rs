@@ -34,7 +34,7 @@ fn the_canonical_encoding_has_not_changed_without_a_version_bump() {
     );
     assert_eq!(
         content_hash(&d).to_hex(),
-        "68cb256c547121e6d3bbd1024d26a58b6718f0343a9c6bb6800fbf642dd9a7f6",
+        "5ff87f060e36aba4288f232ae6a6bc828815c841ca62f1bbc035496a6bac5c2c",
         "the canonical encoding changed. If that was deliberate, bump CANONICAL_VERSION and \
          re-pin this vector in the same commit — a hash change without a version bump means two \
          builds disagree about byte-identical data while both claiming the same encoding, and \
@@ -93,10 +93,17 @@ fn the_golden_fixture_still_covers_what_it_claims_to() {
     assert!(
         streams
             .iter()
-            .any(|s| s.observed_point_counts.is_some_and(|c| c.message_count > 0
-                && c.empty > 0
-                && c.undecoded > 0)),
+            .any(|s| s
+                .observed_point_counts
+                .is_some_and(|c| c.message_count > 0 && c.empty > 0)),
         "observed point counts — the vector must reach the encoding with a non-zero value in every \
+         field, not the absent marker and not a summary of zeros"
+    );
+    assert!(
+        streams.iter().any(|s| s
+            .observed_body_decodes
+            .is_some_and(|b| b.attempted > 0 && b.failed > 0)),
+        "body-decode summary — the vector must reach the encoding with a non-zero value in every \
          field, not the absent marker and not a summary of zeros"
     );
     assert!(

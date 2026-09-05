@@ -2134,11 +2134,14 @@ fn a_label_says_what_the_certificate_says_and_nothing_more() {
         "## Veridex trust label",
         "Grade C — 76/100",
         "| Dataset | `demo` |",
-        // Four, not five: `statistical.value-measurability` separates a stream whose values this
+        // Five, not four: `statistical.value-measurability` separates a stream whose values this
         // source did not hand over from one whose values are not numbers at all, and this demo
         // carries only the first — its camera is an encoded frame, which a source storing raw
-        // pixels would measure, so it is unmeasured rather than unmeasurable.
-        "| Findings | 1 error · 1 warning · 4 info |",
+        // pixels would measure, so it is unmeasured rather than unmeasurable. The fifth is
+        // `STATISTICAL.NO_STORED_STATS`, which arrived when the demo's `/joint_states` started
+        // carrying a real `JointState` body: it is now measured, so it has recomputed statistics
+        // with nothing stored to compare them against.
+        "| Findings | 1 error · 1 warning · 5 info |",
         "| Provenance |",
         "veridex verify",
     ] {

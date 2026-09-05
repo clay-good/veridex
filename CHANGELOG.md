@@ -10,28 +10,38 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
-- **A LiDAR whose sweeps did not survive the recording is no longer graded on the ones that did.**
-  A `PointCloud2`'s point count is believed only when the message's own length invariants hold —
-  the guard that stops a mislabelled topic or a stubbed payload from yielding a fabricated count.
-  Bodies that failed it were then dropped without trace, so `AUTONOMY.POINT_CLOUD_EMPTY` and
-  `AUTONOMY.POINT_CLOUD_DROPPED` ran on whichever sweeps survived and reported a verdict on the
-  stream. A rig whose LiDAR payloads were four fifths truncated by the recording graded exactly as
-  clean as one that was whole: the surviving fifth were full clouds, and the messages still carry a
-  timestamp, a schema and a coordinate frame, so the structural, temporal and frame-resolution
-  families all count them as sound frames. The abstention did not fire either — the stream *did*
-  carry counts, just not many.
+- **A stream is no longer graded on the message bodies that survived the recording.** Every typed
+  decoder in the ROS readers is strict on purpose: it yields a reading only once the body's own
+  invariants prove it is the message it claims to be, so a mislabelled topic, a truncated write or a
+  stubbed payload cannot produce a fabricated number. Nothing reported the other half of that guard.
+  A body that failed it was dropped where it was read — five call sites across three readers each
+  wrote `if let Some(v) = decode(..)` — and it leaves behind a frame with a timestamp, a schema and a
+  coordinate frame like any other. So the structural family saw frames, the temporal family saw a
+  clean cadence, the frame checks placed the sensor in the tree, and *everything read out of the
+  bodies* (a stream's statistics, its point counts, its capture stamps, its fix availability) was
+  computed from whichever ones survived and reported as a property of the whole stream.
 
-  `PointCounts` now records `undecoded` beside the summary, the three adapter call sites take the
-  decode's own `Option` so a caller cannot record the successes and drop the failures, and
-  `AUTONOMY.POINT_CLOUD_UNDECODED` reports how many bodies failed out of how many the stream
-  carried. A fault, not an abstention: the bytes were reached and they are not a cloud, the same
-  fact as `VIDEO.MEDIA_UNREADABLE` one format down — the format-level silence stays
-  `AUTONOMY.POINT_CLOUD_UNMEASURED`, because the two are opposite verdicts. The field is bound into
-  the content hash (`CANONICAL_VERSION` is 18): a check fails a stream on it, so a certificate
-  issued over the whole recording must not verify against the truncated one. Reproduced end to end
-  by a new demo variant, `make_demo_mcap -- <out> av-truncated-lidar`, which drops the rig's trust
-  score from 76 (C) to 66 (D). Documented in [docs/checks.md](docs/checks.md) and the
-  [autonomy quickstart](docs/autonomy-quickstart.md).
+  A rig recorded with four IMU messages in five and four GNSS messages in five cut short graded
+  **byte-identically to the healthy one** — same trust score, same findings, statistics on both
+  sensors drawn from the surviving fifth.
+
+  `Stream.observed_body_decodes` now records how many bodies the reader tried and how many failed,
+  and `autonomy.message-decode` reports the ratio per stream (`AUTONOMY.MESSAGE_BODY_UNDECODED`). One
+  counter for every decoder rather than one per decoder, because the fact is a property of the
+  recording and not of any message type — and a decoder added later is covered without further work.
+  The two rosbag2 readers carried a byte-identical copy of the decode dispatch each, which is how a
+  decoder could reach one storage plugin and not the other; they now share one. A fault, not an
+  abstention: the bytes were reached and they are not the message, the same fact as
+  `VIDEO.MEDIA_UNREADABLE` one format down. The neighbouring silence — a stream whose schema no typed
+  decoder covers — carries no summary at all and stays with the families that wanted to read it,
+  because "nothing failed" and "nothing was tried" are opposite facts.
+
+  Bound into the content hash (`CANONICAL_VERSION` is 18), and added to `world-model-ready`: every
+  criterion in that profile that reads a body is computed from the bodies that decoded, so without it
+  a rig whose sensors mostly did not survive the recording certified as ready on the share that did.
+  Reproduced end to end by two demo variants — `av-corrupt-bodies` (IMU and GNSS, 76 (C) → 55 (F))
+  and `av-truncated-lidar` (point clouds, 76 (C) → 66 (D)). Documented in
+  [docs/checks.md](docs/checks.md) and the [autonomy quickstart](docs/autonomy-quickstart.md).
 
 - **A certificate now names its findings by code, so an abstention survives into the signed
   document.** The certificate carried findings rolled up by severity and by *family*, which cannot

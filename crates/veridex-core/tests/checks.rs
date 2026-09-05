@@ -45,6 +45,7 @@ fn stream(name: &str, clock: &str, rate: Option<f64>, ts: &[i64]) -> Stream {
         declared_range: None,
         point_fields: None,
         observed_point_counts: None,
+        observed_body_decodes: None,
         observed_header_stamps: None,
         observed_sequence: None,
         observed_fix_availability: None,
@@ -343,6 +344,7 @@ fn stream_hashed(name: &str, clock: &str, ts: &[i64], contents: &[u8]) -> Stream
         declared_range: None,
         point_fields: None,
         observed_point_counts: None,
+        observed_body_decodes: None,
         observed_header_stamps: None,
         observed_sequence: None,
         observed_fix_availability: None,
@@ -436,6 +438,7 @@ fn stream_with_content(name: &str, modality: Modality, contents: &[u8]) -> Strea
         declared_range: None,
         point_fields: None,
         observed_point_counts: None,
+        observed_body_decodes: None,
         observed_header_stamps: None,
         observed_sequence: None,
         observed_fix_availability: None,
@@ -517,6 +520,7 @@ fn shaped(name: &str, dtype: Option<&str>, shape: Option<Vec<u64>>, ts: &[i64]) 
         declared_range: None,
         point_fields: None,
         observed_point_counts: None,
+        observed_body_decodes: None,
         observed_header_stamps: None,
         observed_sequence: None,
         observed_fix_availability: None,
@@ -1671,7 +1675,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 46);
+    assert_eq!(verdict.executed_checks.len(), 47);
 }
 
 #[test]
@@ -3347,6 +3351,7 @@ fn a_bus_only_measurement_is_not_treated_as_a_sensor_rig() {
                 declared_range: None,
                 point_fields: None,
                 observed_point_counts: None,
+                observed_body_decodes: None,
                 observed_header_stamps: None,
                 observed_sequence: None,
                 observed_fix_availability: None,
@@ -3433,6 +3438,7 @@ fn one_shared_timeline_reports_once_and_an_event_driven_signal_is_not_called_inc
         declared_range: None,
         point_fields: None,
         observed_point_counts: None,
+        observed_body_decodes: None,
         observed_header_stamps: None,
         observed_sequence: None,
         observed_fix_availability: None,
@@ -5989,6 +5995,17 @@ fn cloud_with_counts(counts: Option<veridex_core::cdm::PointCounts>) -> Dataset 
     dataset(vec![ep])
 }
 
+// ---- AUTONOMY.MESSAGE_BODY_UNDECODED ----
+
+fn cloud_with_decodes(decodes: Option<veridex_core::cdm::BodyDecodes>) -> Dataset {
+    let mut ep = episode(
+        0,
+        vec![rig_stream("lidar", Modality::PointCloud, 1_000_000_000)],
+    );
+    ep.streams[0].observed_body_decodes = decodes;
+    dataset(vec![ep])
+}
+
 #[test]
 fn a_lidar_that_recorded_no_points_is_not_a_working_lidar() {
     // A driver that lost its sensor keeps publishing. The messages have the schema, the rate, the
@@ -6002,7 +6019,6 @@ fn a_lidar_that_recorded_no_points_is_not_a_working_lidar() {
             min: 0,
             max: 0,
             empty: 600,
-            undecoded: 0,
         })));
     assert_eq!(f.len(), 1, "{f:?}");
     assert_eq!(f[0].code, "AUTONOMY.POINT_CLOUD_EMPTY");
@@ -6029,7 +6045,6 @@ fn a_sensor_that_cut_out_mid_recording_is_a_warning_not_a_dead_sensor() {
             min: 0,
             max: 24_000,
             empty: 37,
-            undecoded: 0,
         })));
     assert_eq!(f.len(), 1, "{f:?}");
     assert_eq!(f[0].code, "AUTONOMY.POINT_CLOUD_DROPPED");
@@ -6039,23 +6054,21 @@ fn a_sensor_that_cut_out_mid_recording_is_a_warning_not_a_dead_sensor() {
 }
 
 #[test]
-fn a_density_verdict_drawn_from_the_bodies_that_survived_says_so() {
-    // The bug this exists for: the point count is believed only when a message's own length
-    // invariants hold, and a body that fails them used to be dropped without trace. So a stream
-    // whose sweeps were four fifths truncated by the recording summarized the surviving fifth --
-    // full clouds, every one -- and graded exactly as clean as a whole stream. Proven end to end in
-    // `tests/autonomy.rs`; here the CDM says it directly.
-    let f =
-        autonomy::PointCloudDensity.run(&cloud_with_counts(Some(veridex_core::cdm::PointCounts {
-            message_count: 120,
-            min: 19_800,
-            max: 24_000,
-            empty: 0,
-            undecoded: 480,
-        })));
+fn a_stream_summarized_from_the_bodies_that_survived_says_so() {
+    // The bug this exists for: every typed decoder in the ROS readers is strict, yielding a reading
+    // only once the body proves it is the message it claims to be -- and every call site then wrote
+    // `if let Some(v) = decode(..)` and threw the failures away. So a stream whose bodies were four
+    // fifths cut short by the recording was summarized from the surviving fifth and graded on it.
+    // Proven end to end in `tests/mcap_adapter.rs`; here the CDM says it directly.
+    let f = autonomy::MessageBodyDecode.run(&cloud_with_decodes(Some(
+        veridex_core::cdm::BodyDecodes {
+            attempted: 600,
+            failed: 480,
+        },
+    )));
     assert_eq!(f.len(), 1, "{f:?}");
-    assert_eq!(f[0].code, "AUTONOMY.POINT_CLOUD_UNDECODED");
-    // A fault, not an abstention: the bytes were reached and they are not a cloud. Same fact as
+    assert_eq!(f[0].code, "AUTONOMY.MESSAGE_BODY_UNDECODED");
+    // A fault, not an abstention: the bytes were reached and they are not the message. Same fact as
     // `VIDEO.MEDIA_UNREADABLE`, one format down.
     assert_eq!(f[0].severity, Severity::Error);
     assert_eq!(
@@ -6071,79 +6084,39 @@ fn a_density_verdict_drawn_from_the_bodies_that_survived_says_so() {
 }
 
 #[test]
-fn a_stream_whose_every_body_failed_is_not_a_source_that_carries_no_counts() {
-    // The two silences are opposite verdicts and must not share a finding. A format that states no
-    // per-message point count abstains (`UNMEASURED`, info); a stream whose messages *do* state one
-    // and whose bodies did not survive the recording is a fault in the file. Reporting the second as
-    // the first would tell the reader to go look in a format that reads more, about a stream that
-    // was read.
-    let f =
-        autonomy::PointCloudDensity.run(&cloud_with_counts(Some(veridex_core::cdm::PointCounts {
-            message_count: 0,
-            min: 0,
-            max: 0,
-            empty: 0,
-            undecoded: 600,
-        })));
-    assert_eq!(f.len(), 1, "{f:?}");
-    assert_eq!(f[0].code, "AUTONOMY.POINT_CLOUD_UNDECODED");
-    assert_eq!(f[0].severity, Severity::Error);
-    // Not the empty-sensor verdict either: nothing here measured a sweep as holding zero points.
-    assert!(
-        !f.iter()
-            .any(|f| f.code.contains("EMPTY") || f.code.contains("DROPPED")),
-        "{f:?}"
-    );
+fn a_stream_nothing_tried_to_decode_is_not_a_stream_that_decoded_cleanly() {
+    // The two silences are opposite verdicts and must not share an answer. A stream whose schema no
+    // typed decoder covers carries no summary at all, and the check says nothing -- the families
+    // that wanted to read it disclose that instead. Recording it as "zero failures" would report a
+    // question nobody asked as an answer of "all well".
+    assert!(autonomy::MessageBodyDecode
+        .run(&cloud_with_decodes(None))
+        .is_empty());
+
+    // And a stream every one of whose bodies decoded is simply fine, and says nothing either.
+    assert!(autonomy::MessageBodyDecode
+        .run(&cloud_with_decodes(Some(veridex_core::cdm::BodyDecodes {
+            attempted: 600,
+            failed: 0,
+        })))
+        .is_empty());
 }
 
 #[test]
-fn a_dead_sensor_is_still_reported_beside_bodies_that_did_not_decode() {
-    // The two are independent faults on one stream and the report must carry both: the sweeps that
-    // decoded were all empty *and* most of the stream could not be read. Reporting only the first
-    // understates how little of the stream was measured; reporting only the second loses the sensor
-    // fault that the surviving evidence does establish.
-    let f =
-        autonomy::PointCloudDensity.run(&cloud_with_counts(Some(veridex_core::cdm::PointCounts {
-            message_count: 40,
-            min: 0,
-            max: 0,
-            empty: 40,
-            undecoded: 60,
-        })));
-    let codes: Vec<&str> = f.iter().map(|f| f.code.as_str()).collect();
-    assert!(codes.contains(&"AUTONOMY.POINT_CLOUD_UNDECODED"), "{f:?}");
-    assert!(codes.contains(&"AUTONOMY.POINT_CLOUD_EMPTY"), "{f:?}");
-    assert_eq!(f.len(), 2, "{f:?}");
-
-    // And the two must not read as a contradiction. `EMPTY` counts only the bodies that decoded, so
-    // beside a sibling finding stating a total of 100 its bare "40 point cloud(s)" is a number the
-    // reader has to reconcile alone. It names its own denominator instead.
-    let empty = f
-        .iter()
-        .find(|f| f.code == "AUTONOMY.POINT_CLOUD_EMPTY")
-        .expect("the empty finding");
-    assert!(
-        empty
-            .message
-            .contains("40 point cloud(s) that could be read"),
-        "{}",
-        empty.message
-    );
-
-    // The qualifier is absent when nothing failed to decode, so the ordinary message is unchanged.
-    let whole =
-        autonomy::PointCloudDensity.run(&cloud_with_counts(Some(veridex_core::cdm::PointCounts {
-            message_count: 40,
-            min: 0,
-            max: 0,
-            empty: 40,
-            undecoded: 0,
-        })));
-    assert!(
-        whole[0].message.contains("40 point cloud(s) and every one"),
-        "{}",
-        whole[0].message
-    );
+fn a_stream_whose_every_body_failed_is_reported_not_passed_over() {
+    // The worst case must not fall through into silence: a stream the reader tried to decode and
+    // could not read a single message of is the strongest form of this fault, not the absence of
+    // one. It is also the case the neighbouring abstentions would otherwise claim -- they say the
+    // *source* carries no such data, and this source carries it; it did not survive the recording.
+    let f = autonomy::MessageBodyDecode.run(&cloud_with_decodes(Some(
+        veridex_core::cdm::BodyDecodes {
+            attempted: 600,
+            failed: 600,
+        },
+    )));
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "AUTONOMY.MESSAGE_BODY_UNDECODED");
+    assert_eq!(f[0].severity, Severity::Error);
 }
 
 #[test]
@@ -6166,7 +6139,6 @@ fn a_stream_whose_density_was_never_measured_is_not_a_stream_found_empty() {
             min: 19_800,
             max: 24_000,
             empty: 0,
-            undecoded: 0,
         })))
         .is_empty());
 }
@@ -7030,9 +7002,10 @@ fn every_abstention_code_in_the_catalog_is_declared_as_one() {
         // The stored statistics were read and disagree with the recomputed ones. A disagreement is
         // the strongest measurement this family makes.
         "STATISTICAL.STATS_STALE",
-        // The cloud bodies are present and do not parse — the same fact as `VIDEO.MEDIA_UNREADABLE`
-        // one format down. The check reached the bytes and they are not a point cloud.
-        "AUTONOMY.POINT_CLOUD_UNDECODED",
+        // The message bodies are present and do not parse — the same fact as
+        // `VIDEO.MEDIA_UNREADABLE` one format down. The check reached the bytes and they are not
+        // the message.
+        "AUTONOMY.MESSAGE_BODY_UNDECODED",
     ];
     // How an abstention row reads in `docs/checks.md`. A second, independent signal to the naming
     // vocabulary, because the two miss different things: `STATISTICAL.NO_STORED_STATS` means

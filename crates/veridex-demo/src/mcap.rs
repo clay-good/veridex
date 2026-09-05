@@ -40,8 +40,17 @@
 //!   the body is not readable as a `PointCloud2` at all. The messages are still there, at the right
 //!   rate, on the right topic, in the right frame, and the fifth that survived are full clouds — so
 //!   the point-count summary drawn from them says the LiDAR is healthy →
-//!   `AUTONOMY.POINT_CLOUD_UNDECODED` is the only thing that reports how little of the stream was
+//!   `AUTONOMY.MESSAGE_BODY_UNDECODED` is the only thing that reports how little of the stream was
 //!   actually read.
+//!
+//! - `av-corrupt-bodies` — the same rig with a recording that lost bytes on the two sensors whose
+//!   whole payload is their measurement: four IMU messages in five and four GNSS messages in five
+//!   are cut back so their bodies do not decode. The messages are still there, on time, in the right
+//!   frame, and the fifth that survived are ordinary readings — so the statistics computed from them
+//!   describe a healthy sensor and the whole report was byte-identical to the healthy rig's →
+//!   `AUTONOMY.MESSAGE_BODY_UNDECODED` on both streams. Cut back rather than trimmed at the tail:
+//!   a decoder reads only the fields it uses, and an `Imu` message ends in covariance the reader
+//!   deliberately skips, so shaving the end changes nothing it could have concluded.
 //!
 //! - `av-unstamped` — the same rig whose LiDAR driver never set `header.stamp`. Every cloud is
 //!   well-formed, full of points, on time and in the right frame; only the sensor's own capture time
@@ -68,7 +77,7 @@
 //!   coordinates — `autonomy.gnss-plausibility` passes on them. Only the status byte says four
 //!   fifths of the trajectory is not measured → `AUTONOMY.GNSS_NO_FIX`.
 //!
-//! Usage: `cargo run -p veridex-demo --example make_demo_mcap -- <output.mcap> [skew|clean|stuck|late-start|av|av-miscalibrated|av-ambiguous-tf|av-dead-lidar|av-truncated-lidar|av-unstamped|av-uncalibrated-camera|av-lossy-camera|av-no-fix]`
+//! Usage: `cargo run -p veridex-demo --example make_demo_mcap -- <output.mcap> [skew|clean|stuck|late-start|av|av-miscalibrated|av-ambiguous-tf|av-dead-lidar|av-truncated-lidar|av-corrupt-bodies|av-unstamped|av-uncalibrated-camera|av-lossy-camera|av-no-fix]`
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
@@ -87,6 +96,7 @@ pub const VARIANTS: &[&str] = &[
     "av-ambiguous-tf",
     "av-dead-lidar",
     "av-truncated-lidar",
+    "av-corrupt-bodies",
     "av-unstamped",
     "av-uncalibrated-camera",
     "av-lossy-camera",
@@ -116,6 +126,11 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
     // is not readable as a `PointCloud2` at all. The messages are still there, at the right rate,
     // on the right topic — only their contents are gone.
     let truncated_lidar = variant == "av-truncated-lidar";
+    // `av-corrupt-bodies` is the same rig with a recording that lost bytes on the two sensors whose
+    // whole payload is their measurement: four IMU messages in five and four GNSS messages in five
+    // are cut short, so their bodies do not decode. The messages are still there, on time; only the
+    // values are gone.
+    let corrupt_bodies = variant == "av-corrupt-bodies";
     // `av-unstamped` is the same rig with a LiDAR driver that never set `header.stamp`: the clouds
     // are full and on time, and the sensor says nothing about when it sampled them.
     let unstamped_lidar = variant == "av-unstamped";
@@ -133,6 +148,7 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
         || ambiguous_tf
         || dead_lidar
         || truncated_lidar
+        || corrupt_bodies
         || unstamped_lidar
         || uncalibrated_camera
         || lossy_camera
@@ -150,6 +166,7 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
                     ambiguous_tf,
                     dead_lidar,
                     truncated_lidar,
+                    corrupt_bodies,
                     unstamped_lidar,
                     uncalibrated_camera,
                     lossy_camera,
@@ -245,17 +262,75 @@ fn write_manipulation<W: std::io::Write + std::io::Seek>(
                 // equal spans (no clock skew) with a diverging shared-clock start/end.
                 for i in 0..31u64 {
                     let t = 300_000_000 + i * 33_000_000;
-                    write_msg(w, rob, i as u32, t, &i.to_le_bytes());
+                    let body = joint_state_body(i as f64 * 0.033, t);
+                    write_msg(w, rob, i as u32, t, &body);
                 }
             } else {
                 // Robot state at ~50 Hz spanning ~1.20 s — a 200 ms clock drift vs the camera.
                 for i in 0..61u64 {
                     let t = i * 20_000_000; // 20 ms => 1.20 s total
-                    write_msg(w, rob, i as u32, t, &i.to_le_bytes());
+                    let body = joint_state_body(i as f64 * 0.02, t);
+                    write_msg(w, rob, i as u32, t, &body);
                 }
             }
         }
     }
+}
+
+/// A real CDR `sensor_msgs/msg/JointState` body: `Header`, `string[] name`, `float64[] position`.
+///
+/// Real rather than a stub, for the reason the `Imu`, `Odometry` and `NavSatFix` bodies became real
+/// before it: the adapter decodes a `JointState` in full, so an 8-byte placeholder left the flagship
+/// demo's robot-state stream with no measured values at all — every statistical check abstaining on
+/// the one stream that would show a pinned or drifting joint, on the dataset the README leads with.
+/// `autonomy.message-decode` is what found it: 61 of 61 bodies did not decode.
+///
+/// Six joints sweeping through a slow arc, so successive messages differ and nothing reads as frozen.
+fn joint_state_body(phase: f64, stamp_ns: u64) -> Vec<u8> {
+    const NAMES: [&str; 6] = [
+        "shoulder_pan",
+        "shoulder_lift",
+        "elbow",
+        "wrist_1",
+        "wrist_2",
+        "gripper",
+    ];
+    let mut buf: Vec<u8> = vec![0x00, 0x01, 0x00, 0x00]; // encapsulation: CDR_LE
+    let align = |buf: &mut Vec<u8>, n: usize| {
+        while (buf.len() - 4) % n != 0 {
+            buf.push(0)
+        }
+    };
+    let u32v = |buf: &mut Vec<u8>, v: u32| {
+        align(buf, 4);
+        buf.extend_from_slice(&v.to_le_bytes());
+    };
+    let f64v = |buf: &mut Vec<u8>, v: f64| {
+        align(buf, 8);
+        buf.extend_from_slice(&v.to_le_bytes());
+    };
+    let strv = |buf: &mut Vec<u8>, s: &str| {
+        align(buf, 4);
+        buf.extend_from_slice(&((s.len() + 1) as u32).to_le_bytes());
+        buf.extend_from_slice(s.as_bytes());
+        buf.push(0);
+    };
+    u32v(&mut buf, (stamp_ns / 1_000_000_000) as u32); // stamp.sec
+    u32v(&mut buf, (stamp_ns % 1_000_000_000) as u32); // stamp.nanosec
+    strv(&mut buf, "base_link");
+    u32v(&mut buf, NAMES.len() as u32);
+    for n in NAMES {
+        strv(&mut buf, n);
+    }
+    u32v(&mut buf, NAMES.len() as u32);
+    for (j, _) in NAMES.iter().enumerate() {
+        // A slow arc per joint, offset so no two joints are the same series. Rational arithmetic
+        // only -- a transcendental here would make the demo's content hash depend on the machine's
+        // libm, which is a bug this repo has already had once.
+        let t = phase + j as f64 * 0.17;
+        f64v(&mut buf, (t - t * t * 0.5) * 0.4 - 0.2);
+    }
+    buf
 }
 
 /// The wall-clock instant the rig recording is timed from: 2026-01-01T00:00:00Z, in nanoseconds.
@@ -282,6 +357,7 @@ struct RigFaults {
     ambiguous_tf: bool,
     dead_lidar: bool,
     truncated_lidar: bool,
+    corrupt_bodies: bool,
     unstamped_lidar: bool,
     uncalibrated_camera: bool,
     lossy_camera: bool,
@@ -296,6 +372,7 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(w: &mut mcap::Writer<W>, faul
         ambiguous_tf,
         dead_lidar,
         truncated_lidar,
+        corrupt_bodies,
         unstamped_lidar,
         uncalibrated_camera,
         lossy_camera,
@@ -433,20 +510,22 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(w: &mut mcap::Writer<W>, faul
                 } else {
                     drive
                 };
-                write_msg(
-                    w,
-                    channel,
-                    i as u32,
-                    t,
-                    // ~37.4°N, 122.1°W, moving north at the odometry's 10 m/s (1 m ≈ 9e-6°).
-                    &nav_sat_fix_body(
-                        if lost_sky { -1 } else { 0 },
-                        37.4 + held * 9.0e-6,
-                        -122.1,
-                        12.0,
-                        stamp,
-                    ),
+                // ~37.4°N, 122.1°W, moving north at the odometry's 10 m/s (1 m ≈ 9e-6°).
+                let mut body = nav_sat_fix_body(
+                    if lost_sky { -1 } else { 0 },
+                    37.4 + held * 9.0e-6,
+                    -122.1,
+                    12.0,
+                    stamp,
                 );
+                // Cut back to a third, not trimmed at the tail: a decoder reads only the fields it
+                // uses, and this message's tail is a covariance matrix the reader deliberately
+                // skips — so shaving the end is invisible, and correctly so. Losing a chunk of the
+                // body is the fault, and here it takes the coordinates with it.
+                if corrupt_bodies && i % 5 != 0 {
+                    body.truncate(body.len() / 3);
+                }
+                write_msg(w, channel, i as u32, t, &body);
             } else if *schema == "sensor_msgs/msg/CameraInfo" {
                 write_msg(
                     w,
@@ -460,7 +539,12 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(w: &mut mcap::Writer<W>, faul
                 // the rig's IMU fingerprinted and every statistical check abstaining on it — on the
                 // very sensor this demo exists to show drifting.
                 let phase = i as f64 * (*interval as f64 / 1e9);
-                write_msg(w, channel, i as u32, t, &imu_body(phase, stamp));
+                let mut body = imu_body(phase, stamp);
+                // Half the body, for the reason given on the GNSS branch above.
+                if corrupt_bodies && i % 5 != 0 {
+                    body.truncate(body.len() / 2);
+                }
+                write_msg(w, channel, i as u32, t, &body);
             } else if *schema == "sensor_msgs/msg/PointCloud2" {
                 // Likewise real, and for the reason the others became real: a stub body left the
                 // rig's LiDAR with no declared point layout and no point counts at all, so
