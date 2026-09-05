@@ -10,6 +10,29 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A LiDAR whose sweeps did not survive the recording is no longer graded on the ones that did.**
+  A `PointCloud2`'s point count is believed only when the message's own length invariants hold —
+  the guard that stops a mislabelled topic or a stubbed payload from yielding a fabricated count.
+  Bodies that failed it were then dropped without trace, so `AUTONOMY.POINT_CLOUD_EMPTY` and
+  `AUTONOMY.POINT_CLOUD_DROPPED` ran on whichever sweeps survived and reported a verdict on the
+  stream. A rig whose LiDAR payloads were four fifths truncated by the recording graded exactly as
+  clean as one that was whole: the surviving fifth were full clouds, and the messages still carry a
+  timestamp, a schema and a coordinate frame, so the structural, temporal and frame-resolution
+  families all count them as sound frames. The abstention did not fire either — the stream *did*
+  carry counts, just not many.
+
+  `PointCounts` now records `undecoded` beside the summary, the three adapter call sites take the
+  decode's own `Option` so a caller cannot record the successes and drop the failures, and
+  `AUTONOMY.POINT_CLOUD_UNDECODED` reports how many bodies failed out of how many the stream
+  carried. A fault, not an abstention: the bytes were reached and they are not a cloud, the same
+  fact as `VIDEO.MEDIA_UNREADABLE` one format down — the format-level silence stays
+  `AUTONOMY.POINT_CLOUD_UNMEASURED`, because the two are opposite verdicts. The field is bound into
+  the content hash (`CANONICAL_VERSION` is 18): a check fails a stream on it, so a certificate
+  issued over the whole recording must not verify against the truncated one. Reproduced end to end
+  by a new demo variant, `make_demo_mcap -- <out> av-truncated-lidar`, which drops the rig's trust
+  score from 76 (C) to 66 (D). Documented in [docs/checks.md](docs/checks.md) and the
+  [autonomy quickstart](docs/autonomy-quickstart.md).
+
 - **A certificate now names its findings by code, so an abstention survives into the signed
   document.** The certificate carried findings rolled up by severity and by *family*, which cannot
   express the one thing it most has to: **which checks measured nothing**. A single-episode dataset

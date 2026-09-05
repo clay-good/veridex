@@ -567,6 +567,16 @@ pub struct PointCounts {
     /// "the smallest sweep was empty" and "half the sweeps were empty" are different faults and a
     /// reader acts on them differently.
     pub empty: u64,
+    /// How many of the stream's point-cloud messages could not be read as point clouds at all —
+    /// bodies whose own length invariants did not hold, which is what a truncated write or a
+    /// corrupt payload leaves behind.
+    ///
+    /// Counted rather than dropped, because `message_count` is otherwise the count of the survivors
+    /// and says nothing about how many there were to survive. A stream whose bodies were four
+    /// fifths unreadable reports the same `min`, `max` and `empty` as one that was whole, so
+    /// without this the density verdict is drawn from a sample the file chose and presented as a
+    /// verdict on the stream.
+    pub undecoded: u64,
 }
 
 /// What a stream's messages said about their own sampling time, against the times they were recorded

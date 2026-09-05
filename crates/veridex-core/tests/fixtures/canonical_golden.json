@@ -400,7 +400,8 @@
             "message_count": 2,
             "min": 0,
             "max": 24000,
-            "empty": 1
+            "empty": 1,
+            "undecoded": 4
           },
           "frame_id": "lidar_top",
           "observed_header_stamps": {

@@ -35,6 +35,14 @@
 //!   the frame checks place the sensor in the tree, and every one of them passes →
 //!   `AUTONOMY.POINT_CLOUD_EMPTY` is the only thing that reports the sensor recorded nothing.
 //!
+//! - `av-truncated-lidar` — the same rig with a LiDAR whose cloud bodies did not survive the
+//!   recording: four sweeps in five are cut short of the point payload their own header declares, so
+//!   the body is not readable as a `PointCloud2` at all. The messages are still there, at the right
+//!   rate, on the right topic, in the right frame, and the fifth that survived are full clouds — so
+//!   the point-count summary drawn from them says the LiDAR is healthy →
+//!   `AUTONOMY.POINT_CLOUD_UNDECODED` is the only thing that reports how little of the stream was
+//!   actually read.
+//!
 //! - `av-unstamped` — the same rig whose LiDAR driver never set `header.stamp`. Every cloud is
 //!   well-formed, full of points, on time and in the right frame; only the sensor's own capture time
 //!   is missing, so the recorder's arrival clock is the only clock that stream has. Every timing
@@ -60,7 +68,7 @@
 //!   coordinates — `autonomy.gnss-plausibility` passes on them. Only the status byte says four
 //!   fifths of the trajectory is not measured → `AUTONOMY.GNSS_NO_FIX`.
 //!
-//! Usage: `cargo run -p veridex-demo --example make_demo_mcap -- <output.mcap> [skew|clean|stuck|late-start|av|av-miscalibrated|av-ambiguous-tf|av-dead-lidar|av-unstamped|av-uncalibrated-camera|av-lossy-camera|av-no-fix]`
+//! Usage: `cargo run -p veridex-demo --example make_demo_mcap -- <output.mcap> [skew|clean|stuck|late-start|av|av-miscalibrated|av-ambiguous-tf|av-dead-lidar|av-truncated-lidar|av-unstamped|av-uncalibrated-camera|av-lossy-camera|av-no-fix]`
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
@@ -78,6 +86,7 @@ pub const VARIANTS: &[&str] = &[
     "av-miscalibrated",
     "av-ambiguous-tf",
     "av-dead-lidar",
+    "av-truncated-lidar",
     "av-unstamped",
     "av-uncalibrated-camera",
     "av-lossy-camera",
@@ -102,6 +111,11 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
     // `av-dead-lidar` is the same rig with a LiDAR whose driver lost its sensor: every cloud is
     // well-formed, on time, in the right frame — and holds no points.
     let dead_lidar = variant == "av-dead-lidar";
+    // `av-truncated-lidar` is the same rig with a LiDAR whose cloud bodies did not survive the
+    // recording: four sweeps in five are cut short of the point payload they declare, so the body
+    // is not readable as a `PointCloud2` at all. The messages are still there, at the right rate,
+    // on the right topic — only their contents are gone.
+    let truncated_lidar = variant == "av-truncated-lidar";
     // `av-unstamped` is the same rig with a LiDAR driver that never set `header.stamp`: the clouds
     // are full and on time, and the sensor says nothing about when it sampled them.
     let unstamped_lidar = variant == "av-unstamped";
@@ -118,6 +132,7 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
         || miscalibrated
         || ambiguous_tf
         || dead_lidar
+        || truncated_lidar
         || unstamped_lidar
         || uncalibrated_camera
         || lossy_camera
@@ -134,6 +149,7 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
                     miscalibrated,
                     ambiguous_tf,
                     dead_lidar,
+                    truncated_lidar,
                     unstamped_lidar,
                     uncalibrated_camera,
                     lossy_camera,
@@ -265,6 +281,7 @@ struct RigFaults {
     miscalibrated: bool,
     ambiguous_tf: bool,
     dead_lidar: bool,
+    truncated_lidar: bool,
     unstamped_lidar: bool,
     uncalibrated_camera: bool,
     lossy_camera: bool,
@@ -278,6 +295,7 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(w: &mut mcap::Writer<W>, faul
         miscalibrated,
         ambiguous_tf,
         dead_lidar,
+        truncated_lidar,
         unstamped_lidar,
         uncalibrated_camera,
         lossy_camera,
@@ -456,13 +474,15 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(w: &mut mcap::Writer<W>, faul
                 // The `av-unstamped` fault: a driver that publishes the epoch instead of the time it
                 // sampled. Nothing else about the message changes, which is the point.
                 let cloud_stamp = if unstamped_lidar { 0 } else { stamp };
-                write_msg(
-                    w,
-                    channel,
-                    i as u32,
-                    t,
-                    &point_cloud2_body(frame_id, points, i as u32, cloud_stamp),
-                );
+                let mut body = point_cloud2_body(frame_id, points, i as u32, cloud_stamp);
+                // The `av-truncated-lidar` fault: the body is cut short of the payload its own
+                // header declares, which is what a recording that lost bytes leaves behind. One
+                // sweep in five survives, so the stream still yields counts — the case where a
+                // partial read would otherwise be reported as a whole one.
+                if truncated_lidar && i % 5 != 0 {
+                    body.truncate(body.len() - 64);
+                }
+                write_msg(w, channel, i as u32, t, &body);
             } else {
                 // A real header-first CDR body, so the sensor's coordinate frame is genuinely
                 // decoded into the CDM (that is what the frame-resolution check reads). The trailing

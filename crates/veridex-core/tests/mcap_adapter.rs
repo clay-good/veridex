@@ -840,6 +840,109 @@ fn a_lidar_that_published_only_empty_clouds_is_caught_end_to_end() {
     );
 }
 
+#[test]
+fn a_lidar_whose_bodies_did_not_survive_the_recording_is_not_graded_on_the_survivors() {
+    // The defect, end to end through the real adapter and the real engine: the point count is
+    // believed only when a message's own length invariants hold, and a body that fails them was
+    // dropped without trace. So a stream of five sweeps, four of them cut short of the payload they
+    // declare, summarized the one that survived -- a full cloud -- and the whole report said
+    // nothing about `/lidar/points` at all. Every other family still passes on it, which is why a
+    // unit test on a hand-built CDM cannot show this.
+    let whole = point_cloud2(1, 1024);
+    let cut = {
+        let mut b = point_cloud2(1, 1024);
+        b.truncate(b.len() - 64); // short of the `data` bytes the header declares
+        b
+    };
+    let bytes = build_mcap_one_shot(&[
+        ("sensor_msgs/msg/PointCloud2", "/lidar/points", whole),
+        ("sensor_msgs/msg/PointCloud2", "/lidar/points", cut.clone()),
+        ("sensor_msgs/msg/PointCloud2", "/lidar/points", cut.clone()),
+        ("sensor_msgs/msg/PointCloud2", "/lidar/points", cut.clone()),
+        ("sensor_msgs/msg/PointCloud2", "/lidar/points", cut),
+    ]);
+    let path = write_temp_mcap(&bytes);
+    let d = McapAdapter
+        .ingest(
+            &Source::Local(path.to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest")
+        .dataset;
+
+    let counts = d.episodes[0].streams[0]
+        .observed_point_counts
+        .expect("point counts decoded");
+    // What the old CDM said, and all it said: one message, full, clean.
+    assert_eq!(counts.message_count, 1);
+    assert_eq!(counts.empty, 0);
+    // What it now also says: four bodies were there and could not be read.
+    assert_eq!(counts.undecoded, 4);
+
+    let engine = veridex_core::checks::default_engine().expect("the standard catalog");
+    let hash = veridex_core::content_hash(&d);
+    let verdict = engine.run(&d, hash, &veridex_core::RunConfig::default());
+    let undecoded: Vec<_> = verdict
+        .findings
+        .iter()
+        .filter(|f| f.code == "AUTONOMY.POINT_CLOUD_UNDECODED")
+        .collect();
+    assert_eq!(undecoded.len(), 1, "{:?}", verdict.findings);
+    assert!(
+        undecoded[0].message.contains("/lidar/points"),
+        "{}",
+        undecoded[0].message
+    );
+    // Not the abstention: the source states a count per message and this run read them. Saying the
+    // stream "carries no per-message point count" would send the reader to a format that reads more,
+    // about a stream that was read.
+    assert!(
+        !verdict
+            .findings
+            .iter()
+            .any(|f| f.code == "AUTONOMY.POINT_CLOUD_UNMEASURED"),
+        "{:?}",
+        verdict.findings
+    );
+}
+
+#[test]
+fn a_truncated_sweep_changes_the_content_hash() {
+    // The rule the rest of the CDM follows: a field a check fails a stream on has to be bound, or a
+    // certificate issued over the whole recording verifies against the truncated one. The two
+    // datasets here differ in nothing else -- same topic, same schema, same message count, same
+    // timestamps, same layout, and the surviving sweeps are byte-identical.
+    let whole_body = point_cloud2(1, 1024);
+    let mut cut_body = whole_body.clone();
+    cut_body.truncate(cut_body.len() - 64);
+
+    let ingest = |second: Vec<u8>| {
+        let bytes = build_mcap_one_shot(&[
+            (
+                "sensor_msgs/msg/PointCloud2",
+                "/lidar/points",
+                point_cloud2(1, 1024),
+            ),
+            ("sensor_msgs/msg/PointCloud2", "/lidar/points", second),
+        ]);
+        let path = write_temp_mcap(&bytes);
+        let d = McapAdapter
+            .ingest(
+                &Source::Local(path.to_path_buf()),
+                &IngestOptions::default(),
+            )
+            .expect("ingest")
+            .dataset;
+        veridex_core::content_hash(&d)
+    };
+
+    assert_ne!(
+        ingest(whole_body),
+        ingest(cut_body),
+        "a recording that lost a sweep's payload must not hash as the recording that kept it"
+    );
+}
+
 /// Build a one-channel MCAP whose messages carry the given `(sequence, log_time)` pairs — so a test
 /// can punch holes in the publisher's numbering while leaving the timeline evenly spaced.
 fn build_mcap_numbered(schema: &str, topic: &str, msgs: &[(u32, u64)]) -> Vec<u8> {
@@ -2966,7 +3069,7 @@ fn the_demo_rig_hashes_the_same_on_every_machine() {
         .dataset;
     assert_eq!(
         veridex_core::content_hash(&d).to_hex(),
-        "4f26897dad9db59d6bb1bcf7745e59abb548c4cb12d8ec28d11e4ccc1dfb5dd6",
+        "9850d78341564bb805bdf9d23de33a451fed8db79c2e9e0bd29788ba48eda8e3",
         "the demo rig's content hash must not depend on the machine that computed it"
     );
 

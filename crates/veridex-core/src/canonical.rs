@@ -100,7 +100,14 @@ use crate::cdm::{
 /// it, and a no-fix message contributes no values, so it leaves a frame with a timestamp and nothing
 /// in it: a receiver that lost the sky for most of a drive and one that never did have identical
 /// frame counts, cadences and spans. Same rule again.
-pub const CANONICAL_VERSION: u32 = 17;
+///
+/// v18 binds each stream's `undecoded` point-cloud bodies — how many of its `PointCloud2` messages
+/// could not be read as point clouds at all. `AUTONOMY.POINT_CLOUD_UNDECODED` fails a stream on it,
+/// and an unreadable body leaves a frame with a timestamp, a schema and a coordinate frame, so a
+/// LiDAR whose sweeps were four fifths truncated by the recording and one whose sweeps all arrived
+/// whole have identical frame counts, cadences, spans, layouts and point-count summaries. Same rule
+/// again.
+pub const CANONICAL_VERSION: u32 = 18;
 
 const DOMAIN: &[u8] = b"veridex.cdm.v1\0";
 
@@ -418,6 +425,7 @@ impl Stream {
             e.u64(c.min);
             e.u64(c.max);
             e.u64(c.empty);
+            e.u64(c.undecoded);
         });
         // What the messages said about their own sampling time. Bound because `autonomy.sensor-clock`
         // fails a stream on it: the frame timestamps are the recorder's clock either way, so a rig

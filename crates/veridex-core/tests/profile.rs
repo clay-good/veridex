@@ -98,6 +98,7 @@ fn sensor_in_frame(name: &str, modality: Modality, ts: &[i64], frame_id: Option<
                 min: 19_800,
                 max: 24_000,
                 empty: 0,
+                undecoded: 0,
             },
         ),
         // Likewise: a sensor read in full says when it sampled, and a healthy one's stamps sit a

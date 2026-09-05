@@ -400,7 +400,7 @@ mod tests {
         };
         let base = content_hash(&sample_dataset());
         type Mutator = fn(&mut Stream);
-        let mutate: [(&str, Mutator); 34] = [
+        let mutate: [(&str, Mutator); 35] = [
             // The fields the encoder has carried from the beginning. Absent from this table until a
             // mutation audit deleted `clock_kind` from `encode` and watched 692 tests pass: a
             // stream's frames are a synchronized rig under one value and an unmeasurable timeline
@@ -567,6 +567,21 @@ mod tests {
                     min: 0,
                     max: 0,
                     empty: 10,
+                    undecoded: 0,
+                })
+            }),
+            // How many of the stream's cloud messages could not be read as clouds at all.
+            // `AUTONOMY.POINT_CLOUD_UNDECODED` fails a stream on it, and an unreadable body leaves
+            // behind a frame with a timestamp, a schema and a frame_id -- so a recording that lost
+            // four fifths of a LiDAR's payloads is otherwise identical to one that lost none, down
+            // to the point-count summary drawn from the sweeps that survived.
+            ("observed_point_counts.undecoded", |s| {
+                s.observed_point_counts = Some(crate::cdm::PointCounts {
+                    message_count: 10,
+                    min: 0,
+                    max: 0,
+                    empty: 10,
+                    undecoded: 3,
                 })
             }),
             // What the stream's messages said about their own capture time. `autonomy.sensor-clock`

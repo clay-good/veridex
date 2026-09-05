@@ -144,9 +144,37 @@ cargo run -p veridex-cli -- check /tmp/av-dead.mcap
 
 The count comes from each message's own `height × width`, stated in the header ahead of the bulk
 blob — no point is decoded. A count is believed only when the body's own length invariants hold, so
-a mislabelled topic or a truncated write abstains rather than reporting a fabricated one. When only
-*some* sweeps are empty the sensor cut out mid-recording, which is `AUTONOMY.POINT_CLOUD_DROPPED` at
-warning: the recording holds real data either side of the dropout.
+a mislabelled topic or a truncated write never yields a fabricated one. When only *some* sweeps are
+empty the sensor cut out mid-recording, which is `AUTONOMY.POINT_CLOUD_DROPPED` at warning: the
+recording holds real data either side of the dropout.
+
+### A LiDAR whose sweeps did not survive the recording
+
+The rule above raises a question of its own: what happens to the bodies that fail it? A truncated
+write, a dropped chunk, or a publisher whose point layout disagrees with its own stride all leave a
+message that is present, on time, on the right topic and in the right frame — and is not readable as
+a point cloud. Those bodies used to be dropped without trace, so the two rules above ran on whichever
+sweeps survived and reported a verdict on the stream. The `av-truncated-lidar` variant is that
+recording: four sweeps in five cut short, and the fifth that survived are full clouds.
+
+```sh
+cargo run -p veridex-demo --example make_demo_mcap -- /tmp/av-trunc.mcap av-truncated-lidar
+cargo run -p veridex-cli -- check /tmp/av-trunc.mcap
+```
+
+```
+  [error] AUTONOMY.POINT_CLOUD_UNDECODED  episode 0 · stream `/lidar/points`
+      episode 0: stream `/lidar/points` carries 8 point-cloud message(s) that could not be read as
+      point clouds, out of 11 — the bodies are present and their own length invariants do not hold
+      remedy: Check the recorder and the transport for the run (a truncated write, a dropped chunk,
+              a publisher whose point layout disagrees with its own stride); the affected sweeps
+              hold no recoverable point data.
+```
+
+This is a fault, not an abstention: the bytes were reached and they are not a cloud, the same fact
+as `VIDEO.MEDIA_UNREADABLE` one format down. A stream whose *format* states no per-message count
+abstains instead, as `AUTONOMY.POINT_CLOUD_UNMEASURED` — the two silences are opposite verdicts and
+do not share a finding.
 
 ## 4. Certify readiness
 

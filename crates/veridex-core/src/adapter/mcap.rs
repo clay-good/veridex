@@ -617,9 +617,9 @@ impl Adapter for McapAdapter {
                 // Per message, unlike the layout above: the layout is a property of the stream and
                 // the first message settles it, while whether a sweep held any points is a property
                 // of each message and only the messages can settle it.
-                if let Some(n) = super::cdr::decode_point_cloud2_point_count(&message.data) {
-                    builder.point_counts.observe(n);
-                }
+                builder
+                    .point_counts
+                    .observe(super::cdr::decode_point_cloud2_point_count(&message.data));
             } else if schema_is(schema_name, "CameraInfo") {
                 // First successfully-decoded intrinsics per camera topic wins.
                 if !intrinsics.contains_key(&topic) {

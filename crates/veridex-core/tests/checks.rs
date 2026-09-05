@@ -6002,6 +6002,7 @@ fn a_lidar_that_recorded_no_points_is_not_a_working_lidar() {
             min: 0,
             max: 0,
             empty: 600,
+            undecoded: 0,
         })));
     assert_eq!(f.len(), 1, "{f:?}");
     assert_eq!(f[0].code, "AUTONOMY.POINT_CLOUD_EMPTY");
@@ -6028,12 +6029,121 @@ fn a_sensor_that_cut_out_mid_recording_is_a_warning_not_a_dead_sensor() {
             min: 0,
             max: 24_000,
             empty: 37,
+            undecoded: 0,
         })));
     assert_eq!(f.len(), 1, "{f:?}");
     assert_eq!(f[0].code, "AUTONOMY.POINT_CLOUD_DROPPED");
     assert_eq!(f[0].severity, Severity::Warning);
     assert!(f[0].message.contains("37 empty"), "{}", f[0].message);
     assert!(f[0].message.contains("24000 points"), "{}", f[0].message);
+}
+
+#[test]
+fn a_density_verdict_drawn_from_the_bodies_that_survived_says_so() {
+    // The bug this exists for: the point count is believed only when a message's own length
+    // invariants hold, and a body that fails them used to be dropped without trace. So a stream
+    // whose sweeps were four fifths truncated by the recording summarized the surviving fifth --
+    // full clouds, every one -- and graded exactly as clean as a whole stream. Proven end to end in
+    // `tests/autonomy.rs`; here the CDM says it directly.
+    let f =
+        autonomy::PointCloudDensity.run(&cloud_with_counts(Some(veridex_core::cdm::PointCounts {
+            message_count: 120,
+            min: 19_800,
+            max: 24_000,
+            empty: 0,
+            undecoded: 480,
+        })));
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "AUTONOMY.POINT_CLOUD_UNDECODED");
+    // A fault, not an abstention: the bytes were reached and they are not a cloud. Same fact as
+    // `VIDEO.MEDIA_UNREADABLE`, one format down.
+    assert_eq!(f[0].severity, Severity::Error);
+    assert_eq!(
+        f[0].location,
+        veridex_core::check::Location::Stream {
+            episode: 0,
+            stream: "lidar".into()
+        }
+    );
+    // Both numbers, because the ratio is what a reader acts on.
+    assert!(f[0].message.contains("480"), "{}", f[0].message);
+    assert!(f[0].message.contains("600"), "{}", f[0].message);
+}
+
+#[test]
+fn a_stream_whose_every_body_failed_is_not_a_source_that_carries_no_counts() {
+    // The two silences are opposite verdicts and must not share a finding. A format that states no
+    // per-message point count abstains (`UNMEASURED`, info); a stream whose messages *do* state one
+    // and whose bodies did not survive the recording is a fault in the file. Reporting the second as
+    // the first would tell the reader to go look in a format that reads more, about a stream that
+    // was read.
+    let f =
+        autonomy::PointCloudDensity.run(&cloud_with_counts(Some(veridex_core::cdm::PointCounts {
+            message_count: 0,
+            min: 0,
+            max: 0,
+            empty: 0,
+            undecoded: 600,
+        })));
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "AUTONOMY.POINT_CLOUD_UNDECODED");
+    assert_eq!(f[0].severity, Severity::Error);
+    // Not the empty-sensor verdict either: nothing here measured a sweep as holding zero points.
+    assert!(
+        !f.iter()
+            .any(|f| f.code.contains("EMPTY") || f.code.contains("DROPPED")),
+        "{f:?}"
+    );
+}
+
+#[test]
+fn a_dead_sensor_is_still_reported_beside_bodies_that_did_not_decode() {
+    // The two are independent faults on one stream and the report must carry both: the sweeps that
+    // decoded were all empty *and* most of the stream could not be read. Reporting only the first
+    // understates how little of the stream was measured; reporting only the second loses the sensor
+    // fault that the surviving evidence does establish.
+    let f =
+        autonomy::PointCloudDensity.run(&cloud_with_counts(Some(veridex_core::cdm::PointCounts {
+            message_count: 40,
+            min: 0,
+            max: 0,
+            empty: 40,
+            undecoded: 60,
+        })));
+    let codes: Vec<&str> = f.iter().map(|f| f.code.as_str()).collect();
+    assert!(codes.contains(&"AUTONOMY.POINT_CLOUD_UNDECODED"), "{f:?}");
+    assert!(codes.contains(&"AUTONOMY.POINT_CLOUD_EMPTY"), "{f:?}");
+    assert_eq!(f.len(), 2, "{f:?}");
+
+    // And the two must not read as a contradiction. `EMPTY` counts only the bodies that decoded, so
+    // beside a sibling finding stating a total of 100 its bare "40 point cloud(s)" is a number the
+    // reader has to reconcile alone. It names its own denominator instead.
+    let empty = f
+        .iter()
+        .find(|f| f.code == "AUTONOMY.POINT_CLOUD_EMPTY")
+        .expect("the empty finding");
+    assert!(
+        empty
+            .message
+            .contains("40 point cloud(s) that could be read"),
+        "{}",
+        empty.message
+    );
+
+    // The qualifier is absent when nothing failed to decode, so the ordinary message is unchanged.
+    let whole =
+        autonomy::PointCloudDensity.run(&cloud_with_counts(Some(veridex_core::cdm::PointCounts {
+            message_count: 40,
+            min: 0,
+            max: 0,
+            empty: 40,
+            undecoded: 0,
+        })));
+    assert!(
+        whole[0].message.contains("40 point cloud(s) and every one"),
+        "{}",
+        whole[0].message
+    );
 }
 
 #[test]
@@ -6056,6 +6166,7 @@ fn a_stream_whose_density_was_never_measured_is_not_a_stream_found_empty() {
             min: 19_800,
             max: 24_000,
             empty: 0,
+            undecoded: 0,
         })))
         .is_empty());
 }
@@ -6919,6 +7030,9 @@ fn every_abstention_code_in_the_catalog_is_declared_as_one() {
         // The stored statistics were read and disagree with the recomputed ones. A disagreement is
         // the strongest measurement this family makes.
         "STATISTICAL.STATS_STALE",
+        // The cloud bodies are present and do not parse — the same fact as `VIDEO.MEDIA_UNREADABLE`
+        // one format down. The check reached the bytes and they are not a point cloud.
+        "AUTONOMY.POINT_CLOUD_UNDECODED",
     ];
     // How an abstention row reads in `docs/checks.md`. A second, independent signal to the naming
     // vocabulary, because the two miss different things: `STATISTICAL.NO_STORED_STATS` means

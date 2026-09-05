@@ -269,6 +269,14 @@ No code until this change is approved; this is the build plan.
       `AUTONOMY.POINT_CLOUD_EMPTY` naming `/lidar/points`. Nothing else moves: the structural and
       temporal families both pass, because the empty messages keep the stream's schema, rate and
       continuity intact.
+      A fourth class closes the gap that third one left open: the point count is believed only when a
+      message's own length invariants hold, and a body failing them was dropped without trace — so
+      the density rules reported a verdict on whichever sweeps survived. `make_demo_mcap -- <out>
+      av-truncated-lidar` writes the same rig with four sweeps in five cut short of the payload they
+      declare, and the survivors are full clouds, so before the fix the report said nothing at all
+      about `/lidar/points`. `AUTONOMY.POINT_CLOUD_UNDECODED` now names it, `PointCounts.undecoded`
+      carries the count into the CDM and the content hash (`CANONICAL_VERSION` 18), and the three
+      adapter call sites take the decode's `Option` so a failure cannot be dropped silently again.
 - [x] Issue and offline-verify a world-model-readiness certificate. `certify --profile` issues it and
       `verify` now reads it back: the bound hash, trust score, profile verdict, and each criterion,
       with `--json` for the machine-readable form. Everything reported comes from the signed

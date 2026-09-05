@@ -1622,6 +1622,15 @@ impl Check for SensorFrameResolution {
 /// `AUTONOMY.POINT_CLOUD_DROPPED` reports one where some were, which is the sensor cutting out
 /// rather than never starting.
 ///
+/// `AUTONOMY.POINT_CLOUD_UNDECODED` reports the third case, which is neither: bodies that are not
+/// readable as point clouds at all. It exists because the count is believed only when a message's
+/// own length invariants hold, so an unreadable body used to be dropped silently — and the two
+/// rules above then ran on whatever survived and reported a verdict on the stream. A LiDAR whose
+/// sweeps were four fifths truncated by the recording graded exactly as clean as one that was
+/// whole. Unlike the two above it is a fault in the file rather than in the sensor, and like
+/// `VIDEO.MEDIA_UNREADABLE` it is a measurement that came back wrong, not an abstention: the bytes
+/// were reached and they are not a cloud.
+///
 /// Read from the messages' own `height × width`, never from the point payload — the count is stated
 /// in the header, ahead of the bulk blob. Silent for a source that carries no point counts at all
 /// (every non-ROS format, and a metadata-only run): a stream whose density was never measured is
@@ -1636,6 +1645,7 @@ impl Check for PointCloudDensity {
         &[
             "AUTONOMY.POINT_CLOUD_EMPTY",
             "AUTONOMY.POINT_CLOUD_DROPPED",
+            "AUTONOMY.POINT_CLOUD_UNDECODED",
             "AUTONOMY.POINT_CLOUD_UNMEASURED",
         ]
     }
@@ -1665,12 +1675,56 @@ impl Check for PointCloudDensity {
                 let Some(counts) = &stream.observed_point_counts else {
                     continue;
                 };
-                if counts.empty == 0 {
-                    continue;
-                }
                 let at = || Location::Stream {
                     episode: ep.index,
                     stream: stream.name.clone(),
+                };
+                // Reported before the density rules below, and independently of them: it is the
+                // reason to distrust whatever they conclude on this stream. The two counts are
+                // stated separately because the ratio is what a reader acts on — one bad sweep in a
+                // thousand is a blemish, and four in five means the stream's density result was
+                // drawn from a sample the file chose.
+                if counts.undecoded > 0 {
+                    let total = counts.undecoded.saturating_add(counts.message_count);
+                    findings.push(
+                        Finding::new(
+                            self.id(),
+                            Category::Autonomy,
+                            Severity::Error,
+                            at(),
+                            "AUTONOMY.POINT_CLOUD_UNDECODED",
+                            format!(
+                                "episode {}: stream `{}` carries {} point-cloud message(s) that \
+                                 could not be read as point clouds, out of {} — the bodies are \
+                                 present and their own length invariants do not hold",
+                                ep.index, stream.name, counts.undecoded, total
+                            ),
+                        )
+                        .with_risk(
+                            "The messages still carry a timestamp, a schema and a coordinate \
+                             frame, so every timing, structural and frame-resolution result \
+                             counts them as sound frames — and the density rules ran on \
+                             whichever bodies survived, reporting a verdict on a sample the \
+                             recording chose rather than on the stream.",
+                        )
+                        .with_remedy(
+                            "Check the recorder and the transport for the run (a truncated \
+                             write, a dropped chunk, a publisher whose point layout disagrees \
+                             with its own stride); the affected sweeps hold no recoverable \
+                             point data.",
+                        ),
+                    );
+                }
+                if counts.empty == 0 {
+                    continue;
+                }
+                // The two rules below count only the bodies that decoded, so beside an
+                // `UNDECODED` finding stating a larger total their numbers would read as a
+                // contradiction. Naming the denominator settles which population each is about.
+                let of_readable = if counts.undecoded > 0 {
+                    " that could be read"
+                } else {
+                    ""
                 };
                 if counts.empty == counts.message_count {
                     findings.push(
@@ -1681,10 +1735,11 @@ impl Check for PointCloudDensity {
                             at(),
                             "AUTONOMY.POINT_CLOUD_EMPTY",
                             format!(
-                                "episode {}: stream `{}` published {} point cloud(s) and every one \
-                                 of them was empty — the messages have the schema, the rate and \
-                                 the coordinate frame of a working sensor and none of its data",
-                                ep.index, stream.name, counts.message_count
+                                "episode {}: stream `{}` published {} point cloud(s){} and every \
+                                 one of them was empty — the messages have the schema, the rate \
+                                 and the coordinate frame of a working sensor and none of its \
+                                 data",
+                                ep.index, stream.name, counts.message_count, of_readable
                             ),
                         )
                         .with_risk(
@@ -1709,12 +1764,13 @@ impl Check for PointCloudDensity {
                             "AUTONOMY.POINT_CLOUD_DROPPED",
                             format!(
                                 "episode {}: stream `{}` published {} empty point cloud(s) out of \
-                                 {} — the sensor cut out during the recording (the fullest sweep \
+                                 {}{} — the sensor cut out during the recording (the fullest sweep \
                                  held {} points)",
                                 ep.index,
                                 stream.name,
                                 counts.empty,
                                 counts.message_count,
+                                of_readable,
                                 counts.max
                             ),
                         )

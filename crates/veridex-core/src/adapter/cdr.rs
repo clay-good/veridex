@@ -298,11 +298,21 @@ pub struct PointCountAccum {
     min: u64,
     max: u64,
     empty: u64,
+    undecoded: u64,
 }
 
 impl PointCountAccum {
-    /// Fold in one message's point count.
-    pub fn observe(&mut self, points: u64) {
+    /// Fold in one point-cloud message: its count, or `None` for a body that did not decode.
+    ///
+    /// Takes the decode's own `Option` rather than a count, so a caller cannot record the successes
+    /// and drop the failures. That is the shape of the bug this replaced: three call sites each
+    /// wrote `if let Some(n) = decode(..) { observe(n) }`, and a stream whose bodies were mostly
+    /// unreadable summarized the readable few and graded clean on them.
+    pub fn observe(&mut self, points: Option<u64>) {
+        let Some(points) = points else {
+            self.undecoded += 1;
+            return;
+        };
         if self.messages == 0 {
             self.min = points;
         } else {
@@ -315,14 +325,21 @@ impl PointCountAccum {
         }
     }
 
-    /// The summary, or `None` when no message's count was read — an empty summary and a stream of
-    /// empty clouds are opposite verdicts, so "nothing was measured" must not render as a count.
+    /// The summary, or `None` when the stream carried no point-cloud message at all — an empty
+    /// summary and a stream of empty clouds are opposite verdicts, so "nothing was measured" must
+    /// not render as a count.
+    ///
+    /// A stream whose every body failed to decode does yield a summary, with `message_count` of
+    /// zero: "the messages were there and none of them could be read" is a measurement, and
+    /// returning `None` for it would hand the stream to the density check's abstention, which says
+    /// the *source* carries no counts. It carries them; they did not survive the recording.
     pub fn finish(self) -> Option<PointCounts> {
-        (self.messages > 0).then_some(PointCounts {
+        (self.messages > 0 || self.undecoded > 0).then_some(PointCounts {
             message_count: self.messages,
             min: self.min,
             max: self.max,
             empty: self.empty,
+            undecoded: self.undecoded,
         })
     }
 }

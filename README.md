@@ -186,8 +186,8 @@ cargo build
 
 # generate a demo MCAP with a synthetic cross-stream clock skew. Append a variant name to write a
 # different fault instead — `clean`, `stuck`, `late-start`, or one of the autonomy-rig variants
-# `av`, `av-miscalibrated`, `av-ambiguous-tf`, `av-dead-lidar`, `av-unstamped`,
-# `av-uncalibrated-camera`, `av-lossy-camera`, `av-no-fix`. An unknown variant is refused, never silently
+# `av`, `av-miscalibrated`, `av-ambiguous-tf`, `av-dead-lidar`, `av-truncated-lidar`,
+# `av-unstamped`, `av-uncalibrated-camera`, `av-lossy-camera`, `av-no-fix`. An unknown variant is refused, never silently
 # substituted, and the refusal names the ones it knows.
 cargo run -p veridex-demo --example make_demo_mcap -- /tmp/demo.mcap
 

@@ -783,9 +783,9 @@ fn read_shard(
                 builder.point_fields = super::cdr::decode_point_cloud2_fields(data);
             }
             // Per message: see the same call in the MCAP reader.
-            if let Some(n) = super::cdr::decode_point_cloud2_point_count(data) {
-                builder.point_counts.observe(n);
-            }
+            builder
+                .point_counts
+                .observe(super::cdr::decode_point_cloud2_point_count(data));
         } else if super::mcap::schema_is(ty, "CameraInfo") {
             if !contents.intrinsics.contains_key(&topic.name) {
                 if let Some(ci) = super::cdr::decode_camera_info(data, &topic.name) {
@@ -946,9 +946,9 @@ fn read_mcap_shard(
                 builder.point_fields = super::cdr::decode_point_cloud2_fields(data);
             }
             // Per message: see the same call in the MCAP reader.
-            if let Some(n) = super::cdr::decode_point_cloud2_point_count(data) {
-                builder.point_counts.observe(n);
-            }
+            builder
+                .point_counts
+                .observe(super::cdr::decode_point_cloud2_point_count(data));
         } else if super::mcap::schema_is(&ros_type, "CameraInfo") {
             if !contents.intrinsics.contains_key(&topic) {
                 if let Some(ci) = super::cdr::decode_camera_info(data, &topic) {
