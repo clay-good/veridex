@@ -6208,6 +6208,30 @@ fn a_stream_whose_density_was_never_measured_is_not_a_stream_found_empty() {
 }
 
 #[test]
+fn a_metadata_only_run_is_not_a_rig_that_declares_no_tree_or_receiver() {
+    // `autonomy.point-cloud-density` had this guard from the start and its three siblings did not,
+    // so on a `--metadata-only` run of the demo rig the report said a receiver "carries no decoded
+    // fix status", "carries no decoded coordinates", and — worst of the three, because it is a flat
+    // untruth about the recording rather than a hedge — "the dataset declares no transform tree".
+    // The same file, read fully, declares one and resolves every sensor through it. All three are
+    // built from message bodies, and no adapter reads a transform tree or a fix from a manifest, so
+    // under the flag they are absent by request on every dataset.
+    use veridex_core::check::CheckContext;
+    let metadata_only = CheckContext {
+        frames_read: false,
+        ..Default::default()
+    };
+
+    let no_tree = rig_with_calibration(None);
+    assert!(autonomy::SensorFrameResolution
+        .run_in(&no_tree, &metadata_only)
+        .is_empty());
+    // And it still speaks on a full run, or the guard would have removed the disclosure instead of
+    // correcting its cause.
+    assert!(!autonomy::SensorFrameResolution.run(&no_tree).is_empty());
+}
+
+#[test]
 fn a_metadata_only_run_is_not_a_rig_whose_lidar_was_never_measured() {
     // The abstention's cause matters. Under `--metadata-only` no message body is opened, so *every*
     // point-cloud stream of *every* format carries no counts — and a finding saying so would blame

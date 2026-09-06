@@ -328,6 +328,20 @@ impl Check for GnssFixAvailability {
         }
         findings
     }
+
+    /// Withholds the abstention under a metadata-only ingest.
+    ///
+    /// The fix status is decoded from a `NavSatFix` body, so a run that opened none read no status
+    /// on any dataset — and `AUTONOMY.GNSS_STATUS_UNREAD` would then tell a reader that a receiver
+    /// "carries no decoded fix status" when the receiver carries it and the run declined to look.
+    /// `COVERAGE.METADATA_ONLY` already states the run's shape, and `AUTONOMY.GNSS_NO_FIX` cannot
+    /// fire without the status anyway.
+    fn run_in(&self, dataset: &Dataset, context: &CheckContext) -> Vec<Finding> {
+        if !context.frames_read {
+            return Vec::new();
+        }
+        self.run(dataset)
+    }
 }
 
 /// Names of `Gnss` streams for which `have` reports no decoded evidence, deduplicated across
@@ -536,6 +550,16 @@ impl Check for GnssPlausibility {
             );
         }
         findings
+    }
+
+    /// Withholds the abstention under a metadata-only ingest, for the reason its sibling above does:
+    /// the coordinates are decoded from a `NavSatFix` body, so "carries no decoded coordinates"
+    /// would describe the request rather than the receiver.
+    fn run_in(&self, dataset: &Dataset, context: &CheckContext) -> Vec<Finding> {
+        if !context.frames_read {
+            return Vec::new();
+        }
+        self.run(dataset)
     }
 }
 
@@ -1608,6 +1632,20 @@ impl Check for SensorFrameResolution {
             }
         }
         findings
+    }
+
+    /// Withholds the abstention under a metadata-only ingest.
+    ///
+    /// The transform tree is built from `TFMessage` bodies — no adapter reads one from a manifest —
+    /// so a run that opened no body has no tree for any dataset, and the finding said "the dataset
+    /// declares no transform tree" about datasets that declare one. That is not a softer claim than
+    /// the others in this family; it is a false statement about the recording. The fault codes
+    /// cannot fire without a tree anyway.
+    fn run_in(&self, dataset: &Dataset, context: &CheckContext) -> Vec<Finding> {
+        if !context.frames_read {
+            return Vec::new();
+        }
+        self.run(dataset)
     }
 }
 

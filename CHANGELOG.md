@@ -10,6 +10,21 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A narrower read can no longer invent findings, and three did.** `--metadata-only` opens no
+  payload, so every check that reads values, timestamps or message bodies has nothing — and a check
+  reporting that absence as a property of the *data* says something the full read contradicts.
+  `autonomy.point-cloud-density` had a guard against this from the start; its three siblings did
+  not. On a `--metadata-only` run of the demo rig the report said a receiver "carries no decoded fix
+  status", "carries no decoded coordinates", and — worst of the three, because it is a flat untruth
+  about the recording rather than a hedge about the run — "the dataset declares no transform tree".
+  The same file read fully declares one and resolves every sensor through it. All three now stand
+  down under the flag, where `COVERAGE.METADATA_ONLY` already states the run's shape.
+
+  Found by a new invariant rather than by inspection: **a narrower read never produces a finding the
+  full read does not** (`COVERAGE.METADATA_ONLY` itself excepted). Held over every demo variant of
+  every generator, so the next abstention written without this in mind fails the suite instead of
+  shipping.
+
 - **The semantic family was the last one whose silence could mean either thing.** Every other family
   discloses when it had nothing to measure — `STATISTICAL.UNMEASURED_VALUES`,
   `STRUCTURAL.UNCOMPARED_EPISODES`, `AUTONOMY.POINT_CLOUD_UNMEASURED`. The semantic family declared

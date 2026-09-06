@@ -126,6 +126,43 @@ fn codes_for(path: &Path) -> Option<(BTreeSet<String>, BTreeSet<String>)> {
     ))
 }
 
+/// Every generator, as (label, variants, writer, single-file extension). One list, so a generator
+/// added later is swept by both tests below rather than by whichever one someone remembered.
+#[allow(clippy::type_complexity)]
+fn fixtures() -> Vec<(
+    &'static str,
+    &'static [&'static str],
+    fn(&Path, &str) -> Result<(), veridex_demo::DemoError>,
+    Option<&'static str>,
+)> {
+    vec![
+        (
+            "mcap",
+            veridex_demo::mcap::VARIANTS,
+            veridex_demo::mcap::write as fn(&Path, &str) -> Result<(), veridex_demo::DemoError>,
+            Some("mcap"),
+        ),
+        (
+            "lerobot",
+            veridex_demo::lerobot::VARIANTS,
+            veridex_demo::lerobot::write,
+            None,
+        ),
+        (
+            "mf4",
+            veridex_demo::mf4::VARIANTS,
+            veridex_demo::mf4::write,
+            Some("mf4"),
+        ),
+        (
+            "rlds",
+            veridex_demo::rlds::VARIANTS,
+            veridex_demo::rlds::write,
+            None,
+        ),
+    ]
+}
+
 fn check_generator(
     label: &str,
     module_rel: &str,
@@ -248,5 +285,81 @@ fn every_rlds_variant_emits_what_its_documentation_claims() {
         veridex_demo::rlds::VARIANTS,
         veridex_demo::rlds::write,
         None,
+    );
+}
+
+/// Ingest `path` under `--metadata-only` and run the standard catalog, or `None` when the format
+/// refuses the mode (a CAN log has no manifest to read).
+fn metadata_only_codes_for(path: &Path) -> Option<BTreeSet<String>> {
+    let registry = veridex_core::adapter::default_registry();
+    let checked = veridex_core::pipeline::run_check(
+        &registry,
+        &Source::Local(path.to_path_buf()),
+        None,
+        &IngestOptions {
+            metadata_only: true,
+            ..IngestOptions::default()
+        },
+    )
+    .ok()?;
+    Some(
+        checked
+            .verdict
+            .findings
+            .iter()
+            .map(|f| f.code.clone())
+            .collect(),
+    )
+}
+
+/// Looking at **less** of a dataset must not produce findings about it that looking at all of it
+/// does not.
+///
+/// `--metadata-only` opens no payload, so every check that reads values, timestamps, content hashes
+/// or message bodies has nothing — and a check that reports that absence as a property of the *data*
+/// says something the full read contradicts. `SEMANTIC.NO_TASKS` did exactly that on its first
+/// version: the demo's `video` fixture read "no episode in this dataset carries one" under the flag
+/// and reported nothing at all on a full run. Same recording, opposite claims, and only the request
+/// had changed.
+///
+/// The one code allowed to appear here and nowhere else is `COVERAGE.METADATA_ONLY`, which is the
+/// run describing itself rather than the dataset — and it is precisely what makes every other such
+/// finding redundant as well as wrong.
+#[test]
+fn a_narrower_read_never_invents_a_finding_the_full_read_does_not() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut compared = 0;
+    for (label, variants, write, extension) in fixtures() {
+        for variant in variants {
+            let target = match extension {
+                Some(ext) => dir.path().join(format!("{label}-{variant}.{ext}")),
+                None => dir.path().join(format!("{label}-{variant}")),
+            };
+            let _ = std::fs::remove_dir_all(&target);
+            if write(&target, variant).is_err() {
+                continue;
+            }
+            let (Some((full, _)), Some(narrow)) =
+                (codes_for(&target), metadata_only_codes_for(&target))
+            else {
+                continue; // a fixture built to be refused, or a format with no metadata-only mode
+            };
+            compared += 1;
+            let invented: Vec<&String> = narrow
+                .iter()
+                .filter(|c| !full.contains(*c))
+                .filter(|c| c.as_str() != "COVERAGE.METADATA_ONLY")
+                .collect();
+            assert!(
+                invented.is_empty(),
+                "{label}/{variant}: `--metadata-only` reports {invented:?}, which the full read of \
+                 the same bytes does not. A finding that appears only when Veridex looks at less is \
+                 describing the request rather than the recording.",
+            );
+        }
+    }
+    assert!(
+        compared >= 4,
+        "the sweep must actually reach some metadata-only-capable fixtures, compared {compared}"
     );
 }
