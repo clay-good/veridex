@@ -6,6 +6,15 @@ same score. **Scores are only comparable within the same `rubric_version`.**
 
 `rubric_version: v1`
 
+**What the version tracks, and what it does not.** The rubric is the *function* from a verdict to a
+score: the weights below, the deductions, the two axes and how they combine. The **catalog** is an
+input to that function, not part of it — so adding a check, adding a finding code, or fixing a check
+that was missing a defect does **not** change the rubric, and does not bump `rubric_version`. What
+it changes is the verdict, which is why the sentence above pins comparability to the same *Veridex
+version* as well: a later version can find more in the same bytes, and should. Bump
+`RUBRIC_VERSION` when a weight, a deduction, a grade boundary or the axis split changes — when the
+same verdict would score differently.
+
 ## Two axes
 
 The score combines two independent axes so a clean data verdict can never mask missing provenance.

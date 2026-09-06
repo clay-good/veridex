@@ -38,7 +38,10 @@ Checklist, in the order the things go wrong:
       caught at publish time, not before.
 - [ ] `CANONICAL_VERSION` bumped **if and only if** the canonical encoding changed. The golden vector
       in `tests/canonical_golden.rs` fails until the two agree, which is the point.
-- [ ] `RUBRIC_VERSION` bumped if the trust-score rubric changed (`docs/rubric-v1.md`).
+- [ ] `RUBRIC_VERSION` bumped if the trust-score rubric changed (`docs/rubric-v1.md`) — that means a
+      weight, a deduction, a grade boundary or the axis split, i.e. anything that makes the *same
+      verdict* score differently. Adding a check or a finding code does not: the catalog is an input
+      to the rubric, not part of it, which is why comparability is pinned to the Veridex version too.
 - [ ] The README's status section and `docs/checks.md` match what actually ships.
 
 ## Publishing
