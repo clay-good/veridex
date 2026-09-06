@@ -927,3 +927,38 @@ fn the_sweep_reaches_every_adapter() {
          narrow in silence. Reached: {reached:?}",
     );
 }
+
+/// Every finding teaches: it names the training risk it is about and a remedy to act on.
+///
+/// `openspec/specs/checks-catalog/spec.md` requires it of the catalog — "each catalog check SHALL
+/// ship with a stable ID, the training-time risk it addresses, and a suggested remedy, so findings
+/// teach rather than merely flag" — and it is the difference between a report a team acts on and a
+/// list of codes they look up. It was asserted in a dozen places on the *first* finding of a
+/// hand-built fixture, which leaves every other finding of every other shape unguarded, and a new
+/// code shipped without a remedy would pass all of them.
+///
+/// Held over every finding of every dataset in the sweep instead.
+#[test]
+fn every_finding_names_a_risk_and_a_remedy() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut seen = 0;
+    for (name, target) in sweep_datasets(dir.path()) {
+        let Some(checked) = checked_for(&target) else {
+            continue;
+        };
+        for f in &checked.verdict.findings {
+            seen += 1;
+            assert!(
+                !f.risk.trim().is_empty(),
+                "{name}: `{}` names no training risk",
+                f.code
+            );
+            assert!(
+                !f.remedy.trim().is_empty(),
+                "{name}: `{}` suggests no remedy",
+                f.code
+            );
+        }
+    }
+    assert!(seen >= 100, "the sweep must reach findings, saw {seen}");
+}
