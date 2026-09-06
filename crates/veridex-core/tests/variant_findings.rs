@@ -470,3 +470,95 @@ fn tightening_a_threshold_never_removes_a_finding_or_raises_the_score() {
         "the sweep must reach the fixtures, got {compared}"
     );
 }
+
+/// Every renderer reports the same findings.
+///
+/// A finding reaches a reader through four surfaces — the terminal, the JSON report, SARIF, and the
+/// self-contained HTML — and each is a separate rendering of the same verdict. A renderer that drops
+/// a finding, or names it something the others do not, makes a dataset look different depending on
+/// which output a team reads, and the one that disagrees is the one nothing compares against. This
+/// repo has already had a renderer state a class the verdict did not: the trust label printed the
+/// `asserted` provenance count under the word "attested".
+///
+/// So each renderer's set of finding codes is compared against the verdict's own, over every demo
+/// variant of every generator. Codes rather than messages: the message wording is each renderer's
+/// business (the terminal wraps, the HTML escapes), while *which* findings there are is not.
+#[test]
+fn every_renderer_reports_the_same_findings() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let registry = veridex_core::adapter::default_registry();
+    let mut compared = 0;
+    for (label, variants, write, extension) in fixtures() {
+        for variant in variants {
+            let target = match extension {
+                Some(ext) => dir.path().join(format!("{label}-{variant}.{ext}")),
+                None => dir.path().join(format!("{label}-{variant}")),
+            };
+            let _ = std::fs::remove_dir_all(&target);
+            if write(&target, variant).is_err() {
+                continue;
+            }
+            let Some(checked) = veridex_core::pipeline::run_check(
+                &registry,
+                &Source::Local(target.to_path_buf()),
+                None,
+                &IngestOptions::default(),
+            )
+            .ok() else {
+                continue; // a fixture built to be refused at ingest
+            };
+            compared += 1;
+            let verdict = &checked.verdict;
+            let expected: BTreeSet<&str> =
+                verdict.findings.iter().map(|f| f.code.as_str()).collect();
+
+            // JSON and SARIF carry the code as a field, so they are compared exactly.
+            let json: serde_json::Value =
+                serde_json::from_str(&veridex_core::report::render_json(verdict, None))
+                    .expect("the JSON report parses");
+            let in_json: BTreeSet<&str> = json["verdict"]["findings"]
+                .as_array()
+                .expect("findings array")
+                .iter()
+                .map(|f| f["code"].as_str().expect("a code"))
+                .collect();
+            assert_eq!(
+                in_json, expected,
+                "{label}/{variant}: the JSON report's findings differ from the verdict's",
+            );
+
+            let sarif = veridex_core::report::render_sarif(verdict);
+            let in_sarif: BTreeSet<&str> = sarif["runs"][0]["results"]
+                .as_array()
+                .expect("results array")
+                .iter()
+                .map(|r| r["ruleId"].as_str().expect("a ruleId"))
+                .collect();
+            assert_eq!(
+                in_sarif, expected,
+                "{label}/{variant}: SARIF's results differ from the verdict's findings",
+            );
+
+            // The terminal and HTML render the code into prose, so each is checked for containment
+            // of every code the verdict holds. That is the direction that matters: a renderer
+            // *dropping* a finding is the failure, and a renderer cannot invent a code the catalog
+            // does not define.
+            let terminal = veridex_core::report::render_terminal(verdict, None, usize::MAX);
+            let html = veridex_core::report::render_html(verdict, None);
+            for code in &expected {
+                assert!(
+                    terminal.contains(code),
+                    "{label}/{variant}: the terminal report omits `{code}`",
+                );
+                assert!(
+                    html.contains(code),
+                    "{label}/{variant}: the HTML report omits `{code}`",
+                );
+            }
+        }
+    }
+    assert!(
+        compared >= 30,
+        "the sweep must reach the fixtures, got {compared}"
+    );
+}
