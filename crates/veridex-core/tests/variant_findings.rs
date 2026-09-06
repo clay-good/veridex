@@ -167,6 +167,28 @@ fn generated_datasets(_dir: &Path) -> Vec<(String, std::path::PathBuf)> {
 
 fn write_generated(dir: &Path) -> Vec<(String, std::path::PathBuf)> {
     let mut out: Vec<(String, std::path::PathBuf)> = Vec::new();
+
+    // CAN+DBC, the eighth adapter and the one with no generator and no committed fixture — its own
+    // tests build their inputs inline, so without this the sweeps below would still be missing a
+    // reader. Two text files, the pair `docs/formats.md` tells a reader to create, including the
+    // undefined id `4A2` that makes the coverage disclosure real rather than hypothetical.
+    let can = dir.join("can-drive");
+    if std::fs::create_dir_all(&can).is_ok() {
+        let dbc = "VERSION \"\"\n\n\
+                   BO_ 291 EngineData: 8 ECU\n\
+                    SG_ EngineRPM : 0|16@1+ (0.25,0) [0|16383.75] \"rpm\" Vector__XXX\n\
+                    SG_ VehicleSpeed : 16|16@1+ (0.01,0) [0|655.35] \"km/h\" Vector__XXX\n";
+        let log = "(1709294400.000000) can0 123#7017B80B00000000\n\
+                   (1709294400.010000) can0 123#7A17BC0B00000000\n\
+                   (1709294400.020000) can0 4A2#DEADBEEF\n\
+                   (1709294400.030000) can0 123#8D17C40B00000000\n";
+        if std::fs::write(can.join("vehicle.dbc"), dbc).is_ok()
+            && std::fs::write(can.join("drive.log"), log).is_ok()
+        {
+            out.push(("candbc/drive".to_string(), can));
+        }
+    }
+
     for (label, variants, write, extension) in fixtures() {
         for variant in variants {
             let target = match extension {
@@ -869,5 +891,39 @@ fn a_redacted_report_leaks_no_identifier_the_cdm_carries() {
     assert!(
         compared >= 30,
         "the sweep must reach the fixtures, got {compared}"
+    );
+}
+
+/// The sweep reaches every adapter the registry supports.
+///
+/// The properties below are only as broad as the datasets they run over, and a dataset that fails to
+/// ingest is skipped by every one of them — silently, and indistinguishably from one that passed. So
+/// a fixture that stopped loading, or a reader with no fixture at all, would quietly narrow all nine
+/// properties to the formats that still worked while the file stayed green. Four of the eight
+/// adapters had no generated fixture until the committed ones were swept in, and CAN+DBC had neither
+/// until its two text files were written here.
+///
+/// Checked by the format each dataset actually ingested as, not by filename, so a fixture that reads
+/// as the wrong format counts for the wrong reader and is caught.
+#[test]
+fn the_sweep_reaches_every_adapter() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut reached: BTreeSet<String> = BTreeSet::new();
+    for (_, target) in sweep_datasets(dir.path()) {
+        if let Some(checked) = checked_for(&target) {
+            reached.insert(checked.ingested.report.format_id.to_string());
+        }
+    }
+    let supported: BTreeSet<String> = veridex_core::adapter::default_registry()
+        .supported_formats()
+        .into_iter()
+        .map(|f| f.to_string())
+        .collect();
+    let missing: Vec<&String> = supported.difference(&reached).collect();
+    assert!(
+        missing.is_empty(),
+        "no dataset in the sweep ingests as {missing:?}, so every property in this file is being \
+         held over the other readers only — add a fixture for it rather than letting the coverage \
+         narrow in silence. Reached: {reached:?}",
     );
 }
