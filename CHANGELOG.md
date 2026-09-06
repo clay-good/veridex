@@ -10,6 +10,17 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A camera nothing on the rig can reach.** `autonomy.sensor-frame-resolution` asks whether each
+  sensor's frame resolves through the transform tree to *a* camera, which is the right question per
+  sensor — a sensor that reaches one camera can be projected into it. On a multi-camera rig that
+  leaves a gap the rule cannot see. Two sensor pods with only one wired to the body — a rig whose
+  second pod's extrinsics were never recorded — gives every sensor a camera in its own component of
+  the tree, so every per-sensor result passes, `world-model-ready` certifies, and *no check in the
+  catalog says anything*, while nothing on the rig can be projected into the other pod's camera and
+  every image it recorded is unusable for fusion. `AUTONOMY.CAMERA_FRAME_UNRELATED` reports it,
+  naming which cameras are stranded from which, and stays silent on the ordinary multi-camera
+  vehicle whose cameras share one component.
+
 - **The promise that makes `--profile strict` safe to gate on now has a test behind it.**
   [docs/profiles.md](docs/profiles.md) sells tightening in these words: measuring the data harder
   than the catalog asks "can only lower a score, so it is not a narrowing: it emits no

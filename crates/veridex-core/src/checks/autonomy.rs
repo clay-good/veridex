@@ -1341,6 +1341,7 @@ impl Check for SensorFrameResolution {
             "AUTONOMY.SENSOR_FRAME_UNDECLARED",
             "AUTONOMY.SENSOR_FRAME_UNKNOWN",
             "AUTONOMY.SENSOR_FRAME_UNRELATED",
+            "AUTONOMY.CAMERA_FRAME_UNRELATED",
             "AUTONOMY.EGO_FRAME_UNKNOWN",
             "AUTONOMY.SENSOR_FRAME_UNCHECKED",
         ]
@@ -1495,6 +1496,63 @@ impl Check for SensorFrameResolution {
             // once for every camera on the rig.
             let reachable_from_a_camera: HashSet<&str> =
                 tf_reachable_from_any(transforms, &camera_frames);
+
+            // The question above is answered from *any* camera, which is what the per-sensor rule
+            // wants: a sensor that reaches one camera can be projected into it. On a multi-camera
+            // rig that leaves a gap the rule cannot see. If the cameras themselves sit in different
+            // components of the tree — two sensor pods, and only one of them wired to the body,
+            // which is what a rig whose second pod's extrinsics were never recorded looks like —
+            // then every sensor reaches the camera in *its* component and the rig passes, while
+            // nothing on it can be projected into the other camera at all. Every image that camera
+            // recorded is unusable for fusion, and not one rule said so.
+            //
+            // Asked once per episode over the camera frames alone: they are all in one component or
+            // they are not, and the sensors' own reachability is the loop below.
+            if camera_frames.len() > 1 {
+                let first = camera_frames
+                    .iter()
+                    .copied()
+                    .take(1)
+                    .collect::<BTreeSet<_>>();
+                let anchor_component = tf_reachable_from_any(transforms, &first);
+                let stranded: Vec<&str> = camera_frames
+                    .iter()
+                    .copied()
+                    .filter(|f| !anchor_component.contains(f))
+                    .collect();
+                if !stranded.is_empty() && reported.insert(("", "AUTONOMY.CAMERA_FRAME_UNRELATED"))
+                {
+                    findings.push(
+                        Finding::new(
+                            self.id(),
+                            Category::Autonomy,
+                            Severity::Error,
+                            Location::Episode { episode: ep.index },
+                            "AUTONOMY.CAMERA_FRAME_UNRELATED",
+                            format!(
+                                "episode {}: the rig's cameras are in more than one disconnected \
+                                 part of the transform tree — no chain joins {} to {}, so no sensor \
+                                 can be projected into both",
+                                ep.index,
+                                stranded.join(", "),
+                                first.iter().copied().collect::<Vec<_>>().join(", "),
+                            ),
+                        )
+                        .with_risk(
+                            "Every per-sensor result on this rig is satisfied by reaching *a* \
+                             camera, so a sensor that reaches the camera in its own part of the tree \
+                             passes — while nothing on the rig can be projected into the cameras in \
+                             the other part. Their images are unusable for fusion, and every other \
+                             frame rule reads the rig as resolved.",
+                        )
+                        .with_remedy(
+                            "Record the transform that joins the two parts (the second pod's or \
+                             mast's extrinsics to the body frame). Until it exists, treat the \
+                             stranded cameras as uncalibrated rather than as part of this rig.",
+                        ),
+                    );
+                }
+            }
 
             for stream in &ep.streams {
                 if !is_spatial_sensor(stream.modality) {

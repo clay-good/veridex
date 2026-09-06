@@ -3896,6 +3896,94 @@ fn rig_with_frames(
     d
 }
 
+#[test]
+fn a_camera_no_sensor_can_reach_is_not_a_resolved_rig() {
+    // Two sensor pods, each with its own camera, and only one of them wired to the body — the
+    // ordinary shape of a rig whose second pod's extrinsics were never recorded. The LiDAR sits in
+    // pod 1 and reaches pod 1's camera, so the per-sensor rule is satisfied for it and the rig
+    // certifies as "every sensor's own frame resolves through the tree to a camera".
+    //
+    // Nothing can be projected into `cam_rear`. Not the LiDAR, not the GNSS, not the IMU: its
+    // component holds one frame and nothing else joins it. Every image it recorded is unusable for
+    // fusion, and the reachability question was asked from *any* camera, so one reachable camera
+    // answered it for all of them.
+    let cal = veridex_core::cdm::Calibration {
+        transforms: vec![
+            xf("base_link", "lidar_top"),
+            xf("base_link", "cam_front"),
+            xf("base_link", "gnss"),
+            xf("base_link", "imu_link"),
+            // Pod 2's camera, in the tree and joined to nothing.
+            xf("rear_pod", "cam_rear"),
+        ],
+        intrinsics: vec![intr("cam_front"), intr("cam_rear")],
+    };
+    let mut d = rig_with_frames(
+        Some(cal),
+        &[
+            ("lidar", "lidar_top"),
+            ("gnss", "gnss"),
+            ("imu", "imu_link"),
+            ("cam", "cam_front"),
+        ],
+    );
+    // A second camera stream, stamping the stranded frame.
+    let mut rear = rig_stream("cam_rear", Modality::Video, 1_000_000_000);
+    rear.frame_id = Some("cam_rear".to_string());
+    d.episodes[0].streams.push(rear);
+
+    let engine = veridex_core::checks::default_engine().expect("the standard catalog");
+    let hash = veridex_core::content_hash(&d);
+    let verdict = engine.run(&d, hash, &veridex_core::RunConfig::default());
+    let codes: Vec<&str> = verdict.findings.iter().map(|x| x.code.as_str()).collect();
+    assert!(
+        codes.contains(&"AUTONOMY.CAMERA_FRAME_UNRELATED"),
+        "a camera nothing on the rig can reach must be reported: {codes:?}"
+    );
+    let f = verdict
+        .findings
+        .iter()
+        .find(|x| x.code == "AUTONOMY.CAMERA_FRAME_UNRELATED")
+        .expect("the finding");
+    assert_eq!(f.severity, Severity::Error);
+    // It names both sides, because "which camera" is the whole actionable content.
+    assert!(f.message.contains("cam_rear"), "{}", f.message);
+    assert!(f.message.contains("cam_front"), "{}", f.message);
+
+    // And a rig whose cameras share one component says nothing: the rule must not fire on the
+    // ordinary multi-camera vehicle, which is every real one.
+    let joined = veridex_core::cdm::Calibration {
+        transforms: vec![
+            xf("base_link", "lidar_top"),
+            xf("base_link", "cam_front"),
+            xf("base_link", "gnss"),
+            xf("base_link", "imu_link"),
+            xf("base_link", "rear_pod"),
+            xf("rear_pod", "cam_rear"),
+        ],
+        intrinsics: vec![intr("cam_front"), intr("cam_rear")],
+    };
+    let mut ok = rig_with_frames(
+        Some(joined),
+        &[
+            ("lidar", "lidar_top"),
+            ("gnss", "gnss"),
+            ("imu", "imu_link"),
+            ("cam", "cam_front"),
+        ],
+    );
+    let mut rear_ok = rig_stream("cam_rear", Modality::Video, 1_000_000_000);
+    rear_ok.frame_id = Some("cam_rear".to_string());
+    ok.episodes[0].streams.push(rear_ok);
+    assert!(
+        autonomy::SensorFrameResolution
+            .run(&ok)
+            .iter()
+            .all(|x| x.code != "AUTONOMY.CAMERA_FRAME_UNRELATED"),
+        "a two-camera rig wired into one tree is the ordinary case"
+    );
+}
+
 fn wired_rig() -> veridex_core::cdm::Calibration {
     veridex_core::cdm::Calibration {
         transforms: vec![
