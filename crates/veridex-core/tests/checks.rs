@@ -2384,6 +2384,42 @@ fn exact_duplicate_stream_key_is_an_error_not_a_broken_ambiguity() {
 }
 
 #[test]
+fn a_metadata_only_run_is_not_a_dataset_that_carries_no_instructions() {
+    // The abstention's cause matters, and this one had it wrong. The task is resolved from the
+    // *data* on the formats that have one — a LeRobot episode's from its `task_index` column, an
+    // RLDS episode's from a per-step language feature — so under `--metadata-only` no dataset
+    // resolves a task, and `SEMANTIC.NO_TASKS` fired on datasets whose instructions are all present
+    // and well written. Caught on the demo's own `video` fixture, which reads "no episode in this
+    // dataset carries one" under the flag and reports nothing at all on a full run: the finding was
+    // describing the request, not the recording. `COVERAGE.METADATA_ONLY` already states the run's
+    // shape.
+    use veridex_core::check::CheckContext;
+    let d = dataset(vec![episode_with_task(0, None)]);
+    let metadata_only = CheckContext {
+        frames_read: false,
+        ..Default::default()
+    };
+    let full = CheckContext {
+        frames_read: true,
+        ..Default::default()
+    };
+    assert!(semantic::TaskQuality.run_in(&d, &metadata_only).is_empty());
+    assert_eq!(semantic::TaskQuality.run_in(&d, &full).len(), 1);
+
+    // The annotation half is data too — a LeRobot mid-episode task change is read from the rows.
+    let no_labels = dataset(vec![episode_with_labels(0, vec![])]);
+    assert!(semantic::AnnotationIntegrity
+        .run_in(&no_labels, &metadata_only)
+        .is_empty());
+    assert_eq!(
+        semantic::AnnotationIntegrity
+            .run_in(&no_labels, &full)
+            .len(),
+        1
+    );
+}
+
+#[test]
 fn meaningful_and_absent_tasks_are_not_flagged() {
     // A real instruction is clean.
     let good = dataset(vec![episode_with_task(0, Some("pick up the red cube"))]);

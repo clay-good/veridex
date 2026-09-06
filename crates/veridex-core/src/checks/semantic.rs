@@ -14,7 +14,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::cdm::{Dataset, Episode, TimestampNs};
-use crate::check::{Category, Check, Finding, Location, Scope, Severity};
+use crate::check::{Category, Check, CheckContext, Finding, Location, Scope, Severity};
 
 /// Degenerate placeholder task strings — matched case-insensitively against the trimmed task. These
 /// are common low-information stand-ins that carry no real instruction.
@@ -153,6 +153,23 @@ impl Check for TaskQuality {
             );
         }
         findings
+    }
+
+    /// Withholds the abstention under a metadata-only ingest.
+    ///
+    /// The task is resolved from the data on the formats that have one — a LeRobot episode's task
+    /// comes from its `task_index` column, an RLDS episode's from a per-step language feature — so a
+    /// run that opened no payload resolves none, on every dataset. `SEMANTIC.NO_TASKS` would then
+    /// fire on a dataset whose tasks are all present and well written, blaming the data for a
+    /// silence the *request* caused: the same LeRobot dataset reads "no episode carries one" here
+    /// and reports nothing on a full run. `COVERAGE.METADATA_ONLY` already says no payload was
+    /// opened. The two fault codes cannot fire without a task anyway, so the whole check stands down
+    /// rather than reporting half a question.
+    fn run_in(&self, dataset: &Dataset, context: &CheckContext) -> Vec<Finding> {
+        if !context.frames_read {
+            return Vec::new();
+        }
+        self.run(dataset)
     }
 }
 
@@ -354,6 +371,18 @@ impl Check for AnnotationIntegrity {
             );
         }
         findings
+    }
+
+    /// Withholds the abstention under a metadata-only ingest, for the reason its sibling does.
+    ///
+    /// A language annotation is data — a LeRobot mid-episode `task_index` change is read from the
+    /// rows — so a run that opened no payload finds none in any dataset, and saying so would report
+    /// the request rather than the recording.
+    fn run_in(&self, dataset: &Dataset, context: &CheckContext) -> Vec<Finding> {
+        if !context.frames_read {
+            return Vec::new();
+        }
+        self.run(dataset)
     }
 }
 

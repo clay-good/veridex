@@ -24,6 +24,11 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   of them does), and `SEMANTIC.NO_ANNOTATIONS` reports a dataset carrying no `language` annotation
   for the alignment, conflict and empty-annotation rules to judge. Both informational, both declared
   as abstentions, so the trust label and the certificate's by-code summary carry them like the rest.
+  Both stand down under `--metadata-only`: a task and an annotation are read from the *data* on the
+  formats that have them, so a run that opened no payload resolves neither in any dataset — the
+  demo's own `video` fixture read "no episode in this dataset carries one" under the flag while
+  reporting nothing on a full run, which is the finding describing the request rather than the
+  recording, and `COVERAGE.METADATA_ONLY` already states the run's shape.
   Skipping an absent task remains right — it means the source resolved none, not that it wrote an
   empty one — but not flagging it and not mentioning it are different things. Documented in
   [docs/checks.md](docs/checks.md).
