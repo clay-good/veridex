@@ -60,12 +60,14 @@ extracted `license` as covered provenance rather than a `PROVENANCE.MISSING_LICE
 **The manifest and the data are reconciled in both directions.** `meta/info.json` lists the features
 and the Parquet holds the columns, and the two can disagree either way. A column the manifest never
 declared becomes no stream, so its values go unread. A feature the manifest declares and the Parquet
-does not hold is the mirror image, and the more misleading of the two: a stream is still built for
-every declared feature, so the missing one gets a frame at every row timestamp and no values at all —
-every structural and temporal check passes on it, and the statistical family's abstention reads as a
-gap in Veridex rather than in the data. A manifest promising a wrist camera the Parquet never held
-passed with a perfect `data 100`. Both are now disclosed as **unread sources**, which is what reaches
-the verdict:
+does not hold is the mirror image, and the more misleading of the two: a stream used to be built for
+it with a frame at every row timestamp and no values at all, which invents a populated sensor out of
+a missing one — every structural and temporal check passed on it, and the statistical family's
+abstention read as a gap in Veridex rather than in the data. A manifest promising a force-torque
+sensor the Parquet never held passed with a perfect `data 100`. Its stream is now **empty**, which is
+what it is (`STRUCTURAL.EMPTY_STREAM`, an error, and the same answer the RLDS reader has always given
+a feature absent from a record), and both directions of the disagreement are disclosed as **unread
+sources**, which is what reaches the verdict:
 
 ```
 #   [warning] COVERAGE.SOURCE_UNREAD  dataset
@@ -76,6 +78,11 @@ the verdict:
 That is deliberately *not* an "omitted" note. Omissions are what Veridex chooses not to read — video
 pixels, feature array payloads — and filing a missing feature there tells a reader Veridex declined
 to look at data the dataset does not contain.
+
+**A video feature is not a missing one.** LeRobot stores a camera's pixels in `videos/`, so a video
+feature has no Parquet column *by design* and the rows carry only its timeline. The rule above
+excludes them — read literally it would fail almost every real dataset — and a video file that is
+genuinely absent or unreadable stays the video family's finding, which names the path it looked for.
 
 The card is read for more than the license. Two other standard Hub fields answer provenance
 questions outright: `source_datasets` says which dataset this one was derived from

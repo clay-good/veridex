@@ -45,29 +45,47 @@ fn write_lerobot(dir: &Path, features: &[(&str, &str)], fps: f64, rows: &[(i64, 
     )
     .unwrap();
 
-    write_frames_parquet(&dir.join("data/chunk-000/file-000.parquet"), rows);
+    let names: Vec<&str> = features.iter().map(|(n, _)| *n).collect();
+    write_frames_parquet_with(&dir.join("data/chunk-000/file-000.parquet"), rows, &names);
 }
 
-/// Write one `.parquet` shard with the `episode_index` / `frame_index` / `timestamp` columns from
-/// `rows`. The parent directory must already exist.
-fn write_frames_parquet(path: &Path, rows: &[(i64, f64)]) {
-    let schema = Arc::new(Schema::new(vec![
+/// Write one `.parquet` shard with the `episode_index` / `frame_index` / `timestamp` bookkeeping
+/// columns and one `float64` value column per named feature. The parent directory must already
+/// exist.
+///
+/// The feature columns are not optional decoration: a `meta/info.json` declaring features the
+/// Parquet does not hold is itself a defect Veridex reports (`STRUCTURAL.EMPTY_STREAM` over an
+/// unread source), so a helper that wrote only the bookkeeping columns made every test using it a
+/// test about the wrong thing — and several asserted frame counts that only existed because a
+/// missing feature used to be given one frame per row.
+fn write_frames_parquet_with(path: &Path, rows: &[(i64, f64)], features: &[&str]) {
+    let mut fields = vec![
         Field::new("episode_index", DataType::Int64, false),
         Field::new("frame_index", DataType::Int64, false),
         Field::new("timestamp", DataType::Float64, false),
-    ]));
+    ];
+    for name in features {
+        fields.push(Field::new(*name, DataType::Float64, false));
+    }
+    let schema = Arc::new(Schema::new(fields));
     let eps: Vec<i64> = rows.iter().map(|(e, _)| *e).collect();
     let frames: Vec<i64> = rows.iter().enumerate().map(|(i, _)| i as i64).collect();
     let ts: Vec<f64> = rows.iter().map(|(_, t)| *t).collect();
-    let batch = RecordBatch::try_new(
-        schema.clone(),
-        vec![
-            Arc::new(Int64Array::from(eps)),
-            Arc::new(Int64Array::from(frames)),
-            Arc::new(Float64Array::from(ts)),
-        ],
-    )
-    .unwrap();
+    let mut columns: Vec<ArrayRef> = vec![
+        Arc::new(Int64Array::from(eps)),
+        Arc::new(Int64Array::from(frames)),
+        Arc::new(Float64Array::from(ts)),
+    ];
+    for (f, _) in features.iter().enumerate() {
+        // Distinct per feature and per row, so no stream reads as frozen and no two are duplicates.
+        let vals: Vec<f64> = rows
+            .iter()
+            .enumerate()
+            .map(|(i, _)| (i as f64) * 0.5 + (f as f64) * 7.0)
+            .collect();
+        columns.push(Arc::new(Float64Array::from(vals)));
+    }
+    let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
 
     let file = fs::File::create(path).unwrap();
     let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
@@ -382,6 +400,10 @@ fn a_null_timestamp_cell_falls_back_to_frame_index_not_a_fabricated_zero() {
         Field::new("episode_index", DataType::Int64, false),
         Field::new("frame_index", DataType::Int64, false),
         Field::new("timestamp", DataType::Float64, true), // nullable
+        // The feature the manifest below declares. Written for real, because a shard that omits it
+        // is a different defect entirely (`STRUCTURAL.EMPTY_STREAM` over an unread source) and
+        // would leave this test asserting nothing about timestamps.
+        Field::new("observation.state", DataType::Float64, false),
     ]));
     // Row 1's timestamp is null; frame_index is intact (0,1,2).
     let batch = RecordBatch::try_new(
@@ -390,6 +412,7 @@ fn a_null_timestamp_cell_falls_back_to_frame_index_not_a_fabricated_zero() {
             Arc::new(Int64Array::from(vec![0i64, 0, 0])),
             Arc::new(Int64Array::from(vec![0i64, 1, 2])),
             Arc::new(Float64Array::from(vec![Some(0.0), None, Some(0.2)])),
+            Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0])),
         ],
     )
     .unwrap();
@@ -433,9 +456,10 @@ fn frames_are_aggregated_across_multiple_parquet_shards() {
     );
     // A second shard in a separate chunk dir: episode 2. Only reached if find_parquet recurses.
     fs::create_dir_all(dir.path().join("data/chunk-001")).unwrap();
-    write_frames_parquet(
+    write_frames_parquet_with(
         &dir.path().join("data/chunk-001/file-000.parquet"),
         &[(2, 0.0), (2, 0.1)],
+        &["observation.state"],
     );
 
     let d = ingest_lerobot(dir.path());
@@ -1737,6 +1761,9 @@ fn parquet_columns_and_declared_features_are_reconciled_in_the_report() {
     let info = serde_json::json!({
         "codebase_version": "v3.0",
         "fps": 10.0,
+        // Deliberately not a camera name: a LeRobot *video* feature has no Parquet column by
+        // design (its pixels live in `videos/`), so "declared and absent from the Parquet" is the
+        // normal state for every camera in the format and the rule under test excludes them.
         "features": { "observation.phantom": { "dtype": "float32", "shape": [1] } },
     });
     fs::write(
@@ -1790,8 +1817,20 @@ fn parquet_columns_and_declared_features_are_reconciled_in_the_report() {
         ingested.report.omitted_fields
     );
 
-    // And it reaches the verdict, which is the whole point of the distinction: an adapter note
-    // nothing reads is not a disclosure.
+    // The phantom feature's stream carries no frames. It used to carry one at every row timestamp
+    // and no values at all, which invented a populated sensor out of a missing one — the timeline
+    // said the camera ticked along with everything else. Empty is what it is, and it is the same
+    // answer the RLDS adapter has always given a feature absent from a record.
+    let phantom = ingested.dataset.episodes[0]
+        .streams
+        .iter()
+        .find(|s| s.name == "observation.phantom")
+        .expect("a declared feature still becomes a stream, so the hash and the checks can see it");
+    assert!(phantom.frames.is_empty(), "{:?}", phantom.frames.len());
+
+    // And both reach the verdict, which is the whole point of the distinction: an adapter note
+    // nothing reads is not a disclosure. The error says what is wrong with the stream; the coverage
+    // warning says why, which the error alone cannot.
     let checked = veridex_core::pipeline::check_ingested(ingested, &Default::default(), None);
     let unread = checked
         .verdict
@@ -1801,6 +1840,16 @@ fn parquet_columns_and_declared_features_are_reconciled_in_the_report() {
         .unwrap_or_else(|| panic!("{:?}", checked.verdict.findings));
     assert!(unread.message.contains("observation.phantom"), "{unread:?}");
     assert!(unread.message.contains("observation.state"), "{unread:?}");
+    assert!(
+        checked
+            .verdict
+            .findings
+            .iter()
+            .any(|f| f.code == "STRUCTURAL.EMPTY_STREAM"
+                && f.message.contains("observation.phantom")),
+        "{:?}",
+        checked.verdict.findings
+    );
 }
 
 #[test]
@@ -1857,7 +1906,11 @@ fn shards_are_read_in_numeric_order_not_lexicographic() {
     .unwrap();
     for k in 0..12i64 {
         let rows: Vec<(i64, f64)> = (0..5).map(|i| (0i64, (k * 5 + i) as f64 / 10.0)).collect();
-        write_frames_parquet(&root.join(format!("data/chunk-0/file-{k}.parquet")), &rows);
+        write_frames_parquet_with(
+            &root.join(format!("data/chunk-0/file-{k}.parquet")),
+            &rows,
+            &["observation.state"],
+        );
     }
 
     let d = ingest_lerobot(root);
@@ -2302,4 +2355,54 @@ fn the_demo_dataset_ships_the_summary_a_real_export_ships() {
             && !nan.contains(&"STATISTICAL.STATS_STALE".to_string()),
         "while the stored summary looks perfectly healthy: {nan:?}"
     );
+}
+
+#[test]
+fn a_video_feature_is_not_a_feature_missing_from_the_parquet() {
+    // The false positive the missing-feature rule invites, and it would fire on almost every real
+    // LeRobot dataset: a video feature has **no Parquet column by design** — its pixels live in
+    // `videos/` and the rows carry only its timeline. Read as "declared and absent from the data",
+    // every camera in the format becomes an unread source and an empty stream, and a sound dataset
+    // fails. A video file that is genuinely missing or unreadable is the video family's finding,
+    // which names the path it looked for.
+    let dir = tempfile::tempdir().unwrap();
+    write_lerobot(
+        dir.path(),
+        &[
+            ("observation.images.top", "video"),
+            ("observation.state", "float32"),
+        ],
+        10.0,
+        &[(0, 0.0), (0, 0.1), (0, 0.2)],
+    );
+    // `write_lerobot` writes a column per declared feature; drop the camera's, which is what a real
+    // export does.
+    write_frames_parquet_with(
+        &dir.path().join("data/chunk-000/file-000.parquet"),
+        &[(0, 0.0), (0, 0.1), (0, 0.2)],
+        &["observation.state"],
+    );
+
+    let ingested = LeRobotAdapter
+        .ingest(
+            &Source::Local(dir.path().to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .unwrap();
+    assert!(
+        !ingested
+            .report
+            .unread_sources
+            .iter()
+            .any(|u| u.source_path.contains("observation.images.top")),
+        "a video feature is stored out of band, not missing: {:?}",
+        ingested.report.unread_sources
+    );
+    // And it keeps its timeline: the rows are what say when each video frame was captured.
+    let cam = ingested.dataset.episodes[0]
+        .streams
+        .iter()
+        .find(|s| s.name == "observation.images.top")
+        .expect("the camera is still a stream");
+    assert_eq!(cam.frames.len(), 3);
 }

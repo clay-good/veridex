@@ -16,10 +16,15 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   it reached no finding. Meanwhile a stream is still built for every declared feature, so the missing
   one carries a frame at every row timestamp and no values at all: every structural and temporal
   check passes on it, and the statistical family's abstention reads as a gap in Veridex rather than
-  in the data. A manifest promising a wrist camera the Parquet never held passed with a perfect
-  `data 100`. It is now an unread source, like the undeclared column in the opposite direction — the
-  two halves of the same reconciliation had disagreed about what they meant — so it reaches
-  `COVERAGE.SOURCE_UNREAD` and the verdict. Documented in [docs/formats.md](docs/formats.md).
+  in the data. A manifest promising a force-torque sensor the Parquet never held passed with a
+  perfect `data 100`. It is now an unread source, like the undeclared column in the opposite
+  direction — the two halves of the same reconciliation had disagreed about what they meant — so it
+  reaches `COVERAGE.SOURCE_UNREAD` and the verdict, and its stream is **empty** rather than carrying
+  a frame per row, which is what it is and the same answer the RLDS reader has always given a feature
+  absent from a record (`STRUCTURAL.EMPTY_STREAM`, an error). Video features are excluded: LeRobot
+  keeps a camera's pixels in `videos/`, so having no Parquet column is their normal state, and a
+  genuinely missing video file stays the video family's finding. Documented in
+  [docs/formats.md](docs/formats.md).
 
 - **A DBC signal the bus's frames cannot carry is named rather than dropped.** A `.dbc` taken from a
   different trim of the same vehicle defines signals at bit positions the real frames never reach —

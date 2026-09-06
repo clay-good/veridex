@@ -33,14 +33,18 @@ fn write_dataset(dir: &Path, feature: &str) {
         serde_json::to_string(&info).unwrap(),
     )
     .unwrap();
-    write_parquet(&dir.join("data/chunk-000/file-000.parquet"));
+    write_parquet(&dir.join("data/chunk-000/file-000.parquet"), feature);
 }
 
-fn write_parquet(path: &Path) {
+/// The declared feature gets a real column: a manifest declaring one the Parquet does not hold is
+/// itself a defect Veridex reports (`STRUCTURAL.EMPTY_STREAM` over an unread source), and these
+/// tests are about where the *video files* resolve, not about that.
+fn write_parquet(path: &Path, feature: &str) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("episode_index", DataType::Int64, false),
         Field::new("frame_index", DataType::Int64, false),
         Field::new("timestamp", DataType::Float64, false),
+        Field::new(feature, DataType::Float64, false),
     ]));
     let batch = RecordBatch::try_new(
         schema.clone(),
@@ -48,6 +52,7 @@ fn write_parquet(path: &Path) {
             Arc::new(Int64Array::from(vec![0i64, 0])) as ArrayRef,
             Arc::new(Int64Array::from(vec![0i64, 1])),
             Arc::new(Float64Array::from(vec![0.0f64, 0.0333])),
+            Arc::new(Float64Array::from(vec![1.0f64, 2.0])),
         ],
     )
     .unwrap();

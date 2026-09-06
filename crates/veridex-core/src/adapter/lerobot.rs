@@ -1839,18 +1839,30 @@ impl Adapter for LeRobotAdapter {
                         dtype: dtype.clone(),
                         shape: shape.clone(),
                         dim_names: dim_names.clone(),
-                        frames: rows
-                            .iter()
-                            .map(|(ts, hashes)| Frame {
-                                ts: *ts,
-                                value_ref: ValueRef {
-                                    uri: name.clone(),
-                                    byte_offset: None,
-                                    byte_len: None,
-                                    content_hash: hashes.get(name).copied().flatten(),
-                                },
-                            })
-                            .collect(),
+                        // A feature `meta/info.json` declares and the Parquet does not hold gets an
+                        // *empty* stream, not one frame per row. Giving it the rows' timestamps
+                        // invented a populated sensor out of a missing one: the stream carried a
+                        // frame at every tick and no values at all, so every structural and temporal
+                        // check passed on it and the statistical family's abstention read as a gap in
+                        // Veridex rather than in the data. Empty, it is what it is —
+                        // `STRUCTURAL.EMPTY_STREAM`, an error — which is how the RLDS adapter has
+                        // always handled a feature absent from a record, and the two must not
+                        // disagree about what a vanished feature means.
+                        frames: if observed.contains_key(name) || *modality == Modality::Video {
+                            rows.iter()
+                                .map(|(ts, hashes)| Frame {
+                                    ts: *ts,
+                                    value_ref: ValueRef {
+                                        uri: name.clone(),
+                                        byte_offset: None,
+                                        byte_len: None,
+                                        content_hash: hashes.get(name).copied().flatten(),
+                                    },
+                                })
+                                .collect()
+                        } else {
+                            Vec::new()
+                        },
                         stats: stats.scalar.get(name).copied().or_else(|| {
                             per_episode_stats.and_then(|s| s.scalar.get(name).copied())
                         }),
@@ -2064,6 +2076,16 @@ impl Adapter for LeRobotAdapter {
         // iterate sorted collections so the report is deterministic.
         let declared_names: std::collections::BTreeSet<&str> =
             features.iter().map(|(n, ..)| n.as_str()).collect();
+        // A LeRobot **video** feature has no Parquet column by design: its pixels live in `videos/`
+        // and the rows carry only its timeline. So "declared and not in the Parquet" is the normal
+        // state for every camera in the format, and the missing-feature rule below must not fire on
+        // one — a video file that is genuinely absent or unreadable is the video family's finding
+        // (`VIDEO.MEDIA_MISSING`), which names the path it looked for.
+        let column_backed: std::collections::BTreeSet<&str> = features
+            .iter()
+            .filter(|(_, modality, ..)| *modality != Modality::Video)
+            .map(|(n, ..)| n.as_str())
+            .collect();
         let mut unmapped_fields = vec![UnmappedField {
             source_path: "feature array values".into(),
             note: "feature payloads are fingerprinted (hashed) into content_hash, never decoded \
@@ -2117,7 +2139,7 @@ impl Adapter for LeRobotAdapter {
                 });
             }
         }
-        for name in &declared_names {
+        for name in &column_backed {
             if !observed.contains_key(*name) {
                 // Unread, not omitted — the same call the branch above makes, in the other
                 // direction. `omitted_fields` is for what Veridex deliberately does not read (video

@@ -40,6 +40,10 @@ fn write_shard(dir: &Path, episodes: Vec<i64>, timestamp: (Field, ArrayRef)) {
         Field::new("episode_index", DataType::Int64, false),
         Field::new("frame_index", DataType::Int64, false),
         ts_field,
+        // The feature `write_info` declares. Written for real: a manifest declaring a
+        // (non-video) feature the Parquet does not hold is its own defect, and these tests are
+        // about the `timestamp` column's Arrow type.
+        Field::new("observation.state", DataType::Float64, false),
     ]));
     let batch = RecordBatch::try_new(
         schema.clone(),
@@ -47,6 +51,9 @@ fn write_shard(dir: &Path, episodes: Vec<i64>, timestamp: (Field, ArrayRef)) {
             Arc::new(Int64Array::from(episodes)) as ArrayRef,
             Arc::new(Int64Array::from((0..rows as i64).collect::<Vec<_>>())),
             ts_array,
+            Arc::new(Float64Array::from(
+                (0..rows).map(|i| i as f64).collect::<Vec<_>>(),
+            )),
         ],
     )
     .unwrap();
