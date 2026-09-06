@@ -21,9 +21,11 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   down under the flag, where `COVERAGE.METADATA_ONLY` already states the run's shape.
 
   Found by a new invariant rather than by inspection: **a narrower read never produces a finding the
-  full read does not** (`COVERAGE.METADATA_ONLY` itself excepted). Held over every demo variant of
-  every generator, so the next abstention written without this in mind fails the suite instead of
-  shipping.
+  full read does not**, held over every demo variant of every generator and over both narrowings a
+  caller can ask for (`--metadata-only` and `--sample-episodes`). The only codes exempt are the ones
+  that name the *run* as their own cause — `COVERAGE.METADATA_ONLY`, `COVERAGE.SAMPLE`, and
+  `STRUCTURAL.UNCOMPARED_EPISODES`, which says "this run covers 1 episode(s)". So the next abstention
+  written without this in mind fails the suite instead of shipping.
 
 - **The semantic family was the last one whose silence could mean either thing.** Every other family
   discloses when it had nothing to measure — `STATISTICAL.UNMEASURED_VALUES`,

@@ -288,18 +288,15 @@ fn every_rlds_variant_emits_what_its_documentation_claims() {
     );
 }
 
-/// Ingest `path` under `--metadata-only` and run the standard catalog, or `None` when the format
-/// refuses the mode (a CAN log has no manifest to read).
-fn metadata_only_codes_for(path: &Path) -> Option<BTreeSet<String>> {
+/// Ingest `path` under a narrowing option and run the standard catalog, or `None` when the format
+/// refuses the request (a CAN log has no manifest to read).
+fn narrowed_codes_for(path: &Path, options: IngestOptions) -> Option<BTreeSet<String>> {
     let registry = veridex_core::adapter::default_registry();
     let checked = veridex_core::pipeline::run_check(
         &registry,
         &Source::Local(path.to_path_buf()),
         None,
-        &IngestOptions {
-            metadata_only: true,
-            ..IngestOptions::default()
-        },
+        &options,
     )
     .ok()?;
     Some(
@@ -314,6 +311,9 @@ fn metadata_only_codes_for(path: &Path) -> Option<BTreeSet<String>> {
 
 /// Looking at **less** of a dataset must not produce findings about it that looking at all of it
 /// does not.
+///
+/// Held over both narrowings a caller can ask for: `--metadata-only`, which opens no payload, and
+/// `--sample-episodes`, which reads a subset of them.
 ///
 /// `--metadata-only` opens no payload, so every check that reads values, timestamps, content hashes
 /// or message bodies has nothing — and a check that reports that absence as a property of the *data*
@@ -339,23 +339,50 @@ fn a_narrower_read_never_invents_a_finding_the_full_read_does_not() {
             if write(&target, variant).is_err() {
                 continue;
             }
-            let (Some((full, _)), Some(narrow)) =
-                (codes_for(&target), metadata_only_codes_for(&target))
-            else {
-                continue; // a fixture built to be refused, or a format with no metadata-only mode
+            let Some((full, _)) = codes_for(&target) else {
+                continue; // a fixture built to be refused at ingest
             };
-            compared += 1;
-            let invented: Vec<&String> = narrow
-                .iter()
-                .filter(|c| !full.contains(*c))
-                .filter(|c| c.as_str() != "COVERAGE.METADATA_ONLY")
-                .collect();
-            assert!(
-                invented.is_empty(),
-                "{label}/{variant}: `--metadata-only` reports {invented:?}, which the full read of \
-                 the same bytes does not. A finding that appears only when Veridex looks at less is \
-                 describing the request rather than the recording.",
-            );
+            // Each narrowing, with the codes it is allowed to add: exactly those that name the
+            // *run* as their own cause. `COVERAGE.METADATA_ONLY` and `COVERAGE.SAMPLE` are the run
+            // describing itself, and `STRUCTURAL.UNCOMPARED_EPISODES` says "this run covers 1
+            // episode(s)" — none of the three makes a claim about the recording, which is the
+            // difference this test exists to hold.
+            let narrowings: [(&str, IngestOptions, &[&str]); 2] = [
+                (
+                    "--metadata-only",
+                    IngestOptions {
+                        metadata_only: true,
+                        ..IngestOptions::default()
+                    },
+                    &["COVERAGE.METADATA_ONLY"],
+                ),
+                (
+                    "--sample-episodes 1",
+                    IngestOptions {
+                        sample: veridex_core::adapter::Sample::FirstEpisodes(1),
+                        ..IngestOptions::default()
+                    },
+                    &["COVERAGE.SAMPLE", "STRUCTURAL.UNCOMPARED_EPISODES"],
+                ),
+            ];
+            for (flag, options, allowed) in narrowings {
+                let Some(narrow) = narrowed_codes_for(&target, options) else {
+                    continue; // a format that refuses this narrowing by name
+                };
+                compared += 1;
+                let invented: Vec<&String> = narrow
+                    .iter()
+                    .filter(|c| !full.contains(*c))
+                    .filter(|c| !allowed.contains(&c.as_str()))
+                    .collect();
+                assert!(
+                    invented.is_empty(),
+                    "{label}/{variant}: `{flag}` reports {invented:?}, which the full read of the \
+                     same bytes does not. A finding that appears only when Veridex looks at less is \
+                     describing the request rather than the recording — and if it genuinely names \
+                     the run as its cause, add it to that narrowing's allowed list with the reason.",
+                );
+            }
         }
     }
     assert!(
