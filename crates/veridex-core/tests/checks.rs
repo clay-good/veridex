@@ -6323,8 +6323,14 @@ fn a_file_naming_a_hundred_thousand_parents_for_one_frame_still_answers() {
     };
     let started = std::time::Instant::now();
     let f = autonomy::CalibrationCompleteness.run(&rig_with_calibration(Some(cal)));
+    // The ceiling is 60 s, and the number is measured rather than picked. This input takes ~2.4 s
+    // on the honest path alone and up to ~27 s while the rest of the workspace suite runs beside
+    // it; the quadratic sweep it exists to catch takes ~108 s in a debug build. The bound has to
+    // clear the second number and stay under the third. It used to be 10 s — below the loaded
+    // honest time — so on a busy machine it failed, and said "quadratic" about code that is not.
+    // A guard that cries wolf is one people learn to re-run instead of read.
     assert!(
-        started.elapsed() < std::time::Duration::from_secs(10),
+        started.elapsed() < std::time::Duration::from_secs(60),
         "the sweep must not be quadratic in the edge count a file chooses"
     );
     let ambiguous = f
@@ -6362,8 +6368,11 @@ fn a_hundred_thousand_frame_loop_still_answers() {
     };
     let started = std::time::Instant::now();
     let f = autonomy::CalibrationCompleteness.run(&rig_with_calibration(Some(cal)));
+    // 60 s, for the reason spelled out on the sibling sweep above: the honest path runs in seconds
+    // and the quadratic one in minutes, and the ceiling must sit between them with room for a
+    // loaded machine — not at 10 s, which sat below the loaded honest time.
     assert!(
-        started.elapsed() < std::time::Duration::from_secs(10),
+        started.elapsed() < std::time::Duration::from_secs(60),
         "the loop's own length must not be a cost the file controls"
     );
     let cycle = f

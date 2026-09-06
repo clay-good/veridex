@@ -371,8 +371,12 @@ fn two_large_reports_diff_in_a_time_a_person_will_wait() {
 
     let started = std::time::Instant::now();
     let d = veridex_core::diff::diff_reports(&old, &new);
+    // 60 s, not 20. The bound guards an algorithmic class, so it has to clear the honest path on a
+    // *loaded* machine and stay well under the quadratic one: this suite runs dozens of test
+    // binaries at once, and a ceiling tight enough to fail under that load reports "quadratic"
+    // about code that is not.
     assert!(
-        started.elapsed() < std::time::Duration::from_secs(20),
+        started.elapsed() < std::time::Duration::from_secs(60),
         "the diff must not be quadratic in counts the input files choose"
     );
     // And it partitions exactly as the pairwise form did — the point is the same answer, faster.
