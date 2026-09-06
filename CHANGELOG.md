@@ -10,6 +10,24 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **The semantic family was the last one whose silence could mean either thing.** Every other family
+  discloses when it had nothing to measure — `STATISTICAL.UNMEASURED_VALUES`,
+  `STRUCTURAL.UNCOMPARED_EPISODES`, `AUTONOMY.POINT_CLOUD_UNMEASURED`. The semantic family declared
+  no abstention code at all, so on every MCAP, MF4, CAN and bag recording — none of which carries a
+  task concept — its three checks judged nothing and said nothing, which is byte-for-byte what a
+  dataset of well-written instructions produces. The family did not appear in the report's `By
+  category` line, in the trust label's `By family` row, or in its `Could not measure` row: a reader
+  could not tell that language supervision had been checked and found sound from its never having
+  been looked at.
+
+  `SEMANTIC.NO_TASKS` reports episodes carrying no task string (naming how many, and whether *none*
+  of them does), and `SEMANTIC.NO_ANNOTATIONS` reports a dataset carrying no `language` annotation
+  for the alignment, conflict and empty-annotation rules to judge. Both informational, both declared
+  as abstentions, so the trust label and the certificate's by-code summary carry them like the rest.
+  Skipping an absent task remains right — it means the source resolved none, not that it wrote an
+  empty one — but not flagging it and not mentioning it are different things. Documented in
+  [docs/checks.md](docs/checks.md).
+
 - **Every demo variant is now held to its own documentation.** The generators' module bullets are
   the most detailed documentation these fixtures have — each names the finding code it exists to
   produce, and the quickstart, the README and the format pages are written against those claims.

@@ -467,12 +467,16 @@ fn a_latched_topic_is_read_from_its_qos_and_stops_deflating_the_score() {
         "a latched topic does not cover the recording's window: {codes:?}"
     );
     // The only things left to say about this bag are what it declares no license for, what values
-    // it does not let anyone read, and that one recording is one episode — so the checks that
-    // compare episodes had nothing to compare. All three are statements about the evidence.
+    // it does not let anyone read, that one recording is one episode — so the checks that compare
+    // episodes had nothing to compare — and that a bag carries neither a task string nor a language
+    // annotation, so the semantic family judged nothing. All of them are statements about the
+    // evidence, not accusations about the data.
     assert_eq!(
         codes
             .iter()
-            .filter(|c| !c.starts_with("PROVENANCE.") && !c.starts_with("STATISTICAL."))
+            .filter(|c| !c.starts_with("PROVENANCE.")
+                && !c.starts_with("STATISTICAL.")
+                && !c.starts_with("SEMANTIC.NO_"))
             .filter(|c| **c != "STRUCTURAL.UNCOMPARED_EPISODES")
             .count(),
         0,

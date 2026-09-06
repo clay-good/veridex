@@ -1111,6 +1111,10 @@ fn a_clean_rlds_dataset_passes_the_standard_checks_without_false_findings() {
         // comparing episodes had nothing to compare. A statement about the run's evidence, not
         // about the data.
         .filter(|code| *code != "STRUCTURAL.UNCOMPARED_EPISODES")
+        // And the fourth: this dataset carries per-step instructions but no *timestamped* language
+        // annotation, which is what the annotation rules judge — so they judged nothing, and saying
+        // so is a statement about the run rather than an accusation about the data.
+        .filter(|code| *code != "SEMANTIC.NO_ANNOTATIONS")
         .collect();
     assert!(
         noise.is_empty(),

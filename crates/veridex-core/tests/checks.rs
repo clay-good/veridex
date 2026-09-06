@@ -2299,7 +2299,17 @@ fn non_language_labels_are_ignored_by_the_annotation_check() {
             ts: Some(999),
         }],
     )]);
-    assert!(semantic::AnnotationIntegrity.run(&d).is_empty());
+    let f = semantic::AnnotationIntegrity.run(&d);
+    assert!(
+        f.iter().all(|x| x.code != "SEMANTIC.ANNOTATION_UNALIGNED"),
+        "{f:?}"
+    );
+    // What it *does* say is that it judged nothing: a non-language label leaves the three
+    // annotation rules with no annotation, and silence there is indistinguishable from three rules
+    // that ran over real annotations and found them sound.
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "SEMANTIC.NO_ANNOTATIONS");
+    assert_eq!(f[0].severity, Severity::Info);
 }
 
 #[test]
@@ -2378,9 +2388,27 @@ fn meaningful_and_absent_tasks_are_not_flagged() {
     // A real instruction is clean.
     let good = dataset(vec![episode_with_task(0, Some("pick up the red cube"))]);
     assert!(semantic::TaskQuality.run(&good).is_empty());
-    // An unresolved (None) task is deliberately not flagged — it means "unknown", not "empty".
+    // An unresolved (None) task is deliberately not *flagged* — it means "unknown", not "empty", and
+    // a fault finding over it would fire on every format that has no task concept.
     let absent = dataset(vec![episode_with_task(0, None)]);
-    assert!(semantic::TaskQuality.run(&absent).is_empty());
+    let f = semantic::TaskQuality.run(&absent);
+    assert!(
+        f.iter()
+            .all(|x| x.code != "SEMANTIC.EMPTY_TASK" && x.code != "SEMANTIC.PLACEHOLDER_TASK"),
+        "{f:?}"
+    );
+    // But it is disclosed. Not flagging it and not mentioning it are different things, and the
+    // second is what made a dataset with no instructions at all read exactly like one whose
+    // instructions were judged and found good.
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "SEMANTIC.NO_TASKS");
+    assert_eq!(f[0].severity, Severity::Info);
+    assert!(
+        f[0].message
+            .contains("no episode in this dataset carries one"),
+        "{}",
+        f[0].message
+    );
 }
 
 // ---- documentation drift guard ----
@@ -6992,6 +7020,11 @@ fn every_abstention_code_in_the_catalog_is_declared_as_one() {
         "UNCHECKED",
         "UNREAD",
         "UNFINGERPRINTED",
+        // A code whose *local part begins* `NO_` says the question had nothing to be asked about:
+        // `SEMANTIC.NO_TASKS`, `SEMANTIC.NO_ANNOTATIONS`, `STATISTICAL.NO_STORED_STATS`. The dot
+        // matters — a bare `NO_` would also match `AUTONOMY.GNSS_NO_FIX`, which is the opposite
+        // thing: a receiver that was read and reported no fix, which is a measurement.
+        ".NO_",
     ];
     // Codes a signal below flags that report a *fault*, not an abstention. Each needs a reason.
     const NOT_ABSTENTIONS: &[&str] = &[

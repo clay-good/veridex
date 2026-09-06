@@ -20,14 +20,14 @@ veridex check my-dataset/
 This is a real run, against the demo recording the [Quickstart](#quickstart) builds — every finding
 with its location and message, and the training *risk* and the *remedy* for anything at warning or
 error. Trimmed to fit: the terminal also prints the CDM content hash and a per-episode rollup with
-the worst episode first, and the five informational findings are elided here, `--full` adding their
+the worst episode first, and the seven informational findings are elided here, `--full` adding their
 risk and remedy too.
 
 ```
 Veridex report
   Status:   FAIL   Trust: 76 (C)  [data 81 · provenance 66%]
-  Findings: 1 error · 1 warning · 5 info
-  By category: provenance 2 · statistical 2 · structural 1 · temporal 2
+  Findings: 1 error · 1 warning · 7 info
+  By category: provenance 2 · semantic 2 · statistical 2 · structural 1 · temporal 2
 
 Findings:
   [error] TEMPORAL.CLOCK_SKEW  episode 0
@@ -432,7 +432,7 @@ whose satellite receiver was never decoded, one with no transform tree to resolv
 and one that holds **too few episodes** for the seven checks that answer by comparing episodes
 against each other — which is every MCAP file and every bare rosbag2 recording, since those are one
 episode by construction — each produces an informational finding naming what had nothing to measure.
-Nine checks in the catalog raise one; each declares which of its codes mean *"I could not measure"*
+Eleven checks in the catalog raise one; each declares which of its codes mean *"I could not measure"*
 rather than *"I measured this and it is wrong"*, `veridex checks` marks them, and the full set is in
 [docs/checks.md](docs/checks.md).
 

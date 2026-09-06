@@ -23,14 +23,28 @@ const PLACEHOLDERS: &[&str] = &[
 ];
 
 /// Task-string quality: present-but-empty or present-but-placeholder episode tasks.
+///
+/// And, when there are none to judge, `SEMANTIC.NO_TASKS`. Skipping an absent task is right — it
+/// means the source carried no resolvable task, not that the source wrote an empty one — but until
+/// this existed the skipping was silent, and a dataset whose episodes carry no task at all produced
+/// byte-for-byte what a dataset of well-written instructions produces: nothing. The semantic family
+/// was the last one whose silence could mean either "judged and sound" or "never asked", and on
+/// every MCAP, MF4 and CAN dataset it meant the second.
 pub struct TaskQuality;
 
 impl Check for TaskQuality {
     fn id(&self) -> &'static str {
         "semantic.task-quality"
     }
+    fn abstention_codes(&self) -> &'static [&'static str] {
+        &["SEMANTIC.NO_TASKS"]
+    }
     fn finding_codes(&self) -> &'static [&'static str] {
-        &["SEMANTIC.EMPTY_TASK", "SEMANTIC.PLACEHOLDER_TASK"]
+        &[
+            "SEMANTIC.EMPTY_TASK",
+            "SEMANTIC.PLACEHOLDER_TASK",
+            "SEMANTIC.NO_TASKS",
+        ]
     }
     fn title(&self) -> &'static str {
         "Task-string quality"
@@ -49,9 +63,11 @@ impl Check for TaskQuality {
     }
     fn run(&self, dataset: &Dataset) -> Vec<Finding> {
         let mut findings = Vec::new();
+        let mut untasked = 0u64;
         for ep in &dataset.episodes {
             // Only judge tasks that are actually present (see module docs on why `None` is skipped).
             let Some(task) = &ep.task else {
+                untasked += 1;
                 continue;
             };
             let trimmed = task.trim();
@@ -96,6 +112,45 @@ impl Check for TaskQuality {
                     ),
                 );
             }
+        }
+        // A check that judged nothing must say so, or its silence reads as a pass. This is the rule
+        // the statistical and structural families already follow, applied to the last family that
+        // did not: an episode carrying no task is not an episode carrying a bad one, and the two
+        // were indistinguishable in a report that said nothing about either.
+        if untasked > 0 {
+            let all = untasked == dataset.episodes.len() as u64;
+            findings.push(
+                Finding::new(
+                    self.id(),
+                    Category::Semantic,
+                    Severity::Info,
+                    Location::Dataset,
+                    "SEMANTIC.NO_TASKS",
+                    format!(
+                        "{} episode(s) carry no task string at all, so the task-quality rules had \
+                         nothing to judge on them{}",
+                        untasked,
+                        if all {
+                            " — no episode in this dataset carries one"
+                        } else {
+                            ""
+                        }
+                    ),
+                )
+                .with_risk(
+                    "Nothing in this run says whether those episodes carry usable instructions for \
+                     a language-conditioned policy. A clean semantic result over them is the \
+                     absence of an instruction to judge, not a judgement that the instruction is \
+                     good.",
+                )
+                .with_remedy(
+                    "The task is read from whatever the source resolves it from (a LeRobot \
+                     `meta/tasks.jsonl`, an RLDS language feature, a bag's scenario metadata). A \
+                     format with no task concept carries none, which is a fact about the recording \
+                     rather than a defect in it — what it changes is what a clean semantic result \
+                     is evidence of.",
+                ),
+            );
         }
         findings
     }
@@ -143,6 +198,11 @@ fn episode_time_span(ep: &Episode) -> Option<(TimestampNs, TimestampNs)> {
 ///
 /// Only `language`-keyed labels are judged. Per-camera uniqueness is out of scope until an adapter
 /// associates annotations with a specific stream.
+///
+/// And when a dataset carries no language annotation at all, `SEMANTIC.NO_ANNOTATIONS` — because
+/// three rules that found nothing on a dataset holding nothing to find is not the same result as
+/// three rules that found nothing on a dataset full of them, and the report said the same thing
+/// either way.
 pub struct AnnotationIntegrity;
 
 impl Check for AnnotationIntegrity {
@@ -154,7 +214,11 @@ impl Check for AnnotationIntegrity {
             "SEMANTIC.ANNOTATION_UNALIGNED",
             "SEMANTIC.ANNOTATION_CONFLICT",
             "SEMANTIC.EMPTY_ANNOTATION",
+            "SEMANTIC.NO_ANNOTATIONS",
         ]
+    }
+    fn abstention_codes(&self) -> &'static [&'static str] {
+        &["SEMANTIC.NO_ANNOTATIONS"]
     }
     fn title(&self) -> &'static str {
         "Language-annotation integrity"
@@ -173,10 +237,12 @@ impl Check for AnnotationIntegrity {
     }
     fn run(&self, dataset: &Dataset) -> Vec<Finding> {
         let mut findings = Vec::new();
+        let mut annotations = 0u64;
         for ep in &dataset.episodes {
             let span = episode_time_span(ep);
             // Group timestamped language values by timestamp to detect same-instant conflicts.
             let mut by_ts: BTreeMap<TimestampNs, BTreeSet<&str>> = BTreeMap::new();
+            annotations += ep.labels.iter().filter(|l| l.key == "language").count() as u64;
             for label in ep.labels.iter().filter(|l| l.key == "language") {
                 let value = label.value.trim();
 
@@ -259,6 +325,33 @@ impl Check for AnnotationIntegrity {
                     ),
                 );
             }
+        }
+        // The same rule as its sibling: three rules that found nothing where there was nothing to
+        // find is not the result three rules produce over a dataset full of annotations, and the
+        // report said the same thing either way.
+        if annotations == 0 {
+            findings.push(
+                Finding::new(
+                    self.id(),
+                    Category::Semantic,
+                    Severity::Info,
+                    Location::Dataset,
+                    "SEMANTIC.NO_ANNOTATIONS",
+                    "this dataset carries no language annotation, so the alignment, conflict and \
+                     empty-annotation rules had nothing to judge"
+                        .to_string(),
+                )
+                .with_risk(
+                    "Nothing in this run says whether this dataset's language supervision is \
+                     sound, because there is none to judge. A clean semantic result is the absence \
+                     of an annotation to check, not a judgement that the annotations are good.",
+                )
+                .with_remedy(
+                    "Annotations are read where a source records them (a LeRobot mid-episode task \
+                     change, an RLDS language feature). A dataset that carries none is not worse \
+                     for it — what it changes is what a clean semantic result is evidence of.",
+                ),
+            );
         }
         findings
     }
