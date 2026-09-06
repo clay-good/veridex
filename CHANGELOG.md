@@ -10,6 +10,20 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **Every demo variant is now held to its own documentation.** The generators' module bullets are
+  the most detailed documentation these fixtures have — each names the finding code it exists to
+  produce, and the quickstart, the README and the format pages are written against those claims.
+  Nothing checked them. `veridex-core/tests/variant_findings.rs` runs all 39 variants of all four
+  generators through the real ingest and the real catalog and holds each to its bullet, in both
+  directions: every code the bullet points an arrow at must fire, and every **error** it emits must
+  be one the bullet names. The second direction is the one that matters. Holding a variant only to
+  the codes it claims lets a rule that grew too eager fail every fixture at once with the suite
+  green — which is exactly what happened here, where the LeRobot missing-feature rule turned every
+  camera into an absent feature and took the `video` variant, documented as a clean read of a real
+  container, to two `STRUCTURAL.EMPTY_STREAM` errors. It caught one live drift on its first run:
+  the `av` bullet still promised `TEMPORAL.CLOCK_SKEW`, which `AUTONOMY.RIG_SYNC` supersedes on a
+  rig.
+
 - **A LeRobot feature the manifest declares and the data lacks is a coverage hole, not an
   omission.** The adapter already noticed the disagreement — it just filed it under `omitted`, which
   is where Veridex records what it *chooses* not to read (video pixels, feature array payloads). So

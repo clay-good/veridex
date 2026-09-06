@@ -11,9 +11,17 @@
 //!   advance → `STRUCTURAL.STUCK_STREAM` (a freeze the timestamp-based temporal checks can't see).
 //! - `av` — a five-sensor autonomy rig (camera, LiDAR, IMU, GNSS, ego-odometry) recorded over ~1.0 s,
 //!   with a single-sensor sync drift injected: the IMU spans only ~0.70 s while the rest span ~1.0 s,
-//!   so it drifts ~0.30 s from its peers → `TEMPORAL.CLOCK_SKEW`. The schema names classify to the
+//!   so it drifts ~0.30 s from its peers → `AUTONOMY.RIG_SYNC`, which names the IMU as the
+//!   tightest-spanning sensor and supersedes the pairwise `TEMPORAL.CLOCK_SKEW` on a rig (the
+//!   remaining pair still reports `TEMPORAL.END_OFFSET`). The schema names classify to the
 //!   autonomy modalities (point-cloud / imu / gnss / ego-pose), so `veridex inspect` shows a typed
 //!   rig — proving the cross-domain neutrality claim on AV data end-to-end today.
+//!
+//! Every `av-*` variant beyond the base `av` writes **the same rig** with one further fault layered
+//! on, so each one also carries the base rig's injected sync drift and reports its
+//! `AUTONOMY.RIG_SYNC` alongside whatever its own bullet names. Their bullets describe only the
+//! fault they add, which is the point of each fixture; the phrase "the same rig" is what says the
+//! rest of the base variant still applies.
 //!
 //! Each message's payload bytes vary per frame (so frames are content-distinct, as real recordings
 //! are) except in `stuck`, where the camera deliberately repeats one frame.
@@ -365,7 +373,8 @@ struct RigFaults {
 }
 
 /// sensor spans ~1.0 s from a shared start except the IMU, whose span is deliberately cut to ~0.70 s
-/// — a single-sensor sync drift of ~0.30 s that the duration-based `TEMPORAL.CLOCK_SKEW` flags.
+/// — a single-sensor sync drift of ~0.30 s that the duration-based `AUTONOMY.RIG_SYNC` flags,
+/// naming the IMU. On a rig that check supersedes the pairwise `TEMPORAL.CLOCK_SKEW`.
 fn write_av_rig<W: std::io::Write + std::io::Seek>(w: &mut mcap::Writer<W>, faults: RigFaults) {
     let RigFaults {
         miscalibrated,
