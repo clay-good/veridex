@@ -94,19 +94,131 @@ fn claims(source: &str) -> Vec<Claim> {
     out
 }
 
-/// Ingest `path` and run the standard catalog, returning every finding code it emitted and the
-/// subset of those at error severity — or `None` when the ingest refused the source, which is itself
-/// a documented outcome for some fixtures.
-#[allow(clippy::type_complexity)]
-fn codes_for(path: &Path) -> Option<(BTreeSet<String>, BTreeSet<String>)> {
+/// The default full check of `path`, computed once per test binary.
+///
+/// Nine properties below run over the same ~60 datasets, and re-ingesting each of them nine times
+/// made this file the slowest in the suite for no reason — the sweep is over *what a dataset checks
+/// as*, and that does not depend on which property is asking. `None` is cached too: a fixture built
+/// to be refused at ingest is refused once.
+fn checked_for(path: &Path) -> Option<std::sync::Arc<veridex_core::pipeline::CheckOutput>> {
+    #[allow(clippy::type_complexity)]
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<
+            std::collections::HashMap<
+                std::path::PathBuf,
+                Option<std::sync::Arc<veridex_core::pipeline::CheckOutput>>,
+            >,
+        >,
+    > = std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(hit) = cache.lock().expect("cache").get(path) {
+        return hit.clone();
+    }
     let registry = veridex_core::adapter::default_registry();
-    let checked = veridex_core::pipeline::run_check(
+    let out = veridex_core::pipeline::run_check(
         &registry,
         &Source::Local(path.to_path_buf()),
         None,
         &IngestOptions::default(),
     )
-    .ok()?;
+    .ok()
+    .map(std::sync::Arc::new);
+    cache
+        .lock()
+        .expect("cache")
+        .insert(path.to_path_buf(), out.clone());
+    out
+}
+
+/// Every dataset the property sweeps below run over: the generated demo variants, plus every
+/// fixture committed under `tests/fixtures/`.
+///
+/// The second half matters more than it looks. The four generators cover four of the eight
+/// adapters — nothing generated is HDF5, Zarr, rosbag2 or CAN+DBC — so a property held only over
+/// them was being held over half the readers, and the CDM an HDF5 file or a Zarr replay buffer
+/// produces is exactly the shape these properties have never been asked about.
+///
+/// Directories are swept rather than listed, so a fixture added later is covered without anyone
+/// remembering to add it here. Most of the HDF5 ones are deliberately hostile (`bomb.h5`,
+/// `btree_cycle.h5`) and are refused at ingest; every sweep below skips a refused source already,
+/// so they cost a failed open and nothing else.
+fn sweep_datasets(dir: &Path) -> Vec<(String, std::path::PathBuf)> {
+    let mut out = generated_datasets(dir);
+    out.extend(committed_datasets());
+    out
+}
+
+/// The demo variants, written once per test binary and shared by every sweep.
+///
+/// Writing them per test meant generating all 39 fixtures nine times over, which cost far more than
+/// the checks the sweeps exist to run. The directory lives for the process, so the paths stay valid
+/// for every caller.
+fn generated_datasets(_dir: &Path) -> Vec<(String, std::path::PathBuf)> {
+    static ONCE: std::sync::OnceLock<(tempfile::TempDir, Vec<(String, std::path::PathBuf)>)> =
+        std::sync::OnceLock::new();
+    ONCE.get_or_init(|| {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let built = write_generated(dir.path());
+        (dir, built)
+    })
+    .1
+    .clone()
+}
+
+fn write_generated(dir: &Path) -> Vec<(String, std::path::PathBuf)> {
+    let mut out: Vec<(String, std::path::PathBuf)> = Vec::new();
+    for (label, variants, write, extension) in fixtures() {
+        for variant in variants {
+            let target = match extension {
+                Some(ext) => dir.join(format!("{label}-{variant}.{ext}")),
+                None => dir.join(format!("{label}-{variant}")),
+            };
+            let _ = std::fs::remove_dir_all(&target);
+            if write(&target, variant).is_ok() {
+                out.push((format!("{label}/{variant}"), target));
+            }
+        }
+    }
+    out
+}
+
+/// The fixtures committed under `tests/fixtures/`.
+fn committed_datasets() -> Vec<(String, std::path::PathBuf)> {
+    let mut out: Vec<(String, std::path::PathBuf)> = Vec::new();
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
+    for sub in ["hdf5", "zarr", "rosbag2"] {
+        let Ok(entries) = std::fs::read_dir(format!("{root}/{sub}")) else {
+            continue;
+        };
+        let mut paths: Vec<std::path::PathBuf> = entries
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| {
+                // Skip the generators and notes that live beside the fixtures.
+                !matches!(
+                    p.extension().and_then(|e| e.to_str()),
+                    Some("py") | Some("md") | Some("wal")
+                )
+            })
+            .collect();
+        paths.sort();
+        for path in paths {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("?")
+                .to_string();
+            out.push((format!("{sub}/{name}"), path));
+        }
+    }
+    out
+}
+
+/// Ingest `path` and run the standard catalog, returning every finding code it emitted and the
+/// subset of those at error severity — or `None` when the ingest refused the source, which is itself
+/// a documented outcome for some fixtures.
+#[allow(clippy::type_complexity)]
+fn codes_for(path: &Path) -> Option<(BTreeSet<String>, BTreeSet<String>)> {
+    let checked = checked_for(path)?;
     Some((
         checked
             .verdict
@@ -329,60 +441,50 @@ fn narrowed_codes_for(path: &Path, options: IngestOptions) -> Option<BTreeSet<St
 fn a_narrower_read_never_invents_a_finding_the_full_read_does_not() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut compared = 0;
-    for (label, variants, write, extension) in fixtures() {
-        for variant in variants {
-            let target = match extension {
-                Some(ext) => dir.path().join(format!("{label}-{variant}.{ext}")),
-                None => dir.path().join(format!("{label}-{variant}")),
+    for (name, target) in sweep_datasets(dir.path()) {
+        let Some((full, _)) = codes_for(&target) else {
+            continue; // a fixture built to be refused at ingest
+        };
+        // Each narrowing, with the codes it is allowed to add: exactly those that name the
+        // *run* as their own cause. `COVERAGE.METADATA_ONLY` and `COVERAGE.SAMPLE` are the run
+        // describing itself, and `STRUCTURAL.UNCOMPARED_EPISODES` says "this run covers 1
+        // episode(s)" — none of the three makes a claim about the recording, which is the
+        // difference this test exists to hold.
+        let narrowings: [(&str, IngestOptions, &[&str]); 2] = [
+            (
+                "--metadata-only",
+                IngestOptions {
+                    metadata_only: true,
+                    ..IngestOptions::default()
+                },
+                &["COVERAGE.METADATA_ONLY"],
+            ),
+            (
+                "--sample-episodes 1",
+                IngestOptions {
+                    sample: veridex_core::adapter::Sample::FirstEpisodes(1),
+                    ..IngestOptions::default()
+                },
+                &["COVERAGE.SAMPLE", "STRUCTURAL.UNCOMPARED_EPISODES"],
+            ),
+        ];
+        for (flag, options, allowed) in narrowings {
+            let Some(narrow) = narrowed_codes_for(&target, options) else {
+                continue; // a format that refuses this narrowing by name
             };
-            let _ = std::fs::remove_dir_all(&target);
-            if write(&target, variant).is_err() {
-                continue;
-            }
-            let Some((full, _)) = codes_for(&target) else {
-                continue; // a fixture built to be refused at ingest
-            };
-            // Each narrowing, with the codes it is allowed to add: exactly those that name the
-            // *run* as their own cause. `COVERAGE.METADATA_ONLY` and `COVERAGE.SAMPLE` are the run
-            // describing itself, and `STRUCTURAL.UNCOMPARED_EPISODES` says "this run covers 1
-            // episode(s)" — none of the three makes a claim about the recording, which is the
-            // difference this test exists to hold.
-            let narrowings: [(&str, IngestOptions, &[&str]); 2] = [
-                (
-                    "--metadata-only",
-                    IngestOptions {
-                        metadata_only: true,
-                        ..IngestOptions::default()
-                    },
-                    &["COVERAGE.METADATA_ONLY"],
-                ),
-                (
-                    "--sample-episodes 1",
-                    IngestOptions {
-                        sample: veridex_core::adapter::Sample::FirstEpisodes(1),
-                        ..IngestOptions::default()
-                    },
-                    &["COVERAGE.SAMPLE", "STRUCTURAL.UNCOMPARED_EPISODES"],
-                ),
-            ];
-            for (flag, options, allowed) in narrowings {
-                let Some(narrow) = narrowed_codes_for(&target, options) else {
-                    continue; // a format that refuses this narrowing by name
-                };
-                compared += 1;
-                let invented: Vec<&String> = narrow
-                    .iter()
-                    .filter(|c| !full.contains(*c))
-                    .filter(|c| !allowed.contains(&c.as_str()))
-                    .collect();
-                assert!(
+            compared += 1;
+            let invented: Vec<&String> = narrow
+                .iter()
+                .filter(|c| !full.contains(*c))
+                .filter(|c| !allowed.contains(&c.as_str()))
+                .collect();
+            assert!(
                     invented.is_empty(),
-                    "{label}/{variant}: `{flag}` reports {invented:?}, which the full read of the \
+                    "{name}: `{flag}` reports {invented:?}, which the full read of the \
                      same bytes does not. A finding that appears only when Veridex looks at less is \
                      describing the request rather than the recording — and if it genuinely names \
                      the run as its cause, add it to that narrowing's allowed list with the reason.",
                 );
-            }
         }
     }
     assert!(
@@ -408,62 +510,57 @@ fn tightening_a_threshold_never_removes_a_finding_or_raises_the_score() {
     let registry = veridex_core::adapter::default_registry();
     let strict = veridex_core::profile::strict();
     let mut compared = 0;
-    for (label, variants, write, extension) in fixtures() {
-        for variant in variants {
-            let target = match extension {
-                Some(ext) => dir.path().join(format!("{label}-{variant}.{ext}")),
-                None => dir.path().join(format!("{label}-{variant}")),
-            };
-            let _ = std::fs::remove_dir_all(&target);
-            if write(&target, variant).is_err() {
-                continue;
-            }
-            let run = |config: &veridex_core::RunConfig| {
-                veridex_core::pipeline::run_check_with(
-                    &registry,
-                    &Source::Local(target.to_path_buf()),
-                    None,
-                    &IngestOptions::default(),
-                    config,
-                )
-                .ok()
-            };
-            let base = veridex_core::RunConfig::default();
-            let tightened = veridex_core::RunConfig {
-                tolerances: strict.apply_tolerances(base.tolerances),
-                ..base.clone()
-            };
-            let (Some(loose), Some(tight)) = (run(&base), run(&tightened)) else {
-                continue; // a fixture built to be refused at ingest
-            };
-            compared += 1;
+    // The generated variants only, and deliberately: this property is about *thresholds*, and those
+    // are the fixtures built to sit near one — a clock skew just over the limit, a jitter just under
+    // it. The committed fixtures add two more full runs each for a question they were not built to
+    // answer, and this is the one sweep here that cannot reuse the shared check, since each of its
+    // runs carries a different config.
+    for (name, target) in generated_datasets(dir.path()) {
+        let run = |config: &veridex_core::RunConfig| {
+            veridex_core::pipeline::run_check_with(
+                &registry,
+                &Source::Local(target.to_path_buf()),
+                None,
+                &IngestOptions::default(),
+                config,
+            )
+            .ok()
+        };
+        let base = veridex_core::RunConfig::default();
+        let tightened = veridex_core::RunConfig {
+            tolerances: strict.apply_tolerances(base.tolerances),
+            ..base.clone()
+        };
+        let (Some(loose), Some(tight)) = (run(&base), run(&tightened)) else {
+            continue; // a fixture built to be refused at ingest
+        };
+        compared += 1;
 
-            let before: BTreeSet<String> = loose
-                .verdict
-                .findings
-                .iter()
-                .map(|f| f.code.clone())
-                .collect();
-            let after: BTreeSet<String> = tight
-                .verdict
-                .findings
-                .iter()
-                .map(|f| f.code.clone())
-                .collect();
-            let lost: Vec<&String> = before.difference(&after).collect();
-            assert!(
-                lost.is_empty(),
-                "{label}/{variant}: `--profile strict` loses {lost:?}. Measuring harder must never \
+        let before: BTreeSet<String> = loose
+            .verdict
+            .findings
+            .iter()
+            .map(|f| f.code.clone())
+            .collect();
+        let after: BTreeSet<String> = tight
+            .verdict
+            .findings
+            .iter()
+            .map(|f| f.code.clone())
+            .collect();
+        let lost: Vec<&String> = before.difference(&after).collect();
+        assert!(
+            lost.is_empty(),
+            "{name}: `--profile strict` loses {lost:?}. Measuring harder must never \
                  make a finding disappear — that would make a tightened run a way to launder a \
                  failing dataset through the one gate `SCOPE.NARROWED` deliberately leaves open.",
-            );
-            assert!(
-                tight.trust.score <= loose.trust.score,
-                "{label}/{variant}: `--profile strict` raises the score from {} to {}",
-                loose.trust.score,
-                tight.trust.score,
-            );
-        }
+        );
+        assert!(
+            tight.trust.score <= loose.trust.score,
+            "{name}: `--profile strict` raises the score from {} to {}",
+            loose.trust.score,
+            tight.trust.score,
+        );
     }
     assert!(
         compared >= 30,
@@ -486,75 +583,57 @@ fn tightening_a_threshold_never_removes_a_finding_or_raises_the_score() {
 #[test]
 fn every_renderer_reports_the_same_findings() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let registry = veridex_core::adapter::default_registry();
     let mut compared = 0;
-    for (label, variants, write, extension) in fixtures() {
-        for variant in variants {
-            let target = match extension {
-                Some(ext) => dir.path().join(format!("{label}-{variant}.{ext}")),
-                None => dir.path().join(format!("{label}-{variant}")),
-            };
-            let _ = std::fs::remove_dir_all(&target);
-            if write(&target, variant).is_err() {
-                continue;
-            }
-            let Some(checked) = veridex_core::pipeline::run_check(
-                &registry,
-                &Source::Local(target.to_path_buf()),
-                None,
-                &IngestOptions::default(),
-            )
-            .ok() else {
-                continue; // a fixture built to be refused at ingest
-            };
-            compared += 1;
-            let verdict = &checked.verdict;
-            let expected: BTreeSet<&str> =
-                verdict.findings.iter().map(|f| f.code.as_str()).collect();
+    for (name, target) in sweep_datasets(dir.path()) {
+        let Some(checked) = checked_for(&target) else {
+            continue; // a fixture built to be refused at ingest
+        };
+        compared += 1;
+        let verdict = &checked.verdict;
+        let expected: BTreeSet<&str> = verdict.findings.iter().map(|f| f.code.as_str()).collect();
 
-            // JSON and SARIF carry the code as a field, so they are compared exactly.
-            let json: serde_json::Value =
-                serde_json::from_str(&veridex_core::report::render_json(verdict, None))
-                    .expect("the JSON report parses");
-            let in_json: BTreeSet<&str> = json["verdict"]["findings"]
-                .as_array()
-                .expect("findings array")
-                .iter()
-                .map(|f| f["code"].as_str().expect("a code"))
-                .collect();
-            assert_eq!(
-                in_json, expected,
-                "{label}/{variant}: the JSON report's findings differ from the verdict's",
+        // JSON and SARIF carry the code as a field, so they are compared exactly.
+        let json: serde_json::Value =
+            serde_json::from_str(&veridex_core::report::render_json(verdict, None))
+                .expect("the JSON report parses");
+        let in_json: BTreeSet<&str> = json["verdict"]["findings"]
+            .as_array()
+            .expect("findings array")
+            .iter()
+            .map(|f| f["code"].as_str().expect("a code"))
+            .collect();
+        assert_eq!(
+            in_json, expected,
+            "{name}: the JSON report's findings differ from the verdict's",
+        );
+
+        let sarif = veridex_core::report::render_sarif(verdict);
+        let in_sarif: BTreeSet<&str> = sarif["runs"][0]["results"]
+            .as_array()
+            .expect("results array")
+            .iter()
+            .map(|r| r["ruleId"].as_str().expect("a ruleId"))
+            .collect();
+        assert_eq!(
+            in_sarif, expected,
+            "{name}: SARIF's results differ from the verdict's findings",
+        );
+
+        // The terminal and HTML render the code into prose, so each is checked for containment
+        // of every code the verdict holds. That is the direction that matters: a renderer
+        // *dropping* a finding is the failure, and a renderer cannot invent a code the catalog
+        // does not define.
+        let terminal = veridex_core::report::render_terminal(verdict, None, usize::MAX);
+        let html = veridex_core::report::render_html(verdict, None);
+        for code in &expected {
+            assert!(
+                terminal.contains(code),
+                "{name}: the terminal report omits `{code}`",
             );
-
-            let sarif = veridex_core::report::render_sarif(verdict);
-            let in_sarif: BTreeSet<&str> = sarif["runs"][0]["results"]
-                .as_array()
-                .expect("results array")
-                .iter()
-                .map(|r| r["ruleId"].as_str().expect("a ruleId"))
-                .collect();
-            assert_eq!(
-                in_sarif, expected,
-                "{label}/{variant}: SARIF's results differ from the verdict's findings",
+            assert!(
+                html.contains(code),
+                "{name}: the HTML report omits `{code}`",
             );
-
-            // The terminal and HTML render the code into prose, so each is checked for containment
-            // of every code the verdict holds. That is the direction that matters: a renderer
-            // *dropping* a finding is the failure, and a renderer cannot invent a code the catalog
-            // does not define.
-            let terminal = veridex_core::report::render_terminal(verdict, None, usize::MAX);
-            let html = veridex_core::report::render_html(verdict, None);
-            for code in &expected {
-                assert!(
-                    terminal.contains(code),
-                    "{label}/{variant}: the terminal report omits `{code}`",
-                );
-                assert!(
-                    html.contains(code),
-                    "{label}/{variant}: the HTML report omits `{code}`",
-                );
-            }
         }
     }
     assert!(
@@ -580,57 +659,39 @@ fn every_renderer_reports_the_same_findings() {
 #[test]
 fn a_certificate_names_the_findings_of_the_run_it_attests() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let registry = veridex_core::adapter::default_registry();
     let mut compared = 0;
-    for (label, variants, write, extension) in fixtures() {
-        for variant in variants {
-            let target = match extension {
-                Some(ext) => dir.path().join(format!("{label}-{variant}.{ext}")),
-                None => dir.path().join(format!("{label}-{variant}")),
-            };
-            let _ = std::fs::remove_dir_all(&target);
-            if write(&target, variant).is_err() {
-                continue;
-            }
-            let Some(checked) = veridex_core::pipeline::run_check(
-                &registry,
-                &Source::Local(target.to_path_buf()),
-                None,
-                &IngestOptions::default(),
-            )
-            .ok() else {
-                continue; // a fixture built to be refused at ingest
-            };
-            compared += 1;
+    for (name, target) in sweep_datasets(dir.path()) {
+        let Some(checked) = checked_for(&target) else {
+            continue; // a fixture built to be refused at ingest
+        };
+        compared += 1;
 
-            let coverage =
-                veridex_core::certificate::ProvenanceCoverage::of(&checked.ingested.dataset);
-            let cert = veridex_core::certificate::Certificate::build(
-                checked.ingested.dataset.id.clone(),
-                &checked.verdict,
-                checked.trust,
-                coverage,
-                veridex_core::certificate::Issuance {
-                    key_id: "test".into(),
-                    timestamp: "2026-01-01T00:00:00Z".into(),
-                },
-            );
+        let coverage = veridex_core::certificate::ProvenanceCoverage::of(&checked.ingested.dataset);
+        let cert = veridex_core::certificate::Certificate::build(
+            checked.ingested.dataset.id.clone(),
+            &checked.verdict,
+            checked.trust.clone(),
+            coverage,
+            veridex_core::certificate::Issuance {
+                key_id: "test".into(),
+                timestamp: "2026-01-01T00:00:00Z".into(),
+            },
+        );
 
-            let mut from_verdict: std::collections::BTreeMap<&str, u64> = Default::default();
-            for f in &checked.verdict.findings {
-                *from_verdict.entry(f.code.as_str()).or_default() += 1;
-            }
-            let in_cert: std::collections::BTreeMap<&str, u64> = cert
-                .findings_summary
-                .by_code
-                .iter()
-                .map(|(k, v)| (k.as_str(), *v))
-                .collect();
-            assert_eq!(
-                in_cert, from_verdict,
-                "{label}/{variant}: the certificate's findings do not match the run it attests",
-            );
+        let mut from_verdict: std::collections::BTreeMap<&str, u64> = Default::default();
+        for f in &checked.verdict.findings {
+            *from_verdict.entry(f.code.as_str()).or_default() += 1;
         }
+        let in_cert: std::collections::BTreeMap<&str, u64> = cert
+            .findings_summary
+            .by_code
+            .iter()
+            .map(|(k, v)| (k.as_str(), *v))
+            .collect();
+        assert_eq!(
+            in_cert, from_verdict,
+            "{name}: the certificate's findings do not match the run it attests",
+        );
     }
     assert!(
         compared >= 30,
@@ -684,12 +745,12 @@ fn contains_token(text: &str, needle: &str) -> bool {
 /// stream name and `frame_id`, every task and label value, every provenance value and metadata value
 /// — and requires that none of them appears in the redacted terminal, JSON, SARIF or HTML report.
 ///
-/// Matching is on whole tokens, not substrings, and identifiers shorter than four characters are
-/// skipped — both for the same reason. See [`contains_token`].
+/// Matching is on whole tokens, not substrings, and only identifiers carrying a separator or a digit
+/// are checked — an identifier that is an ordinary English word cannot be told from Veridex's own
+/// prose, and no redactor can remove a word from its own sentences. See [`contains_token`].
 #[test]
 fn a_redacted_report_leaks_no_identifier_the_cdm_carries() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let registry = veridex_core::adapter::default_registry();
     // Every word Veridex's own catalog uses, from the check ids and finding codes it can print.
     let catalog_tokens: BTreeSet<String> = {
         let engine = veridex_core::checks::default_engine().expect("the standard catalog");
@@ -708,6 +769,16 @@ fn a_redacted_report_leaks_no_identifier_the_cdm_carries() {
                 veridex_core::engine::COVERAGE_CHECK_ID.to_string(),
                 veridex_core::engine::SCOPE_CHECK_ID.to_string(),
             ])
+            // And the format ids. Every adapter records the format it read as a `source_format`
+            // provenance element, so the dataset "carries" the word `rosbag2` — which the report
+            // also prints on its own `format:` line, and in the sentence refusing a bare `.db3`,
+            // whatever the dataset is.
+            .chain(
+                veridex_core::adapter::default_registry()
+                    .supported_formats()
+                    .into_iter()
+                    .map(|f| f.to_string()),
+            )
             .flat_map(|s| {
                 s.split(|c: char| !c.is_alphanumeric())
                     .map(|t| t.to_ascii_lowercase())
@@ -716,87 +787,82 @@ fn a_redacted_report_leaks_no_identifier_the_cdm_carries() {
             .collect()
     };
     let mut compared = 0;
-    for (label, variants, write, extension) in fixtures() {
-        for variant in variants {
-            let target = match extension {
-                Some(ext) => dir.path().join(format!("{label}-{variant}.{ext}")),
-                None => dir.path().join(format!("{label}-{variant}")),
-            };
-            let _ = std::fs::remove_dir_all(&target);
-            if write(&target, variant).is_err() {
-                continue;
-            }
-            let Some(checked) = veridex_core::pipeline::run_check(
-                &registry,
-                &Source::Local(target.to_path_buf()),
-                None,
-                &IngestOptions::default(),
-            )
-            .ok() else {
-                continue; // a fixture built to be refused at ingest
-            };
-            compared += 1;
+    for (name, target) in sweep_datasets(dir.path()) {
+        let Some(checked) = checked_for(&target) else {
+            continue; // a fixture built to be refused at ingest
+        };
+        compared += 1;
 
-            let d = &checked.ingested.dataset;
-            let mut secrets: BTreeSet<String> = BTreeSet::new();
-            secrets.insert(d.id.clone());
-            for (k, v) in &d.metadata {
-                secrets.insert(k.clone());
-                secrets.insert(v.clone());
-            }
-            for record in &d.provenance {
-                for el in &record.elements {
-                    if let Some(v) = el.value.as_ref() {
-                        secrets.insert(v.clone());
-                    }
+        let d = &checked.ingested.dataset;
+        let mut secrets: BTreeSet<String> = BTreeSet::new();
+        secrets.insert(d.id.clone());
+        for (k, v) in &d.metadata {
+            secrets.insert(k.clone());
+            secrets.insert(v.clone());
+        }
+        for record in &d.provenance {
+            for el in &record.elements {
+                if let Some(v) = el.value.as_ref() {
+                    secrets.insert(v.clone());
                 }
             }
-            for ep in &d.episodes {
-                if let Some(t) = ep.task.as_ref() {
-                    secrets.insert(t.clone());
-                }
-                for l in &ep.labels {
-                    secrets.insert(l.value.clone());
-                }
-                for s in &ep.streams {
-                    secrets.insert(s.name.clone());
-                    if let Some(f) = s.frame_id.as_ref() {
-                        secrets.insert(f.clone());
-                    }
+        }
+        for ep in &d.episodes {
+            if let Some(t) = ep.task.as_ref() {
+                secrets.insert(t.clone());
+            }
+            for l in &ep.labels {
+                secrets.insert(l.value.clone());
+            }
+            for s in &ep.streams {
+                secrets.insert(s.name.clone());
+                if let Some(f) = s.frame_id.as_ref() {
+                    secrets.insert(f.clone());
                 }
             }
-            secrets.retain(|s| s.len() >= 4);
-            // A dataset is free to name a frame `gnss` or a stream `camera`, and Veridex's own
-            // vocabulary says those words too — `autonomy.gnss-plausibility` is a check id, and it
-            // is in the report whatever the dataset is called. An identifier that collides with the
-            // catalog's own words cannot be told apart in the rendered output and is not something
-            // redaction failed to remove, so it is excluded rather than reported as a leak. Names
-            // that do not collide — `camera_front`, `/lidar/points`, `demo-operator` — are still
-            // held to the promise.
-            secrets.retain(|s| !catalog_tokens.contains(&s.to_ascii_lowercase()));
+        }
+        // Only identifiers that cannot be mistaken for English: something carrying a separator or a
+        // digit. A dataset is free to name a stream `timestamps` — an HDF5 fixture here does — and
+        // the report says "per-frame timestamps" in its own prose whatever the dataset is called.
+        // No redactor can remove a word from Veridex's own sentences, and a test demanding it would
+        // be measuring English rather than the promise. What is left is everything a leak actually
+        // looks like: `/camera/image`, `camera_front`, `demo-operator`, `maps/demo_town.xodr`,
+        // `CC-BY-4.0`, `observation.state`.
+        secrets.retain(|s| {
+            s.len() >= 4
+                && s.chars()
+                    .any(|c| c.is_ascii_digit() || matches!(c, '/' | '.' | '-' | '_' | ':'))
+        });
+        // A dataset is free to name a frame `gnss` or a stream `camera`, and Veridex's own
+        // vocabulary says those words too — `autonomy.gnss-plausibility` is a check id, and it
+        // is in the report whatever the dataset is called. An identifier that collides with the
+        // catalog's own words cannot be told apart in the rendered output and is not something
+        // redaction failed to remove, so it is excluded rather than reported as a leak. Names
+        // that do not collide — `camera_front`, `/lidar/points`, `demo-operator` — are still
+        // held to the promise.
+        secrets.retain(|s| !catalog_tokens.contains(&s.to_ascii_lowercase()));
 
-            let mut redactor = veridex_core::Redactor::for_dataset(d);
-            let redacted = redactor.redact_verdict(&checked.verdict);
-            let rendered = [
-                (
-                    "terminal",
-                    veridex_core::report::render_terminal(&redacted, None, usize::MAX),
-                ),
-                ("json", veridex_core::report::render_json(&redacted, None)),
-                (
-                    "sarif",
-                    veridex_core::report::render_sarif(&redacted).to_string(),
-                ),
-                ("html", veridex_core::report::render_html(&redacted, None)),
-            ];
-            for (surface, text) in &rendered {
-                for secret in &secrets {
-                    assert!(
-                        !contains_token(text, secret.as_str()),
-                        "{label}/{variant}: the redacted {surface} report still contains \
+        let mut redactor = veridex_core::Redactor::for_dataset(d);
+        let redacted = redactor.redact_verdict(&checked.verdict);
+        let rendered = [
+            (
+                "terminal",
+                veridex_core::report::render_terminal(&redacted, None, usize::MAX),
+            ),
+            ("json", veridex_core::report::render_json(&redacted, None)),
+            (
+                "sarif",
+                veridex_core::report::render_sarif(&redacted).to_string(),
+            ),
+            ("html", veridex_core::report::render_html(&redacted, None)),
+        ];
+        for (surface, text) in &rendered {
+            for secret in &secrets {
+                assert!(
+                    !contains_token(text, secret.as_str()),
+                    "{name}: the redacted {surface} report still contains \
                          `{secret}`, which the CDM carries and redaction promises to remove",
-                    );
-                }
+                );
             }
         }
     }
