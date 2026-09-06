@@ -10,6 +10,16 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **The promise that makes `--profile strict` safe to gate on now has a test behind it.**
+  [docs/profiles.md](docs/profiles.md) sells tightening in these words: measuring the data harder
+  than the catalog asks "can only lower a score, so it is not a narrowing: it emits no
+  `SCOPE.NARROWED`, and `check --profile strict --min-score 80` is a valid CI gate". Nothing held it.
+  A profile that could make a finding *disappear* would turn that gate into a way to launder a
+  failing dataset — the exact thing `SCOPE.NARROWED` exists to stop a loosened threshold from doing,
+  arriving through the one door deliberately left open. Held now over every demo variant of every
+  generator: tightening never removes a finding and never raises the score. (It didn't; the property
+  was true and unguarded.)
+
 - **A narrower read can no longer invent findings, and three did.** `--metadata-only` opens no
   payload, so every check that reads values, timestamps or message bodies has nothing — and a check
   reporting that absence as a property of the *data* says something the full read contradicts.

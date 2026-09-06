@@ -390,3 +390,83 @@ fn a_narrower_read_never_invents_a_finding_the_full_read_does_not() {
         "the sweep must actually reach some metadata-only-capable fixtures, compared {compared}"
     );
 }
+
+/// Measuring the data **harder** can only add findings, never remove one — and so can only lower the
+/// trust score, never raise it.
+///
+/// That is the whole argument for `--profile strict` being safe to gate on, and `docs/profiles.md`
+/// sells it in those words: tightening "is not a narrowing: it emits no `SCOPE.NARROWED`, and
+/// `check --profile strict --min-score 80` is a valid CI gate". A profile that could make a finding
+/// *disappear* would turn that gate into a way to launder a failing dataset — the exact thing
+/// `SCOPE.NARROWED` exists to stop a loosened threshold from doing, arriving through the one door
+/// that is deliberately left open.
+///
+/// Nothing held the promise. This does, over every demo variant of every generator.
+#[test]
+fn tightening_a_threshold_never_removes_a_finding_or_raises_the_score() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let registry = veridex_core::adapter::default_registry();
+    let strict = veridex_core::profile::strict();
+    let mut compared = 0;
+    for (label, variants, write, extension) in fixtures() {
+        for variant in variants {
+            let target = match extension {
+                Some(ext) => dir.path().join(format!("{label}-{variant}.{ext}")),
+                None => dir.path().join(format!("{label}-{variant}")),
+            };
+            let _ = std::fs::remove_dir_all(&target);
+            if write(&target, variant).is_err() {
+                continue;
+            }
+            let run = |config: &veridex_core::RunConfig| {
+                veridex_core::pipeline::run_check_with(
+                    &registry,
+                    &Source::Local(target.to_path_buf()),
+                    None,
+                    &IngestOptions::default(),
+                    config,
+                )
+                .ok()
+            };
+            let base = veridex_core::RunConfig::default();
+            let tightened = veridex_core::RunConfig {
+                tolerances: strict.apply_tolerances(base.tolerances),
+                ..base.clone()
+            };
+            let (Some(loose), Some(tight)) = (run(&base), run(&tightened)) else {
+                continue; // a fixture built to be refused at ingest
+            };
+            compared += 1;
+
+            let before: BTreeSet<String> = loose
+                .verdict
+                .findings
+                .iter()
+                .map(|f| f.code.clone())
+                .collect();
+            let after: BTreeSet<String> = tight
+                .verdict
+                .findings
+                .iter()
+                .map(|f| f.code.clone())
+                .collect();
+            let lost: Vec<&String> = before.difference(&after).collect();
+            assert!(
+                lost.is_empty(),
+                "{label}/{variant}: `--profile strict` loses {lost:?}. Measuring harder must never \
+                 make a finding disappear — that would make a tightened run a way to launder a \
+                 failing dataset through the one gate `SCOPE.NARROWED` deliberately leaves open.",
+            );
+            assert!(
+                tight.trust.score <= loose.trust.score,
+                "{label}/{variant}: `--profile strict` raises the score from {} to {}",
+                loose.trust.score,
+                tight.trust.score,
+            );
+        }
+    }
+    assert!(
+        compared >= 30,
+        "the sweep must reach the fixtures, got {compared}"
+    );
+}
