@@ -637,3 +637,171 @@ fn a_certificate_names_the_findings_of_the_run_it_attests() {
         "the sweep must reach the fixtures, got {compared}"
     );
 }
+
+/// Does `text` contain `needle` as a standalone token — not merely as a substring of a longer word?
+///
+/// Substring matching is not good enough here and the difference is not academic: the demo rig
+/// records `weather: rain`, and every risk sentence in the report talks about *training*. A test
+/// that reported that would be measuring English, not the redactor.
+fn contains_token(text: &str, needle: &str) -> bool {
+    let boundary = |c: Option<char>| match c {
+        None => true,
+        Some(c) => !c.is_alphanumeric() && c != '_',
+    };
+    let bytes = text.as_bytes();
+    let mut from = 0;
+    while let Some(rel) = text[from..].find(needle) {
+        let start = from + rel;
+        let end = start + needle.len();
+        let before = text[..start].chars().next_back();
+        let after = text[end..].chars().next();
+        if boundary(before) && boundary(after) {
+            return true;
+        }
+        // Advance past this occurrence; `find` works on char boundaries, so `start + 1` may land
+        // inside a multi-byte char — step to the next boundary instead.
+        from = start + 1;
+        while from < bytes.len() && !text.is_char_boundary(from) {
+            from += 1;
+        }
+        if from >= text.len() {
+            break;
+        }
+    }
+    false
+}
+
+/// Nothing a redacted report is meant to hide survives into it, in any renderer.
+///
+/// `--redact` is a promise about what a report does *not* contain, and a broken promise here is
+/// silent: the report looks fine, and the identifier it leaked is only noticed by whoever should not
+/// have seen it. `tests/redact.rs` is thorough about the substitution rules, but it works over one
+/// hand-built `sensitive_dataset()` — so it covers the identifier shapes that fixture happens to
+/// carry, and a real CAN signal name, MF4 channel, RLDS feature path or rig coordinate frame is not
+/// among them.
+///
+/// This takes the identifiers out of the *real* CDM of every demo variant — the dataset id, every
+/// stream name and `frame_id`, every task and label value, every provenance value and metadata value
+/// — and requires that none of them appears in the redacted terminal, JSON, SARIF or HTML report.
+///
+/// Matching is on whole tokens, not substrings, and identifiers shorter than four characters are
+/// skipped — both for the same reason. See [`contains_token`].
+#[test]
+fn a_redacted_report_leaks_no_identifier_the_cdm_carries() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let registry = veridex_core::adapter::default_registry();
+    // Every word Veridex's own catalog uses, from the check ids and finding codes it can print.
+    let catalog_tokens: BTreeSet<String> = {
+        let engine = veridex_core::checks::default_engine().expect("the standard catalog");
+        engine
+            .catalog()
+            .iter()
+            .flat_map(|c| {
+                std::iter::once(c.id.to_string())
+                    .chain(c.finding_codes.iter().map(|s| s.to_string()))
+            })
+            // The two disclosures that are deliberately *not* registered checks — a run's own
+            // coverage and its own narrowing — so that configuration cannot switch them off. They
+            // are printed like any check id, so their words belong here too: the MF4 demo names its
+            // recorder `veridex`, which is exactly the first token of both.
+            .chain([
+                veridex_core::engine::COVERAGE_CHECK_ID.to_string(),
+                veridex_core::engine::SCOPE_CHECK_ID.to_string(),
+            ])
+            .flat_map(|s| {
+                s.split(|c: char| !c.is_alphanumeric())
+                    .map(|t| t.to_ascii_lowercase())
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    };
+    let mut compared = 0;
+    for (label, variants, write, extension) in fixtures() {
+        for variant in variants {
+            let target = match extension {
+                Some(ext) => dir.path().join(format!("{label}-{variant}.{ext}")),
+                None => dir.path().join(format!("{label}-{variant}")),
+            };
+            let _ = std::fs::remove_dir_all(&target);
+            if write(&target, variant).is_err() {
+                continue;
+            }
+            let Some(checked) = veridex_core::pipeline::run_check(
+                &registry,
+                &Source::Local(target.to_path_buf()),
+                None,
+                &IngestOptions::default(),
+            )
+            .ok() else {
+                continue; // a fixture built to be refused at ingest
+            };
+            compared += 1;
+
+            let d = &checked.ingested.dataset;
+            let mut secrets: BTreeSet<String> = BTreeSet::new();
+            secrets.insert(d.id.clone());
+            for (k, v) in &d.metadata {
+                secrets.insert(k.clone());
+                secrets.insert(v.clone());
+            }
+            for record in &d.provenance {
+                for el in &record.elements {
+                    if let Some(v) = el.value.as_ref() {
+                        secrets.insert(v.clone());
+                    }
+                }
+            }
+            for ep in &d.episodes {
+                if let Some(t) = ep.task.as_ref() {
+                    secrets.insert(t.clone());
+                }
+                for l in &ep.labels {
+                    secrets.insert(l.value.clone());
+                }
+                for s in &ep.streams {
+                    secrets.insert(s.name.clone());
+                    if let Some(f) = s.frame_id.as_ref() {
+                        secrets.insert(f.clone());
+                    }
+                }
+            }
+            secrets.retain(|s| s.len() >= 4);
+            // A dataset is free to name a frame `gnss` or a stream `camera`, and Veridex's own
+            // vocabulary says those words too — `autonomy.gnss-plausibility` is a check id, and it
+            // is in the report whatever the dataset is called. An identifier that collides with the
+            // catalog's own words cannot be told apart in the rendered output and is not something
+            // redaction failed to remove, so it is excluded rather than reported as a leak. Names
+            // that do not collide — `camera_front`, `/lidar/points`, `demo-operator` — are still
+            // held to the promise.
+            secrets.retain(|s| !catalog_tokens.contains(&s.to_ascii_lowercase()));
+
+            let mut redactor = veridex_core::Redactor::for_dataset(d);
+            let redacted = redactor.redact_verdict(&checked.verdict);
+            let rendered = [
+                (
+                    "terminal",
+                    veridex_core::report::render_terminal(&redacted, None, usize::MAX),
+                ),
+                ("json", veridex_core::report::render_json(&redacted, None)),
+                (
+                    "sarif",
+                    veridex_core::report::render_sarif(&redacted).to_string(),
+                ),
+                ("html", veridex_core::report::render_html(&redacted, None)),
+            ];
+            for (surface, text) in &rendered {
+                for secret in &secrets {
+                    assert!(
+                        !contains_token(text, secret.as_str()),
+                        "{label}/{variant}: the redacted {surface} report still contains \
+                         `{secret}`, which the CDM carries and redaction promises to remove",
+                    );
+                }
+            }
+        }
+    }
+    assert!(
+        compared >= 30,
+        "the sweep must reach the fixtures, got {compared}"
+    );
+}
