@@ -666,6 +666,23 @@ mod tests {
                 seeded,
                 "changing {field} must change the content hash"
             );
+
+            // ...and the field survives a JSON round-trip. The two properties belong together: a
+            // field the hash binds but `serde` drops is one `veridex inspect --json` writes out and
+            // nothing can read back, so a CDM re-read from that JSON hashes differently from the
+            // dataset it came from — a mismatch `verify` reports as tampering. The round-trip test
+            // in `tests/autonomy_cdm.rs` uses a hand-built fixture and so only covers the fields
+            // that fixture happens to populate; this table is the one place every hash-bound field
+            // is enumerated, and the `Stream` destructure above makes a new one a compile error.
+            let json = serde_json::to_string(&d).expect("the CDM serializes");
+            let back: crate::cdm::Dataset =
+                serde_json::from_str(&json).expect("the CDM deserializes");
+            assert_eq!(
+                content_hash(&back),
+                content_hash(&d),
+                "{field} does not survive a JSON round-trip: the re-read CDM hashes differently"
+            );
+            assert_eq!(back, d, "{field} does not survive a JSON round-trip");
         }
     }
 
