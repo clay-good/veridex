@@ -562,3 +562,78 @@ fn every_renderer_reports_the_same_findings() {
         "the sweep must reach the fixtures, got {compared}"
     );
 }
+
+/// The certificate must not disagree with the verdict it attests.
+///
+/// A certificate is the one artifact that travels without Veridex beside it: the reader who most
+/// needs it is the one who cannot re-run the check. It carries findings **by code** for exactly that
+/// reason — a family count cannot tell a check that measured nothing from one that measured
+/// something wrong — and `tests/certificate.rs` holds that map against the coarser rollups sitting
+/// beside it in the same document.
+///
+/// What nothing held is the map against the *run*. A certificate that is internally consistent and
+/// disagrees with the verdict it was issued from is a signed statement about a dataset that Veridex
+/// did not make, and it verifies cleanly, because the signature covers the document rather than the
+/// run behind it. So: over every demo variant, the code histogram in the certificate is compared to
+/// the code histogram of the verdict it came from — counts included, since a dropped duplicate is
+/// the same defect one grain finer.
+#[test]
+fn a_certificate_names_the_findings_of_the_run_it_attests() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let registry = veridex_core::adapter::default_registry();
+    let mut compared = 0;
+    for (label, variants, write, extension) in fixtures() {
+        for variant in variants {
+            let target = match extension {
+                Some(ext) => dir.path().join(format!("{label}-{variant}.{ext}")),
+                None => dir.path().join(format!("{label}-{variant}")),
+            };
+            let _ = std::fs::remove_dir_all(&target);
+            if write(&target, variant).is_err() {
+                continue;
+            }
+            let Some(checked) = veridex_core::pipeline::run_check(
+                &registry,
+                &Source::Local(target.to_path_buf()),
+                None,
+                &IngestOptions::default(),
+            )
+            .ok() else {
+                continue; // a fixture built to be refused at ingest
+            };
+            compared += 1;
+
+            let coverage =
+                veridex_core::certificate::ProvenanceCoverage::of(&checked.ingested.dataset);
+            let cert = veridex_core::certificate::Certificate::build(
+                checked.ingested.dataset.id.clone(),
+                &checked.verdict,
+                checked.trust,
+                coverage,
+                veridex_core::certificate::Issuance {
+                    key_id: "test".into(),
+                    timestamp: "2026-01-01T00:00:00Z".into(),
+                },
+            );
+
+            let mut from_verdict: std::collections::BTreeMap<&str, u64> = Default::default();
+            for f in &checked.verdict.findings {
+                *from_verdict.entry(f.code.as_str()).or_default() += 1;
+            }
+            let in_cert: std::collections::BTreeMap<&str, u64> = cert
+                .findings_summary
+                .by_code
+                .iter()
+                .map(|(k, v)| (k.as_str(), *v))
+                .collect();
+            assert_eq!(
+                in_cert, from_verdict,
+                "{label}/{variant}: the certificate's findings do not match the run it attests",
+            );
+        }
+    }
+    assert!(
+        compared >= 30,
+        "the sweep must reach the fixtures, got {compared}"
+    );
+}
