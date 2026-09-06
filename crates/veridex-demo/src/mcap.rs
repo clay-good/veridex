@@ -60,6 +60,13 @@
 //!   a decoder reads only the fields it uses, and an `Imu` message ends in covariance the reader
 //!   deliberately skips, so shaving the end changes nothing it could have concluded.
 //!
+//! - `av-split-rig` — the same rig with a **second camera** on a rear pod whose extrinsics to the
+//!   body were never recorded. The transform tree stays well-formed and every frame keeps one
+//!   parent; it simply has two components, with a camera in each. Every sensor still reaches the
+//!   camera in *its* component, so every per-sensor frame rule passes and the rig reads as resolved,
+//!   while nothing on it can be projected into `camera_rear` at all →
+//!   `AUTONOMY.CAMERA_FRAME_UNRELATED`.
+//!
 //! - `av-unstamped` — the same rig whose LiDAR driver never set `header.stamp`. Every cloud is
 //!   well-formed, full of points, on time and in the right frame; only the sensor's own capture time
 //!   is missing, so the recorder's arrival clock is the only clock that stream has. Every timing
@@ -85,7 +92,7 @@
 //!   coordinates — `autonomy.gnss-plausibility` passes on them. Only the status byte says four
 //!   fifths of the trajectory is not measured → `AUTONOMY.GNSS_NO_FIX`.
 //!
-//! Usage: `cargo run -p veridex-demo --example make_demo_mcap -- <output.mcap> [skew|clean|stuck|late-start|av|av-miscalibrated|av-ambiguous-tf|av-dead-lidar|av-truncated-lidar|av-corrupt-bodies|av-unstamped|av-uncalibrated-camera|av-lossy-camera|av-no-fix]`
+//! Usage: `cargo run -p veridex-demo --example make_demo_mcap -- <output.mcap> [skew|clean|stuck|late-start|av|av-miscalibrated|av-ambiguous-tf|av-dead-lidar|av-truncated-lidar|av-corrupt-bodies|av-split-rig|av-unstamped|av-uncalibrated-camera|av-lossy-camera|av-no-fix]`
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
@@ -105,6 +112,7 @@ pub const VARIANTS: &[&str] = &[
     "av-dead-lidar",
     "av-truncated-lidar",
     "av-corrupt-bodies",
+    "av-split-rig",
     "av-unstamped",
     "av-uncalibrated-camera",
     "av-lossy-camera",
@@ -139,6 +147,9 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
     // are cut short, so their bodies do not decode. The messages are still there, on time; only the
     // values are gone.
     let corrupt_bodies = variant == "av-corrupt-bodies";
+    // `av-split-rig` is the same rig with a second camera on a rear pod whose extrinsics to the body
+    // were never recorded, so the tree has two components with one camera in each.
+    let split_rig = variant == "av-split-rig";
     // `av-unstamped` is the same rig with a LiDAR driver that never set `header.stamp`: the clouds
     // are full and on time, and the sensor says nothing about when it sampled them.
     let unstamped_lidar = variant == "av-unstamped";
@@ -157,6 +168,7 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
         || dead_lidar
         || truncated_lidar
         || corrupt_bodies
+        || split_rig
         || unstamped_lidar
         || uncalibrated_camera
         || lossy_camera
@@ -175,6 +187,7 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
                     dead_lidar,
                     truncated_lidar,
                     corrupt_bodies,
+                    split_rig,
                     unstamped_lidar,
                     uncalibrated_camera,
                     lossy_camera,
@@ -366,6 +379,7 @@ struct RigFaults {
     dead_lidar: bool,
     truncated_lidar: bool,
     corrupt_bodies: bool,
+    split_rig: bool,
     unstamped_lidar: bool,
     uncalibrated_camera: bool,
     lossy_camera: bool,
@@ -382,6 +396,7 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(w: &mut mcap::Writer<W>, faul
         dead_lidar,
         truncated_lidar,
         corrupt_bodies,
+        split_rig,
         unstamped_lidar,
         uncalibrated_camera,
         lossy_camera,
@@ -390,6 +405,24 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(w: &mut mcap::Writer<W>, faul
     // (schema, topic, message count, inter-message interval ns, coordinate frame). The IMU runs the
     // same 100 msg count as a healthy 100 Hz sensor but at a compressed 7 ms interval, so it finishes
     // ~0.30 s early.
+    // The rear pod's camera, present only in `av-split-rig`. It publishes exactly what the front one
+    // does — images and its own `CameraInfo` — so nothing but the transform tree distinguishes them.
+    let rear_camera: &[(&str, &str, u64, u64, &str)] = &[
+        (
+            "sensor_msgs/msg/Image",
+            "/camera_rear/image",
+            31,
+            33_000_000,
+            "camera_rear",
+        ),
+        (
+            "sensor_msgs/msg/CameraInfo",
+            "/camera_rear/camera_info",
+            31,
+            33_000_000,
+            "camera_rear",
+        ),
+    ];
     let sensors: &[(&str, &str, u64, u64, &str)] = &[
         (
             "sensor_msgs/msg/Image",
@@ -449,6 +482,13 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(w: &mut mcap::Writer<W>, faul
         ("base_link", "imu_link"),
         ("odom", "base_link"),
     ];
+    if split_rig {
+        // The rear pod's camera hangs off a `rear_pod` frame, and nothing joins `rear_pod` to
+        // `base_link` — the extrinsics nobody recorded. The tree is well-formed and every frame has
+        // one parent; it simply has two components, with a camera in each. Every sensor still
+        // reaches the camera in *its* component, which is why every per-sensor rule passes.
+        tf_edges.push(("rear_pod", "camera_rear"));
+    }
     if ambiguous_tf {
         // A second broadcaster claims the LiDAR, from a mount frame that is itself on `base_link`.
         // The mount edge keeps the graph connected and keeps the LiDAR reachable from the camera, so
@@ -475,7 +515,13 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(w: &mut mcap::Writer<W>, faul
         &tf_message_body(&tf_edges, RECORDING_EPOCH_NS),
     );
 
-    for (seq_base, (schema, topic, count, interval, frame_id)) in sensors.iter().enumerate() {
+    let all_sensors: Vec<&(&str, &str, u64, u64, &str)> = sensors
+        .iter()
+        .chain(if split_rig { rear_camera } else { &[] })
+        .collect();
+    for (seq_base, (schema, topic, count, interval, frame_id)) in
+        all_sensors.iter().copied().enumerate()
+    {
         let schema_id = w.add_schema(schema, "ros2msg", b"").unwrap();
         let channel = w
             .add_channel(schema_id, topic, "cdr", &BTreeMap::new())

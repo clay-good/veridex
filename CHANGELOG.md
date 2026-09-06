@@ -19,7 +19,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   catalog says anything*, while nothing on the rig can be projected into the other pod's camera and
   every image it recorded is unusable for fusion. `AUTONOMY.CAMERA_FRAME_UNRELATED` reports it,
   naming which cameras are stranded from which, and stays silent on the ordinary multi-camera
-  vehicle whose cameras share one component.
+  vehicle whose cameras share one component. Reproduced end to end by a new demo variant,
+  `make_demo_mcap -- <out> av-split-rig`.
 
 - **The promise that makes `--profile strict` safe to gate on now has a test behind it.**
   [docs/profiles.md](docs/profiles.md) sells tightening in these words: measuring the data harder

@@ -250,7 +250,15 @@ No code until this change is approved; this is the build plan.
 
 ## A5 — Proof
 - [ ] End-to-end on a real multi-sensor rig log (MF4 and/or ROS bag): LiDAR + multi-camera + CAN +
-      GNSS/IMU.
+      GNSS/IMU. Still open, and it needs a real log — no synthetic fixture can stand in for the last
+      of it. The **multi-camera** half is now exercised synthetically: `make_demo_mcap -- <out>
+      av-split-rig` writes the five-sensor rig with a second camera on a rear pod whose extrinsics
+      to the body were never recorded, and it found a real gap rather than confirming one. Every
+      per-sensor frame rule asked whether a sensor reaches *a* camera, which a rig split cleanly in
+      two satisfies for every sensor at once — so the whole catalog passed a rig with a camera
+      nothing could be projected into. `AUTONOMY.CAMERA_FRAME_UNRELATED` now reports it. What
+      remains genuinely untried is CAN alongside the rest in one log (Veridex reads CAN through a
+      DBC beside a candump log, not as bag topics) and the whole mix on real hardware.
 - [~] Reproduce detection of an injected single-sensor sync drift and a LiDAR-camera miscalibration.
       The sync-drift half is reproduced end-to-end on a synthetic rig: `make_demo_mcap -- <out> av`
       writes a five-sensor MCAP rig (camera/LiDAR/IMU/GNSS/odometry) with the IMU span cut ~0.30 s,
