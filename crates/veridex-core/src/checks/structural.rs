@@ -230,7 +230,17 @@ impl Check for DeclaredEpisodeCount {
 /// LeRobot `meta/info.json` `total_frames`), the frames ingested must match. This catches truncation
 /// that leaves every episode present but some episodes short — which the episode-count check misses.
 /// The actual count per episode is its longest stream (in a frame-aligned source, every stream in an
-/// episode has the same length). Datasets that declare no frame count are skipped.
+/// episode has the same length).
+///
+/// A dataset that declares no frame count has nothing to compare against, and until this check said
+/// so it was *silently* skipped — which is byte-for-byte what a dataset whose declared count matched
+/// produces. `docs/checks.md` recorded the limit in prose, and a note on a documentation page reaches
+/// neither the report, the SARIF, the HTML, nor the certificate; the reader who most needs it is the
+/// one holding a signed document with no Veridex beside them. `STRUCTURAL.FRAME_COUNT_UNDECLARED`
+/// says it where the rest of the family's abstentions say theirs. It is the common case rather than
+/// the rare one — RLDS declares no total, and neither does a bag, an MCAP file, a CAN log or an MF4
+/// measurement — and it is informational, because a recording is not worse for the format it was
+/// published in. What it changes is what a clean structural result is evidence of.
 pub struct DeclaredFrameCount;
 
 impl Check for DeclaredFrameCount {
@@ -238,7 +248,13 @@ impl Check for DeclaredFrameCount {
         "structural.declared-frame-count"
     }
     fn finding_codes(&self) -> &'static [&'static str] {
-        &["STRUCTURAL.FRAME_COUNT_MISMATCH"]
+        &[
+            "STRUCTURAL.FRAME_COUNT_MISMATCH",
+            "STRUCTURAL.FRAME_COUNT_UNDECLARED",
+        ]
+    }
+    fn abstention_codes(&self) -> &'static [&'static str] {
+        &["STRUCTURAL.FRAME_COUNT_UNDECLARED"]
     }
     fn title(&self) -> &'static str {
         "Declared frame count matches the data"
@@ -262,7 +278,28 @@ impl Check for DeclaredFrameCount {
             .find(|(k, _)| k == crate::cdm::META_DECLARED_FRAMES)
             .and_then(|(_, v)| v.parse::<u64>().ok())
         else {
-            return Vec::new();
+            return vec![Finding::new(
+                self.id(),
+                Category::Structural,
+                Severity::Info,
+                Location::Dataset,
+                "STRUCTURAL.FRAME_COUNT_UNDECLARED",
+                "this dataset declares no total frame count, so there was nothing for the \
+                 declared-vs-actual comparison to test against"
+                    .to_string(),
+            )
+            .with_risk(
+                "A truncated export that leaves every episode present and some episodes short is \
+                 what this comparison exists to catch, and nothing in this run could look for it. A \
+                 clean structural result here is the absence of that check, not evidence that the \
+                 export is complete.",
+            )
+            .with_remedy(
+                "The count is read from whatever total the source states (a LeRobot \
+                 `meta/info.json` `total_frames`, an HDF5 `num_samples`/`total`). A format that \
+                 states none carries nothing to compare, which is a fact about the recording rather \
+                 than a defect in it.",
+            )];
         };
         // Per episode, the longest stream is the episode length (streams are frame-aligned).
         let actual: u64 = dataset
@@ -295,10 +332,15 @@ impl Check for DeclaredFrameCount {
             "Re-download or re-export the dataset, or fix the manifest's total_frames to match.",
         )]
     }
-    /// Abstains entirely under a metadata-only ingest: the declared total is a claim about frames,
-    /// and no frame was read to compare it against.
+    /// Abstains entirely under a metadata-only ingest — the declared total is a claim about frames,
+    /// and no frame was read to compare it against — and under a **sampled** one, where the ingest
+    /// drops the dataset-level totals on purpose because they are only comparable against a whole
+    /// read. Without the second guard `STRUCTURAL.FRAME_COUNT_UNDECLARED` said "this dataset
+    /// declares no total frame count" about a dataset that declares one, and the same file read
+    /// whole reported nothing: the finding would be describing the request rather than the
+    /// recording. `COVERAGE.SAMPLE` already states the run's shape.
     fn run_in(&self, dataset: &Dataset, context: &CheckContext) -> Vec<Finding> {
-        if !context.frames_read {
+        if !context.frames_read || context.sampled {
             return Vec::new();
         }
         self.run(dataset)

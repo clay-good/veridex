@@ -274,9 +274,19 @@ fn declared_frame_count_matching_or_absent_is_clean() {
     d.metadata
         .push((veridex_core::cdm::META_DECLARED_FRAMES.into(), "4".into()));
     assert!(structural::DeclaredFrameCount.run(&d).is_empty());
-    // No declared frame count → skipped.
+    // No declared frame count → the comparison is skipped, and says so. Skipping it is right; doing
+    // so silently was not, because a dataset with nothing to compare then produced byte-for-byte
+    // what a dataset whose declared count matched produces.
     let plain = dataset(vec![episode(0, vec![stream("s", "c", None, &[0, 1])])]);
-    assert!(structural::DeclaredFrameCount.run(&plain).is_empty());
+    let f = structural::DeclaredFrameCount.run(&plain);
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "STRUCTURAL.FRAME_COUNT_UNDECLARED");
+    assert_eq!(f[0].severity, Severity::Info);
+    assert!(
+        f.iter()
+            .all(|x| x.code != "STRUCTURAL.FRAME_COUNT_MISMATCH"),
+        "an absent declaration is not a mismatch: {f:?}"
+    );
 }
 
 #[test]
@@ -1533,6 +1543,7 @@ fn provenance_findings_after_full_read(d: &Dataset) -> Vec<veridex_core::check::
         &CheckContext {
             frames_read: true,
             attested_keys: Vec::new(),
+            sampled: false,
         },
     )
 }
@@ -1595,6 +1606,7 @@ fn an_attested_element_is_not_also_reported_partial() {
     let context = CheckContext {
         frames_read: true,
         attested_keys: vec!["upstream".to_string()],
+        sampled: false,
     };
     let f = provenance::ProvenanceCompleteness.run_in(&d, &context);
     assert!(f.iter().all(|x| x.code != "PROVENANCE.PARTIAL"), "{f:?}");
@@ -6779,6 +6791,7 @@ fn an_attested_element_is_not_also_reported_missing() {
     let context = CheckContext {
         frames_read: true,
         attested_keys: vec!["clock".to_string(), "license".to_string()],
+        sampled: false,
     };
     let codes: Vec<String> = provenance::ProvenanceCompleteness
         .run_in(&d, &context)
@@ -7168,6 +7181,7 @@ fn every_abstention_code_in_the_catalog_is_declared_as_one() {
         "UNCHECKED",
         "UNREAD",
         "UNFINGERPRINTED",
+        "UNDECLARED",
         // A code whose *local part begins* `NO_` says the question had nothing to be asked about:
         // `SEMANTIC.NO_TASKS`, `SEMANTIC.NO_ANNOTATIONS`, `STATISTICAL.NO_STORED_STATS`. The dot
         // matters — a bare `NO_` would also match `AUTONOMY.GNSS_NO_FIX`, which is the opposite
@@ -7196,6 +7210,13 @@ fn every_abstention_code_in_the_catalog_is_declared_as_one() {
         // `VIDEO.MEDIA_UNREADABLE` one format down. The check reached the bytes and they are not
         // the message.
         "AUTONOMY.MESSAGE_BODY_UNDECODED",
+        // Reads like an abstention by name, and is a fault: a spatial sensor on a rig with a
+        // transform tree that declares no coordinate frame is a *recording* missing something it
+        // should state — an unconfigured driver publishing an empty `header.frame_id`. Veridex
+        // looked and the data did not say, which is the opposite of Veridex not looking. Its
+        // sibling `STRUCTURAL.FRAME_COUNT_UNDECLARED` genuinely is an abstention: there, the
+        // *format* states no total and no recording of it could.
+        "AUTONOMY.SENSOR_FRAME_UNDECLARED",
     ];
     // How an abstention row reads in `docs/checks.md`. A second, independent signal to the naming
     // vocabulary, because the two miss different things: `STATISTICAL.NO_STORED_STATS` means

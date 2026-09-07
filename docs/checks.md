@@ -24,6 +24,7 @@ neither is among them, so a config naming one is rejected.
 | `structural.episode-continuity` | `STRUCTURAL.EPISODE_INDEX_GAP` | warning | Episode indices are non-contiguous (e.g. `0, 1, 3`) — an episode was dropped between export and ingest. Needs no manifest, unlike the declared-count check. |
 | `structural.declared-episode-count` | `STRUCTURAL.EPISODE_COUNT_MISMATCH` | error | The manifest's declared episode count (e.g. LeRobot `total_episodes`) differs from the episodes ingested (a truncated export). |
 | `structural.declared-frame-count` | `STRUCTURAL.FRAME_COUNT_MISMATCH` | error | The manifest's declared frame count (e.g. LeRobot `total_frames`) differs from the frames ingested (episodes present but cut short). |
+| `structural.declared-frame-count` | `STRUCTURAL.FRAME_COUNT_UNDECLARED` | info | The dataset declares **no total frame count**, so the declared-vs-actual comparison had nothing to test against. Skipping the comparison is right; doing so silently was not — a dataset with nothing to compare produced byte-for-byte what a dataset whose declared count matched produces, and the truncated export that leaves every episode present and some episodes short is exactly what that comparison exists to catch. This is the common case rather than the rare one: RLDS declares no total, and neither does a bag, an MCAP file, a CAN log or an MF4 measurement. **Withheld under `--metadata-only`**, where no frame was read to compare against anything. Informational, not a defect: a recording is not worse for the format it was published in. What it changes is what a clean structural result is evidence of. |
 | `structural.shape-consistency` | `STRUCTURAL.SHAPE_MISMATCH` | error | A stream keeps a different declared dtype/shape across episodes (un-batchable). dtype and shape carry **independent** baselines, each taken from the first episode that declared *that* axis — a stream declaring a dtype in one episode and a shape only in a later one is still compared on both. (HDF5 and Zarr write no `shape` for a 1-D dataset, so a single such episode used to disable shape-drift detection for that stream permanently.) |
 | `structural.stream-presence` | `STRUCTURAL.STREAM_PRESENCE_INCONSISTENT` | warning | A stream key is present in some episodes but missing from others — a heterogeneous feature set (a sensor that dropped out, or two exports pooled together). |
 | `structural.step-alignment` | `STRUCTURAL.STEP_COUNT_MISMATCH` | error | Two streams in one episode indexed by the same **step counter** disagree about how many steps the episode has. A step index is a row index, so `action[i]` and `observation.state[i]` are the same moment by construction — the only thing that can break the pairing is the arrays holding different numbers of rows. Nothing else looks: the whole temporal family abstains on a step index (correctly — an index is flawlessly monotonic and perfectly regular), and `structural.declared-frame-count` needs a count these formats rarely declare, so an `action` of 100 rows beside an `observation.state` of 50 came back clean with every pair past row 50 built from the wrong observation. On measured time the same defect is `TEMPORAL.CLOCK_SKEW`. Reachable for HDF5 and Zarr, both proven end-to-end. RLDS stamps step indices too but cannot reach this check: a TFRecord holds one `steps` sequence, so the adapter refuses a record whose features disagree about its length before a CDM exists. MCAP, rosbag2, LeRobot, CAN+DBC and MF4 carry measured time, where the same defect is `TEMPORAL.CLOCK_SKEW`. **A difference of one is tolerated**: several collectors store the terminal observation a trajectory ends in, giving `observation` one row more than `action` — a deliberate convention, and flagging it would fire on sound robomimic data. Two rows is no convention. Empty streams are `STRUCTURAL.EMPTY_STREAM`'s concern and are excluded. |
@@ -265,7 +266,10 @@ sound. (HDF5's gate is the same idea one level down: a chunk that fails its stor
 checksum, or inflates to the wrong size for its own shape, is refused rather than read past.) Frame
 counts are the one thing genuinely not covered *for RLDS*: it declares no total, so
 `STRUCTURAL.FRAME_COUNT_MISMATCH` has nothing to test against. An HDF5 file that writes `num_samples`
-or `total` does get that check.
+or `total` does get that check. That gap is now reported rather than only written down —
+`STRUCTURAL.FRAME_COUNT_UNDECLARED` — because a note on this page reaches neither the report, the
+SARIF, the HTML nor the certificate, and the reader who most needs it is the one holding a signed
+document with no Veridex beside them.
 
 All three limits are recorded here rather than left implicit, on the same principle as the rest of
 the catalog: a check that abstains must say so, or its silence reads as a pass.
@@ -335,7 +339,7 @@ the terminal report, the JSON, the SARIF, the HTML, and the certificate's own su
 | `statistical.value-measurability` | the adapter never read values (any MCAP or rosbag2 topic other than a `JointState` or an `Imu`, and any `bytes_list` leaf of an RLDS record), or read them but had no stored statistics to compare against (HDF5, Zarr, CAN+DBC, MF4, RLDS numeric leaves, bag `JointState` / `Imu` topics) |
 | `structural.content-measurability` | frames carry no content fingerprint, so the duplicate-episode and stuck-stream checks had no bytes to compare — and, separately, that the run covers too few episodes for the seven checks that answer by comparing one episode against another |
 
-Eight further checks do their own work *and* disclose when they could not do it, rather than leaving a
+Nine further checks do their own work *and* disclose when they could not do it, rather than leaving a
 sibling to speak for them. A readiness criterion is judged by its own check's findings, so a check
 that defers its silence to another leaves that criterion green over data nobody measured — which is
 how a rig with no decoded receiver, and one with no transform tree at all, each came back with two
@@ -350,6 +354,7 @@ and one criteria met respectively:
 | `autonomy.gnss-plausibility` | `AUTONOMY.GNSS_UNMEASURED` |
 | `autonomy.gnss-fix-availability` | `AUTONOMY.GNSS_STATUS_UNREAD` |
 | `autonomy.sensor-frame-resolution` | `AUTONOMY.SENSOR_FRAME_UNCHECKED` |
+| `structural.declared-frame-count` | `STRUCTURAL.FRAME_COUNT_UNDECLARED` |
 
 Every abstention code is **declared** by its check (`Check::abstention_codes`, listed by
 `veridex checks` with a `†` and by `veridex checks --json` as a field), so anything summarizing a run

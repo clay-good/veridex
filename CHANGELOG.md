@@ -10,6 +10,25 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A dataset that declares no frame count now says so.** `structural.declared-frame-count` compares
+  a manifest's declared total against the frames ingested, and skipped datasets that declare none —
+  silently, which is byte-for-byte what a dataset whose declared count *matched* produces. The
+  truncated export that leaves every episode present and some episodes short is exactly what that
+  comparison exists to catch, and nothing said it had not been looked for.
+  [docs/checks.md](docs/checks.md) recorded the limit in prose, and a note on a documentation page
+  reaches neither the report, the SARIF, the HTML nor the certificate — the reader who most needs it
+  is the one holding a signed document with no Veridex beside them.
+  `STRUCTURAL.FRAME_COUNT_UNDECLARED` says it where the rest of the family's abstentions say theirs.
+  It is the common case rather than the rare one: RLDS declares no total, and neither does a bag, an
+  MCAP file, a CAN log or an MF4 measurement.
+
+  Withheld under `--metadata-only`, and under a **sampled** run, which drops the dataset-level totals
+  on purpose because they are only comparable against a whole read — without that second guard it
+  said "this dataset declares no total frame count" about a dataset that declares one, and the same
+  file read whole reported nothing. `CheckContext` gains `sampled` for it, beside `frames_read`. That
+  mistake was caught by the narrower-read invariant added earlier in this release, on the very code
+  that motivated it.
+
 - **A camera nothing on the rig can reach.** `autonomy.sensor-frame-resolution` asks whether each
   sensor's frame resolves through the transform tree to *a* camera, which is the right question per
   sensor — a sensor that reaches one camera can be projected into it. On a multi-camera rig that

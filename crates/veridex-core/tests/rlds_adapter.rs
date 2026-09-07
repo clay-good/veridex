@@ -1115,6 +1115,9 @@ fn a_clean_rlds_dataset_passes_the_standard_checks_without_false_findings() {
         // annotation, which is what the annotation rules judge — so they judged nothing, and saying
         // so is a statement about the run rather than an accusation about the data.
         .filter(|code| *code != "SEMANTIC.NO_ANNOTATIONS")
+        // The fifth, and the one this format is named in `docs/checks.md` for: RLDS declares no
+        // total frame count, so the declared-vs-actual comparison had nothing to test against.
+        .filter(|code| *code != "STRUCTURAL.FRAME_COUNT_UNDECLARED")
         .collect();
     assert!(
         noise.is_empty(),

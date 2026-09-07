@@ -411,6 +411,9 @@ fn a_zarr_store_flows_through_the_whole_pipeline() {
         // And this fixture is a single episode, so the checks that answer by comparing episodes had
         // nothing to compare — the same kind of statement, about a different absence.
         .filter(|c| *c != "STRUCTURAL.UNCOMPARED_EPISODES")
+        // A replay buffer states its episode boundaries and no total frame count, so the
+        // declared-vs-actual comparison had nothing to test against either.
+        .filter(|c| *c != "STRUCTURAL.FRAME_COUNT_UNDECLARED")
         .collect();
     assert!(
         noise.is_empty(),

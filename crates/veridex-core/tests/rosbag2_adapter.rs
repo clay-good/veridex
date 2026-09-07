@@ -478,6 +478,9 @@ fn a_latched_topic_is_read_from_its_qos_and_stops_deflating_the_score() {
                 && !c.starts_with("STATISTICAL.")
                 && !c.starts_with("SEMANTIC.NO_"))
             .filter(|c| **c != "STRUCTURAL.UNCOMPARED_EPISODES")
+            // A bag declares no total frame count, so the declared-vs-actual comparison had
+            // nothing to test against — another statement about the evidence.
+            .filter(|c| **c != "STRUCTURAL.FRAME_COUNT_UNDECLARED")
             .count(),
         0,
         "{codes:?}"

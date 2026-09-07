@@ -493,6 +493,7 @@ impl Engine {
         // What the checks are allowed to conclude from absence, derived from what the ingest read.
         let context = crate::check::CheckContext {
             frames_read: coverage.frames_read(),
+            sampled: matches!(coverage, CoverageNote::Sample { .. }),
             attested_keys: attestation.map(|a| a.keys.clone()).unwrap_or_default(),
         };
 

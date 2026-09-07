@@ -322,6 +322,15 @@ pub struct CheckContext {
     /// the same report. The element is not missing; it is claimed by a signed producer rather than
     /// extracted, which `PROVENANCE.ATTESTED` discloses along with the key that signed it.
     pub attested_keys: Vec<String>,
+    /// Whether the ingest read only a *sample* of the dataset's episodes.
+    ///
+    /// Separate from [`CheckContext::frames_read`] because it withholds a different class of claim.
+    /// A sampled ingest reads frames — so every per-episode rule still applies to the episodes it
+    /// read — but it deliberately drops the dataset-level declared totals, which are only comparable
+    /// against a whole read. A check that reports the absence of one as a property of the *dataset*
+    /// then says "this dataset declares no total frame count" about a dataset that declares one, and
+    /// the same file read whole reports nothing. `COVERAGE.SAMPLE` already states the run's shape.
+    pub sampled: bool,
 }
 
 impl Default for CheckContext {
@@ -329,6 +338,7 @@ impl Default for CheckContext {
     fn default() -> Self {
         CheckContext {
             frames_read: true,
+            sampled: false,
             attested_keys: Vec::new(),
         }
     }

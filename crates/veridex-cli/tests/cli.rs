@@ -2142,8 +2142,11 @@ fn a_label_says_what_the_certificate_says_and_nothing_more() {
         // carrying a real `JointState` body: it is now measured, so it has recomputed statistics
         // with nothing stored to compare them against. The sixth and seventh are the semantic
         // family's own disclosures — an MCAP recording carries neither a task string nor a language
-        // annotation, so both of its judging checks judged nothing and now say so.
-        "| Findings | 1 error · 1 warning · 7 info |",
+        // annotation, so both of its judging checks judged nothing and now say so. The eighth is
+        // `STRUCTURAL.FRAME_COUNT_UNDECLARED`: an MCAP file states no total frame count, so the
+        // declared-vs-actual comparison had nothing to test against and says that rather than
+        // passing silently.
+        "| Findings | 1 error · 1 warning · 8 info |",
         "| Provenance |",
         "veridex verify",
     ] {
