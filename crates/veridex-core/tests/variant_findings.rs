@@ -962,3 +962,79 @@ fn every_finding_names_a_risk_and_a_remedy() {
     }
     assert!(seen >= 100, "the sweep must reach findings, saw {seen}");
 }
+
+/// Every finding points at something the dataset actually has.
+///
+/// A finding's location is the half a reader acts on: "episode 7, stream `/lidar/points`" is what
+/// sends someone to the right place in a recording. A location naming an episode index the dataset
+/// does not hold, or a stream name no episode carries, sends them nowhere — and it is silent, since
+/// nothing downstream resolves the location against the CDM. An off-by-one in an episode index or a
+/// check that names the stream it was *comparing against* rather than the one at fault both look
+/// exactly like a correct finding in every renderer.
+///
+/// A frame range is checked against the stream's own frame count for the same reason, and a time
+/// range only for its ordering: a range whose end precedes its start is wrong on its face, while
+/// whether a timestamp falls inside the recording is the temporal family's own question.
+#[test]
+fn every_finding_points_at_something_the_dataset_has() {
+    use veridex_core::check::Location;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut seen = 0;
+    for (name, target) in sweep_datasets(dir.path()) {
+        let Some(checked) = checked_for(&target) else {
+            continue;
+        };
+        let d = &checked.ingested.dataset;
+        let episode = |index: u64| d.episodes.iter().find(|e| e.index == index);
+        for f in &checked.verdict.findings {
+            seen += 1;
+            let (ep_index, stream_name) = match &f.location {
+                Location::Dataset => continue,
+                Location::Episode { episode } => (*episode, None),
+                Location::Stream { episode, stream } => (*episode, Some(stream)),
+                Location::FrameRange {
+                    episode,
+                    stream,
+                    start_frame,
+                    end_frame,
+                } => {
+                    let ep = episode;
+                    assert!(
+                        start_frame <= end_frame,
+                        "{name}: `{}` names frames {start_frame}..={end_frame}, which runs backwards",
+                        f.code
+                    );
+                    (*ep, Some(stream))
+                }
+                Location::TimeRange {
+                    episode,
+                    stream,
+                    start_ts,
+                    end_ts,
+                } => {
+                    assert!(
+                        start_ts <= end_ts,
+                        "{name}: `{}` names a time range that runs backwards",
+                        f.code
+                    );
+                    (*episode, Some(stream))
+                }
+            };
+            let ep = episode(ep_index).unwrap_or_else(|| {
+                panic!(
+                    "{name}: `{}` points at episode {ep_index}, which this dataset does not have",
+                    f.code
+                )
+            });
+            if let Some(stream) = stream_name {
+                assert!(
+                    ep.streams.iter().any(|s| &s.name == stream),
+                    "{name}: `{}` points at stream `{stream}` in episode {ep_index}, which carries \
+                     no such stream",
+                    f.code
+                );
+            }
+        }
+    }
+    assert!(seen >= 100, "the sweep must reach findings, saw {seen}");
+}
