@@ -10,6 +10,27 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A sample an MF4 marks invalid is no longer a whole channel thrown away.** MDF appends
+  *invalidation bytes* to each record and gives a channel a bit in them — how a signal that is only
+  present while a subsystem is awake is recorded: the samples taken while it slept are in the record
+  and declared invalid. Veridex did not evaluate those bits, and rather than present invalid samples
+  as measurements it declined **the entire channel**, reported as unread. The honest half of that was
+  the reporting; the costly half is that a fleet measurement's conditional signals — often most of
+  its interesting ones — produced no streams at all, so no check ever reached them.
+
+  The bits are evaluated now. An invalid sample yields no frame, so nothing summarizes it and no
+  timing check counts it as a measurement, and the count reaches the report per channel: a signal
+  present for a tenth of a drive is summarized over that tenth, and a mean and a range alone do not
+  say so. `cn_flags` bit 0 ("all values invalid") is the file saying the channel measured nothing
+  anywhere — no stream can carry a finding about it, so the report does. An invalid *master* value
+  costs the whole record rather than one channel: it cannot be placed in time, so it contributes no
+  sample to any channel in the group, and a master declaring every value invalid stops the group.
+
+  A channel whose invalidation bit lies **outside** the invalidation bytes each record carries stays
+  declined and unread. That is not a channel with no invalid samples: it is a file whose valid
+  samples cannot be told from its invalid ones, and reading them all as valid would put values the
+  file disowned into the verdict as measurements.
+
 - **The last unapplied numeric MF4 conversion is applied.** An ASAM MF4 channel carries a `##CC`
   block saying how the raw bits in a record become the physical quantity they stand for, and every
   numeric form of it was applied — linear, rational, both value-to-value tables, value-range-to-value

@@ -528,12 +528,22 @@ it, so it raises `COVERAGE.SOURCE_UNREAD` rather than sitting in a note only `in
 `##DZ` holding something other than a `DT` record stream, an undefined zip type, a record id no
 channel group claims, a variable-length signal-data group (its records are length-prefixed, not
 fixed-stride, so slicing them at a fixed width would read every one at the wrong offset), a group
-with no usable time master, a channel declaring per-sample invalidation, a group declaring more
+with no usable time master, a channel whose invalidation bit lies outside the invalidation bytes each
+record carries (so its valid samples cannot be told from its invalid ones), a group declaring more
 cycles than its block holds, a bit-packed big-endian field, a channel that runs past the end of its
-record, a numeric `##CC` conversion left unevaluated. Non-numeric channels and the four text-valued
-conversions are **unmapped** instead, and cost the reader nothing: a value-to-text conversion turns a
-code into a string, which a numeric stream has no shape for, and the raw code is the honest thing to
-record.
+record, a numeric `##CC` conversion left unevaluated. Non-numeric channels, the four text-valued
+conversions and the samples the file itself marks invalid are **unmapped** instead, and cost the
+reader nothing: a value-to-text conversion turns a code into a string, which a numeric stream has no
+shape for, and the raw code is the honest thing to record.
+
+**A sample the file marks invalid is not a measurement.** MDF appends invalidation bytes to each
+record and gives a channel a bit in them, which is how a signal that is only present while a
+subsystem is awake gets recorded: the samples taken while it slept are there in the record and are
+declared invalid. Those bits are evaluated — an invalid sample yields no frame, so nothing summarizes
+it and no timing check counts it as a measurement — and the count reaches the report per channel,
+because a signal present for a tenth of a drive is summarized over that tenth and a mean and a range
+alone do not say so. An invalid *master* value costs the whole record: it cannot be placed in time,
+so it contributes no sample to any channel in the group.
 
 **Bit-packed signals are read.** An MF4 carrying bus traffic does not store one signal per byte: a
 12-bit pedal position starting three bits into a byte, a 4-bit gear packed above it in the same word,

@@ -178,6 +178,34 @@ impl Mf4Builder {
         at
     }
 
+    /// A channel with `cn_flags` and the `cn_inval_bit_pos` those flags refer to.
+    #[allow(clippy::too_many_arguments)]
+    fn channel_with_invalidation(
+        &mut self,
+        name: &str,
+        data_type: u8,
+        byte_offset: u32,
+        bit_count: u32,
+        flags: u32,
+        inval_bit_pos: u32,
+    ) -> u64 {
+        let at = self.channel_with_flags(
+            name,
+            0,
+            0,
+            data_type,
+            0,
+            byte_offset,
+            bit_count,
+            None,
+            flags,
+        );
+        // cn_inval_bit_pos sits at data offset 16, immediately after cn_flags.
+        let off = at as usize + 24 + 8 * 8 + 16;
+        self.bytes[off..off + 4].copy_from_slice(&inval_bit_pos.to_le_bytes());
+        at
+    }
+
     fn channel_group(&mut self, cycle_count: u64, data_bytes: u32) -> u64 {
         self.channel_group_with_inval(cycle_count, data_bytes, 0)
     }
@@ -1091,37 +1119,158 @@ fn a_conversion_on_the_time_master_that_cannot_be_applied_stops_the_group() {
     );
 }
 
-#[test]
-fn a_channel_declaring_invalidation_bits_is_not_decoded() {
-    // Veridex does not evaluate per-sample invalidation bits, so decoding such a channel would
-    // present samples the file marked invalid as real measurements.
+/// A three-record group whose records carry two invalidation bytes each: an `f64` time at byte 0, a
+/// `u32` value at byte 8, then the invalidation bytes `inval[i]` for record `i`. The `value` channel
+/// is built by the caller, so it can declare whatever flags and bit position the case is about.
+fn invalidation_file(
+    inval: [[u8; 2]; 3],
+    make_value: impl FnOnce(&mut Mf4Builder) -> u64,
+    master_flags: u32,
+) -> Vec<u8> {
     let mut b = Mf4Builder::new(b"veridex ");
     let mut data = Vec::new();
-    for i in 0..3u32 {
+    for (i, bits) in inval.iter().enumerate() {
         data.extend_from_slice(&(i as f64 * 0.1).to_le_bytes());
-        data.extend_from_slice(&i.to_le_bytes());
-        data.extend_from_slice(&[0xFF, 0xFF]); // invalidation bytes: every sample invalid
+        data.extend_from_slice(&(i as u32).to_le_bytes());
+        data.extend_from_slice(bits);
     }
     let dt = b.block(b"##DT", &[], &data);
-    let value = b.channel_with_flags("value", 0, 0, UINT_LE, 0, 8, 32, None, 0x02);
-    let time = b.channel("t", 2, 1, FLOAT_LE, 0, 0, 64, None);
+    let value = make_value(&mut b);
+    let time = b.channel_with_flags("t", 2, 1, FLOAT_LE, 0, 0, 64, None, master_flags);
     b.patch_link(time, 0, value);
     let cg = b.channel_group_with_inval(3, 12, 2);
     b.patch_link(cg, 1, time);
     let dg = b.data_group(0);
     b.patch_link(dg, 1, cg);
     b.patch_link(dg, 2, dt);
-    let ingested = ingest(&b.finish(dg, 0));
+    b.finish(dg, 0)
+}
 
+#[test]
+fn a_sample_the_file_marks_invalid_yields_no_frame_and_is_counted() {
+    // MDF marks a sample invalid with a bit in the record's invalidation bytes — how a signal that
+    // is only present while a subsystem is awake is recorded. An invalid sample is the file saying
+    // it was not measured, so it must not become a frame; and the count has to reach the report,
+    // because a channel summarized over a third of a drive looks exactly like one measured
+    // throughout once it is only a mean and a range.
+    let bytes = invalidation_file(
+        [[0x00, 0x00], [0x01, 0x00], [0x00, 0x00]],
+        |b| b.channel_with_invalidation("value", UINT_LE, 8, 32, 0x02, 0),
+        0,
+    );
+    let ingested = ingest(&bytes);
+    let stream = &ingested.dataset.episodes[0].streams[0];
+    assert_eq!(stream.frames.len(), 2, "the invalid sample yields no frame");
+    // Raw counts 0 and 2 survive; the mean is over those two, not over all three.
+    let stats = stream.observed_stats.expect("statistics");
+    assert_eq!((stats.min, stats.max, stats.mean), (0.0, 2.0, 1.0));
+    assert!(
+        ingested.report.unmapped_fields.iter().any(|u| u
+            .note
+            .contains("marks 1 of this channel's 3 sample(s) invalid")),
+        "{:?}",
+        ingested.report.unmapped_fields
+    );
+    // Nothing was withheld by the reader, so this is not a coverage hole.
+    assert!(
+        !ingested
+            .report
+            .unread_sources
+            .iter()
+            .any(|u| u.note.contains("invalid")),
+        "{:?}",
+        ingested.report.unread_sources
+    );
+}
+
+#[test]
+fn a_channel_the_file_marks_wholly_invalid_carries_no_measurement_and_says_so() {
+    // `cn_flags` bit 0 is "all values invalid": the channel is in the header tree and measured
+    // nothing anywhere. It has no stream, so no check can carry a finding about it — which is
+    // exactly why the report has to.
+    let ingested = ingest(&invalidation_file(
+        [[0x00, 0x00]; 3],
+        |b| b.channel_with_invalidation("value", UINT_LE, 8, 32, 0x01, 0),
+        0,
+    ));
+    assert!(ingested.dataset.episodes[0].streams.is_empty());
+    assert!(
+        ingested
+            .report
+            .unmapped_fields
+            .iter()
+            .any(|u| u.note.contains("declares every value invalid")),
+        "{:?}",
+        ingested.report.unmapped_fields
+    );
+}
+
+#[test]
+fn an_invalidation_bit_outside_the_record_is_refused_rather_than_read_as_valid() {
+    // Bit 64 with two invalidation bytes names a bit that is not there. That is not a channel with
+    // no invalid samples: it is a file this reader cannot tell valid samples from invalid ones in,
+    // and reading them all as valid would put values the file disowned into the verdict.
+    let ingested = ingest(&invalidation_file(
+        [[0xFF, 0xFF]; 3],
+        |b| b.channel_with_invalidation("value", UINT_LE, 8, 32, 0x02, 64),
+        0,
+    ));
     assert!(ingested.dataset.episodes[0].streams.is_empty());
     assert!(
         ingested
             .report
             .unread_sources
             .iter()
-            .any(|u| u.note.contains("per-sample invalidation")),
+            .any(|u| u.note.contains("lies outside the 2 invalidation byte(s)")),
         "{:?}",
         ingested.report.unread_sources
+    );
+}
+
+#[test]
+fn invalidation_on_the_time_master_stops_the_whole_group() {
+    // An invalid signal sample costs that signal one sample; an invalid *master* costs every stream
+    // in the group the whole record. A master whose every value the file marks invalid places
+    // nothing in time at all, so the group is refused rather than decoded against a timeline that
+    // does not exist.
+    let ingested = ingest(&invalidation_file(
+        [[0x00, 0x00]; 3],
+        |b| b.channel_with_invalidation("value", UINT_LE, 8, 32, 0, 0),
+        0x01,
+    ));
+    assert!(ingested.dataset.episodes[0].streams.is_empty());
+    assert!(
+        ingested
+            .report
+            .unread_sources
+            .iter()
+            .any(|u| u.note.contains("time master declares invalidation")),
+        "{:?}",
+        ingested.report.unread_sources
+    );
+}
+
+#[test]
+fn a_master_marked_invalid_for_one_record_drops_that_record_everywhere() {
+    // The master's own invalidation bit is per record: a record the file will not place in time
+    // contributes no sample to any channel of the group, not just to the master.
+    let ingested = ingest(&invalidation_file(
+        [[0x00, 0x00], [0x01, 0x00], [0x00, 0x00]],
+        |b| b.channel_with_invalidation("value", UINT_LE, 8, 32, 0, 0),
+        0x02,
+    ));
+    let stream = &ingested.dataset.episodes[0].streams[0];
+    assert_eq!(stream.frames.len(), 2);
+    // The value channel declares no invalidation of its own, so nothing is reported against it —
+    // the record simply has no place in time.
+    assert!(
+        !ingested
+            .report
+            .unmapped_fields
+            .iter()
+            .any(|u| u.note.contains("sample(s) invalid")),
+        "{:?}",
+        ingested.report.unmapped_fields
     );
 }
 

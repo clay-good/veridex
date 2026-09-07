@@ -33,14 +33,17 @@
 //! things. **Unread** (a `COVERAGE.SOURCE_UNREAD` warning in the verdict): a `##DZ` holding something
 //! other than a `DT` record stream or using an undefined zip type, a data list whose elements do not
 //! all resolve, an unsorted record tagged with an id no channel group claims, a variable-length
-//! signal-data group, a group with no usable time master, a channel declaring per-sample
-//! invalidation, a group declaring more cycles than its block holds, a bit-packed big-endian field, a
+//! signal-data group, a group with no usable time master, a channel whose invalidation bit lies
+//! outside the invalidation bytes each record carries — so valid samples cannot be told from invalid
+//! ones — a group declaring more cycles than its block holds, a bit-packed big-endian field, a
 //! channel that runs past the end of its record, and a numeric `##CC` conversion left unevaluated —
 //! the physical value is defined in the file as a rule, and the raw count stood in for it. All of it
 //! is in the file and nobody read it, so every result is over less of the measurement than it appears
-//! to be. **Unmapped** (a note about shape, costing the reader nothing): non-numeric channels, and
-//! the four text-valued conversions, whose physical value is a string a numeric stream cannot hold
-//! and whose raw code is the honest thing to record.
+//! to be. **Unmapped** (a note about shape, costing the reader nothing): non-numeric channels, the
+//! four text-valued conversions, whose physical value is a string a numeric stream cannot hold and
+//! whose raw code is the honest thing to record, and the samples the file itself marks invalid —
+//! quantified per channel, because a signal present for a tenth of a drive is summarized over that
+//! tenth and the summary alone does not say so.
 //!
 //! Decompression is charged to the shared [`DecompressionBudget`] before a decompressor is pointed
 //! at a stream, and each block's read is capped at the length it declares, so a forged expansion is
@@ -810,6 +813,9 @@ struct Channel {
     bit_count: u32,
     /// `cn_flags`, read so invalidation-bit declarations can be honored rather than ignored.
     flags: u32,
+    /// `cn_inval_bit_pos`: which bit of a record's invalidation bytes says whether *this* channel's
+    /// sample in that record is valid. Meaningful only when `cn_flags` bit 1 is set.
+    inval_bit_pos: u32,
     conversion: Conversion,
     /// A conversion type present in the file but not applied.
     unapplied_conversion: Option<u8>,
@@ -822,10 +828,47 @@ impl Channel {
         (self.channel_type == 2 || self.channel_type == 3) && self.sync_type == 1
     }
 
-    /// Whether the channel declares that some or all of its samples may be invalid — `cn_flags` bit 0
-    /// ("all values invalid") or bit 1 ("invalidation bit valid").
-    fn declares_invalidation(&self) -> bool {
-        self.flags & 0b11 != 0
+    /// Whether the file declares *every* sample of this channel invalid — `cn_flags` bit 0. The
+    /// channel is present in the header tree and carries no measurement at all.
+    fn all_values_invalid(&self) -> bool {
+        self.flags & 0b1 != 0
+    }
+
+    /// Whether the channel's samples are each marked valid or invalid by a bit in the record's
+    /// invalidation bytes — `cn_flags` bit 1.
+    fn has_invalidation_bit(&self) -> bool {
+        self.flags & 0b10 != 0
+    }
+
+    /// Whether the invalidation bit this channel names actually lies inside the invalidation bytes
+    /// the group appends to each record.
+    ///
+    /// A declaration pointing outside them is not a channel with no invalid samples: it is a file
+    /// this reader cannot tell valid samples from invalid ones in, and reading every sample as valid
+    /// would put values the file marked invalid into the verdict as measurements.
+    fn invalidation_bit_is_addressable(&self, inval_bytes: usize) -> bool {
+        !self.has_invalidation_bit()
+            || (self.inval_bit_pos as usize) < inval_bytes.saturating_mul(8)
+    }
+
+    /// Whether the sample this channel takes from `record` is valid.
+    ///
+    /// `data_bytes` is where the record's invalidation bytes begin. A set bit means *invalid*, which
+    /// is MDF's way of saying the sample was not measured — a signal that is only present while a
+    /// subsystem is awake, say. Callers must have checked [`Self::invalidation_bit_is_addressable`];
+    /// a bit that cannot be read is treated as invalid rather than as valid.
+    fn sample_is_valid(&self, record: &[u8], data_bytes: usize) -> bool {
+        if self.all_values_invalid() {
+            return false;
+        }
+        if !self.has_invalidation_bit() {
+            return true;
+        }
+        let pos = self.inval_bit_pos as usize;
+        let Some(byte) = record.get(data_bytes.saturating_add(pos / 8)) else {
+            return false;
+        };
+        byte & (1 << (pos % 8)) == 0
     }
 
     /// Whether this adapter can decode the channel's raw value. Anything else is reported rather
@@ -939,6 +982,7 @@ fn channel_at(bytes: &[u8], at: u64) -> Option<Channel> {
         byte_offset: le_u32(data, 4)?,
         bit_count: le_u32(data, 8)?,
         flags: le_u32(data, 12).unwrap_or(0),
+        inval_bit_pos: le_u32(data, 16).unwrap_or(0),
         conversion,
         unapplied_conversion,
     })
@@ -2214,6 +2258,19 @@ fn decode_channel_group(
         });
         return false;
     }
+    // Invalidation on a signal costs that signal's invalid samples; on the master it costs every
+    // stream in the group the whole record, so an unreadable declaration must stop the group rather
+    // than be noted. A master whose every value is declared invalid places nothing in time at all.
+    if master.all_values_invalid() || !master.invalidation_bit_is_addressable(inval_bytes) {
+        out.unread.push(UnmappedField {
+            source_path: locate(&master.name),
+            note: format!(
+                "time master declares invalidation (cn_flags 0x{:x}, bit {}) that cannot be read against {inval_bytes} invalidation byte(s), so no record can be placed in time; nothing decoded",
+                master.flags, master.inval_bit_pos
+            ),
+        });
+        return false;
+    }
 
     // Records actually present, never more than the file holds even if the group over-declares.
     let available = records.len() / record_len;
@@ -2231,11 +2288,21 @@ fn decode_channel_group(
         });
     }
 
-    // Timestamps first: a record whose master value cannot be read contributes no sample anywhere.
+    // Where a record's invalidation bytes begin: after its data bytes.
+    let data_bytes = record_len.saturating_sub(inval_bytes);
+
+    // Timestamps first: a record whose master value cannot be read — or whose master the file marks
+    // invalid — contributes no sample anywhere.
     let mut timestamps: Vec<Option<i64>> = Vec::with_capacity(count);
     for i in 0..count {
         let record = &records[i * record_len..(i + 1) * record_len];
-        timestamps.push(master.value(record).and_then(seconds_to_ns));
+        timestamps.push(
+            master
+                .sample_is_valid(record, data_bytes)
+                .then(|| master.value(record))
+                .flatten()
+                .and_then(seconds_to_ns),
+        );
     }
 
     let mut produced = false;
@@ -2244,14 +2311,30 @@ fn decode_channel_group(
         if channel.is_time_master() {
             continue;
         }
-        // MDF marks a sample invalid with a per-record invalidation bit. Veridex does not evaluate
-        // those bits, so a channel that declares them would present invalid samples as real values.
-        if inval_bytes != 0 && channel.declares_invalidation() {
+        // MDF marks a sample invalid with a per-record invalidation bit, and an invalid sample is
+        // the file saying it was not measured — not something this reader failed to read. So the
+        // channel is decoded and its invalid samples yield no frames.
+        if channel.all_values_invalid() {
+            // Nothing was withheld by the reader: the file itself says this channel measured
+            // nothing anywhere, which costs a reader nothing to skip but must not pass in silence.
+            out.unmapped.push(UnmappedField {
+                source_path: locate(&channel.name),
+                note: format!(
+                    "channel declares every value invalid (cn_flags 0x{:x}), so it carries no measurement and yields no samples",
+                    channel.flags
+                ),
+            });
+            continue;
+        }
+        if !channel.invalidation_bit_is_addressable(inval_bytes) {
+            // The declaration names a bit outside the record's invalidation bytes, so which samples
+            // the file marks invalid cannot be told. Reading them all as valid would put values the
+            // file disowned into the verdict as measurements.
             out.unread.push(UnmappedField {
                 source_path: locate(&channel.name),
                 note: format!(
-                    "channel declares per-sample invalidation (cn_flags 0x{:x}), which is not evaluated; its samples are not decoded",
-                    channel.flags
+                    "channel's invalidation bit {} lies outside the {inval_bytes} invalidation byte(s) of each record, so its valid samples cannot be told from its invalid ones; its samples are not decoded",
+                    channel.inval_bit_pos
                 ),
             });
             continue;
@@ -2299,11 +2382,18 @@ fn decode_channel_group(
         // whose steering angle sits at its end-stop for the whole drive scored `data 100` with no
         // statistical findings. Single-pass and holding no values: an MF4 is far larger than memory.
         let mut accum = super::stats::FeatureAccum::default();
+        // How many of this channel's samples the file itself marked invalid. Counted rather than
+        // quietly skipped: a channel whose signal was only present for a tenth of the drive is
+        // summarized over that tenth, and a reader given the summary and not the count cannot tell
+        // it from a channel measured throughout.
+        let mut invalidated = 0usize;
         for (i, ts) in timestamps.iter().enumerate() {
-            let (Some(ts), Some(value)) = (
-                *ts,
-                channel.value(&records[i * record_len..(i + 1) * record_len]),
-            ) else {
+            let record = &records[i * record_len..(i + 1) * record_len];
+            if !channel.sample_is_valid(record, data_bytes) {
+                invalidated += 1;
+                continue;
+            }
+            let (Some(ts), Some(value)) = (*ts, channel.value(record)) else {
                 continue;
             };
             accum.push_cell(&[Some(value)]);
@@ -2320,6 +2410,18 @@ fn decode_channel_group(
                             .into(),
                     ),
                 },
+            });
+        }
+        // The count, wherever it landed: a channel with some invalid samples is summarized over the
+        // rest, and a channel with nothing but invalid samples has no stream at all to carry a
+        // finding — so both have to say so here.
+        if invalidated > 0 {
+            out.unmapped.push(UnmappedField {
+                source_path: locate(&channel.name),
+                note: format!(
+                    "the file marks {invalidated} of this channel's {count} sample(s) invalid (cn_flags 0x{:x}, invalidation bit {}); they carry no measurement, so they yield no frames and are not summarized",
+                    channel.flags, channel.inval_bit_pos
+                ),
             });
         }
         if frames.is_empty() {
@@ -2510,6 +2612,7 @@ mod tests {
                 byte_offset: 0,
                 bit_count,
                 flags: 0,
+                inval_bit_pos: 0,
                 conversion: Conversion::Identity,
                 unapplied_conversion: None,
             }
@@ -2567,6 +2670,7 @@ mod tests {
             byte_offset: 0,
             bit_count,
             flags: 0,
+            inval_bit_pos: 0,
             conversion: Conversion::Identity,
             unapplied_conversion: None,
         };
