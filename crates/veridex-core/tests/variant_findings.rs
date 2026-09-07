@@ -94,6 +94,13 @@ fn claims(source: &str) -> Vec<Claim> {
     out
 }
 
+/// What [`checked_for`] remembers: the default check of each path, `None` for a source the ingest
+/// refused.
+type CheckCache = std::collections::HashMap<
+    std::path::PathBuf,
+    Option<std::sync::Arc<veridex_core::pipeline::CheckOutput>>,
+>;
+
 /// The default full check of `path`, computed once per test binary.
 ///
 /// Nine properties below run over the same ~60 datasets, and re-ingesting each of them nine times
@@ -101,15 +108,7 @@ fn claims(source: &str) -> Vec<Claim> {
 /// as*, and that does not depend on which property is asking. `None` is cached too: a fixture built
 /// to be refused at ingest is refused once.
 fn checked_for(path: &Path) -> Option<std::sync::Arc<veridex_core::pipeline::CheckOutput>> {
-    #[allow(clippy::type_complexity)]
-    static CACHE: std::sync::OnceLock<
-        std::sync::Mutex<
-            std::collections::HashMap<
-                std::path::PathBuf,
-                Option<std::sync::Arc<veridex_core::pipeline::CheckOutput>>,
-            >,
-        >,
-    > = std::sync::OnceLock::new();
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<CheckCache>> = std::sync::OnceLock::new();
     let cache = CACHE.get_or_init(Default::default);
     if let Some(hit) = cache.lock().expect("cache").get(path) {
         return hit.clone();
@@ -238,7 +237,6 @@ fn committed_datasets() -> Vec<(String, std::path::PathBuf)> {
 /// Ingest `path` and run the standard catalog, returning every finding code it emitted and the
 /// subset of those at error severity — or `None` when the ingest refused the source, which is itself
 /// a documented outcome for some fixtures.
-#[allow(clippy::type_complexity)]
 fn codes_for(path: &Path) -> Option<(BTreeSet<String>, BTreeSet<String>)> {
     let checked = checked_for(path)?;
     Some((
@@ -262,13 +260,16 @@ fn codes_for(path: &Path) -> Option<(BTreeSet<String>, BTreeSet<String>)> {
 
 /// Every generator, as (label, variants, writer, single-file extension). One list, so a generator
 /// added later is swept by both tests below rather than by whichever one someone remembered.
-#[allow(clippy::type_complexity)]
-fn fixtures() -> Vec<(
+/// One demo generator: its label, the variants it accepts, its writer, and the file extension it
+/// writes — `None` for a generator that writes a directory.
+type Generator = (
     &'static str,
     &'static [&'static str],
     fn(&Path, &str) -> Result<(), veridex_demo::DemoError>,
     Option<&'static str>,
-)> {
+);
+
+fn fixtures() -> Vec<Generator> {
     vec![
         (
             "mcap",
