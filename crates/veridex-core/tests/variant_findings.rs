@@ -1038,3 +1038,47 @@ fn every_finding_points_at_something_the_dataset_has() {
     }
     assert!(seen >= 100, "the sweep must reach findings, saw {seen}");
 }
+
+/// A fault the run found always costs data-quality score.
+///
+/// `docs/rubric-v1.md` is explicit: the data axis starts at 100 and deducts for each non-provenance
+/// finding. The consequence is what makes `--min-score` usable as a CI gate — a dataset Veridex
+/// found something wrong in cannot present a perfect data score. A deduction that failed to apply
+/// would be silent in every renderer, since the finding is still printed beside the score that
+/// ignored it, and the gate would wave through exactly the dataset it exists to stop.
+///
+/// Only errors and warnings count here. An informational finding is by design not a fault — the
+/// abstentions are informational precisely so that "we could not measure this" does not read as a
+/// defect — so requiring one to move the score would contradict the rubric rather than hold it.
+#[test]
+fn a_fault_always_costs_data_score() {
+    use veridex_core::check::{Category, Severity};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut with_faults = 0;
+    for (name, target) in sweep_datasets(dir.path()) {
+        let Some(checked) = checked_for(&target) else {
+            continue;
+        };
+        let faults: Vec<&str> = checked
+            .verdict
+            .findings
+            .iter()
+            .filter(|f| f.category != Category::Provenance)
+            .filter(|f| matches!(f.severity, Severity::Error | Severity::Warning))
+            .map(|f| f.code.as_str())
+            .collect();
+        if faults.is_empty() {
+            continue;
+        }
+        with_faults += 1;
+        assert!(
+            checked.trust.data_score < 100,
+            "{name}: data score is a perfect 100 beside {faults:?} — a fault the run found has to \
+             cost something, or `--min-score` passes the dataset it exists to stop",
+        );
+    }
+    assert!(
+        with_faults >= 10,
+        "the sweep must reach datasets that carry faults, got {with_faults}"
+    );
+}
