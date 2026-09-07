@@ -10,6 +10,27 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **The last unapplied numeric MF4 conversion is applied.** An ASAM MF4 channel carries a `##CC`
+  block saying how the raw bits in a record become the physical quantity they stand for, and every
+  numeric form of it was applied — linear, rational, both value-to-value tables, value-range-to-value
+  — except type 3, the *algebraic formula*, which stores the rule as text (`(X - 32) * 5 / 9`) in a
+  `##TX` rather than as parameters. It was disclosed as unread, honestly, and that disclosure is the
+  whole problem: the physical value was defined in the file, nobody computed it, and every
+  statistical result for that channel graded a raw count under the name of a temperature. A
+  calibration that is neither a line, a curve nor a table is exactly the one a fleet logger writes
+  this way.
+
+  Read now by a parser over arithmetic, parentheses, `X`, and a **closed table** of functions
+  (`sin`…`tanh`, `exp`, `log`, `log10`, `sqrt`, `abs`, `pow`, `min`, `max`). Closed on purpose: a
+  formula naming a function the table does not know, or referring to a *second* input signal as `X2`
+  — whose value a channel conversion has no access to — is declined **whole** and reported exactly as
+  before, never evaluated in part. A plausible wrong physical value is worse than an unevaluated
+  conversion, because nothing downstream can tell it was wrong.
+
+  The formula text is file-controlled and the parser is recursive, so its depth is bounded: without
+  that bound a nest of 2,000 parentheses ends the run in a stack overflow rather than a verdict,
+  which is what the guard's test asserts (and what removing the bound reproduces).
+
 - **A dataset that declares no frame count now says so.** `structural.declared-frame-count` compares
   a manifest's declared total against the frames ingested, and skipped datasets that declare none —
   silently, which is byte-for-byte what a dataset whose declared count *matched* produces. The

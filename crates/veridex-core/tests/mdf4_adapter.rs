@@ -98,10 +98,25 @@ impl Mf4Builder {
         self.block(b"##CC", &[0, 0, 0, 0], &data)
     }
 
-    /// A conversion type the adapter does not apply: an algebraic formula (type 3), whose physical
-    /// value is a number this reader has no expression evaluator for.
+    /// An algebraic formula conversion (type 3) with no `##TX` behind it: the rule the file says
+    /// exists is not in the file, so there is nothing to evaluate.
     fn algebraic_conversion(&mut self) -> u64 {
         self.conversion(3, &[])
+    }
+
+    /// An algebraic formula conversion (type 3): the rule as text in a `##TX` at `cc_ref[0]`, which
+    /// is link 4 of the `##CC`.
+    fn formula_conversion(&mut self, formula: &str) -> u64 {
+        let tx = self.text(formula);
+        let mut data = Vec::new();
+        data.push(3u8); // cc_type = algebraic
+        data.push(0u8); // precision
+        data.extend_from_slice(&0u16.to_le_bytes()); // flags
+        data.extend_from_slice(&1u16.to_le_bytes()); // ref_count
+        data.extend_from_slice(&0u16.to_le_bytes()); // val_count
+        data.extend_from_slice(&0f64.to_le_bytes()); // phy_range_min
+        data.extend_from_slice(&0f64.to_le_bytes()); // phy_range_max
+        self.block(b"##CC", &[0, 0, 0, 0, tx], &data)
     }
 
     /// A channel block. Returns its offset; `cn_next` is patched by the caller.
@@ -526,6 +541,8 @@ fn an_unapplied_numeric_conversion_reaches_the_verdict_as_data_that_went_unread(
     // An algebraic formula produces a *number*, and it is in the file as a rule. Not evaluating it
     // leaves every value of the stream a raw count summarized as though it were the physical
     // quantity — so the run has to say so in the verdict, not in a note only `inspect` prints.
+    // This one declares the type and carries no `##TX` to hold the rule, so there is nothing to
+    // evaluate.
     let ingested = ingest(&converted_file(|b| b.algebraic_conversion()));
     assert_eq!(ingested.dataset.episodes[0].streams.len(), 1);
     assert!(
@@ -602,6 +619,42 @@ fn a_rational_conversion_is_applied_rather_than_leaving_raw_counts_in_the_verdic
     // A sensor's calibration curve is not always a straight line. `(2x + 1) / 1` over raw 0..4.
     let bytes = converted_file(|b| b.conversion(2, &[0.0, 2.0, 1.0, 0.0, 0.0, 1.0]));
     assert_eq!(converted_values(&bytes), vec![1.0, 9.0, 5.0]);
+}
+
+#[test]
+fn an_algebraic_formula_is_evaluated_rather_than_leaving_raw_counts_in_the_verdict() {
+    // A calibration that is neither a line, a curve nor a table is stored as text: `##CC` type 3
+    // points at a `##TX` holding the rule, with `X` the raw value. `2X + 1` over raw 0..4 — the
+    // same curve the rational test pins, reached the other way.
+    let bytes = converted_file(|b| b.formula_conversion("X * 2 + 1"));
+    assert_eq!(converted_values(&bytes), vec![1.0, 9.0, 5.0]);
+}
+
+#[test]
+fn an_algebraic_formula_may_call_the_functions_in_the_closed_table() {
+    // Raw 0..4 squared: 0, 1, 4, 9, 16 — min 0, max 16, mean 6.
+    let bytes = converted_file(|b| b.formula_conversion("pow(X, 2)"));
+    assert_eq!(converted_values(&bytes), vec![0.0, 16.0, 6.0]);
+}
+
+#[test]
+fn a_formula_this_reader_cannot_evaluate_is_declined_whole_and_disclosed() {
+    // `X2` is a *second* input signal, whose value a channel conversion has no access to. Reading it
+    // as this channel's raw value would put a number in the verdict that is not the physical value
+    // the file defines — which is worse than the raw count, because nothing downstream could tell.
+    let ingested = ingest(&converted_file(|b| b.formula_conversion("X2 * 2")));
+    assert!(
+        ingested.report.unread_sources.iter().any(|u| u
+            .note
+            .contains("conversion type 3 (algebraic formula) is not applied")),
+        "{:?}",
+        ingested.report.unread_sources
+    );
+    // And the values it left behind are the raw counts, not a partial evaluation of the formula.
+    let stats = ingested.dataset.episodes[0].streams[0]
+        .observed_stats
+        .expect("statistics");
+    assert_eq!((stats.min, stats.max), (0.0, 4.0));
 }
 
 #[test]

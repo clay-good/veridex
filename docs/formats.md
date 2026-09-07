@@ -474,12 +474,16 @@ cargo run -p veridex-cli -- check /tmp/drive.mf4   # fires STATISTICAL.SATURATED
 The point of that finding is that it needs the *values*, not the file's shape: the records had to be
 decompressed, untransposed, sliced at the right byte offsets, and run through the channel's `##CC`
 conversion before anything could notice the wheel was pinned at its end-stop. Every numeric
-conversion MDF defines is applied — linear, rational, the two value-to-value look-up tables, and
-value-range-to-value — because a sensor's calibration curve is not always a straight line, and
-reporting the raw count instead grades a detector count as though it were a temperature. A numeric
-conversion this reader *cannot* evaluate (the algebraic-formula type) is disclosed as unread for the
-same reason: the physical value is defined in the file and nobody computed it. An MF4 channel is
-measured the same way a LeRobot feature is, so the whole statistical family reaches it — a buried
+conversion MDF defines is applied — linear, rational, the two value-to-value look-up tables,
+value-range-to-value, and the algebraic formula a `##CC` type 3 stores as text — because a sensor's
+calibration curve is not always a straight line, and reporting the raw count instead grades a
+detector count as though it were a temperature. The formula is read by a parser over arithmetic,
+parentheses, `X`, and a closed table of functions (`sin`, `sqrt`, `exp`, `log`, `pow`, `min`, `max`
+and the rest); a formula written outside that — one calling a function the table does not name, or
+referring to a *second* signal as `X2`, whose value a channel conversion has no access to — is
+declined whole and disclosed as unread, never evaluated in part — a plausible wrong physical value
+is worse than an unevaluated conversion, because nothing downstream can tell it was wrong. An MF4
+channel is measured the same way a LeRobot feature is, so the whole statistical family reaches it — a buried
 NaN, a 250x spike, a dead constant channel.
 
 **How the records are stored is not what they mean.** A logger deflates its records into `##DZ`

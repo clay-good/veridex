@@ -21,7 +21,9 @@
 //! verdict). Decoded: little-endian integer channels at **any bit offset and any width up to 64
 //! bits** — which is how an automotive measurement stores bus signals — plus big-endian integers and
 //! IEEE floats in whole bytes on a byte boundary, with every numeric `##CC` conversion applied:
-//! identity, linear, rational, the two value-to-value look-up tables, and value-range-to-value. A
+//! identity, linear, rational, the two value-to-value look-up tables, value-range-to-value, and the
+//! algebraic formula — the last evaluated by a parser over arithmetic, parentheses and a closed
+//! table of functions, which declines anything outside it rather than approximating it. A
 //! bit-packed big-endian field is declined rather than guessed at, because MDF's bit numbering for a
 //! straddling Motorola field is not the DBC sawtooth and a wrong reading there is a plausible number,
 //! not a failure.
@@ -245,12 +247,343 @@ fn unescape_xml(s: &str) -> String {
         .replace("&amp;", "&")
 }
 
+/// The longest algebraic formula this reader will parse, and the deepest it will nest.
+///
+/// Both are file-controlled: a `##CC` type 3 points at a `##TX` whose text is whatever the writer
+/// put there, and a recursive-descent parser over `((((…))))` recurses once per level. A real
+/// conversion formula is a line of arithmetic; these ceilings sit far above that and far below a
+/// depth that would end the run in a stack overflow rather than a verdict. The depth counts parser
+/// calls rather than parentheses — five per nesting level — so 128 is about 25 levels of nesting.
+const MAX_FORMULA_LEN: usize = 4096;
+const MAX_FORMULA_DEPTH: usize = 128;
+
+/// The one-argument functions an MDF algebraic formula may call.
+///
+/// A closed table on purpose: a name outside it is a formula this reader cannot evaluate, and the
+/// conversion is then declined and reported rather than approximated. Reading `foo(X)` as `X` would
+/// put a raw count in the verdict under the name of a physical quantity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fn1 {
+    Sin,
+    Cos,
+    Tan,
+    Asin,
+    Acos,
+    Atan,
+    Sinh,
+    Cosh,
+    Tanh,
+    Exp,
+    Log,
+    Log10,
+    Sqrt,
+    Abs,
+}
+
+/// The two-argument functions an MDF algebraic formula may call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fn2 {
+    Pow,
+    Min,
+    Max,
+}
+
+/// A parsed algebraic formula (`##CC` type 3), evaluated once per sample with `X` bound to the raw
+/// value.
+#[derive(Debug, Clone)]
+enum Expr {
+    Const(f64),
+    /// `X` — the raw value of the channel this conversion belongs to.
+    Var,
+    Neg(Box<Expr>),
+    Add(Box<Expr>, Box<Expr>),
+    Sub(Box<Expr>, Box<Expr>),
+    Mul(Box<Expr>, Box<Expr>),
+    Div(Box<Expr>, Box<Expr>),
+    Pow(Box<Expr>, Box<Expr>),
+    Call1(Fn1, Box<Expr>),
+    Call2(Fn2, Box<Expr>, Box<Expr>),
+}
+
+impl Expr {
+    /// The formula's value at raw value `x`.
+    ///
+    /// Nothing here guards against a non-finite result: a division by zero or a `sqrt` of a negative
+    /// is the file's own rule saying the sample has no physical value there, and
+    /// `STATISTICAL.NON_FINITE_OBSERVED` is the finding that says so — the same treatment the
+    /// rational conversion gets.
+    fn eval(&self, x: f64) -> f64 {
+        match self {
+            Expr::Const(v) => *v,
+            Expr::Var => x,
+            Expr::Neg(a) => -a.eval(x),
+            Expr::Add(a, b) => a.eval(x) + b.eval(x),
+            Expr::Sub(a, b) => a.eval(x) - b.eval(x),
+            Expr::Mul(a, b) => a.eval(x) * b.eval(x),
+            Expr::Div(a, b) => a.eval(x) / b.eval(x),
+            Expr::Pow(a, b) => a.eval(x).powf(b.eval(x)),
+            Expr::Call1(f, a) => {
+                let v = a.eval(x);
+                match f {
+                    Fn1::Sin => v.sin(),
+                    Fn1::Cos => v.cos(),
+                    Fn1::Tan => v.tan(),
+                    Fn1::Asin => v.asin(),
+                    Fn1::Acos => v.acos(),
+                    Fn1::Atan => v.atan(),
+                    Fn1::Sinh => v.sinh(),
+                    Fn1::Cosh => v.cosh(),
+                    Fn1::Tanh => v.tanh(),
+                    Fn1::Exp => v.exp(),
+                    Fn1::Log => v.ln(),
+                    Fn1::Log10 => v.log10(),
+                    Fn1::Sqrt => v.sqrt(),
+                    Fn1::Abs => v.abs(),
+                }
+            }
+            Expr::Call2(f, a, b) => {
+                let (a, b) = (a.eval(x), b.eval(x));
+                match f {
+                    Fn2::Pow => a.powf(b),
+                    Fn2::Min => a.min(b),
+                    Fn2::Max => a.max(b),
+                }
+            }
+        }
+    }
+}
+
+/// A recursive-descent parser over an algebraic formula's characters.
+///
+/// Deliberately not a general expression language: it accepts the arithmetic, the parentheses, the
+/// variable and the closed function table an MDF conversion formula is written in, and rejects
+/// everything else. A rejected formula leaves the raw value in place *and says so* — which is what
+/// the reader needs, because the alternative to an unevaluated rule is not a missing number, it is a
+/// raw count reported as a physical quantity.
+struct FormulaParser<'a> {
+    chars: &'a [u8],
+    at: usize,
+}
+
+impl<'a> FormulaParser<'a> {
+    fn new(text: &'a str) -> Self {
+        FormulaParser {
+            chars: text.as_bytes(),
+            at: 0,
+        }
+    }
+
+    fn skip_space(&mut self) {
+        while matches!(self.chars.get(self.at), Some(b' ' | b'\t' | b'\r' | b'\n')) {
+            self.at += 1;
+        }
+    }
+
+    fn peek(&mut self) -> Option<u8> {
+        self.skip_space();
+        self.chars.get(self.at).copied()
+    }
+
+    /// Consume `c` if it is next.
+    fn eat(&mut self, c: u8) -> bool {
+        if self.peek() == Some(c) {
+            self.at += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// `expr := term (('+' | '-') term)*`
+    fn expr(&mut self, depth: usize) -> Option<Expr> {
+        if depth > MAX_FORMULA_DEPTH {
+            return None;
+        }
+        let mut left = self.term(depth + 1)?;
+        loop {
+            if self.eat(b'+') {
+                left = Expr::Add(Box::new(left), Box::new(self.term(depth + 1)?));
+            } else if self.eat(b'-') {
+                left = Expr::Sub(Box::new(left), Box::new(self.term(depth + 1)?));
+            } else {
+                return Some(left);
+            }
+        }
+    }
+
+    /// `term := unary (('*' | '/') unary)*`
+    fn term(&mut self, depth: usize) -> Option<Expr> {
+        if depth > MAX_FORMULA_DEPTH {
+            return None;
+        }
+        let mut left = self.unary(depth + 1)?;
+        loop {
+            if self.eat(b'*') {
+                left = Expr::Mul(Box::new(left), Box::new(self.unary(depth + 1)?));
+            } else if self.eat(b'/') {
+                left = Expr::Div(Box::new(left), Box::new(self.unary(depth + 1)?));
+            } else {
+                return Some(left);
+            }
+        }
+    }
+
+    /// `unary := ('+' | '-') unary | power`
+    fn unary(&mut self, depth: usize) -> Option<Expr> {
+        if depth > MAX_FORMULA_DEPTH {
+            return None;
+        }
+        if self.eat(b'-') {
+            return Some(Expr::Neg(Box::new(self.unary(depth + 1)?)));
+        }
+        if self.eat(b'+') {
+            return self.unary(depth + 1);
+        }
+        self.power(depth + 1)
+    }
+
+    /// `power := atom ('^' unary)?` — right-associative, and binding tighter than unary minus, so
+    /// `-X^2` is `-(X^2)` as it is in every language that writes the operator this way.
+    fn power(&mut self, depth: usize) -> Option<Expr> {
+        if depth > MAX_FORMULA_DEPTH {
+            return None;
+        }
+        let base = self.atom(depth + 1)?;
+        if self.eat(b'^') {
+            return Some(Expr::Pow(Box::new(base), Box::new(self.unary(depth + 1)?)));
+        }
+        Some(base)
+    }
+
+    /// `atom := number | 'X' digits? | ident '(' expr (',' expr)? ')' | '(' expr ')'`
+    fn atom(&mut self, depth: usize) -> Option<Expr> {
+        if depth > MAX_FORMULA_DEPTH {
+            return None;
+        }
+        let c = self.peek()?;
+        if c == b'(' {
+            self.at += 1;
+            let inner = self.expr(depth + 1)?;
+            return self.eat(b')').then_some(inner);
+        }
+        if c.is_ascii_digit() || c == b'.' {
+            return self.number();
+        }
+        if c.is_ascii_alphabetic() || c == b'_' {
+            return self.name(depth);
+        }
+        None
+    }
+
+    /// A decimal literal, with an optional exponent.
+    fn number(&mut self) -> Option<Expr> {
+        let start = self.at;
+        while matches!(self.chars.get(self.at), Some(c) if c.is_ascii_digit() || *c == b'.') {
+            self.at += 1;
+        }
+        if matches!(self.chars.get(self.at), Some(b'e' | b'E')) {
+            let exp_at = self.at;
+            self.at += 1;
+            if matches!(self.chars.get(self.at), Some(b'+' | b'-')) {
+                self.at += 1;
+            }
+            if matches!(self.chars.get(self.at), Some(c) if c.is_ascii_digit()) {
+                while matches!(self.chars.get(self.at), Some(c) if c.is_ascii_digit()) {
+                    self.at += 1;
+                }
+            } else {
+                // `2e` is not a number with an exponent; it is a number followed by something this
+                // parser does not know, and rewinding lets that be the error rather than this.
+                self.at = exp_at;
+            }
+        }
+        std::str::from_utf8(self.chars.get(start..self.at)?)
+            .ok()?
+            .parse()
+            .ok()
+            .map(Expr::Const)
+    }
+
+    /// The variable, or a call to one of the functions in the closed table.
+    fn name(&mut self, depth: usize) -> Option<Expr> {
+        let start = self.at;
+        while matches!(self.chars.get(self.at), Some(c) if c.is_ascii_alphanumeric() || *c == b'_')
+        {
+            self.at += 1;
+        }
+        let word = std::str::from_utf8(self.chars.get(start..self.at)?).ok()?;
+        // MDF writes the single input of a channel conversion as `X`, and `X1` where the syntax
+        // numbers its inputs. Any other index names a *second* signal, whose value this conversion
+        // has no access to, so the formula is declined rather than evaluated against the wrong one.
+        if word == "X" || word == "X1" {
+            return Some(Expr::Var);
+        }
+        let lower = word.to_ascii_lowercase();
+        if !self.eat(b'(') {
+            return None;
+        }
+        let first = self.expr(depth + 1)?;
+        if self.eat(b',') {
+            let second = self.expr(depth + 1)?;
+            if !self.eat(b')') {
+                return None;
+            }
+            let f = match lower.as_str() {
+                "pow" => Fn2::Pow,
+                "min" => Fn2::Min,
+                "max" => Fn2::Max,
+                _ => return None,
+            };
+            return Some(Expr::Call2(f, Box::new(first), Box::new(second)));
+        }
+        if !self.eat(b')') {
+            return None;
+        }
+        let f = match lower.as_str() {
+            "sin" => Fn1::Sin,
+            "cos" => Fn1::Cos,
+            "tan" => Fn1::Tan,
+            "asin" => Fn1::Asin,
+            "acos" => Fn1::Acos,
+            "atan" => Fn1::Atan,
+            "sinh" => Fn1::Sinh,
+            "cosh" => Fn1::Cosh,
+            "tanh" => Fn1::Tanh,
+            "exp" => Fn1::Exp,
+            "log" | "ln" => Fn1::Log,
+            "log10" => Fn1::Log10,
+            "sqrt" => Fn1::Sqrt,
+            "abs" => Fn1::Abs,
+            _ => return None,
+        };
+        Some(Expr::Call1(f, Box::new(first)))
+    }
+}
+
+/// Parse an MDF algebraic conversion formula, or `None` when it is not one this reader evaluates.
+///
+/// `None` is a real answer, not a failure to try: the caller leaves the raw value in place and
+/// reports the conversion as data that went unread, which is exactly what every type 3 did before
+/// this parser existed.
+fn parse_formula(text: &str) -> Option<Expr> {
+    if text.is_empty() || text.len() > MAX_FORMULA_LEN {
+        return None;
+    }
+    let mut parser = FormulaParser::new(text);
+    let expr = parser.expr(0)?;
+    // Trailing text means the parse stopped early and the rest of the rule was never read, which is
+    // a formula this reader does not evaluate rather than one it evaluated in part.
+    parser.skip_space();
+    (parser.at == parser.chars.len()).then_some(expr)
+}
+
 /// A channel's value conversion: the rule that turns the raw bits in a record into the physical
 /// quantity they stand for.
 ///
-/// Every numeric conversion MDF defines is applied. What is left — the algebraic-formula type, which
-/// needs an expression evaluator, and the four text-valued types, whose physical value is a string
-/// the CDM's numeric stream has no shape for — leaves the raw value untouched and is reported.
+/// Every numeric conversion MDF defines is applied, the algebraic formula included. What is left —
+/// the four text-valued types, whose physical value is a string the CDM's numeric stream has no
+/// shape for, and a formula written outside the arithmetic and closed function table
+/// [`parse_formula`] accepts — leaves the raw value untouched and is reported.
 #[derive(Debug, Clone)]
 enum Conversion {
     /// Physical value is the raw value.
@@ -272,6 +605,10 @@ enum Conversion {
         ranges: Vec<(f64, f64, f64)>,
         default: f64,
     },
+    /// An algebraic formula (`##CC` type 3) over the raw value: the conversion written as text in a
+    /// `##TX` block rather than as parameters, which is how a calibration that is neither a line, a
+    /// curve nor a table is stored.
+    Formula { expr: Expr },
 }
 
 impl Conversion {
@@ -290,6 +627,7 @@ impl Conversion {
                 .iter()
                 .find(|(min, max, _)| raw >= *min && raw < *max)
                 .map_or(*default, |(_, _, value)| *value),
+            Conversion::Formula { expr } => expr.eval(raw),
         }
     }
 }
@@ -417,6 +755,20 @@ fn conversion_at(bytes: &[u8], at: u64) -> (Conversion, Option<u8>) {
                 return (Conversion::Identity, Some(6));
             };
             (Conversion::RangeTable { ranges, default }, None)
+        }
+        // 3 = algebraic formula: the rule is text in the `##TX` at `cc_ref[0]` (link 4, after the
+        // four fixed links every `##CC` carries), evaluated once per sample with `X` as the raw
+        // value. A formula this parser does not accept — a second input signal, a function outside
+        // the closed table — is declined whole and reported, never evaluated in part.
+        3 => {
+            let formula = opt_link(bytes, at, &header, 4)
+                .and_then(|l| text_block(bytes, l))
+                .as_deref()
+                .and_then(parse_formula);
+            match formula {
+                Some(expr) => (Conversion::Formula { expr }, None),
+                None => (Conversion::Identity, Some(3)),
+            }
         }
         other => (Conversion::Identity, Some(other)),
     }
@@ -1062,7 +1414,8 @@ impl Adapter for Mdf4Adapter {
                         vec![
                             "##CN channel -> stream (name from its ##TX)".into(),
                             "time master channel -> frame.ts".into(),
-                            "##CC linear/identity conversion -> physical value".into(),
+                            "##CC conversion (linear, rational, table, formula) -> physical value"
+                                .into(),
                             "physical value -> frame.value_ref.content_hash (SHA-256)".into(),
                             "identification block program -> provenance.recorder".into(),
                         ]
@@ -2059,6 +2412,77 @@ fn read_id_block(path: &std::path::Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Evaluate `text` at `x`, requiring it to parse.
+    fn formula(text: &str, x: f64) -> f64 {
+        parse_formula(text)
+            .unwrap_or_else(|| panic!("`{text}` should parse"))
+            .eval(x)
+    }
+
+    #[test]
+    fn a_formula_binds_its_operators_the_way_the_arithmetic_reads() {
+        // Precedence, associativity and the unary minus, which is where a hand-rolled parser gets a
+        // plausible wrong number rather than a parse error — and a wrong physical value is worse
+        // than an unevaluated conversion, because nothing downstream can tell it was wrong.
+        assert_eq!(formula("1 + 2 * 3", 0.0), 7.0);
+        assert_eq!(formula("(1 + 2) * 3", 0.0), 9.0);
+        assert_eq!(formula("10 - 3 - 2", 0.0), 5.0);
+        assert_eq!(formula("100 / 10 / 2", 0.0), 5.0);
+        // `^` is right-associative and binds tighter than the unary minus.
+        assert_eq!(formula("2 ^ 3 ^ 2", 0.0), 512.0);
+        assert_eq!(formula("-2 ^ 2", 0.0), -4.0);
+        assert_eq!(formula("-X", 3.0), -3.0);
+    }
+
+    #[test]
+    fn a_formula_reads_the_raw_value_and_the_closed_function_table() {
+        assert_eq!(formula("X * 2 + 1", 4.0), 9.0);
+        assert_eq!(formula("X1 * 2", 4.0), 8.0);
+        assert_eq!(formula("(X - 32) * 5 / 9", 212.0), 100.0);
+        assert_eq!(formula("sqrt(X)", 9.0), 3.0);
+        assert_eq!(formula("abs(0 - X)", 5.0), 5.0);
+        assert_eq!(formula("pow(X, 3)", 2.0), 8.0);
+        assert_eq!(formula("min(X, 10)", 4.0), 4.0);
+        assert_eq!(formula("max(X, 10)", 4.0), 10.0);
+        // Names are matched case-insensitively; the exponent form of a literal is a number.
+        assert_eq!(formula("EXP(0) * 1.5e2", 0.0), 150.0);
+    }
+
+    #[test]
+    fn a_formula_outside_what_this_reader_evaluates_is_declined_whole() {
+        // Each of these has a plausible wrong reading — treating the unknown call as its argument,
+        // reading `X2` as `X`, stopping at the first thing that parses — and every one of them puts
+        // a number in the verdict that is not the physical value the file defines.
+        assert!(parse_formula("gamma(X)").is_none(), "unknown function");
+        assert!(parse_formula("X2 * 2").is_none(), "a second input signal");
+        assert!(parse_formula("X * 2 rubbish").is_none(), "trailing text");
+        assert!(
+            parse_formula("X *").is_none(),
+            "an operator with no operand"
+        );
+        assert!(parse_formula("(X * 2").is_none(), "an unclosed parenthesis");
+        assert!(parse_formula("pow(X)").is_none(), "the wrong arity");
+        assert!(parse_formula("sin(X, 2)").is_none(), "the wrong arity");
+        assert!(parse_formula("").is_none(), "no formula at all");
+        assert!(
+            parse_formula("X").is_some(),
+            "the identity formula is a formula"
+        );
+    }
+
+    #[test]
+    fn a_formula_cannot_recurse_the_parser_off_the_stack() {
+        // The text is file-controlled and the parser is recursive, so a nest deeper than any real
+        // conversion must end in a declined formula rather than in a stack overflow, which takes the
+        // process down with no verdict at all. Well inside `MAX_FORMULA_LEN`, so depth is what is
+        // under test.
+        let deep = format!("{}X{}", "(".repeat(2000), ")".repeat(2000));
+        assert!(deep.len() < MAX_FORMULA_LEN);
+        assert!(parse_formula(&deep).is_none());
+        // And the ceiling is not so low that ordinary nesting trips it.
+        assert_eq!(formula("((((X + 1))))", 1.0), 2.0);
+    }
 
     #[test]
     fn sign_extension_covers_the_field_width() {
