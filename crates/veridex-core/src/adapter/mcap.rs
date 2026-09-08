@@ -635,6 +635,22 @@ impl Adapter for McapAdapter {
                     }
                     None => Some(false),
                 }
+            } else if schema_is(schema_name, "Twist") || schema_is(schema_name, "TwistStamped") {
+                // A mobile base's action channel. `/cmd_vel` is to a base what `/joint_states` is to
+                // an arm, and a commanded velocity pinned at its rail is exactly what the
+                // statistical family exists to catch on an actuator.
+                match super::cdr::decode_twist_values(
+                    &message.data,
+                    schema_is(schema_name, "TwistStamped"),
+                ) {
+                    Some(values) => {
+                        builder
+                            .values
+                            .push_fixed(&values, &super::cdr::TWIST_DIM_NAMES);
+                        Some(true)
+                    }
+                    None => Some(false),
+                }
             } else if schema_is(schema_name, "LaserScan") {
                 // A planar scanner's returns feed the same density summary a 3-D cloud's points do:
                 // the fault is the same one, and a `LaserScan` is what most mobile robots publish.

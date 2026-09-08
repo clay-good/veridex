@@ -494,6 +494,24 @@ fn decode_body(
             }
             None => Some(false),
         }
+    } else if super::mcap::schema_is(ros_type, "Twist")
+        || super::mcap::schema_is(ros_type, "TwistStamped")
+    {
+        // A mobile base's action channel. `/cmd_vel` is to a base what `/joint_states` is to an arm,
+        // and a commanded velocity pinned at its rail is exactly what the statistical family exists
+        // to catch on an actuator.
+        match super::cdr::decode_twist_values(
+            data,
+            super::mcap::schema_is(ros_type, "TwistStamped"),
+        ) {
+            Some(values) => {
+                builder
+                    .values
+                    .push_fixed(&values, &super::cdr::TWIST_DIM_NAMES);
+                Some(true)
+            }
+            None => Some(false),
+        }
     } else if super::mcap::schema_is(ros_type, "LaserScan") {
         // A planar scanner's returns feed the same density summary a 3-D cloud's points do: the
         // fault is the same one, and a `LaserScan` is what most mobile robots publish.

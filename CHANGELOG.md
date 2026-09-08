@@ -10,6 +10,21 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A mobile base's action channel is measured.** `/cmd_vel` is to a base what `/joint_states` is to
+  an arm — and `geometry_msgs/msg/Twist` bodies went unread, so a recording whose commanded velocity
+  sat pinned at its rail for the whole run carried no values to grade. The stream reported
+  `STATISTICAL.UNMEASURED_VALUES` and the dataset scored `data 100`, which is the exact failure the
+  statistical family exists to prevent, on the exact channel a policy imitates.
+
+  `Twist` and `TwistStamped` now decode into six named dimensions (`linear.x`…`angular.z`) and are
+  summarized per dimension like a `JointState` or an `Imu`, so `STATISTICAL.SATURATED`,
+  `DEGENERATE`, `OUTLIER` and `NON_FINITE_OBSERVED` all reach them.
+
+  Six doubles are six doubles, and any value they hold is legal — a NaN in a velocity command is a
+  fault to report, not a parse failure — so the message's **length** is the invariant that says a
+  body is one. Without it a mislabelled topic would have whatever it carries summarized as a
+  velocity.
+
 - **A planar scanner's returns are counted like a 3-D LiDAR's.** `sensor_msgs/msg/LaserScan` is what
   most mobile robots publish, and its bodies were never decoded — so a scanner whose driver lost its
   sensor, publishing a full, well-formed, correctly-timed sweep of infinities, had no point count at

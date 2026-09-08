@@ -53,6 +53,11 @@ impl<'a> Reader<'a> {
         self.pos = (self.pos + n - 1) & !(n - 1);
     }
 
+    /// Bytes left in the body past the cursor.
+    fn remaining(&self) -> usize {
+        self.buf.len().saturating_sub(self.pos)
+    }
+
     fn take(&mut self, n: usize) -> Option<&'a [u8]> {
         let end = self.pos.checked_add(n)?;
         let slice = self.buf.get(self.pos..end)?;
@@ -760,6 +765,43 @@ pub fn decode_joint_state(data: &[u8]) -> Option<(Vec<String>, Vec<f64>)> {
     (!positions.is_empty()).then_some((names, positions))
 }
 
+/// The name of each scalar [`decode_twist_values`] returns, in the same order.
+pub const TWIST_DIM_NAMES: [&str; 6] = [
+    "linear.x",
+    "linear.y",
+    "linear.z",
+    "angular.x",
+    "angular.y",
+    "angular.z",
+];
+
+/// Decode a `geometry_msgs/msg/Twist` (or `TwistStamped`) body into its six velocity components.
+///
+/// Layout: `Vector3 linear { float64 x, y, z }`, `Vector3 angular { float64 x, y, z }` — six doubles
+/// and nothing else. `TwistStamped` is the same, behind a `std_msgs/Header`; pass `stamped`.
+///
+/// This is a mobile robot's **action** channel: `/cmd_vel` is to a base what `/joint_states` is to
+/// an arm, and it went unread. A recording whose commanded velocity is pinned at its rail for the
+/// whole run — the one fault the statistical family exists to catch on an actuator — carried no
+/// values to grade, so the stream reported `STATISTICAL.UNMEASURED_VALUES` and the run scored clean.
+///
+/// A `Twist` has no invariants of its own to prove it is one: six doubles are six doubles, and any
+/// value they hold is legal (a NaN in a velocity command is a real fault, not a parse failure, and
+/// `STATISTICAL.NON_FINITE_OBSERVED` is what reports it). Its **length** is the invariant instead —
+/// the message is exactly six doubles, so a body carrying more than its own padding past them is not
+/// a `Twist`, and reading one would summarize whatever else it is as a velocity.
+pub fn decode_twist_values(data: &[u8], stamped: bool) -> Option<Vec<Option<f64>>> {
+    let mut r = Reader::new(data)?;
+    if stamped {
+        r.header()?;
+    }
+    let values: Vec<Option<f64>> = (0..6)
+        .map(|_| r.f64().map(Some))
+        .collect::<Option<Vec<_>>>()?;
+    // CDR pads a body to its own alignment, never beyond it.
+    (r.remaining() < 8).then_some(values)
+}
+
 /// Decode a `sensor_msgs/msg/Imu` body into its ten measured scalars, in the order
 /// `[qx, qy, qz, qw, wx, wy, wz, ax, ay, az]` — orientation, angular velocity, linear acceleration.
 ///
@@ -963,6 +1005,67 @@ mod tests {
             self.u32((stamp_ns % 1_000_000_000) as u32); // stamp.nanosec
             self.string(frame_id);
         }
+    }
+
+    #[test]
+    fn a_twist_is_six_velocity_components_and_nothing_else() {
+        let mut w = W::new();
+        for v in [0.5, 0.0, 0.0, 0.0, 0.0, -0.25] {
+            w.f64(v);
+        }
+        assert_eq!(
+            decode_twist_values(&w.buf, false),
+            Some(vec![
+                Some(0.5),
+                Some(0.0),
+                Some(0.0),
+                Some(0.0),
+                Some(0.0),
+                Some(-0.25)
+            ])
+        );
+        // A NaN in a velocity command is a fault the statistical family reports, not a parse
+        // failure — reading it is the only way anything can say it is there.
+        let mut w = W::new();
+        w.f64(f64::NAN);
+        for _ in 0..5 {
+            w.f64(0.0);
+        }
+        assert!(decode_twist_values(&w.buf, false).expect("decodes")[0]
+            .expect("a value")
+            .is_nan());
+    }
+
+    #[test]
+    fn a_stamped_twist_carries_the_same_six_behind_a_header() {
+        let mut w = W::new();
+        w.header_at("base_link", 1_767_225_600_000_000_000);
+        for v in [1.0, 2.0, 3.0, 4.0, 5.0, 6.0] {
+            w.f64(v);
+        }
+        let values = decode_twist_values(&w.buf, true).expect("decodes");
+        assert_eq!(values[0], Some(1.0));
+        assert_eq!(values[5], Some(6.0));
+        // Read without the header, the same bytes are not a `Twist`: the length no longer fits.
+        assert_eq!(decode_twist_values(&w.buf, false), None);
+    }
+
+    #[test]
+    fn a_body_that_is_not_a_twist_yields_no_values() {
+        // Six doubles are six doubles and any value they hold is legal, so the message's *length*
+        // is the only thing that says a body is one. Without it a mislabelled topic would have
+        // whatever it carries summarized as a velocity command.
+        let mut w = W::new();
+        for _ in 0..5 {
+            w.f64(0.0);
+        }
+        assert_eq!(decode_twist_values(&w.buf, false), None, "too short");
+        let mut w = W::new();
+        for _ in 0..8 {
+            w.f64(0.0);
+        }
+        assert_eq!(decode_twist_values(&w.buf, false), None, "too long");
+        assert_eq!(TWIST_DIM_NAMES.len(), 6);
     }
 
     /// A `sensor_msgs/msg/LaserScan` body over `ranges`, with the scanner's own window under the
