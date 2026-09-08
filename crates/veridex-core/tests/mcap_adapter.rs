@@ -2851,6 +2851,84 @@ fn a_topic_whose_payload_stays_opaque_is_still_reported_unmeasured() {
     );
 }
 
+#[test]
+fn a_joint_stalled_against_its_limit_is_caught_through_its_effort() {
+    // `position`, `velocity` and `effort` are three quantities a `JointState` reports per joint, and
+    // only the first was read. `effort` is the one that says an arm is pushing against something —
+    // a gripper stalled on an object holds a *constant position* and a railed effort, so the
+    // position beside it looks like a joint at rest. Graded now.
+    let payloads: Vec<Vec<u8>> = (0..40)
+        .map(|i: i32| {
+            let mut c = Cdr::new();
+            c.header("");
+            c.u32(2);
+            c.string("elbow");
+            c.string("gripper");
+            c.u32(2);
+            for v in [0.1 + f64::from(i) * 0.01, 0.02] {
+                c.f64(v); // the gripper barely moves: closed on the object
+            }
+            c.u32(2);
+            for v in [0.01, 0.0] {
+                c.f64(v);
+            }
+            c.u32(2);
+            for v in [1.0, if i < 30 { 60.0 } else { 5.0 }] {
+                c.f64(v); // the gripper's effort is pinned at its limit
+            }
+            c.buf
+        })
+        .collect();
+    let stream = measured_stream("sensor_msgs/msg/JointState", "/joint_states", &payloads);
+    let names = stream.dim_names.as_ref().expect("names");
+    assert_eq!(
+        names,
+        &[
+            "elbow",
+            "gripper",
+            "elbow.velocity",
+            "gripper.velocity",
+            "elbow.effort",
+            "gripper.effort"
+        ],
+        "positions keep the joints' own names, so a position-only recording is unchanged"
+    );
+    let sat = stream
+        .observed_saturation
+        .expect("the efforts were measured");
+    assert_eq!((sat.dim, sat.at_max), (5, 30), "`gripper.effort` is pinned");
+}
+
+#[test]
+fn a_position_only_joint_state_is_summarized_exactly_as_before() {
+    // The common case: a driver that publishes no velocity and no effort. Reading the two arrays it
+    // does not carry must not widen the cell or rename a dimension, or every existing manipulation
+    // recording's summary — and its content hash — would move for a field nobody added.
+    let payloads: Vec<Vec<u8>> = (0..20)
+        .map(|i: i32| {
+            let mut c = Cdr::new();
+            c.header("");
+            c.u32(1);
+            c.string("elbow");
+            c.u32(1);
+            c.f64(f64::from(i) * 0.01);
+            c.u32(0); // velocity[]
+            c.u32(0); // effort[]
+            c.buf
+        })
+        .collect();
+    let stream = measured_stream("sensor_msgs/msg/JointState", "/joint_states", &payloads);
+    assert_eq!(stream.dim_names.as_ref().expect("names"), &["elbow"]);
+    let stats = stream.observed_stats.expect("the positions were measured");
+    assert_eq!((stats.min, stats.max), (0.0, 0.19));
+    // One dimension in, one dimension out: the two arrays the driver does not publish contribute
+    // nothing rather than a column of zeros, which would read as a joint frozen at the origin.
+    assert!(stream
+        .observed_dim_stats
+        .as_ref()
+        .is_none_or(|d| d.len() == 1));
+}
+
 /// One `tf2_msgs/msg/TFMessage` body carrying a single `base_link -> sensor` edge at height `z`.
 fn tf_body_at_height(z: f64) -> Vec<u8> {
     let mut c = Cdr::new();

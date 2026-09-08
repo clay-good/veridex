@@ -238,7 +238,7 @@ frame timestamps carry. Both are read, and `autonomy.sensor-clock` compares them
 one, every sync result on a bag is a measurement of the recording host rather than of the rig.
 
 The exceptions are the messages that carry nothing *but* the measurement, and they are what let the
-statistical family grade a bag at all: a `sensor_msgs/msg/JointState` (a handful of joint angles), a
+statistical family grade a bag at all: a `sensor_msgs/msg/JointState` (a handful of joint angles, and the velocity and **effort** beside them where the driver publishes those), a
 `sensor_msgs/msg/Imu` (thirty-seven doubles with no bulk blob among them), a
 `geometry_msgs/msg/Twist` and a `geometry_msgs/msg/Wrench` and their stamped forms (six components
 each), and the one-scalar `sensor_msgs` readings — `Temperature`, `FluidPressure`,
@@ -249,6 +249,13 @@ against its stop, an accelerometer railed at ±16 g, a mobile base commanded at 
 whole run and a force/torque sensor clipped through every contact episode all scored a clean
 `data 100` with every statistical check listed as run. `/cmd_vel` is to a base what `/joint_states`
 is to an arm: the action channel, and the one a saturated actuator shows up on.
+
+A `JointState`'s three arrays — `position`, `velocity`, `effort` — are each either empty or one per
+joint. Positions keep the joints' own names, so a recording that reports only positions (the common
+case) is summarized exactly as it was before the other two were read; velocities and efforts are
+appended behind them as `<joint>.velocity` and `<joint>.effort` where the message carries them.
+`effort` is the one that says an arm is *pushing against something*: a gripper stalled on an object
+holds a constant position and a railed effort, so the position beside it looks like a joint at rest.
 
 A `Range` reading outside the rangefinder's **own** `[min_range, max_range]` is held out rather than
 summarized. That is how a sonar or IR sensor reports "nothing there" — the same convention a

@@ -612,8 +612,8 @@ fn decode_body(
         // The one message whose entire payload is the measurement: a handful of joint angles.
         // Measuring them is what lets the statistical family grade an arm recorded to a bag.
         match super::cdr::decode_joint_state(data) {
-            Some((names, positions)) => {
-                builder.values.push_joint_state(names, positions);
+            Some(sample) => {
+                builder.values.push_joint_state(sample);
                 Some(true)
             }
             None => Some(false),

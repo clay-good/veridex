@@ -377,6 +377,12 @@ fn joint_state_body(phase: f64, stamp_ns: u64) -> Vec<u8> {
         let t = phase + j as f64 * 0.17;
         f64v(&mut buf, (t - t * t * 0.5) * 0.4 - 0.2);
     }
+    // A `JointState` always encodes all three sequences, empty or not — a driver publishing only
+    // positions writes two zero lengths, and a body that stops after `position[]` is a truncated
+    // one. This fixture stopped there, which the reader rightly declined once it began reading the
+    // velocity and effort a real arm reports.
+    u32v(&mut buf, 0); // velocity[]
+    u32v(&mut buf, 0); // effort[]
     buf
 }
 

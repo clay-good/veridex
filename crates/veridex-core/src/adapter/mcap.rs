@@ -749,8 +749,8 @@ impl Adapter for McapAdapter {
                 // angles. Measuring them is what lets the statistical family grade an arm recorded
                 // to a bag, instead of abstaining on the stream that would show a pinned joint.
                 match super::cdr::decode_joint_state(&message.data) {
-                    Some((names, positions)) => {
-                        builder.values.push_joint_state(names, positions);
+                    Some(sample) => {
+                        builder.values.push_joint_state(sample);
                         Some(true)
                     }
                     None => Some(false),

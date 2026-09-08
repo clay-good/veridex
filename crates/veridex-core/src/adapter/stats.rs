@@ -217,25 +217,68 @@ pub(crate) struct StreamValues {
 }
 
 impl StreamValues {
-    /// Fold in one `JointState` message: its joint names and the positions they belong to.
-    pub(crate) fn push_joint_state(&mut self, names: Vec<String>, positions: Vec<f64>) {
+    /// Fold in one `JointState` message: its joint names and the quantities it reports for each.
+    ///
+    /// Positions come first and keep the joints' own names, so a recording that reports only
+    /// positions — the common case — is summarized exactly as it was before the other two arrays
+    /// were read. Velocities and efforts are appended behind them as `<joint>.velocity` and
+    /// `<joint>.effort`, and only where the message carries them: `effort` is what says an arm is
+    /// pushing against something, so a joint fighting a limit or a gripper stalled on an object was
+    /// a measured quantity nothing graded.
+    pub(crate) fn push_joint_state(&mut self, sample: super::cdr::JointSample) {
         if self.refused {
             return;
         }
+        let super::cdr::JointSample {
+            names,
+            positions,
+            velocities,
+            efforts,
+        } = sample;
+        // Each of the three arrays is either empty or one per joint, per the message definition. One
+        // that is neither names nothing this can attach a joint to, so it is left out rather than
+        // aligned by guesswork.
+        let per_joint = |a: &Vec<f64>| a.len() == positions.len() && !a.is_empty();
+        let velocities = if per_joint(&velocities) {
+            velocities
+        } else {
+            Vec::new()
+        };
+        let efforts = if per_joint(&efforts) {
+            efforts
+        } else {
+            Vec::new()
+        };
         // A message that names one joint per position establishes — or must match — the joint set.
         // One that does not (an empty `name[]`, or a count that disagrees) names nothing this can
         // be checked against, so it is accumulated positionally, as it was before names were read.
+        // The derived names must match too: a driver that starts reporting effort part-way through
+        // would otherwise widen the cell under an established set.
         if names.len() == positions.len() && !names.is_empty() {
+            let mut dims = names.clone();
+            for (suffix, present) in [
+                (".velocity", !velocities.is_empty()),
+                (".effort", !efforts.is_empty()),
+            ] {
+                if present {
+                    dims.extend(names.iter().map(|n| format!("{n}{suffix}")));
+                }
+            }
             match &self.names {
-                Some(established) if *established != names => {
+                Some(established) if *established != dims => {
                     self.refused = true;
                     return;
                 }
                 Some(_) => {}
-                None => self.names = Some(names),
+                None => self.names = Some(dims),
             }
         }
-        let cell: Vec<Option<f64>> = positions.into_iter().map(Some).collect();
+        let cell: Vec<Option<f64>> = positions
+            .into_iter()
+            .chain(velocities)
+            .chain(efforts)
+            .map(Some)
+            .collect();
         self.accum.push_cell(&cell);
         self.cells += 1;
     }

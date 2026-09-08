@@ -853,7 +853,7 @@ pub fn decode_odometry(data: &[u8]) -> Option<(Pose, Option<String>)> {
 /// Returns `None` for a message that is truncated, big-endian, or publishes no positions at all (a
 /// `JointState` may carry effort alone); an empty result would otherwise read as "measured, and
 /// there was nothing there".
-pub fn decode_joint_state(data: &[u8]) -> Option<(Vec<String>, Vec<f64>)> {
+pub fn decode_joint_state(data: &[u8]) -> Option<JointSample> {
     let mut r = Reader::new(data)?;
     r.header()?;
     let name_count = r.u32()? as usize;
@@ -867,15 +867,44 @@ pub fn decode_joint_state(data: &[u8]) -> Option<(Vec<String>, Vec<f64>)> {
     for _ in 0..name_count {
         names.push(r.string()?);
     }
-    let count = r.u32()? as usize;
-    if count > data.len() / 8 {
-        return None;
-    }
-    let mut positions = Vec::with_capacity(count);
-    for _ in 0..count {
-        positions.push(r.f64()?);
-    }
-    (!positions.is_empty()).then_some((names, positions))
+    // `position`, `velocity` and `effort` are each either empty or one per joint. Most drivers
+    // publish the first, many the second, fewer the third — and `effort` is the one that says an arm
+    // is pushing against something, so a joint fighting a limit or a gripper stalled on an object
+    // was a measured quantity nothing graded while the position beside it was graded.
+    let array = |r: &mut Reader| -> Option<Vec<f64>> {
+        let count = r.u32()? as usize;
+        if count > data.len() / 8 {
+            return None;
+        }
+        (0..count).map(|_| r.f64()).collect()
+    };
+    let positions = array(&mut r)?;
+    let velocities = array(&mut r)?;
+    let efforts = array(&mut r)?;
+    (!positions.is_empty()).then_some(JointSample {
+        names,
+        positions,
+        velocities,
+        efforts,
+    })
+}
+
+/// One `sensor_msgs/msg/JointState` message: the joints it names and the three quantities it may
+/// report for each.
+///
+/// `velocities` and `efforts` are empty for a driver that publishes neither, which is the common
+/// case — they are appended as their own dimensions only where the message actually carries them,
+/// so a position-only recording is summarized exactly as it was before they were read.
+#[derive(Debug, Clone, PartialEq)]
+pub struct JointSample {
+    /// The joint names, in the order the message lists them.
+    pub names: Vec<String>,
+    /// Joint positions — angles for a revolute joint, metres for a prismatic one.
+    pub positions: Vec<f64>,
+    /// Joint velocities, or empty.
+    pub velocities: Vec<f64>,
+    /// Joint efforts — the torque or force each joint is applying, or empty.
+    pub efforts: Vec<f64>,
 }
 
 /// The `(parent, child)` edges a recording republished with a **different** pose, and so the frames
@@ -1853,10 +1882,38 @@ mod tests {
         }
         w.u32(0); // velocity[]
         w.u32(0); // effort[]
-        assert_eq!(
-            decode_joint_state(&w.buf).expect("decode").1,
-            vec![0.5, -1.25, 0.0]
-        );
+        let sample = decode_joint_state(&w.buf).expect("decode");
+        assert_eq!(sample.positions, vec![0.5, -1.25, 0.0]);
+        assert!(sample.velocities.is_empty() && sample.efforts.is_empty());
+    }
+
+    #[test]
+    fn a_joint_state_gives_up_its_velocity_and_effort_too() {
+        // `effort` is what says an arm is pushing against something — a joint fighting a limit, a
+        // gripper stalled on an object — and it was read past to the end of the body and dropped
+        // while the position beside it was summarized.
+        let mut w = W::new();
+        w.header("");
+        w.u32(2);
+        w.string("shoulder");
+        w.string("elbow");
+        w.u32(2);
+        for v in [0.5, -1.25] {
+            w.f64(v);
+        }
+        w.u32(2);
+        for v in [0.01, -0.02] {
+            w.f64(v);
+        }
+        w.u32(2);
+        for v in [12.5, -3.0] {
+            w.f64(v);
+        }
+        let sample = decode_joint_state(&w.buf).expect("decode");
+        assert_eq!(sample.names, vec!["shoulder", "elbow"]);
+        assert_eq!(sample.positions, vec![0.5, -1.25]);
+        assert_eq!(sample.velocities, vec![0.01, -0.02]);
+        assert_eq!(sample.efforts, vec![12.5, -3.0]);
     }
 
     #[test]

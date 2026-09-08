@@ -10,6 +10,20 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A joint's effort is measured, not read past.** A `sensor_msgs/msg/JointState` reports three
+  quantities per joint — `position`, `velocity`, `effort` — and the decoder read the first and
+  stopped. `effort` is the one that says an arm is *pushing against something*: a gripper stalled on
+  an object holds a constant position and a railed effort, so the position beside it looks like a
+  joint at rest and `STATISTICAL.SATURATED` had nothing to fire on. On the flagship manipulation
+  message, in the family built to catch exactly that.
+
+  Positions keep the joints' own names, so a position-only recording — the common case — is
+  summarized exactly as before, dimension for dimension and hash for hash. Velocity and effort are
+  appended behind them as `<joint>.velocity` and `<joint>.effort`, and only where the message carries
+  them: an array that is neither empty nor one-per-joint names nothing a joint can be attached to and
+  is left out rather than aligned by guesswork, and a driver that starts reporting effort part-way
+  through a topic is refused like any other mid-stream change of the joint set.
+
 - **A rig whose frames moved is no longer read as one that stood still.** A bag's `/tf` topic hands
   each edge over as an open-ended transform, once per message, with nothing to bound one sample from
   the next — so both readers kept the first pose of each `(parent, child)` edge and dropped the rest.
