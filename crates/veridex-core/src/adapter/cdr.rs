@@ -878,6 +878,73 @@ pub fn decode_joint_state(data: &[u8]) -> Option<(Vec<String>, Vec<f64>)> {
     (!positions.is_empty()).then_some((names, positions))
 }
 
+/// The `(parent, child)` edges a recording republished with a **different** pose, and so the frames
+/// that moved during it.
+///
+/// `Transform` is time-scoped by design — a rig is recalibrated and coordinate frames move within a
+/// log — but a bag's `/tf` topic hands each edge over as an open-ended transform per message, with
+/// nothing to bound one sample from the next. So the readers keep the first pose seen for each edge
+/// and drop the rest, which is right for the `/tf_static` an unmoving rig publishes and wrong for a
+/// pan-tilt head, an articulated trailer or an arm: every spatial result is then judged against the
+/// rig's geometry at the start of the log, and nothing says so.
+///
+/// This is what says so. It records which edges moved, so the run can disclose the geometry it did
+/// not read rather than presenting one instant as the whole recording.
+#[derive(Debug, Default, Clone)]
+pub struct MovingFrames {
+    edges: std::collections::BTreeSet<String>,
+}
+
+impl MovingFrames {
+    /// Whether any edge was republished with a different pose.
+    pub fn is_empty(&self) -> bool {
+        self.edges.is_empty()
+    }
+
+    /// The disclosure, naming the first few edges that moved.
+    pub fn note(&self) -> String {
+        let shown = self
+            .edges
+            .iter()
+            .take(4)
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let listed = match self.edges.len().saturating_sub(4) {
+            0 => shown,
+            rest => format!("{shown} and {rest} more"),
+        };
+        format!(
+            "{} transform edge(s) were republished with a different pose during the recording ({listed}); only the first pose of each was read, so every result that places a sensor — the frame resolution, the calibration completeness, anything projected between sensors — is judged against the rig's geometry at the start of the log rather than at the time of each frame",
+            self.edges.len()
+        )
+    }
+}
+
+/// Fold one transform into a bag-wide `(parent, child)` map, noting the edge when the recording has
+/// already given that edge a **different** pose.
+///
+/// The first pose wins, which is what a `/tf_static` republished unchanged means. A later pose that
+/// differs is the frame moving, and is recorded in `moved` rather than silently dropped — the value
+/// of the disclosure is that a moving rig read as a still one is invisible in every other result.
+pub fn insert_transform(
+    transforms: &mut std::collections::BTreeMap<(String, String), Transform>,
+    moved: &mut MovingFrames,
+    t: Transform,
+) {
+    let key = (t.parent_frame.clone(), t.child_frame.clone());
+    match transforms.get(&key) {
+        // Republished unchanged: what an unmoving rig's `/tf_static` does every message.
+        Some(existing) if existing.pose == t.pose => {}
+        Some(_) => {
+            moved.edges.insert(format!("{} -> {}", key.0, key.1));
+        }
+        None => {
+            transforms.insert(key, t);
+        }
+    }
+}
+
 /// The name of each scalar [`decode_twist_values`] returns, in the same order.
 pub const TWIST_DIM_NAMES: [&str; 6] = [
     "linear.x",

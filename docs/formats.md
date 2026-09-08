@@ -506,6 +506,14 @@ is worse than an unevaluated conversion, because nothing downstream can tell it 
 channel is measured the same way a LeRobot feature is, so the whole statistical family reaches it — a buried
 NaN, a 250x spike, a dead constant channel.
 
+**A rig whose frames moved is not read as one that stood still.** A bag's `/tf` topic hands each
+edge over as an open-ended transform, once per message, with nothing to bound one sample from the
+next — so the reader keeps the first pose of each `(parent, child)` edge and drops the rest. That is
+right for the `/tf_static` an unmoving rig republishes unchanged, and wrong for a pan-tilt head, an
+articulated trailer or an arm: every result that *places* a sensor is then judged against the
+geometry at the start of the log. An edge republished with a **different** pose is disclosed as
+unread, naming the edges that moved, rather than being dropped in silence.
+
 A `CompressedImage` in a codec this reader has no header parser for is **untried**, not broken: the
 stream carries no measured sizes and `AUTONOMY.IMAGE_UNMEASURED` says so, rather than the frames
 being reported as bodies that failed to decode. A frame that names a codec the reader *does* read and

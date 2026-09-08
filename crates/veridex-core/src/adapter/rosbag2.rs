@@ -444,6 +444,9 @@ struct BagContents {
     ego_frame: Option<String>,
     intrinsics: BTreeMap<String, CameraIntrinsics>,
     transforms: BTreeMap<(String, String), Transform>,
+    /// Edges the recording republished with a different pose — a rig whose frames moved, read as one
+    /// that stood still. Disclosed rather than dropped.
+    moved_frames: super::cdr::MovingFrames,
     serialization_formats: BTreeSet<String>,
     /// Topic ids referenced by a message row that the `topics` table never declared, with how many
     /// messages each accounts for.
@@ -458,6 +461,7 @@ struct BodySink<'a> {
     ego_frame: &'a mut Option<String>,
     intrinsics: &'a mut BTreeMap<String, CameraIntrinsics>,
     transforms: &'a mut BTreeMap<(String, String), Transform>,
+    moved_frames: &'a mut super::cdr::MovingFrames,
 }
 
 /// Decode one message body into the autonomy CDM, returning whether the body decoded — or `None`
@@ -647,9 +651,7 @@ fn decode_body(
         match super::cdr::decode_tf_message(data) {
             Some(edges) => {
                 for t in edges {
-                    sink.transforms
-                        .entry((t.parent_frame.clone(), t.child_frame.clone()))
-                        .or_insert(t);
+                    super::cdr::insert_transform(sink.transforms, sink.moved_frames, t);
                 }
                 Some(true)
             }
@@ -998,6 +1000,7 @@ fn read_shard(
                 ego_frame: &mut contents.ego_frame,
                 intrinsics: &mut contents.intrinsics,
                 transforms: &mut contents.transforms,
+                moved_frames: &mut contents.moved_frames,
             },
             &topic.ros_type,
             &topic.name,
@@ -1119,6 +1122,7 @@ fn read_mcap_shard(
                 ego_frame: &mut contents.ego_frame,
                 intrinsics: &mut contents.intrinsics,
                 transforms: &mut contents.transforms,
+                moved_frames: &mut contents.moved_frames,
             },
             &ros_type,
             &topic,
@@ -1527,6 +1531,12 @@ impl Adapter for Rosbag2Adapter {
         // both travel into the verdict as `COVERAGE.SOURCE_UNREAD` rather than staying in a note
         // only `inspect` would print.
         let mut unread_sources = Vec::new();
+        if !contents.moved_frames.is_empty() {
+            unread_sources.push(UnmappedField {
+                source_path: "tf".into(),
+                note: contents.moved_frames.note(),
+            });
+        }
         let present: BTreeSet<String> = shards.iter().map(|p| display(p)).collect();
         for listed in &manifest.relative_file_paths {
             if listed.contains('/') || listed.contains('\\') {

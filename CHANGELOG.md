@@ -10,6 +10,19 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A rig whose frames moved is no longer read as one that stood still.** A bag's `/tf` topic hands
+  each edge over as an open-ended transform, once per message, with nothing to bound one sample from
+  the next — so both readers kept the first pose of each `(parent, child)` edge and dropped the rest.
+  That is right for the `/tf_static` an unmoving rig republishes unchanged. On a pan-tilt head, an
+  articulated trailer or an arm it means every result that *places* a sensor — the frame resolution,
+  the calibration completeness, anything projected between sensors — was judged against the rig's
+  geometry at the start of the log, and nothing said so. `Transform` is time-scoped by design and its
+  own doc says frames move within a log; the adapters collapsed that away silently.
+
+  An edge republished with a **different** pose is now disclosed as unread, naming the edges that
+  moved. An edge republished unchanged still says nothing, because that is what a static tree does
+  every message.
+
 - **A compressed camera topic is graded like a raw one.** Most real bags record their cameras
   compressed, and `sensor_msgs/msg/CompressedImage` went unread — so once `Image` was measured, the
   same dead camera was caught on `/camera/image_raw` and missed on

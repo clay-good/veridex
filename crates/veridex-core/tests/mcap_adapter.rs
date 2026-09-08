@@ -2851,6 +2851,78 @@ fn a_topic_whose_payload_stays_opaque_is_still_reported_unmeasured() {
     );
 }
 
+/// One `tf2_msgs/msg/TFMessage` body carrying a single `base_link -> sensor` edge at height `z`.
+fn tf_body_at_height(z: f64) -> Vec<u8> {
+    let mut c = Cdr::new();
+    c.u32(1); // one TransformStamped
+    c.u32(0); // stamp.sec
+    c.u32(0); // stamp.nanosec
+    c.string("base_link"); // header.frame_id = parent
+    c.string("sensor"); // child_frame_id
+    for v in [0.0, 0.0, z, 0.0, 0.0, 0.0, 1.0] {
+        c.f64(v);
+    }
+    c.buf
+}
+
+#[test]
+fn a_rig_whose_frames_moved_is_not_read_as_one_that_stood_still() {
+    // `/tf` hands each edge over as an open-ended transform per message, with nothing to bound one
+    // sample from the next, so the reader keeps the first pose of each edge and drops the rest.
+    // That is right for the `/tf_static` an unmoving rig republishes unchanged and wrong for a
+    // pan-tilt head, an articulated trailer or an arm — every result that *places* a sensor is then
+    // judged against the geometry at the start of the log. Silently, until now.
+    let moving: Vec<Vec<u8>> = (0..10)
+        .map(|i| tf_body_at_height(1.0 + f64::from(i) * 0.05))
+        .collect();
+    let bytes = build_mcap_series("tf2_msgs/msg/TFMessage", "/tf", &moving);
+    let path = write_temp_mcap(&bytes);
+    let ingested = McapAdapter
+        .ingest(
+            &Source::Local(path.to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest");
+    let note = ingested
+        .report
+        .unread_sources
+        .iter()
+        .find(|u| u.note.contains("republished with a different pose"))
+        .unwrap_or_else(|| panic!("{:?}", ingested.report.unread_sources))
+        .note
+        .clone();
+    assert!(note.contains("base_link -> sensor"), "{note}");
+    // The first pose is what reached the CDM, which is what the disclosure is about.
+    let tf = &ingested
+        .dataset
+        .calibration
+        .as_ref()
+        .expect("calibration")
+        .transforms;
+    assert_eq!(tf.len(), 1);
+    assert_eq!(tf[0].pose.translation[2], 1.0);
+
+    // A rig that republishes the same pose every message — what `/tf_static` does — says nothing.
+    let still: Vec<Vec<u8>> = (0..10).map(|_| tf_body_at_height(1.0)).collect();
+    let bytes = build_mcap_series("tf2_msgs/msg/TFMessage", "/tf_static", &still);
+    let path = write_temp_mcap(&bytes);
+    let ingested = McapAdapter
+        .ingest(
+            &Source::Local(path.to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest");
+    assert!(
+        !ingested
+            .report
+            .unread_sources
+            .iter()
+            .any(|u| u.note.contains("republished with a different pose")),
+        "an unmoving rig is not a coverage hole: {:?}",
+        ingested.report.unread_sources
+    );
+}
+
 /// One `geometry_msgs/msg/Twist` or `Wrench` body: six doubles and nothing else.
 fn six_double_body(values: [f64; 6]) -> Vec<u8> {
     let mut c = Cdr::new();

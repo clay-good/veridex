@@ -527,6 +527,9 @@ impl Adapter for McapAdapter {
         let mut ego_frame: Option<String> = None;
         let mut intrinsics: BTreeMap<String, CameraIntrinsics> = BTreeMap::new();
         let mut transforms: BTreeMap<(String, String), Transform> = BTreeMap::new();
+        // Edges the recording republished with a different pose — a rig whose frames moved, read as
+        // one that stood still. Disclosed rather than dropped.
+        let mut moved_frames = super::cdr::MovingFrames::default();
 
         // One message is one frame, but the message count comes from the file — and a chunked MCAP
         // can expand a 100 KB file into a gigabyte of payload, all of which gets hashed. The budget
@@ -787,9 +790,7 @@ impl Adapter for McapAdapter {
                 match super::cdr::decode_tf_message(&message.data) {
                     Some(edges) => {
                         for t in edges {
-                            transforms
-                                .entry((t.parent_frame.clone(), t.child_frame.clone()))
-                                .or_insert(t);
+                            super::cdr::insert_transform(&mut transforms, &mut moved_frames, t);
                         }
                         Some(true)
                     }
@@ -1036,6 +1037,12 @@ impl Adapter for McapAdapter {
         // A file with no summary section is not a fault — a streaming writer legitimately omits one
         // — so it disables the reconciliation rather than failing the read, and says so.
         let mut unread_sources = refused_values;
+        if !moved_frames.is_empty() {
+            unread_sources.push(UnmappedField {
+                source_path: "tf".into(),
+                note: moved_frames.note(),
+            });
+        }
         let mut count_note = None;
         match read_summary(path).ok().and_then(|s| s.statistics) {
             Some(stats) => {
