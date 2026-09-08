@@ -668,6 +668,17 @@ impl Adapter for McapAdapter {
                     }
                     None => Some(false),
                 }
+            } else if schema_is(schema_name, "MagneticField") {
+                // The third instrument in the IMU package, and the one heading is estimated from.
+                match super::cdr::decode_magnetic_field(&message.data) {
+                    Some(values) => {
+                        builder
+                            .values
+                            .push_fixed(&values, &super::cdr::MAGNETIC_FIELD_DIM_NAMES);
+                        Some(true)
+                    }
+                    None => Some(false),
+                }
             } else if let Some(name) = super::cdr::scalar_measurement_name(schema_name) {
                 // Four schemas, one layout: a header, the reading, and its variance.
                 match super::cdr::decode_scalar_measurement(&message.data) {

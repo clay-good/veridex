@@ -10,6 +10,29 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **The magnetometer is measured too.** `sensor_msgs/msg/MagneticField` is the third instrument in
+  the IMU package a robot carries, and the one heading is estimated from — and it was fingerprinted
+  rather than measured, so a magnetometer railed at its full-scale limit near a motor, or frozen at a
+  constant because its driver stopped polling, was a stream every statistical rule abstained on while
+  the accelerometer beside it, in the same package, was graded. A covariance beginning with `-1` is
+  ROS's "not provided" and those readings are held out rather than summarized as the zeros ROS leaves
+  behind, the same treatment an `Imu`'s unprovided fields get.
+
+  With it, every ROS message this reader knows of that is nothing but its own reading is read. What
+  is left unread is left deliberately: `NavSatFix`'s covariance and `CameraInfo`'s `r`/`p` are the
+  sensor's uncertainty and rectification rather than measurements of the world, and `PointCloud2`'s
+  `is_dense` is false on every organized cloud, so reporting it would be noise.
+
+- **The ego's own velocity is measured.** A `nav_msgs/msg/Odometry` carries the vehicle's speed and
+  yaw rate in the `twist` behind the pose's 36-element covariance, and the decoder stopped at the
+  pose. So an ego stream carried a trajectory and **no values at all**: a speed pinned at a limiter,
+  stuck at a constant, or gone NaN reported nothing, while the same faults on the IMU beside it were
+  caught. Read now and summarized under the same six names a `Twist` uses.
+
+  Optional rather than required: a body that ends at the pose is still a pose that was read, and
+  nothing is invented by stopping there. The demo rig and the cross-plugin replay both write a full
+  `Odometry` now, so the path is exercised end to end and the reader-drift guard covers it.
+
 - **A joint's effort is measured, not read past.** A `sensor_msgs/msg/JointState` reports three
   quantities per joint — `position`, `velocity`, `effort` — and the decoder read the first and
   stopped. `effort` is the one that says an arm is *pushing against something*: a gripper stalled on

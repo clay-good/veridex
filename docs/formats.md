@@ -243,7 +243,8 @@ The exceptions are the messages that carry nothing *but* the measurement, and th
 statistical family grade a bag at all: a `sensor_msgs/msg/JointState` (a handful of joint angles, and the velocity and **effort** beside them where the driver publishes those), a
 `sensor_msgs/msg/Imu` (thirty-seven doubles with no bulk blob among them), a
 `geometry_msgs/msg/Twist` and a `geometry_msgs/msg/Wrench` and their stamped forms (six components
-each), and the one-scalar `sensor_msgs` readings — `Temperature`, `FluidPressure`,
+each), a `sensor_msgs/msg/MagneticField` (the third instrument in the IMU package, and the one heading is
+estimated from), and the one-scalar `sensor_msgs` readings — `Temperature`, `FluidPressure`,
 `RelativeHumidity`, `Illuminance` and `Range`. Every one is read and summarized per dimension,
 exactly as LeRobot's or HDF5's values are, and named by what it is (`linear.x`, `force.z`,
 `temperature`) so a finding says which quantity is wrong. Without them, an arm whose elbow sat pinned

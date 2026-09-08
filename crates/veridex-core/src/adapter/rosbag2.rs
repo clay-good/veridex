@@ -532,6 +532,17 @@ fn decode_body(
             }
             None => Some(false),
         }
+    } else if super::mcap::schema_is(ros_type, "MagneticField") {
+        // The third instrument in the IMU package, and the one heading is estimated from.
+        match super::cdr::decode_magnetic_field(data) {
+            Some(values) => {
+                builder
+                    .values
+                    .push_fixed(&values, &super::cdr::MAGNETIC_FIELD_DIM_NAMES);
+                Some(true)
+            }
+            None => Some(false),
+        }
     } else if let Some(name) = super::cdr::scalar_measurement_name(ros_type) {
         // Four schemas, one layout: a header, the reading, and its variance.
         match super::cdr::decode_scalar_measurement(data) {

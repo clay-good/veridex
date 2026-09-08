@@ -1005,6 +1005,16 @@ fn cdr_body(schema: &str, seq: u32, stamp_ns: u64) -> Vec<u8> {
             }
             return buf;
         }
+        // The field vector and its 9-element covariance.
+        "sensor_msgs/msg/MagneticField" => {
+            for i in 0..3 {
+                f64v(&mut buf, f64::from(seq) * 1e-7 + f64::from(i) * 1e-5);
+            }
+            for _ in 0..9 {
+                f64v(&mut buf, 0.0);
+            }
+            return buf;
+        }
         // One reading and its variance — the shape `Temperature`, `FluidPressure`,
         // `RelativeHumidity` and `Illuminance` share.
         "sensor_msgs/msg/Temperature" => {
@@ -1403,6 +1413,7 @@ fn every_decoded_channel(per_topic: usize) -> Vec<Channel> {
         ("geometry_msgs/msg/TwistStamped", "/cmd_vel_stamped"),
         ("geometry_msgs/msg/Wrench", "/wrench"),
         ("geometry_msgs/msg/WrenchStamped", "/wrench_stamped"),
+        ("sensor_msgs/msg/MagneticField", "/imu/mag"),
         ("sensor_msgs/msg/Temperature", "/temperature"),
         ("sensor_msgs/msg/Range", "/sonar"),
     ]

@@ -1037,6 +1037,42 @@ pub fn decode_twist_values(data: &[u8], stamped: bool) -> Option<Vec<Option<f64>
     six_doubles(data, stamped)
 }
 
+/// The name of each scalar [`decode_magnetic_field`] returns, in the same order.
+pub const MAGNETIC_FIELD_DIM_NAMES: [&str; 3] =
+    ["magnetic_field.x", "magnetic_field.y", "magnetic_field.z"];
+
+/// Decode a `sensor_msgs/msg/MagneticField` body: `Header`, `Vector3 magnetic_field`,
+/// `float64[9] magnetic_field_covariance`.
+///
+/// The magnetometer is the third instrument in the IMU package a robot carries, and the one heading
+/// is estimated from. It was fingerprinted rather than measured, so a magnetometer railed at its
+/// full-scale limit near a motor, or frozen at a constant because its driver stopped polling, was a
+/// stream every statistical rule abstained on — while the accelerometer beside it, in the same
+/// package, was graded.
+///
+/// A covariance beginning with `-1` is ROS's "not provided", and ROS leaves the field zero-filled
+/// there. Those readings come back as `None` rather than as zeros, the same treatment
+/// [`decode_imu_values`] gives an IMU's unprovided fields: recording them would report a driver that
+/// publishes no field as a magnetometer frozen at the origin — a defect it does not have, hiding the
+/// ones it might.
+pub fn decode_magnetic_field(data: &[u8]) -> Option<Vec<Option<f64>>> {
+    let mut r = Reader::new(data)?;
+    r.header()?;
+    let field: Vec<f64> = (0..3).map(|_| r.f64()).collect::<Option<_>>()?;
+    let covariance0 = r.f64()?;
+    for _ in 0..8 {
+        r.f64()?;
+    }
+    // The message is a fixed thirteen doubles behind its header, so its length is what says a body
+    // is one — the same rule a `Twist` is held to, and for the same reason: every value it can hold
+    // is legal, so nothing in the content can prove it.
+    if r.remaining() >= 8 {
+        return None;
+    }
+    let provided = covariance0 != -1.0;
+    Some(field.into_iter().map(|v| provided.then_some(v)).collect())
+}
+
 /// The name of each scalar [`decode_wrench_values`] returns, in the same order.
 pub const WRENCH_DIM_NAMES: [&str; 6] = [
     "force.x", "force.y", "force.z", "torque.x", "torque.y", "torque.z",
@@ -1372,6 +1408,48 @@ mod tests {
         }
         assert!(decode_wrench_values(&w.buf, true).is_some());
         assert_eq!(decode_wrench_values(&w.buf, false), None);
+    }
+
+    /// A `sensor_msgs/msg/MagneticField` body: header, the field vector, then its 9-element
+    /// covariance.
+    fn magnetic_field(field: [f64; 3], covariance0: f64) -> W {
+        let mut w = W::new();
+        w.header("imu_link");
+        for v in field {
+            w.f64(v);
+        }
+        w.f64(covariance0);
+        for _ in 0..8 {
+            w.f64(0.0);
+        }
+        w
+    }
+
+    #[test]
+    fn a_magnetic_field_is_read_unless_the_driver_disclaims_it() {
+        let w = magnetic_field([2.1e-5, -1.4e-5, 4.6e-5], 0.0);
+        assert_eq!(
+            decode_magnetic_field(&w.buf),
+            Some(vec![Some(2.1e-5), Some(-1.4e-5), Some(4.6e-5)])
+        );
+        // `covariance[0] == -1` is ROS's "not provided", and the field is zero-filled there.
+        // Recording those zeros would report a driver that publishes no field as a magnetometer
+        // frozen at the origin.
+        let w = magnetic_field([0.0, 0.0, 0.0], -1.0);
+        assert_eq!(decode_magnetic_field(&w.buf), Some(vec![None, None, None]));
+        assert_eq!(MAGNETIC_FIELD_DIM_NAMES.len(), 3);
+    }
+
+    #[test]
+    fn a_body_that_is_not_a_magnetic_field_yields_nothing() {
+        // Thirteen doubles behind a header, and every value they can hold is legal — so the
+        // message's length is the only thing that says a body is one.
+        let mut w = magnetic_field([1.0, 2.0, 3.0], 0.0);
+        w.buf.truncate(w.buf.len() - 8);
+        assert_eq!(decode_magnetic_field(&w.buf), None, "too short");
+        let mut w = magnetic_field([1.0, 2.0, 3.0], 0.0);
+        w.f64(0.0);
+        assert_eq!(decode_magnetic_field(&w.buf), None, "too long");
     }
 
     #[test]
