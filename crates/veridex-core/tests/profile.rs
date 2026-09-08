@@ -100,6 +100,20 @@ fn sensor_in_frame(name: &str, modality: Modality, ts: &[i64], frame_id: Option<
                 empty: 0,
             },
         ),
+        // Likewise for a camera: a stream read in full carries the size its frames declared, and a
+        // healthy one's frames are not empty. Left absent, `autonomy.image-integrity` abstains out
+        // loud and refuses its `world-model-ready` criterion — "every camera actually recorded
+        // pixels" cannot be attested over dimensions nobody read.
+        observed_image_dims: (modality == Modality::Video).then_some(
+            veridex_core::cdm::ImageDims {
+                message_count: ts.len() as u64,
+                empty: 0,
+                min_width: 1920,
+                max_width: 1920,
+                min_height: 1080,
+                max_height: 1080,
+            },
+        ),
         // Likewise: a rig read in full decoded the bodies it read, and `autonomy.message-decode`
         // rightly refuses the `world-model-ready` criterion over a stream whose bodies nobody
         // counted. A fixture standing in for a healthy rig has to carry what a healthy rig carries.
@@ -234,7 +248,7 @@ fn a_healthy_rig_is_world_model_ready() {
     let r = ReadinessReport::evaluate(&p, &v, &d);
     assert!(r.applicable, "a rig is applicable");
     assert!(r.ready, "a healthy rig should be ready: {:?}", r.criteria);
-    assert_eq!(r.criteria.len(), 10);
+    assert_eq!(r.criteria.len(), 11);
     assert!(r.criteria.iter().all(|c| c.passed));
 }
 
@@ -333,7 +347,7 @@ fn a_readiness_certificate_verifies_offline_and_reports_every_criterion() {
     assert_eq!(doc["verified"], true);
     assert_eq!(doc["readiness"]["ready"], true);
     assert_eq!(doc["readiness"]["profile"], "world-model-ready");
-    assert_eq!(doc["readiness"]["criteria"].as_array().unwrap().len(), 10);
+    assert_eq!(doc["readiness"]["criteria"].as_array().unwrap().len(), 11);
     assert_eq!(doc["cdm_content_hash"], signed.certificate.cdm_content_hash);
 }
 

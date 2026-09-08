@@ -43,6 +43,13 @@
 //!   the frame checks place the sensor in the tree, and every one of them passes →
 //!   `AUTONOMY.POINT_CLOUD_EMPTY` is the only thing that reports the sensor recorded nothing.
 //!
+//! - `av-dead-camera` — the same rig with a camera whose driver lost its sensor. Every
+//!   `sensor_msgs/msg/Image` is well-formed, on time, in the right coordinate frame and names its
+//!   encoding — and declares a width and a height of zero, so it carries no pixels. The structural
+//!   family sees frames, the temporal family sees a clean 30 Hz, the frame checks place the camera
+//!   in the tree, and every one of them passes → `AUTONOMY.IMAGE_EMPTY` is the only thing that
+//!   reports the camera recorded nothing.
+//!
 //! - `av-truncated-lidar` — the same rig with a LiDAR whose cloud bodies did not survive the
 //!   recording: four sweeps in five are cut short of the point payload their own header declares, so
 //!   the body is not readable as a `PointCloud2` at all. The messages are still there, at the right
@@ -92,7 +99,7 @@
 //!   coordinates — `autonomy.gnss-plausibility` passes on them. Only the status byte says four
 //!   fifths of the trajectory is not measured → `AUTONOMY.GNSS_NO_FIX`.
 //!
-//! Usage: `cargo run -p veridex-demo --example make_demo_mcap -- <output.mcap> [skew|clean|stuck|late-start|av|av-miscalibrated|av-ambiguous-tf|av-dead-lidar|av-truncated-lidar|av-corrupt-bodies|av-split-rig|av-unstamped|av-uncalibrated-camera|av-lossy-camera|av-no-fix]`
+//! Usage: `cargo run -p veridex-demo --example make_demo_mcap -- <output.mcap> [skew|clean|stuck|late-start|av|av-miscalibrated|av-ambiguous-tf|av-dead-lidar|av-dead-camera|av-truncated-lidar|av-corrupt-bodies|av-split-rig|av-unstamped|av-uncalibrated-camera|av-lossy-camera|av-no-fix]`
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
@@ -110,6 +117,7 @@ pub const VARIANTS: &[&str] = &[
     "av-miscalibrated",
     "av-ambiguous-tf",
     "av-dead-lidar",
+    "av-dead-camera",
     "av-truncated-lidar",
     "av-corrupt-bodies",
     "av-split-rig",
@@ -137,6 +145,9 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
     // `av-dead-lidar` is the same rig with a LiDAR whose driver lost its sensor: every cloud is
     // well-formed, on time, in the right frame — and holds no points.
     let dead_lidar = variant == "av-dead-lidar";
+    // `av-dead-camera` is the same rig with a camera whose driver lost its sensor: every frame is
+    // well-formed, on time, in the right frame, names its encoding — and declares no pixels.
+    let dead_camera = variant == "av-dead-camera";
     // `av-truncated-lidar` is the same rig with a LiDAR whose cloud bodies did not survive the
     // recording: four sweeps in five are cut short of the point payload they declare, so the body
     // is not readable as a `PointCloud2` at all. The messages are still there, at the right rate,
@@ -166,6 +177,7 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
         || miscalibrated
         || ambiguous_tf
         || dead_lidar
+        || dead_camera
         || truncated_lidar
         || corrupt_bodies
         || split_rig
@@ -185,6 +197,7 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
                     miscalibrated,
                     ambiguous_tf,
                     dead_lidar,
+                    dead_camera,
                     truncated_lidar,
                     corrupt_bodies,
                     split_rig,
@@ -265,10 +278,23 @@ fn write_manipulation<W: std::io::Write + std::io::Seek>(
             .add_channel(cam_schema, "/camera/image", "cdr", &BTreeMap::new())
             .unwrap();
         for i in 0..31u64 {
-            // A frozen feed repeats one frame; a healthy feed's frames each differ.
-            let payload = if stuck { 0u64 } else { i };
+            // A frozen feed repeats one frame; a healthy feed's frames each differ. The body is a
+            // real `Image` — a stub left the camera with no frame size, so `autonomy.image-integrity`
+            // abstained on it and every body counted as undecodable. No `frame_id`: a manipulation
+            // recording declares no transform tree, and inventing a coordinate frame here would put
+            // a sensor in a rig that does not exist.
             let t = i * 33_000_000; // 33 ms
-            write_msg(w, cam, i as u32, t, &payload.to_le_bytes());
+                                    // A frozen feed republishes one message verbatim — the stamp in its header included,
+                                    // because a driver that stopped updating its buffer stopped updating all of it. That is
+                                    // what makes every frame's content hash identical, which is what
+                                    // `STRUCTURAL.STUCK_STREAM` reads. A healthy feed restamps and repaints each frame.
+            let (stamp, seed) = if stuck {
+                (0, 0u8)
+            } else {
+                (t, (i % 251) as u8)
+            };
+            let body = image_body("", stamp, DEMO_IMAGE_WIDTH, DEMO_IMAGE_HEIGHT, seed);
+            write_msg(w, cam, i as u32, t, &body);
         }
 
         if !clean {
@@ -377,6 +403,7 @@ struct RigFaults {
     miscalibrated: bool,
     ambiguous_tf: bool,
     dead_lidar: bool,
+    dead_camera: bool,
     truncated_lidar: bool,
     corrupt_bodies: bool,
     split_rig: bool,
@@ -394,6 +421,7 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(w: &mut mcap::Writer<W>, faul
         miscalibrated,
         ambiguous_tf,
         dead_lidar,
+        dead_camera,
         truncated_lidar,
         corrupt_bodies,
         split_rig,
@@ -622,11 +650,23 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(w: &mut mcap::Writer<W>, faul
                     body.truncate(body.len() - 64);
                 }
                 write_msg(w, channel, i as u32, t, &body);
+            } else if *schema == "sensor_msgs/msg/Image" {
+                // Real for the reason the cloud above is real: a stub body gave the rig's camera no
+                // frame size, so `autonomy.image-integrity` abstained on it and every one of its
+                // bodies counted as undecodable.
+                // The `av-dead-camera` fault: a driver that lost its sensor still publishes a
+                // well-formed frame at the right rate, declaring no pixels.
+                let (width, height) = if dead_camera {
+                    (0, 0)
+                } else {
+                    (DEMO_IMAGE_WIDTH, DEMO_IMAGE_HEIGHT)
+                };
+                let body = image_body(frame_id, stamp, width, height, (i % 251) as u8);
+                write_msg(w, channel, i as u32, t, &body);
             } else {
                 // A real header-first CDR body, so the sensor's coordinate frame is genuinely
                 // decoded into the CDM (that is what the frame-resolution check reads). The trailing
-                // payload varies per (sensor, frame) so frames stay content-distinct. Enough for the
-                // `Image` reader, which takes the header and never the pixels.
+                // payload varies per (sensor, frame) so frames stay content-distinct.
                 let payload = ((seq_base as u64) << 32) | i;
                 write_msg(
                     w,
@@ -743,9 +783,60 @@ fn nav_sat_fix_body(
     buf
 }
 
+/// The demo camera's frame size.
+///
+/// Deliberately tiny. A `sensor_msgs/msg/Image` body has to carry the pixel bytes its own header
+/// declares — that length invariant is what stops an arbitrary buffer being read as a frame — so a
+/// realistic 1280x720 would put 28 MB of pixels through every ingest of every variant. 64x48 `mono8`
+/// is 3 KB a frame, which keeps the fixture small while the *body* stays a real one.
+pub(crate) const DEMO_IMAGE_WIDTH: u32 = 64;
+pub(crate) const DEMO_IMAGE_HEIGHT: u32 = 48;
+
+/// A real `sensor_msgs/msg/Image` CDR body: `Header`, `height`, `width`, `encoding`,
+/// `is_bigendian`, `step`, then the `uint8[] data` blob.
+///
+/// Real for the reason the point cloud beside it became real: a stub body left the rig's camera with
+/// no frame size at all, so `autonomy.image-integrity` abstained on the modality a policy is mostly
+/// trained on — and every one of its bodies counted as undecodable, which is what a stub is. The
+/// pixels are a flat value that varies per frame, so frames stay content-distinct without the
+/// fixture depending on anything a machine can disagree about.
+///
+/// `width`/`height` of zero writes what a driver that lost its sensor publishes: a well-formed frame
+/// at the right rate, declaring no pixels.
+fn image_body(frame_id: &str, stamp_ns: u64, width: u32, height: u32, seed: u8) -> Vec<u8> {
+    let mut buf: Vec<u8> = vec![0x00, 0x01, 0x00, 0x00]; // encapsulation: CDR_LE
+    let align = |buf: &mut Vec<u8>, n: usize| {
+        while (buf.len() - 4) % n != 0 {
+            buf.push(0)
+        }
+    };
+    let u32v = |buf: &mut Vec<u8>, v: u32| {
+        align(buf, 4);
+        buf.extend_from_slice(&v.to_le_bytes());
+    };
+    u32v(&mut buf, (stamp_ns / 1_000_000_000) as u32); // stamp.sec
+    u32v(&mut buf, (stamp_ns % 1_000_000_000) as u32); // stamp.nanosec
+    u32v(&mut buf, (frame_id.len() + 1) as u32);
+    buf.extend_from_slice(frame_id.as_bytes());
+    buf.push(0);
+    u32v(&mut buf, height);
+    u32v(&mut buf, width);
+    let encoding = "mono8";
+    u32v(&mut buf, (encoding.len() + 1) as u32);
+    buf.extend_from_slice(encoding.as_bytes());
+    buf.push(0);
+    buf.push(0); // is_bigendian
+    let step = width; // one byte per pixel
+    u32v(&mut buf, step);
+    let data_len = step * height;
+    u32v(&mut buf, data_len);
+    buf.extend(std::iter::repeat(seed).take(data_len as usize));
+    buf
+}
+
 /// A minimal header-first CDR body: `Header { stamp, frame_id }` followed by a varying `u64` so each
 /// frame's bytes differ. Enough for the adapter to recover the sensor's coordinate frame without
-/// pretending to encode a full `Image` / `PointCloud2` / `Imu` message.
+/// pretending to encode a full `PointCloud2` / `Imu` message.
 fn header_body(frame_id: &str, stamp_ns: u64, payload: u64) -> Vec<u8> {
     let mut buf: Vec<u8> = vec![0x00, 0x01, 0x00, 0x00]; // encapsulation: CDR_LE
     let align = |buf: &mut Vec<u8>, n: usize| {

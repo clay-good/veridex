@@ -116,6 +116,7 @@ struct StreamBuilder {
     /// Per-point field layout, decoded from the first `PointCloud2` message on this topic (if any).
     point_fields: Option<Vec<PointField>>,
     point_counts: super::cdr::PointCountAccum,
+    image_dims: super::cdr::ImageDimAccum,
     body_decodes: super::cdr::BodyDecodeAccum,
     /// What this topic's messages said about their own sampling time, against the log times they
     /// were recorded at. Empty for a topic whose bodies are not header-first.
@@ -558,6 +559,7 @@ impl Adapter for McapAdapter {
                 .entry(topic.clone())
                 .or_insert_with(|| StreamBuilder {
                     point_counts: Default::default(),
+                    image_dims: Default::default(),
                     body_decodes: Default::default(),
                     header_stamps: Default::default(),
                     sequence: Default::default(),
@@ -629,6 +631,18 @@ impl Adapter for McapAdapter {
                 match super::cdr::decode_point_cloud2_point_count(&message.data) {
                     Some(n) => {
                         builder.point_counts.observe(n);
+                        Some(true)
+                    }
+                    None => Some(false),
+                }
+            } else if schema_is(schema_name, "Image") {
+                // The camera counterpart of the point count above, and there for the same fault: a
+                // driver that lost its sensor keeps publishing well-formed frames at its configured
+                // rate with no pixels in them. Read from the message's own `height`/`width`; the
+                // pixel blob is never opened.
+                match super::cdr::decode_image_dimensions(&message.data) {
+                    Some((w, h)) => {
+                        builder.image_dims.observe(w, h);
                         Some(true)
                     }
                     None => Some(false),
@@ -753,6 +767,7 @@ impl Adapter for McapAdapter {
                     declared_range: None,
                     point_fields: b.point_fields,
                     observed_point_counts: b.point_counts.finish(),
+                    observed_image_dims: b.image_dims.finish(),
                     observed_body_decodes: b.body_decodes.finish(),
                     // What the messages said about their own sampling time, against the recorder's.
                     observed_header_stamps: b.header_stamps.finish(),
@@ -1125,6 +1140,7 @@ fn ingest_summary_only(path: &Path, summary: McapSummary) -> Result<Ingested, In
             observed_dim_stats: None,
             point_fields: None,
             observed_point_counts: None,
+            observed_image_dims: None,
             observed_body_decodes: None,
             observed_header_stamps: None,
             observed_sequence: None,

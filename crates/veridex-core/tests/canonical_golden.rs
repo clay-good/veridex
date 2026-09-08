@@ -29,12 +29,12 @@ fn the_canonical_encoding_has_not_changed_without_a_version_bump() {
     let d: Dataset = serde_json::from_str(GOLDEN).expect("the golden fixture parses");
 
     assert_eq!(
-        CANONICAL_VERSION, 18,
+        CANONICAL_VERSION, 19,
         "the encoding version changed; re-pin the hash below in the same commit"
     );
     assert_eq!(
         content_hash(&d).to_hex(),
-        "5ff87f060e36aba4288f232ae6a6bc828815c841ca62f1bbc035496a6bac5c2c",
+        "813db90fe597f2049176cfc80b96d707e9d971710d7c318e7ae6a1d16dbbca6f",
         "the canonical encoding changed. If that was deliberate, bump CANONICAL_VERSION and \
          re-pin this vector in the same commit — a hash change without a version bump means two \
          builds disagree about byte-identical data while both claiming the same encoding, and \
@@ -98,6 +98,18 @@ fn the_golden_fixture_still_covers_what_it_claims_to() {
                 .is_some_and(|c| c.message_count > 0 && c.empty > 0)),
         "observed point counts — the vector must reach the encoding with a non-zero value in every \
          field, not the absent marker and not a summary of zeros"
+    );
+    assert!(
+        streams.iter().any(
+            |s| s.observed_image_dims.is_some_and(|d| d.message_count > 0
+                && d.empty > 0
+                && d.min_width > 0
+                && d.max_width > d.min_width
+                && d.min_height > 0
+                && d.max_height > d.min_height)
+        ),
+        "observed image dimensions — the vector must reach the encoding with a non-zero value in \
+         every field, not the absent marker and not a summary of zeros"
     );
     assert!(
         streams.iter().any(|s| s

@@ -1940,6 +1940,7 @@ mod tests {
             frame_id: None,
             point_fields: None,
             observed_point_counts: None,
+            observed_image_dims: None,
             observed_body_decodes: None,
             observed_header_stamps: None,
             observed_sequence: None,

@@ -45,6 +45,7 @@ fn stream(name: &str, clock: &str, rate: Option<f64>, ts: &[i64]) -> Stream {
         declared_range: None,
         point_fields: None,
         observed_point_counts: None,
+        observed_image_dims: None,
         observed_body_decodes: None,
         observed_header_stamps: None,
         observed_sequence: None,
@@ -354,6 +355,7 @@ fn stream_hashed(name: &str, clock: &str, ts: &[i64], contents: &[u8]) -> Stream
         declared_range: None,
         point_fields: None,
         observed_point_counts: None,
+        observed_image_dims: None,
         observed_body_decodes: None,
         observed_header_stamps: None,
         observed_sequence: None,
@@ -448,6 +450,7 @@ fn stream_with_content(name: &str, modality: Modality, contents: &[u8]) -> Strea
         declared_range: None,
         point_fields: None,
         observed_point_counts: None,
+        observed_image_dims: None,
         observed_body_decodes: None,
         observed_header_stamps: None,
         observed_sequence: None,
@@ -530,6 +533,7 @@ fn shaped(name: &str, dtype: Option<&str>, shape: Option<Vec<u64>>, ts: &[i64]) 
         declared_range: None,
         point_fields: None,
         observed_point_counts: None,
+        observed_image_dims: None,
         observed_body_decodes: None,
         observed_header_stamps: None,
         observed_sequence: None,
@@ -1687,7 +1691,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 47);
+    assert_eq!(verdict.executed_checks.len(), 48);
 }
 
 #[test]
@@ -3427,6 +3431,7 @@ fn a_bus_only_measurement_is_not_treated_as_a_sensor_rig() {
                 declared_range: None,
                 point_fields: None,
                 observed_point_counts: None,
+                observed_image_dims: None,
                 observed_body_decodes: None,
                 observed_header_stamps: None,
                 observed_sequence: None,
@@ -3514,6 +3519,7 @@ fn one_shared_timeline_reports_once_and_an_event_driven_signal_is_not_called_inc
         declared_range: None,
         point_fields: None,
         observed_point_counts: None,
+        observed_image_dims: None,
         observed_body_decodes: None,
         observed_header_stamps: None,
         observed_sequence: None,
@@ -6157,6 +6163,115 @@ fn cloud_with_counts(counts: Option<veridex_core::cdm::PointCounts>) -> Dataset 
     );
     ep.streams[0].observed_point_counts = counts;
     dataset(vec![ep])
+}
+
+// ---- AUTONOMY.IMAGE_EMPTY / IMAGE_DROPPED / IMAGE_RESIZED ----
+
+fn camera_with_dims(dims: Option<veridex_core::cdm::ImageDims>) -> Dataset {
+    let mut ep = episode(
+        0,
+        vec![rig_stream("camera", Modality::Video, 1_000_000_000)],
+    );
+    ep.streams[0].observed_image_dims = dims;
+    dataset(vec![ep])
+}
+
+#[test]
+fn a_camera_that_recorded_no_pixels_is_not_a_working_camera() {
+    // The dead-LiDAR fault on the modality a policy is usually trained on. A driver that lost its
+    // sensor keeps publishing: the frames have the schema, the rate, the coordinate frame and the
+    // monotonic timestamps of a working camera, so every other family passes on a stream carrying
+    // no imagery at all. The size is in the message header, ahead of the pixel blob.
+    let f = autonomy::ImageIntegrity.run(&camera_with_dims(Some(veridex_core::cdm::ImageDims {
+        message_count: 900,
+        empty: 900,
+        min_width: 0,
+        max_width: 0,
+        min_height: 0,
+        max_height: 0,
+    })));
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "AUTONOMY.IMAGE_EMPTY");
+    assert_eq!(f[0].severity, Severity::Error);
+    assert_eq!(
+        f[0].location,
+        veridex_core::check::Location::Stream {
+            episode: 0,
+            stream: "camera".into()
+        }
+    );
+    assert!(f[0].message.contains("900"), "{}", f[0].message);
+}
+
+#[test]
+fn a_camera_that_cut_out_mid_recording_is_a_warning_not_a_dead_camera() {
+    // Some frames empty, not all: the camera dropped out partway. A reader acts on that differently
+    // — the recording holds real imagery on either side and may be usable once the span is cut —
+    // and it is invisible to every timing check, because the empty frames keep the rate intact.
+    let f = autonomy::ImageIntegrity.run(&camera_with_dims(Some(veridex_core::cdm::ImageDims {
+        message_count: 900,
+        empty: 42,
+        min_width: 1920,
+        max_width: 1920,
+        min_height: 1080,
+        max_height: 1080,
+    })));
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "AUTONOMY.IMAGE_DROPPED");
+    assert_eq!(f[0].severity, Severity::Warning);
+    assert!(f[0].message.contains("42 empty"), "{}", f[0].message);
+    assert!(f[0].message.contains("1920x1080"), "{}", f[0].message);
+}
+
+#[test]
+fn a_camera_that_changed_resolution_part_way_through_says_so() {
+    // Nothing else notices: every frame is well-formed at both sizes, the rate is unchanged and the
+    // timeline is continuous. A policy with a fixed input shape trains on whichever size the loader
+    // resamples to, and intrinsics calibrated at one resolution are wrong for the other.
+    let f = autonomy::ImageIntegrity.run(&camera_with_dims(Some(veridex_core::cdm::ImageDims {
+        message_count: 900,
+        empty: 0,
+        min_width: 1280,
+        max_width: 1920,
+        min_height: 720,
+        max_height: 1080,
+    })));
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "AUTONOMY.IMAGE_RESIZED");
+    assert_eq!(f[0].severity, Severity::Warning);
+    assert!(f[0].message.contains("1280x720"), "{}", f[0].message);
+    assert!(f[0].message.contains("1920x1080"), "{}", f[0].message);
+}
+
+#[test]
+fn a_dead_camera_is_not_also_reported_as_one_that_changed_resolution() {
+    // Every frame empty leaves no resolution to compare. Folding the zeros into the range would
+    // report every dead camera as one that also resized, which is a second finding about a fault
+    // that is not there.
+    let f = autonomy::ImageIntegrity.run(&camera_with_dims(Some(veridex_core::cdm::ImageDims {
+        message_count: 900,
+        empty: 900,
+        min_width: 0,
+        max_width: 0,
+        min_height: 0,
+        max_height: 0,
+    })));
+    assert!(
+        !f.iter().any(|f| f.code == "AUTONOMY.IMAGE_RESIZED"),
+        "{f:?}"
+    );
+}
+
+#[test]
+fn a_camera_stream_nobody_measured_says_so_rather_than_passing() {
+    // The silence this check would otherwise pass in: a camera whose frames carry no declared size
+    // and whose container was never read is one the rules never asked their question about, and
+    // that is indistinguishable in a report from one asked and found clean.
+    let f = autonomy::ImageIntegrity.run(&camera_with_dims(None));
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "AUTONOMY.IMAGE_UNMEASURED");
+    assert_eq!(f[0].severity, Severity::Info);
+    assert!(f[0].message.contains("camera"), "{}", f[0].message);
 }
 
 // ---- AUTONOMY.MESSAGE_BODY_UNDECODED ----

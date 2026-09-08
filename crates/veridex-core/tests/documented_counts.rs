@@ -20,9 +20,28 @@ use std::path::{Path, PathBuf};
 use veridex_core::adapter::mcap::McapAdapter;
 use veridex_core::adapter::{default_registry, Adapter, IngestOptions, Source};
 
-const SPELLED: [&str; 13] = [
-    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
-    "eleven", "twelve",
+const SPELLED: [&str; 21] = [
+    "zero",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
+    "nineteen",
+    "twenty",
 ];
 
 fn spelled(n: usize) -> &'static str {

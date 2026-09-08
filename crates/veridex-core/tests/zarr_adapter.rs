@@ -414,6 +414,10 @@ fn a_zarr_store_flows_through_the_whole_pipeline() {
         // A replay buffer states its episode boundaries and no total frame count, so the
         // declared-vs-actual comparison had nothing to test against either.
         .filter(|c| *c != "STRUCTURAL.FRAME_COUNT_UNDECLARED")
+        // A Zarr image array is pixels in a chunked array, with no per-frame `height`/`width`
+        // declared beside it and no container header to read, so the image rules had nothing to
+        // measure. The same kind of statement again.
+        .filter(|c| *c != "AUTONOMY.IMAGE_UNMEASURED")
         .collect();
     assert!(
         noise.is_empty(),

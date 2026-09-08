@@ -1118,6 +1118,10 @@ fn a_clean_rlds_dataset_passes_the_standard_checks_without_false_findings() {
         // The fifth, and the one this format is named in `docs/checks.md` for: RLDS declares no
         // total frame count, so the declared-vs-actual comparison had nothing to test against.
         .filter(|code| *code != "STRUCTURAL.FRAME_COUNT_UNDECLARED")
+        // And the sixth: an RLDS image is a blob inside a TFRecord feature, with no per-frame
+        // `height`/`width` beside it and no container header to read, so the image rules had nothing
+        // to measure. Again a statement about the run's evidence, not an accusation.
+        .filter(|code| *code != "AUTONOMY.IMAGE_UNMEASURED")
         .collect();
     assert!(
         noise.is_empty(),

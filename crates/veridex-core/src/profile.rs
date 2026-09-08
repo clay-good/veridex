@@ -161,6 +161,10 @@ const WORLD_MODEL_READY_CRITERIA: &[(&str, &str)] = &[
         "every point-cloud sensor actually recorded points",
     ),
     (
+        "autonomy.image-integrity",
+        "every camera actually recorded pixels, at one resolution throughout",
+    ),
+    (
         "autonomy.sensor-clock",
         "every rig sensor stamped its own capture time, on a clock that agrees with the recorder's",
     ),
@@ -177,7 +181,11 @@ const WORLD_MODEL_READY_CRITERIA: &[(&str, &str)] = &[
 /// world model built from more than one of them requires — GNSS fix availability, because a
 /// receiver that reported no fix for most of a drive leaves a trajectory that every timing check
 /// still reads as continuous — point-cloud density, because a LiDAR
-/// that published nothing but empty sweeps satisfies every one of the others, and sensor clock,
+/// that published nothing but empty sweeps satisfies every one of the others, and image integrity,
+/// which is the same fault on the modality a policy is usually trained on: a camera whose driver
+/// lost its sensor publishes well-formed zero-sized frames at the right rate, and a camera that
+/// changed resolution part-way through shifts the training distribution without failing anything,
+/// and sensor clock,
 /// because the 20 ms sync above is measured from the recorder's clock, and a sensor that never
 /// stamped its own data has no second clock for that result to be about, and message decode,
 /// because every criterion above that reads a body — sequence, ego pose, GNSS, point-cloud density,

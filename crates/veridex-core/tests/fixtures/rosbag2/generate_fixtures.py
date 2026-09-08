@@ -162,12 +162,37 @@ def joint_state(ts_ns, names, positions):
     return c.bytes()
 
 
-def header_only(frame_id, ts_ns, filler=64):
-    """Any header-first message whose body Veridex does not decode (Image, …).
+def image(frame_id, ts_ns, width=64, height=48, seed=0):
+    """A real `sensor_msgs/msg/Image` body: header, height, width, encoding, is_bigendian, step,
+    then the pixel blob.
 
-    Not for `Imu` or `JointState` any more: Veridex decodes both in full, so a stub body there
-    leaves the bag path's decoder unexercised and the statistical family abstaining on a sensor the
-    fixture calls clean. See `imu()`.
+    Real for the same reason `imu()` is: Veridex reads a frame's declared size out of this header —
+    that is how a camera whose driver lost its sensor is caught — so a stub body leaves the bag
+    path's decoder unexercised, counts every message as one whose body could not be decoded, and
+    has the image rules abstain on a camera the fixture calls clean.
+
+    Deliberately tiny: the body has to carry the pixel bytes its own header declares, and the
+    fixtures are committed. 64x48 `mono8` is 3 KB a frame.
+    """
+    c = Cdr()
+    c.header(frame_id, ts_ns)
+    c.u32(height)
+    c.u32(width)
+    c.string("mono8")
+    c.u8(0)                      # is_bigendian
+    step = width                 # one byte per pixel
+    c.u32(step)
+    c.u32(step * height)
+    c.raw(bytes([seed % 251]) * (step * height))
+    return c.bytes()
+
+
+def header_only(frame_id, ts_ns, filler=64):
+    """Any header-first message whose body Veridex does not decode (node chatter, diagnostics).
+
+    Not for `Imu`, `JointState` or `Image` any more: Veridex decodes all three, so a stub body there
+    leaves the bag path's decoder unexercised and the statistical or image family abstaining on a
+    sensor the fixture calls clean. See `imu()` and `image()`.
     """
     c = Cdr()
     c.header(frame_id, ts_ns)
@@ -313,7 +338,7 @@ def rig_messages(n_lidar=20, camera_end_scale=1.0):
     cam_dt = int(50_000_000 * camera_end_scale)
     for i in range(n_lidar * 2):
         ts = START + i * cam_dt
-        msgs.append((2, ts, header_only("camera_front", ts, 256)))
+        msgs.append((2, ts, image("camera_front", ts, seed=i)))
         # Most drivers publish CameraInfo alongside every frame. (Some latch it instead; either
         # way it is not graded as a sensor — see `Modality::is_sensor`.)
         msgs.append((3, ts, camera_info("camera_front", ts)))

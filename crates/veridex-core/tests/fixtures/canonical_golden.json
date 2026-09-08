@@ -190,7 +190,15 @@
             },
             "frame_count": 2
           },
-          "frame_id": "cam_frame"
+          "frame_id": "cam_frame",
+          "observed_image_dims": {
+            "message_count": 120,
+            "empty": 3,
+            "min_width": 1280,
+            "max_width": 1920,
+            "min_height": 720,
+            "max_height": 1080
+          }
         },
         {
           "name": "action",

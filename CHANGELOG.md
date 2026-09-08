@@ -10,6 +10,34 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A camera that recorded nothing now says so.** `autonomy.point-cloud-density` exists because a
+  LiDAR driver that loses its sensor keeps publishing perfectly-formed empty sweeps at the right
+  rate, and every other check passes. The same driver failure on a **camera** was still invisible:
+  `sensor_msgs/msg/Image` bodies were never decoded at all, so a stream of zero-sized frames kept the
+  schema, the cadence, the frame count and the coordinate frame of a working camera, and a rig that
+  recorded no imagery certified as world-model-ready — on the modality a policy is usually trained
+  on.
+
+  `autonomy.image-integrity` reads each frame's own `height`/`width` from the message header, ahead
+  of the pixel blob, which is never opened. `AUTONOMY.IMAGE_EMPTY` reports a stream where every frame
+  declared no pixels, `AUTONOMY.IMAGE_DROPPED` one where some did — the camera cutting out rather
+  than never starting — and `AUTONOMY.IMAGE_UNMEASURED` says out loud where the rules had nothing to
+  measure, excluding streams whose *container* was read, because the `video.*` family reports on
+  those. It is the eleventh `world-model-ready` criterion.
+
+  `AUTONOMY.IMAGE_RESIZED` is the second fault and does not have a point-cloud counterpart: a stream
+  whose frames do not all declare the same size. Every frame is well-formed at both resolutions, so
+  nothing else notices — and a policy with a fixed input shape trains on whichever size the loader
+  resamples to, while the intrinsics calibrated at one resolution are wrong for the other, so the
+  same pixel projects to two different rays.
+
+  A size is believed only once the body proves it is an `Image`: a non-empty `encoding` (the field an
+  all-zero buffer cannot satisfy), a `step` covering between one and 32 bytes per pixel of the
+  declared width, `data` of exactly `step × height` bytes, and those bytes present. A fabricated
+  resolution would be a finding about honest data. `CANONICAL_VERSION` 18 → 19 binds
+  `Stream.observed_image_dims`, for the reason every `observed_*` field is bound: a camera that
+  recorded nothing and one that recorded a whole drive must not hash alike.
+
 - **A sample an MF4 marks invalid is no longer a whole channel thrown away.** MDF appends
   *invalidation bytes* to each record and gives a channel a bit in them — how a signal that is only
   present while a subsystem is awake is recorded: the samples taken while it slept are in the record

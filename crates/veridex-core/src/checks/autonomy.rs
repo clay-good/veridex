@@ -1707,6 +1707,247 @@ impl Check for SensorFrameResolution {
     }
 }
 
+/// **Image integrity (design A2).** A camera stream whose frames carried no pixels, or whose
+/// resolution changed part-way through the recording.
+///
+/// The point-cloud story one modality over, and the modality a policy is usually trained on. A
+/// driver that lost its sensor keeps publishing a perfectly-formed `sensor_msgs/msg/Image` at its
+/// configured rate — right schema, right `frame_id`, monotonic timestamps, no jitter — and a
+/// `width` of zero. The structural family sees frames, the temporal family sees a clean 30 Hz,
+/// `autonomy.sensor-frame-resolution` places the camera in the tree, and the rig certifies as
+/// world-model-ready on a camera that recorded nothing. `AUTONOMY.IMAGE_EMPTY` reports a stream on
+/// which *every* frame was empty; `AUTONOMY.IMAGE_DROPPED` reports one where some were, which is the
+/// camera cutting out rather than never starting.
+///
+/// `AUTONOMY.IMAGE_RESIZED` is the second fault: a stream whose frames do not all declare the same
+/// size. Nothing else notices — the frames are well-formed at both sizes — and a policy with a fixed
+/// input shape trains on whichever the loader happens to resample, so a resolution change part-way
+/// through a recording is a silent distribution shift rather than an error anyone sees.
+///
+/// All three are drawn from the frames whose bodies *decoded*; how many did not is reported by
+/// `autonomy.message-decode`, which is what says whether they describe the stream or a sample of it
+/// that the recording chose.
+///
+/// Read from the messages' own `height`/`width`, never from the pixel blob — the size is stated in
+/// the header, ahead of the bulk data. Silent for a camera stream that carries no per-message
+/// dimensions *and* no container metadata either: a stream whose imagery was never measured is not
+/// one that was measured and found empty.
+pub struct ImageIntegrity;
+
+impl Check for ImageIntegrity {
+    fn id(&self) -> &'static str {
+        "autonomy.image-integrity"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &[
+            "AUTONOMY.IMAGE_EMPTY",
+            "AUTONOMY.IMAGE_DROPPED",
+            "AUTONOMY.IMAGE_RESIZED",
+            "AUTONOMY.IMAGE_UNMEASURED",
+        ]
+    }
+
+    fn abstention_codes(&self) -> &'static [&'static str] {
+        &["AUTONOMY.IMAGE_UNMEASURED"]
+    }
+    fn title(&self) -> &'static str {
+        "Image integrity"
+    }
+    fn category(&self) -> Category {
+        Category::Autonomy
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Error
+    }
+    fn scope(&self) -> Scope {
+        Scope::Stream
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        for ep in &dataset.episodes {
+            for stream in &ep.streams {
+                let Some(dims) = &stream.observed_image_dims else {
+                    continue;
+                };
+                let at = || Location::Stream {
+                    episode: ep.index,
+                    stream: stream.name.clone(),
+                };
+                if dims.empty == dims.message_count {
+                    findings.push(
+                        Finding::new(
+                            self.id(),
+                            Category::Autonomy,
+                            Severity::Error,
+                            at(),
+                            "AUTONOMY.IMAGE_EMPTY",
+                            format!(
+                                "episode {}: stream `{}` published {} camera frame(s) and every one \
+                                 of them declared no pixels — the messages have the schema, the \
+                                 rate and the coordinate frame of a working camera and none of its \
+                                 image",
+                                ep.index, stream.name, dims.message_count
+                            ),
+                        )
+                        .with_risk(
+                            "Nothing else reports this. The frames exist, the timestamps are \
+                             monotonic and evenly spaced, the transform tree places the camera, \
+                             and the stream grades clean — so a rig that recorded no imagery at \
+                             all certifies as ready to build a world model from, and a policy \
+                             trained on it learns from whatever the loader substitutes for the \
+                             missing frames.",
+                        )
+                        .with_remedy(
+                            "Check the camera and its driver for the recording (power, bandwidth, \
+                             the driver's own diagnostics) and re-record; the segment holds no \
+                             image data to recover.",
+                        ),
+                    );
+                } else if dims.empty > 0 {
+                    findings.push(
+                        Finding::new(
+                            self.id(),
+                            Category::Autonomy,
+                            Severity::Warning,
+                            at(),
+                            "AUTONOMY.IMAGE_DROPPED",
+                            format!(
+                                "episode {}: stream `{}` published {} empty camera frame(s) out of \
+                                 {} — the camera cut out during the recording (the frames that \
+                                 carried pixels were up to {}x{})",
+                                ep.index,
+                                stream.name,
+                                dims.empty,
+                                dims.message_count,
+                                dims.max_width,
+                                dims.max_height
+                            ),
+                        )
+                        .with_risk(
+                            "The gap is invisible to every timing check, because the empty frames \
+                             keep the stream's rate and continuity intact. Anything fusing this \
+                             camera with the other sensors is missing its observations over a \
+                             stretch of the recording while the timeline says it was present.",
+                        )
+                        .with_remedy(
+                            "Find the dropout in the camera's diagnostics and either re-record or \
+                             cut the affected span, rather than training over a stretch the camera \
+                             did not see.",
+                        ),
+                    );
+                }
+                if dims.min_width != dims.max_width || dims.min_height != dims.max_height {
+                    findings.push(
+                        Finding::new(
+                            self.id(),
+                            Category::Autonomy,
+                            Severity::Warning,
+                            at(),
+                            "AUTONOMY.IMAGE_RESIZED",
+                            format!(
+                                "episode {}: stream `{}` changed resolution during the recording — \
+                                 its frames range from {}x{} to {}x{}",
+                                ep.index,
+                                stream.name,
+                                dims.min_width,
+                                dims.min_height,
+                                dims.max_width,
+                                dims.max_height
+                            ),
+                        )
+                        .with_risk(
+                            "Every frame is well-formed at both sizes, so nothing else notices. A \
+                             policy with a fixed input shape trains on whichever size the loader \
+                             resamples to, and the camera's intrinsics — calibrated at one \
+                             resolution — are wrong for the other, so the same pixel projects to \
+                             two different rays.",
+                        )
+                        .with_remedy(
+                            "Pin the camera's resolution for the whole recording, or split the \
+                             segments and re-calibrate each; do not resample across the change.",
+                        ),
+                    );
+                }
+            }
+        }
+        // A check that measured nothing must say so, or its silence reads as a pass. A camera stream
+        // carrying no per-frame dimensions is one this check never asked its question about, and it
+        // is indistinguishable in the report from one that was asked and came back clean. Named by
+        // the *property* rather than by a list of formats, which goes stale the moment an adapter
+        // reads more — and a stream whose container metadata *was* read (a video file's own header)
+        // is excluded, because something did measure that imagery and the `video.*` family reports
+        // on it.
+        let unmeasured: Vec<&str> = {
+            let mut names: std::collections::BTreeSet<&str> = Default::default();
+            for ep in &dataset.episodes {
+                for s in &ep.streams {
+                    if s.modality == Modality::Video
+                        && s.observed_image_dims.is_none()
+                        && s.media.is_none()
+                    {
+                        names.insert(s.name.as_str());
+                    }
+                }
+            }
+            names.into_iter().collect()
+        };
+        if !unmeasured.is_empty() {
+            let shown = unmeasured
+                .iter()
+                .take(4)
+                .copied()
+                .collect::<Vec<_>>()
+                .join(", ");
+            let listed = match unmeasured.len().saturating_sub(4) {
+                0 => shown,
+                rest => format!("{shown} and {rest} more"),
+            };
+            findings.push(
+                Finding::new(
+                    self.id(),
+                    Category::Autonomy,
+                    Severity::Info,
+                    Location::Dataset,
+                    "AUTONOMY.IMAGE_UNMEASURED",
+                    format!(
+                        "{} camera stream(s) carry neither per-frame image dimensions nor container \
+                         metadata, so the image rules had nothing to measure on them ({listed})",
+                        unmeasured.len()
+                    ),
+                )
+                .with_risk(
+                    "Nothing in this run can tell you whether these cameras recorded any pixels. A \
+                     clean autonomy result here is the absence of a measurement, not evidence that \
+                     the camera was working.",
+                )
+                .with_remedy(
+                    "Treat the image result as unverified for these streams. The size is read from \
+                     a frame's own header, so it is available wherever the messages themselves are \
+                     decoded rather than only fingerprinted.",
+                ),
+            );
+        }
+        findings
+    }
+
+    /// Withholds the abstention under a metadata-only ingest.
+    ///
+    /// The three image codes are conclusions about sizes that were read, and a run that did not open
+    /// the message bodies read none — so `AUTONOMY.IMAGE_UNMEASURED` would fire on every camera
+    /// stream of every format, blaming the data for a silence the *request* caused.
+    /// `COVERAGE.METADATA_ONLY` already states that. The other three codes cannot fire without
+    /// dimensions anyway, so the whole check stands down rather than reporting half a question.
+    fn run_in(&self, dataset: &Dataset, context: &CheckContext) -> Vec<Finding> {
+        if !context.frames_read {
+            return Vec::new();
+        }
+        self.run(dataset)
+    }
+}
+
 /// **Point-cloud density (design A2).** A LiDAR or radar stream whose messages carried no points.
 ///
 /// The one autonomy fault that every other check passes: a driver that lost its sensor keeps

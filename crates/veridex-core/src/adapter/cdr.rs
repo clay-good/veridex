@@ -14,7 +14,9 @@
 //! little-endian representation (what ROS 2 emits by default) is decoded; a big-endian body is
 //! declined (the caller simply gets no decoded metadata, exactly as if the field were absent).
 
-use crate::cdm::{CameraIntrinsics, HeaderStamps, PointCounts, PointField, Pose, Transform};
+use crate::cdm::{
+    CameraIntrinsics, HeaderStamps, ImageDims, PointCounts, PointField, Pose, Transform,
+};
 
 /// Ceiling on any name this reader will return (coordinate frames, point-field names, distortion
 /// models). ROS names are identifiers — tens of bytes — so this is generous by three orders of
@@ -288,6 +290,59 @@ impl FixAvailabilityAccum {
     }
 }
 
+/// Accumulates a camera stream's frame dimensions, as a running summary rather than a `Vec` for the
+/// same reason [`PointCountAccum`] is one: the number of messages on a topic is chosen by the file.
+///
+/// `min`/`max` are taken over the frames that carried pixels. An empty frame has no resolution to
+/// compare, and folding its zeros into the range would report every dead camera as one that also
+/// changed resolution.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ImageDimAccum {
+    messages: u64,
+    empty: u64,
+    sized: u64,
+    min_width: u32,
+    max_width: u32,
+    min_height: u32,
+    max_height: u32,
+}
+
+impl ImageDimAccum {
+    /// Fold in one frame's dimensions.
+    pub fn observe(&mut self, width: u32, height: u32) {
+        self.messages += 1;
+        if width == 0 || height == 0 {
+            self.empty += 1;
+            return;
+        }
+        if self.sized == 0 {
+            self.min_width = width;
+            self.max_width = width;
+            self.min_height = height;
+            self.max_height = height;
+        } else {
+            self.min_width = self.min_width.min(width);
+            self.max_width = self.max_width.max(width);
+            self.min_height = self.min_height.min(height);
+            self.max_height = self.max_height.max(height);
+        }
+        self.sized += 1;
+    }
+
+    /// The summary, or `None` when no frame's dimensions were read — "nothing was measured" and "a
+    /// stream of empty frames" are opposite verdicts and must not render the same.
+    pub fn finish(self) -> Option<ImageDims> {
+        (self.messages > 0).then_some(ImageDims {
+            message_count: self.messages,
+            empty: self.empty,
+            min_width: self.min_width,
+            max_width: self.max_width,
+            min_height: self.min_height,
+            max_height: self.max_height,
+        })
+    }
+}
+
 /// Accumulates the point counts of a stream's `PointCloud2` messages into a [`PointCounts`].
 ///
 /// Kept as a running summary rather than a `Vec` of counts: the number of messages on a topic is
@@ -377,6 +432,60 @@ impl BodyDecodeAccum {
 /// that prove the body is a cloud at all, so an uncapped count is a per-message cost the file
 /// chooses. 64 is far above any real layout and far below anything expensive.
 const MAX_POINT_FIELDS: usize = 64;
+
+/// The most bytes per pixel any `sensor_msgs/msg/Image` encoding uses, as a sanity bound on `step`.
+///
+/// The widest ROS encodings are 4-channel 32-bit float (`32FC4`), which is 16. Doubling that leaves
+/// room for an encoding this table does not know while still refusing a `step` that could only come
+/// from a body that is not an image.
+const MAX_IMAGE_BYTES_PER_PIXEL: u64 = 32;
+
+/// Decode a `sensor_msgs/msg/Image` body far enough to recover the frame's **dimensions**.
+///
+/// Layout: `Header`, `uint32 height`, `uint32 width`, `string encoding`, `uint8 is_bigendian`,
+/// `uint32 step`, then the `uint8[] data` blob — which is never read, only proved to be present at
+/// the length the message states.
+///
+/// Returns `(width, height)`, and `(0, 0)` is a real answer rather than a failure: a camera driver
+/// that lost its sensor keeps publishing well-formed zero-sized frames at its configured rate, and
+/// that is exactly what this exists to let a check see.
+///
+/// What separates that from an arbitrary buffer is the message's own length invariants, because
+/// every one of them holds trivially at zero. A non-empty `encoding` is the anchor — a body of
+/// zeroes yields the empty string and is declined — and beyond it a row is at least one byte per
+/// pixel and no more than [`MAX_IMAGE_BYTES_PER_PIXEL`], `data` is exactly `step × height` bytes,
+/// and those bytes are there. A fabricated resolution is worse than silence: it is a finding about
+/// honest data.
+pub fn decode_image_dimensions(data: &[u8]) -> Option<(u32, u32)> {
+    let mut r = Reader::new(data)?;
+    r.header()?;
+    let height = r.u32()?;
+    let width = r.u32()?;
+    let encoding = r.string()?;
+    // The one field an all-zero body cannot satisfy. A driver publishing empty frames still names
+    // the encoding it would have published in.
+    if encoding.is_empty() {
+        return None;
+    }
+    let _is_bigendian = r.u8()?;
+    let step = r.u32()? as u64;
+    let data_len = r.u32()? as u64;
+    // A row covers its own pixels: at least one byte each, and no more than the widest encoding a
+    // ROS image uses. An empty frame has no row to size, so the bound applies only where there is
+    // one.
+    if width > 0 && (step < u64::from(width) || step > u64::from(width) * MAX_IMAGE_BYTES_PER_PIXEL)
+    {
+        return None;
+    }
+    // `data` is exactly `step × height` bytes, per the message definition — the invariant an
+    // arbitrary body will not satisfy by accident — and the bytes are actually present, so a stub
+    // body claiming a full frame is declined even when its numbers agree with each other.
+    if data_len != step.saturating_mul(u64::from(height)) {
+        return None;
+    }
+    r.take(usize::try_from(data_len).ok()?)?;
+    Some((width, height))
+}
 
 /// Decode a `sensor_msgs/msg/PointCloud2` body far enough to recover its **point count** — `height ×
 /// width` — or `None` when the body is not a `PointCloud2` at all.
@@ -781,6 +890,66 @@ mod tests {
             self.u32((stamp_ns % 1_000_000_000) as u32); // stamp.nanosec
             self.string(frame_id);
         }
+    }
+
+    /// A `sensor_msgs/msg/Image` body, with every field the decode reads under the caller's control
+    /// so each invariant can be broken one at a time.
+    fn image(frame_id: &str, height: u32, width: u32, encoding: &str, step: u32, data: u32) -> W {
+        let mut w = W::new();
+        w.header(frame_id);
+        w.u32(height);
+        w.u32(width);
+        w.string(encoding);
+        w.u8(0); // is_bigendian
+        w.u32(step);
+        w.u32(data);
+        w.buf.extend(std::iter::repeat(0u8).take(data as usize));
+        w
+    }
+
+    #[test]
+    fn an_image_body_yields_the_size_it_declares() {
+        let w = image("camera_front", 720, 1280, "mono8", 1280, 1280 * 720);
+        assert_eq!(decode_image_dimensions(&w.buf), Some((1280, 720)));
+        // Three bytes a pixel is an ordinary `rgb8` frame, not a suspicious stride.
+        let w = image("camera_front", 4, 8, "rgb8", 24, 96);
+        assert_eq!(decode_image_dimensions(&w.buf), Some((8, 4)));
+    }
+
+    #[test]
+    fn an_empty_frame_is_a_reading_rather_than_a_refusal() {
+        // The whole point of the check this feeds: a driver that lost its sensor publishes a
+        // well-formed frame declaring no pixels, and that has to be distinguishable from a body
+        // whose size was never read.
+        let w = image("camera_front", 0, 0, "mono8", 0, 0);
+        assert_eq!(decode_image_dimensions(&w.buf), Some((0, 0)));
+    }
+
+    #[test]
+    fn a_body_that_is_not_an_image_yields_no_size() {
+        // A buffer of zeroes satisfies every length invariant trivially, so the non-empty
+        // `encoding` is what stands between it and being reported as a dead camera.
+        assert_eq!(decode_image_dimensions(&[0x00, 0x01, 0x00, 0x00][..]), None);
+        let w = image("camera_front", 4, 8, "", 8, 32);
+        assert_eq!(decode_image_dimensions(&w.buf), None, "no encoding named");
+        // A row that cannot hold its own pixels, and one far too wide to be an image's.
+        let w = image("camera_front", 4, 8, "mono8", 4, 16);
+        assert_eq!(decode_image_dimensions(&w.buf), None, "step below width");
+        let w = image("camera_front", 4, 8, "mono8", 8 * 33, 8 * 33 * 4);
+        assert_eq!(decode_image_dimensions(&w.buf), None, "step absurdly wide");
+        // `data` is exactly `step × height` — the invariant an arbitrary body will not satisfy by
+        // accident.
+        let w = image("camera_front", 4, 8, "mono8", 8, 31);
+        assert_eq!(
+            decode_image_dimensions(&w.buf),
+            None,
+            "data length disagrees"
+        );
+        // ...and the bytes are actually there. A stub prefix claiming a full frame is declined even
+        // when its numbers agree with each other.
+        let mut w = image("camera_front", 4, 8, "mono8", 8, 32);
+        w.buf.truncate(w.buf.len() - 1);
+        assert_eq!(decode_image_dimensions(&w.buf), None, "pixels not present");
     }
 
     #[test]

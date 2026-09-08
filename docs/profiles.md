@@ -109,6 +109,7 @@ Three rules keep that honest:
 | GNSS plausibility | `autonomy.gnss-plausibility` | every satellite fix is a possible place, and the receiver actually had one — a drive whose fix is impossible or never acquired cannot be aligned to a map or to another drive |
 | GNSS fix availability | `autonomy.gnss-fix-availability` | no satellite receiver reporting no fix for more than 5% of its messages — the receiver's own `STATUS_NO_FIX` is the only record of an outage, because a no-fix message still arrives on time and contributes no position, so the stream keeps its frame count, cadence and span |
 | Point-cloud density | `autonomy.point-cloud-density` | every point-cloud sensor actually recorded points — a LiDAR whose driver lost its sensor keeps publishing well-formed empty clouds at the right rate, and satisfies every criterion above |
+| Image integrity | `autonomy.image-integrity` | every camera actually recorded pixels, at one resolution throughout — the same driver failure on the modality a policy is usually trained on, plus a resolution that changed part-way through the recording, which shifts the training distribution without failing anything else |
 | Sensor clock | `autonomy.sensor-clock` | every rig sensor stamped its own capture time, on a clock that agrees with the recorder's — the 20 ms sync above is measured from the recorder's clock, and a sensor that never stamped its data has no second clock for that result to be about |
 | Message decode | `autonomy.message-decode` | every rig sensor's message bodies survived the recording, so the results above are about the whole stream — each criterion here that reads a body (sequence, ego pose, GNSS, point-cloud density, sensor clock) is computed from the bodies that decoded, so a stream whose bodies mostly did not survive satisfies all of them on the share that did |
 
@@ -149,6 +150,7 @@ Real output, over the `av-lossy-camera` rig the demo generator writes
     ✓ autonomy.gnss-plausibility — every satellite fix is a possible place, and the receiver actually had one
     ✓ autonomy.gnss-fix-availability — no satellite receiver reporting no fix for more than 5% of its messages
     ✓ autonomy.point-cloud-density — every point-cloud sensor actually recorded points
+    ✓ autonomy.image-integrity — every camera actually recorded pixels, at one resolution throughout
     ✓ autonomy.sensor-clock — every rig sensor stamped its own capture time, on a clock that agrees with the recorder's
     ✓ autonomy.message-decode — every rig sensor's message bodies survived the recording, so the results above are about the whole stream
 ```

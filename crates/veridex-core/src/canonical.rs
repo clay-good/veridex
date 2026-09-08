@@ -108,7 +108,14 @@ use crate::cdm::{
 /// counts, cadences and spans — while every summary drawn from those bodies (the statistics, the
 /// point counts, the capture stamps, the fix availability) is computed from the survivors and
 /// therefore differs *silently* between them. Same rule again.
-pub const CANONICAL_VERSION: u32 = 18;
+///
+/// v19 binds each stream's `observed_image_dims` — the sizes its camera frames declared.
+/// `AUTONOMY.IMAGE_EMPTY` fails a stream on it, and it is the point-cloud story one modality over:
+/// a camera whose driver lost its sensor keeps publishing well-formed zero-sized frames at its
+/// configured rate, so a camera that recorded nothing and one that recorded a whole drive carry the
+/// same schema, the same frame count, the same cadence and the same coordinate frame. Same rule
+/// again.
+pub const CANONICAL_VERSION: u32 = 19;
 
 const DOMAIN: &[u8] = b"veridex.cdm.v1\0";
 
@@ -426,6 +433,17 @@ impl Stream {
             e.u64(c.min);
             e.u64(c.max);
             e.u64(c.empty);
+        });
+        // The sizes the camera frames declared. Bound because `autonomy.image-integrity` fails a
+        // stream on it: a camera publishing zero-sized frames keeps the schema, rate, frame count
+        // and coordinate frame of a working one, so the two must not hash alike.
+        e.opt(&self.observed_image_dims, |e, d| {
+            e.u64(d.message_count);
+            e.u64(d.empty);
+            e.u64(u64::from(d.min_width));
+            e.u64(u64::from(d.max_width));
+            e.u64(u64::from(d.min_height));
+            e.u64(u64::from(d.max_height));
         });
         // How many of the stream's bodies decoded. Bound because `autonomy.message-decode` fails a
         // stream on it, and because every other observed summary on this stream is drawn from the

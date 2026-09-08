@@ -465,6 +465,16 @@ pub struct Stream {
     /// none of its data.
     #[serde(default)]
     pub observed_point_counts: Option<PointCounts>,
+    /// What this stream's camera frames said about **their own size** — `None` for every source that
+    /// carries no per-message image dimensions, and for a run that did not open the message bodies.
+    /// Extension for `autonomy-sensor-data`.
+    ///
+    /// The camera counterpart of [`Stream::observed_point_counts`], and it exists for the same
+    /// fault: a driver that lost its sensor keeps publishing well-formed frames at its configured
+    /// rate, with the right schema, the right coordinate frame and monotonic timestamps, carrying no
+    /// pixels. Read from the message's own `height`/`width`, never from the pixel blob.
+    #[serde(default)]
+    pub observed_image_dims: Option<ImageDims>,
     /// How many of this stream's message bodies the reader could decode — `None` for every stream
     /// whose schema this reader has no typed decoder for, and for a run that did not open the
     /// message bodies. Extension for `autonomy-sensor-data`.
@@ -577,6 +587,27 @@ pub struct PointCounts {
     /// "the smallest sweep was empty" and "half the sweeps were empty" are different faults and a
     /// reader acts on them differently.
     pub empty: u64,
+}
+
+/// The sizes a camera stream's frames declared, summarized over the episode.
+///
+/// The camera counterpart of [`PointCounts`]. `min_*`/`max_*` are over the frames that carried
+/// pixels: an empty frame has no resolution, and folding its zeros into the range would report every
+/// dead camera as one that also changed resolution. All four are zero when every frame was empty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageDims {
+    /// Frames whose dimensions were read (the denominator for `empty`).
+    pub message_count: u64,
+    /// How many frames declared no pixels at all — a zero width or a zero height.
+    pub empty: u64,
+    /// The narrowest frame that carried pixels.
+    pub min_width: u32,
+    /// The widest frame that carried pixels.
+    pub max_width: u32,
+    /// The shortest frame that carried pixels.
+    pub min_height: u32,
+    /// The tallest frame that carried pixels.
+    pub max_height: u32,
 }
 
 /// How many of a stream's message bodies the reader was able to decode, summarized over the episode.

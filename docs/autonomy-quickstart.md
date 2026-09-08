@@ -211,6 +211,7 @@ certified av — fail, grade C (76), bound to <the CDM content hash>
     ✓ autonomy.gnss-plausibility — every satellite fix is a possible place, and the receiver actually had one
     ✓ autonomy.gnss-fix-availability — no satellite receiver reporting no fix for more than 5% of its messages
     ✓ autonomy.point-cloud-density — every point-cloud sensor actually recorded points
+    ✓ autonomy.image-integrity — every camera actually recorded pixels, at one resolution throughout
     ✓ autonomy.sensor-clock — every rig sensor stamped its own capture time, on a clock that agrees with the recorder's
     ✓ autonomy.message-decode — every rig sensor's message bodies survived the recording, so the results above are about the whole stream
 ```

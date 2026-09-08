@@ -415,6 +415,7 @@ struct StreamBuilder {
     latched: Option<bool>,
     point_fields: Option<Vec<PointField>>,
     point_counts: super::cdr::PointCountAccum,
+    image_dims: super::cdr::ImageDimAccum,
     body_decodes: super::cdr::BodyDecodeAccum,
     /// What this topic's messages said about their own sampling time, against the log times they
     /// were recorded at. Empty for a topic whose bodies are not header-first.
@@ -489,6 +490,18 @@ fn decode_body(
         match super::cdr::decode_point_cloud2_point_count(data) {
             Some(n) => {
                 builder.point_counts.observe(n);
+                Some(true)
+            }
+            None => Some(false),
+        }
+    } else if super::mcap::schema_is(ros_type, "Image") {
+        // The camera counterpart of the point count above, and there for the same fault: a driver
+        // that lost its sensor keeps publishing well-formed frames at its configured rate with no
+        // pixels in them. Read from the message's own `height`/`width`; the pixel blob is never
+        // opened.
+        match super::cdr::decode_image_dimensions(data) {
+            Some((w, h)) => {
+                builder.image_dims.observe(w, h);
                 Some(true)
             }
             None => Some(false),
@@ -867,6 +880,7 @@ fn read_shard(
             .entry(topic.name.clone())
             .or_insert_with(|| StreamBuilder {
                 point_counts: Default::default(),
+                image_dims: Default::default(),
                 body_decodes: Default::default(),
                 header_stamps: Default::default(),
                 sequence: Default::default(),
@@ -983,6 +997,7 @@ fn read_mcap_shard(
             .entry(topic.clone())
             .or_insert_with(|| StreamBuilder {
                 point_counts: Default::default(),
+                image_dims: Default::default(),
                 body_decodes: Default::default(),
                 header_stamps: Default::default(),
                 sequence: Default::default(),
@@ -1124,6 +1139,7 @@ fn ingest_metadata_only(
             observed_dim_stats: None,
             point_fields: None,
             observed_point_counts: None,
+            observed_image_dims: None,
             observed_body_decodes: None,
             observed_header_stamps: None,
             observed_sequence: None,
@@ -1534,6 +1550,7 @@ impl Adapter for Rosbag2Adapter {
                     declared_range: None,
                     point_fields: b.point_fields,
                     observed_point_counts: b.point_counts.finish(),
+                    observed_image_dims: b.image_dims.finish(),
                     observed_body_decodes: b.body_decodes.finish(),
                     observed_header_stamps: b.header_stamps.finish(),
                     observed_sequence: b.sequence.finish(),

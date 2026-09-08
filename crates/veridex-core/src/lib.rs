@@ -141,6 +141,7 @@ mod tests {
                         declared_range: None,
                         point_fields: None,
                         observed_point_counts: None,
+                        observed_image_dims: None,
                         observed_body_decodes: None,
                         observed_header_stamps: None,
                         observed_sequence: None,
@@ -187,6 +188,7 @@ mod tests {
                         declared_range: None,
                         point_fields: None,
                         observed_point_counts: None,
+                        observed_image_dims: None,
                         observed_body_decodes: None,
                         observed_header_stamps: None,
                         observed_sequence: None,
@@ -402,7 +404,7 @@ mod tests {
         };
         let base = content_hash(&sample_dataset());
         type Mutator = fn(&mut Stream);
-        let mutate: [(&str, Mutator); 35] = [
+        let mutate: [(&str, Mutator); 36] = [
             // The fields the encoder has carried from the beginning. Absent from this table until a
             // mutation audit deleted `clock_kind` from `encode` and watched 692 tests pass: a
             // stream's frames are a synchronized rig under one value and an unmeasurable timeline
@@ -438,6 +440,19 @@ mod tests {
             // so a rig whose LiDAR names a frame the TF tree relates and one whose LiDAR does not
             // must not hash alike.
             ("frame_id", |s| s.frame_id = Some("lidar_top_v2".into())),
+            // The sizes the camera frames declared: `autonomy.image-integrity` fails a stream on
+            // them, so a camera that published zero-sized frames and one that published a whole
+            // drive must not hash alike.
+            ("observed_image_dims", |s| {
+                s.observed_image_dims = Some(crate::cdm::ImageDims {
+                    message_count: 120,
+                    empty: 3,
+                    min_width: 1280,
+                    max_width: 1920,
+                    min_height: 720,
+                    max_height: 1080,
+                })
+            }),
             ("dim_stats", |s| {
                 s.dim_stats = Some(vec![DimStats {
                     dim: 0,
@@ -640,6 +655,7 @@ mod tests {
                 observed_dim_stats: _,
                 point_fields: _,
                 observed_point_counts: _,
+                observed_image_dims: _,
                 observed_body_decodes: _,
                 observed_header_stamps: _,
                 observed_sequence: _,
@@ -772,6 +788,7 @@ mod proptests {
                 declared_range: None,
                 point_fields: None,
                 observed_point_counts: None,
+                observed_image_dims: None,
                 observed_body_decodes: None,
                 observed_header_stamps: None,
                 observed_sequence: None,
