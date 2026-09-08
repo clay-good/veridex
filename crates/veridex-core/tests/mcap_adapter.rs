@@ -719,6 +719,10 @@ impl Cdr {
         self.align(4);
         self.buf.extend_from_slice(&v.to_le_bytes());
     }
+    fn f32(&mut self, v: f32) {
+        self.align(4);
+        self.buf.extend_from_slice(&v.to_le_bytes());
+    }
     fn f64(&mut self, v: f64) {
         self.align(8);
         self.buf.extend_from_slice(&v.to_le_bytes());
@@ -2844,6 +2848,226 @@ fn a_topic_whose_payload_stays_opaque_is_still_reported_unmeasured() {
             .iter()
             .any(|f| f.code == "STATISTICAL.UNMEASURABLE_VALUES"),
         "a camera topic is unmeasured here, not unmeasurable everywhere"
+    );
+}
+
+/// One `geometry_msgs/msg/Twist` or `Wrench` body: six doubles and nothing else.
+fn six_double_body(values: [f64; 6]) -> Vec<u8> {
+    let mut c = Cdr::new();
+    for v in values {
+        c.f64(v);
+    }
+    c.buf
+}
+
+/// The stream's recomputed statistics, ingested through the real MCAP reader.
+fn measured_stream(schema: &str, topic: &str, payloads: &[Vec<u8>]) -> veridex_core::cdm::Stream {
+    let bytes = build_mcap_series(schema, topic, payloads);
+    let path = write_temp_mcap(&bytes);
+    let ingested = McapAdapter
+        .ingest(
+            &Source::Local(path.to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest");
+    ingested.dataset.episodes[0].streams[0].clone()
+}
+
+/// The findings a dataset produces under the default catalog.
+fn findings_for(dataset: &veridex_core::cdm::Dataset) -> Vec<veridex_core::check::Finding> {
+    let hash = veridex_core::content_hash(dataset);
+    let engine = veridex_core::checks::default_engine().unwrap();
+    engine
+        .run(dataset, hash, &veridex_core::RunConfig::default())
+        .findings
+}
+
+#[test]
+fn a_commanded_velocity_pinned_at_its_rail_is_caught_end_to_end() {
+    // `/cmd_vel` is a mobile base's action channel, and it was fingerprinted rather than measured —
+    // so a run commanded at its speed limit throughout, the exact fault `STATISTICAL.SATURATED`
+    // exists for on an actuator, reported nothing at all. Proven through the real reader rather than
+    // against the decoder, because the value has to reach the CDM to be graded.
+    let payloads: Vec<Vec<u8>> = (0..40)
+        .map(|i: i32| {
+            let x = if i < 30 {
+                1.5
+            } else {
+                0.2 + f64::from(i) * 0.01
+            };
+            six_double_body([x, 0.0, 0.0, 0.0, 0.0, 0.0])
+        })
+        .collect();
+    let stream = measured_stream("geometry_msgs/msg/Twist", "/cmd_vel", &payloads);
+    assert_eq!(stream.modality, Modality::Action);
+    let sat = stream
+        .observed_saturation
+        .expect("the commanded velocity was measured");
+    assert_eq!((sat.dim, sat.at_max), (0, 30), "linear.x is the pinned one");
+    // And the dimension is named by what it is, so a finding says which component is pinned.
+    let dims = stream
+        .observed_dim_stats
+        .as_ref()
+        .expect("per-dimension statistics");
+    assert_eq!(dims.len(), 6);
+    assert_eq!(stream.dim_names.as_ref().expect("names")[0], "linear.x");
+}
+
+#[test]
+fn a_force_torque_sensor_clipped_through_contact_is_caught_end_to_end() {
+    // The contact channel of a manipulation recording. Same shape as a `Twist`, same fault, and it
+    // was unread for the same reason.
+    let payloads: Vec<Vec<u8>> = (0..40)
+        .map(|i: i32| {
+            let z = if i < 30 {
+                -50.0
+            } else {
+                -1.0 - f64::from(i) * 0.1
+            };
+            // Stamped, so the header-carrying branch is exercised end to end too.
+            let mut c = Cdr::new();
+            c.header("ft_link");
+            for v in [0.0, 0.0, z, 0.0, 0.0, 0.0] {
+                c.f64(v);
+            }
+            c.buf
+        })
+        .collect();
+    let stream = measured_stream("geometry_msgs/msg/WrenchStamped", "/ft_sensor", &payloads);
+    assert_eq!(stream.modality, Modality::TactileForceTorque);
+    let sat = stream.observed_saturation.expect("the force was measured");
+    assert_eq!((sat.dim, sat.at_min), (2, 30), "force.z is the pinned one");
+    assert_eq!(stream.dim_names.as_ref().expect("names")[2], "force.z");
+}
+
+#[test]
+fn a_one_scalar_reading_is_named_by_what_it_measures_end_to_end() {
+    // Four schemas share this layout, and calling the dimension `value` would leave a finding that
+    // cannot say what is wrong. A probe frozen at a constant is the fault here.
+    let payloads: Vec<Vec<u8>> = (0..40)
+        .map(|_| {
+            let mut c = Cdr::new();
+            c.header("probe");
+            c.f64(21.5);
+            c.f64(0.01);
+            c.buf
+        })
+        .collect();
+    let stream = measured_stream("sensor_msgs/msg/Temperature", "/temperature", &payloads);
+    assert_eq!(stream.dim_names.as_ref().expect("names"), &["temperature"]);
+    let stats = stream.observed_stats.expect("the reading was measured");
+    assert_eq!((stats.min, stats.max), (21.5, 21.5));
+}
+
+/// One `sensor_msgs/msg/Range` body over the sensor's own `[min_range, max_range]` window.
+fn range_body(range: f32) -> Vec<u8> {
+    let mut c = Cdr::new();
+    c.header("sonar");
+    c.u8(0); // radiation_type
+    c.f32(0.5); // field_of_view
+    c.f32(0.2); // min_range
+    c.f32(4.0); // max_range
+    c.f32(range);
+    c.buf
+}
+
+#[test]
+fn a_rangefinder_that_saw_nothing_is_not_reported_as_a_steady_probe() {
+    // A sonar reports "nothing there" by publishing outside its own window. Summarizing those as
+    // distances would make a probe that saw nothing all run look like a perfectly steady one — which
+    // is a defect it does not have, hiding the ones it might.
+    let blind: Vec<Vec<u8>> = (0..40).map(|_| range_body(f32::INFINITY)).collect();
+    let stream = measured_stream("sensor_msgs/msg/Range", "/sonar", &blind);
+    assert_eq!(
+        stream.observed_stats, None,
+        "no reading measured anything, so there is nothing to summarize"
+    );
+    // A working one is measured, which is what makes the silence above a statement rather than a
+    // limitation of the reader.
+    let working: Vec<Vec<u8>> = (0..40)
+        .map(|i: i32| range_body(0.5 + i as f32 * 0.05))
+        .collect();
+    let stream = measured_stream("sensor_msgs/msg/Range", "/sonar", &working);
+    let stats = stream.observed_stats.expect("the readings were measured");
+    assert!(stats.min >= 0.2 && stats.max <= 4.0, "{stats:?}");
+}
+
+#[test]
+fn a_planar_scanner_that_recorded_nothing_is_reported_end_to_end() {
+    // A `LaserScan` is what most mobile robots publish, and a scanner whose driver lost its sensor
+    // publishes a full, well-formed, correctly-timed sweep of infinities. Its returns feed the same
+    // density summary a `PointCloud2`'s points do, so the fault already had a name.
+    let sweep = |measured: bool| {
+        let mut c = Cdr::new();
+        c.header("laser");
+        for v in [-1.57f32, 1.57, 0.01, 0.0, 0.1, 0.1, 10.0] {
+            c.f32(v);
+        }
+        c.u32(16);
+        for _ in 0..16 {
+            c.f32(if measured { 2.5 } else { f32::INFINITY });
+        }
+        c.u32(0); // no intensities
+        c.buf
+    };
+    let dead: Vec<Vec<u8>> = (0..20).map(|_| sweep(false)).collect();
+    let stream = measured_stream("sensor_msgs/msg/LaserScan", "/scan", &dead);
+    assert_eq!(stream.modality, Modality::PointCloud);
+    let counts = stream
+        .observed_point_counts
+        .expect("the returns were counted");
+    assert_eq!((counts.message_count, counts.empty), (20, 20));
+
+    let healthy: Vec<Vec<u8>> = (0..20).map(|_| sweep(true)).collect();
+    let counts = measured_stream("sensor_msgs/msg/LaserScan", "/scan", &healthy)
+        .observed_point_counts
+        .expect("counted");
+    assert_eq!((counts.min, counts.max, counts.empty), (16, 16, 0));
+}
+
+#[test]
+fn a_compressed_camera_is_graded_like_a_raw_one_end_to_end() {
+    // Most real bags record their cameras compressed, so the dead camera has to be caught on both
+    // spellings of the topic. A payload of zero bytes needs no codec to recognize.
+    let empty = |_: i32| {
+        let mut c = Cdr::new();
+        c.header("camera_front");
+        c.string("jpeg");
+        c.u32(0);
+        c.buf
+    };
+    let payloads: Vec<Vec<u8>> = (0..20).map(empty).collect();
+    let bytes = build_mcap_series(
+        "sensor_msgs/msg/CompressedImage",
+        "/camera/image_raw/compressed",
+        &payloads,
+    );
+    let path = write_temp_mcap(&bytes);
+    let ingested = McapAdapter
+        .ingest(
+            &Source::Local(path.to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest");
+    let stream = &ingested.dataset.episodes[0].streams[0];
+    assert_eq!(stream.modality, Modality::Video);
+    let dims = stream
+        .observed_image_dims
+        .expect("the frames were measured");
+    assert_eq!((dims.message_count, dims.empty), (20, 20));
+
+    let codes: Vec<String> = findings_for(&ingested.dataset)
+        .iter()
+        .map(|f| f.code.clone())
+        .filter(|c| c.starts_with("AUTONOMY.IMAGE"))
+        .collect();
+    assert!(
+        codes.iter().any(|c| c == "AUTONOMY.IMAGE_EMPTY"),
+        "{codes:?}"
+    );
+    assert!(
+        !codes.iter().any(|c| c == "AUTONOMY.IMAGE_UNMEASURED"),
+        "the frames were measured, so nothing abstains: {codes:?}"
     );
 }
 
