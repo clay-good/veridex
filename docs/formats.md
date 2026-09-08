@@ -235,22 +235,29 @@ sampled, as distinct from the log time the **recorder** wrote it at, which is th
 frame timestamps carry. Both are read, and `autonomy.sensor-clock` compares them: without the second
 one, every sync result on a bag is a measurement of the recording host rather than of the rig.
 
-Three exceptions, and they are what let the statistical family grade a bag at all. A
-`sensor_msgs/msg/JointState`, a `sensor_msgs/msg/Imu` and a `geometry_msgs/msg/Twist` (or
-`TwistStamped`) each carry nothing *but* the measurement — a handful of joint angles, thirty-seven
-doubles with no bulk blob among them, or six velocity components — so the joint `position` array, the
-IMU's orientation, angular velocity and linear acceleration, and the commanded linear and angular
-velocity are read and summarized per dimension, exactly as LeRobot's or HDF5's values are. Without
-them, an arm whose elbow sat pinned against its stop, an accelerometer railed at ±16 g and a mobile
-base commanded at its speed limit for a whole run all scored a clean `data 100` with every
-statistical check listed as run. `/cmd_vel` is to a base what `/joint_states` is to an arm: the
-action channel, and the one a saturated actuator shows up on.
+The exceptions are the messages that carry nothing *but* the measurement, and they are what let the
+statistical family grade a bag at all: a `sensor_msgs/msg/JointState` (a handful of joint angles), a
+`sensor_msgs/msg/Imu` (thirty-seven doubles with no bulk blob among them), a
+`geometry_msgs/msg/Twist` and a `geometry_msgs/msg/Wrench` and their stamped forms (six components
+each), and the one-scalar `sensor_msgs` readings — `Temperature`, `FluidPressure`,
+`RelativeHumidity`, `Illuminance` and `Range`. Every one is read and summarized per dimension,
+exactly as LeRobot's or HDF5's values are, and named by what it is (`linear.x`, `force.z`,
+`temperature`) so a finding says which quantity is wrong. Without them, an arm whose elbow sat pinned
+against its stop, an accelerometer railed at ±16 g, a mobile base commanded at its speed limit for a
+whole run and a force/torque sensor clipped through every contact episode all scored a clean
+`data 100` with every statistical check listed as run. `/cmd_vel` is to a base what `/joint_states`
+is to an arm: the action channel, and the one a saturated actuator shows up on.
 
-A `Twist` has no invariants of its own to prove it is one — six doubles are six doubles, and any
-value they hold is legal, a NaN in a velocity command included, which is a fault to report rather
-than a parse failure. Its *length* is the invariant instead: a body carrying more than its own
-padding past those six is not a `Twist`, and reading one would summarize whatever else it is as a
-velocity command.
+A `Range` reading outside the rangefinder's **own** `[min_range, max_range]` is held out rather than
+summarized. That is how a sonar or IR sensor reports "nothing there" — the same convention a
+`LaserScan` uses — so recording it as a distance would report a beam that saw nothing as a
+measurement, and a probe that saw nothing all run as a perfectly steady one.
+
+A `Twist` and a `Wrench` have no invariants of their own to prove a body is one — six doubles are six
+doubles, and any value they hold is legal, a NaN in a velocity command included, which is a fault to
+report rather than a parse failure. Their *length* is the invariant instead: a body carrying more
+than its own padding past those six is not one of them, and reading it would summarize whatever else
+it is as a velocity command. The one-scalar readings are held to the same rule.
 
 An IMU field whose `covariance[0]` is `-1` is one the driver declares it does **not** provide, and
 ROS leaves it zero-filled; those slots are held out rather than summarized, because reporting them

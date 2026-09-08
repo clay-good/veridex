@@ -512,6 +512,40 @@ fn decode_body(
             }
             None => Some(false),
         }
+    } else if super::mcap::schema_is(ros_type, "Wrench")
+        || super::mcap::schema_is(ros_type, "WrenchStamped")
+    {
+        // A manipulation recording's contact channel, and the same shape as a `Twist`.
+        match super::cdr::decode_wrench_values(
+            data,
+            super::mcap::schema_is(ros_type, "WrenchStamped"),
+        ) {
+            Some(values) => {
+                builder
+                    .values
+                    .push_fixed(&values, &super::cdr::WRENCH_DIM_NAMES);
+                Some(true)
+            }
+            None => Some(false),
+        }
+    } else if let Some(name) = super::cdr::scalar_measurement_name(ros_type) {
+        // Four schemas, one layout: a header, the reading, and its variance.
+        match super::cdr::decode_scalar_measurement(data) {
+            Some(value) => {
+                builder.values.push_fixed(&[Some(value)], &[name]);
+                Some(true)
+            }
+            None => Some(false),
+        }
+    } else if super::mcap::schema_is(ros_type, "Range") {
+        // A reading the rangefinder's own window disowns is "nothing there", not a distance.
+        match super::cdr::decode_range_value(data) {
+            Some(value) => {
+                builder.values.push_fixed(&[value], &["range"]);
+                Some(true)
+            }
+            None => Some(false),
+        }
     } else if super::mcap::schema_is(ros_type, "LaserScan") {
         // A planar scanner's returns feed the same density summary a 3-D cloud's points do: the
         // fault is the same one, and a `LaserScan` is what most mobile robots publish.

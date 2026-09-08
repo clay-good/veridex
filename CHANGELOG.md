@@ -10,6 +10,24 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **The rest of the ROS messages that are nothing but their own reading.** Beside `/cmd_vel`, five
+  more schemas were fingerprinted rather than measured, so every statistical rule abstained on them:
+  `geometry_msgs/msg/Wrench` (and `WrenchStamped`) — a manipulation recording's **contact** channel,
+  where a force/torque sensor clipped at its rail through every contact-rich episode is exactly what
+  `STATISTICAL.SATURATED` exists for — and the one-scalar `sensor_msgs` readings `Temperature`,
+  `FluidPressure`, `RelativeHumidity` and `Illuminance`, which are one layout between them, plus
+  `Range`.
+
+  Each is summarized per dimension and **named by what it is** (`force.z`, `temperature`), because a
+  finding that says a stream's `temperature` is pinned at its rail tells a reader what is wrong and
+  one that says `value` does not. The schema table behind that naming is closed and abstains: a
+  schema outside it is declined, never guessed at.
+
+  A `Range` reading outside the rangefinder's **own** `[min_range, max_range]` is held out rather
+  than summarized. That is how a sonar or IR sensor reports "nothing there" — the same convention
+  `LaserScan` uses — so recording it as a distance would report a beam that saw nothing as a
+  measurement, and a probe that saw nothing all run as a perfectly steady one.
+
 - **A mobile base's action channel is measured.** `/cmd_vel` is to a base what `/joint_states` is to
   an arm — and `geometry_msgs/msg/Twist` bodies went unread, so a recording whose commanded velocity
   sat pinned at its rail for the whole run carried no values to grade. The stream reported

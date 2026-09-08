@@ -651,6 +651,38 @@ impl Adapter for McapAdapter {
                     }
                     None => Some(false),
                 }
+            } else if schema_is(schema_name, "Wrench") || schema_is(schema_name, "WrenchStamped") {
+                // A manipulation recording's contact channel, and the same shape as a `Twist`.
+                match super::cdr::decode_wrench_values(
+                    &message.data,
+                    schema_is(schema_name, "WrenchStamped"),
+                ) {
+                    Some(values) => {
+                        builder
+                            .values
+                            .push_fixed(&values, &super::cdr::WRENCH_DIM_NAMES);
+                        Some(true)
+                    }
+                    None => Some(false),
+                }
+            } else if let Some(name) = super::cdr::scalar_measurement_name(schema_name) {
+                // Four schemas, one layout: a header, the reading, and its variance.
+                match super::cdr::decode_scalar_measurement(&message.data) {
+                    Some(value) => {
+                        builder.values.push_fixed(&[Some(value)], &[name]);
+                        Some(true)
+                    }
+                    None => Some(false),
+                }
+            } else if schema_is(schema_name, "Range") {
+                // A reading the rangefinder's own window disowns is "nothing there", not a distance.
+                match super::cdr::decode_range_value(&message.data) {
+                    Some(value) => {
+                        builder.values.push_fixed(&[value], &["range"]);
+                        Some(true)
+                    }
+                    None => Some(false),
+                }
             } else if schema_is(schema_name, "LaserScan") {
                 // A planar scanner's returns feed the same density summary a 3-D cloud's points do:
                 // the fault is the same one, and a `LaserScan` is what most mobile robots publish.

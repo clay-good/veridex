@@ -791,6 +791,36 @@ pub const TWIST_DIM_NAMES: [&str; 6] = [
 /// the message is exactly six doubles, so a body carrying more than its own padding past them is not
 /// a `Twist`, and reading one would summarize whatever else it is as a velocity.
 pub fn decode_twist_values(data: &[u8], stamped: bool) -> Option<Vec<Option<f64>>> {
+    six_doubles(data, stamped)
+}
+
+/// The name of each scalar [`decode_wrench_values`] returns, in the same order.
+pub const WRENCH_DIM_NAMES: [&str; 6] = [
+    "force.x", "force.y", "force.z", "torque.x", "torque.y", "torque.z",
+];
+
+/// Decode a `geometry_msgs/msg/Wrench` (or `WrenchStamped`) body into its six force/torque
+/// components.
+///
+/// Layout: `Vector3 force { float64 x, y, z }`, `Vector3 torque { float64 x, y, z }` — the same
+/// shape as a [`decode_twist_values`], and read by the same rule.
+///
+/// A force/torque sensor is a manipulation recording's contact channel, and it went unread: a sensor
+/// clipped at its rail through a whole run of contact-rich episodes — the exact fault
+/// `STATISTICAL.SATURATED` exists for — carried no values to grade.
+pub fn decode_wrench_values(data: &[u8], stamped: bool) -> Option<Vec<Option<f64>>> {
+    six_doubles(data, stamped)
+}
+
+/// Six doubles behind an optional `std_msgs/Header`, and nothing else in the body.
+///
+/// Shared by `Twist` and `Wrench`, which have the same shape. Neither has an invariant of its own to
+/// prove a body is one — six doubles are six doubles, and every value they can hold is legal (a NaN
+/// in a velocity command or a force reading is a fault to report, not a parse failure). The
+/// message's **length** is the invariant instead: a body carrying more than its own padding past
+/// those six is not one of these, and reading it would summarize whatever else it is as a
+/// measurement.
+fn six_doubles(data: &[u8], stamped: bool) -> Option<Vec<Option<f64>>> {
     let mut r = Reader::new(data)?;
     if stamped {
         r.header()?;
@@ -800,6 +830,79 @@ pub fn decode_twist_values(data: &[u8], stamped: bool) -> Option<Vec<Option<f64>
         .collect::<Option<Vec<_>>>()?;
     // CDR pads a body to its own alignment, never beyond it.
     (r.remaining() < 8).then_some(values)
+}
+
+/// The dimension name for a one-scalar `sensor_msgs` measurement, or `None` for a schema that is not
+/// one of them.
+///
+/// A **closed** table, and it names the quantity rather than calling every one of them `value`: a
+/// finding that says a stream's `temperature` is pinned at its rail tells a reader what is wrong,
+/// and `value` does not. Same rule as every other open namespace this reader judges — a schema
+/// outside the table is declined, never guessed at.
+pub fn scalar_measurement_name(schema_name: &str) -> Option<&'static str> {
+    if super::mcap::schema_is(schema_name, "Temperature") {
+        Some("temperature")
+    } else if super::mcap::schema_is(schema_name, "FluidPressure") {
+        Some("fluid_pressure")
+    } else if super::mcap::schema_is(schema_name, "RelativeHumidity") {
+        Some("relative_humidity")
+    } else if super::mcap::schema_is(schema_name, "Illuminance") {
+        Some("illuminance")
+    } else {
+        None
+    }
+}
+
+/// Decode a one-scalar `sensor_msgs` measurement: `Header`, `float64 <value>`, `float64 variance`.
+///
+/// That is the whole of `Temperature`, `FluidPressure`, `RelativeHumidity` and `Illuminance` — four
+/// schemas, one layout, and a robot recording carries them wherever it carries an environment. Each
+/// was fingerprinted rather than measured, so a probe frozen at a constant, railed at its limit, or
+/// publishing a NaN reported nothing at all.
+///
+/// The variance is read only to prove the body ends where the message says it does; the value it
+/// holds is the sensor's own uncertainty, which is not a measurement of the world.
+pub fn decode_scalar_measurement(data: &[u8]) -> Option<f64> {
+    let mut r = Reader::new(data)?;
+    r.header()?;
+    let value = r.f64()?;
+    r.f64()?; // variance
+    (r.remaining() < 8).then_some(value)
+}
+
+/// Decode a `sensor_msgs/msg/Range`: `Header`, `uint8 radiation_type`, `float32 field_of_view`,
+/// `float32 min_range`, `float32 max_range`, `float32 range`.
+///
+/// Returns the reading, or `None` for a reading the sensor's **own** window disowns. A sonar or IR
+/// rangefinder reports "nothing there" by publishing a value outside `[min_range, max_range]` (or an
+/// infinity), the same convention `LaserScan` uses, so recording one as a distance would report a
+/// beam that saw nothing as a measurement — and a probe that saw nothing for a whole run as a
+/// perfectly steady one.
+///
+/// The outer `Option` says whether the body is a `Range` at all; the inner one whether that message
+/// measured something.
+pub fn decode_range_value(data: &[u8]) -> Option<Option<f64>> {
+    let mut r = Reader::new(data)?;
+    r.header()?;
+    r.u8()?; // radiation_type
+    let field_of_view = r.f32()?;
+    let min_range = r.f32()?;
+    let max_range = r.f32()?;
+    let range = r.f32()?;
+    if r.remaining() >= 4 {
+        return None;
+    }
+    // The sensor's own window has to be a window, and a beam has to have a width; without both there
+    // is nothing to judge the reading against.
+    if !(field_of_view.is_finite()
+        && min_range.is_finite()
+        && max_range.is_finite()
+        && min_range < max_range)
+    {
+        return None;
+    }
+    let measured = range.is_finite() && range >= min_range && range <= max_range;
+    Some(measured.then(|| f64::from(range)))
 }
 
 /// Decode a `sensor_msgs/msg/Imu` body into its ten measured scalars, in the order
@@ -1005,6 +1108,100 @@ mod tests {
             self.u32((stamp_ns % 1_000_000_000) as u32); // stamp.nanosec
             self.string(frame_id);
         }
+    }
+
+    #[test]
+    fn a_wrench_is_six_force_and_torque_components() {
+        let mut w = W::new();
+        for v in [1.0, 2.0, 3.0, 0.1, 0.2, 0.3] {
+            w.f64(v);
+        }
+        let values = decode_wrench_values(&w.buf, false).expect("decodes");
+        assert_eq!(values[0], Some(1.0));
+        assert_eq!(values[5], Some(0.3));
+        assert_eq!(WRENCH_DIM_NAMES.len(), 6);
+        // Behind a header it is a `WrenchStamped`, and the same bytes read the other way are not
+        // one of these at all: the length no longer fits.
+        let mut w = W::new();
+        w.header("ft_sensor");
+        for _ in 0..6 {
+            w.f64(0.0);
+        }
+        assert!(decode_wrench_values(&w.buf, true).is_some());
+        assert_eq!(decode_wrench_values(&w.buf, false), None);
+    }
+
+    #[test]
+    fn a_one_scalar_measurement_is_its_reading_and_its_variance() {
+        let mut w = W::new();
+        w.header("probe");
+        w.f64(21.5); // the reading
+        w.f64(0.01); // variance
+        assert_eq!(decode_scalar_measurement(&w.buf), Some(21.5));
+
+        // The table that says which schemas have this shape is closed, and names the quantity
+        // rather than calling all four of them `value`.
+        assert_eq!(
+            scalar_measurement_name("sensor_msgs/msg/Temperature"),
+            Some("temperature")
+        );
+        assert_eq!(
+            scalar_measurement_name("sensor_msgs/RelativeHumidity"),
+            Some("relative_humidity")
+        );
+        assert_eq!(scalar_measurement_name("sensor_msgs/msg/Imu"), None);
+
+        // Its length is what says a body is one of them.
+        let mut w = W::new();
+        w.header("probe");
+        w.f64(21.5);
+        assert_eq!(decode_scalar_measurement(&w.buf), None, "no variance");
+        let mut w = W::new();
+        w.header("probe");
+        for _ in 0..4 {
+            w.f64(0.0);
+        }
+        assert_eq!(decode_scalar_measurement(&w.buf), None, "too long");
+    }
+
+    /// A `sensor_msgs/msg/Range` body, with the rangefinder's own window under the caller's control.
+    fn range_msg(min_range: f32, max_range: f32, range: f32) -> W {
+        let mut w = W::new();
+        w.header("sonar");
+        w.u8(0); // radiation_type = ULTRASOUND
+        w.f32(0.5); // field_of_view
+        w.f32(min_range);
+        w.f32(max_range);
+        w.f32(range);
+        w
+    }
+
+    #[test]
+    fn a_rangefinder_reading_outside_its_own_window_is_not_a_distance() {
+        // A sonar reports "nothing there" by publishing outside `[min_range, max_range]`. Recording
+        // that as a distance would report a beam that saw nothing as a measurement — and a probe
+        // that saw nothing all run as a perfectly steady one.
+        assert_eq!(
+            decode_range_value(&range_msg(0.2, 4.0, 1.5).buf),
+            Some(Some(1.5))
+        );
+        assert_eq!(
+            decode_range_value(&range_msg(0.2, 4.0, 9.0).buf),
+            Some(None)
+        );
+        assert_eq!(
+            decode_range_value(&range_msg(0.2, 4.0, 0.05).buf),
+            Some(None)
+        );
+        assert_eq!(
+            decode_range_value(&range_msg(0.2, 4.0, f32::INFINITY).buf),
+            Some(None)
+        );
+        // And a body whose window is not a window, or that is not a `Range` at all, yields nothing.
+        assert_eq!(decode_range_value(&range_msg(4.0, 0.2, 1.5).buf), None);
+        let mut w = range_msg(0.2, 4.0, 1.5);
+        w.f32(0.0);
+        assert_eq!(decode_range_value(&w.buf), None, "too long");
     }
 
     #[test]
