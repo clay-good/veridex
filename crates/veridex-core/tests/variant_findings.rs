@@ -943,12 +943,6 @@ fn the_sweep_reaches_every_adapter() {
 /// statement about the *fixtures*, not a defect in the check.
 const NOT_REACHED_BY_THE_SWEEP: &[(&str, &str)] = &[
     (
-        "autonomy.gnss-plausibility",
-        "needs a coordinate outside the possible range, or a fix at exactly (0,0); the demo \
-         receiver sits at a real place, and `av-no-fix` publishes a real last position under \
-         STATUS_NO_FIX — which is availability, not plausibility",
-    ),
-    (
         "semantic.stream-key-clarity",
         "needs two stream keys that differ only by letter case or whitespace; no fixture names a \
          pair that collides",

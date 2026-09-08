@@ -23,6 +23,13 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
   It is a census, not a coverage target: a check being absent is a statement about the fixtures.
 
+- **A receiver that never acquired a fix, reproducible.** The second of the eight:
+  `make_demo_mcap -- <out> av-null-island` writes the same rig with every coordinate exactly `0.0`
+  while the status byte still claims a fix — the way an unconfigured driver reports a receiver that
+  never saw a satellite. The messages are on time, and `(0, 0)` is a *possible* place, so nothing
+  about the numbers is out of range; only their being exactly zero on every message says so, and
+  `AUTONOMY.GNSS_UNSET` is the only thing that reports it.
+
 - **A rig whose localization jumped, reproducible.** The first of the eight, closed:
   `make_demo_mcap -- <out> av-ego-jump` writes the same rig with one `Odometry` message placing the
   vehicle 50 m from where it was 20 ms earlier — an implied 2,500 m/s. A jump is not a gap, so no

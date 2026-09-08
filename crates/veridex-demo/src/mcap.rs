@@ -56,6 +56,13 @@
 //!   gap so no timing check sees it → `AUTONOMY.EGO_POSE_CONTINUITY` is the only thing that reports
 //!   the ego path is not a path a vehicle drove.
 //!
+//! - `av-null-island` — the same rig with a receiver that never acquired a fix and reports it the
+//!   way an unconfigured driver does: every message says `STATUS_FIX` and every coordinate is
+//!   exactly `0.0`, the point in the Gulf of Guinea where the null meridian meets the equator. The
+//!   messages are on time, the status byte claims a fix, and `(0, 0)` is a *possible* coordinate —
+//!   so nothing about the numbers is out of range → `AUTONOMY.GNSS_UNSET` is the only thing that
+//!   reports the receiver never saw a satellite.
+//!
 //! - `av-truncated-lidar` — the same rig with a LiDAR whose cloud bodies did not survive the
 //!   recording: four sweeps in five are cut short of the point payload their own header declares, so
 //!   the body is not readable as a `PointCloud2` at all. The messages are still there, at the right
@@ -105,7 +112,7 @@
 //!   coordinates — `autonomy.gnss-plausibility` passes on them. Only the status byte says four
 //!   fifths of the trajectory is not measured → `AUTONOMY.GNSS_NO_FIX`.
 //!
-//! Usage: `cargo run -p veridex-demo --example make_demo_mcap -- <output.mcap> [skew|clean|stuck|late-start|av|av-miscalibrated|av-ambiguous-tf|av-dead-lidar|av-dead-camera|av-ego-jump|av-truncated-lidar|av-corrupt-bodies|av-split-rig|av-unstamped|av-uncalibrated-camera|av-lossy-camera|av-no-fix]`
+//! Usage: `cargo run -p veridex-demo --example make_demo_mcap -- <output.mcap> [skew|clean|stuck|late-start|av|av-miscalibrated|av-ambiguous-tf|av-dead-lidar|av-dead-camera|av-ego-jump|av-null-island|av-truncated-lidar|av-corrupt-bodies|av-split-rig|av-unstamped|av-uncalibrated-camera|av-lossy-camera|av-no-fix]`
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
@@ -125,6 +132,7 @@ pub const VARIANTS: &[&str] = &[
     "av-dead-lidar",
     "av-dead-camera",
     "av-ego-jump",
+    "av-null-island",
     "av-truncated-lidar",
     "av-corrupt-bodies",
     "av-split-rig",
@@ -158,6 +166,9 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
     // `av-ego-jump` is the same rig whose localization jumped: one pose lands 50 m from the last,
     // 20 ms earlier. Nothing else about the recording changes, which is the point.
     let ego_jump = variant == "av-ego-jump";
+    // `av-null-island` is the same rig with a receiver that never acquired a fix: every coordinate
+    // is exactly zero while the status byte still claims one.
+    let null_island = variant == "av-null-island";
     // `av-truncated-lidar` is the same rig with a LiDAR whose cloud bodies did not survive the
     // recording: four sweeps in five are cut short of the point payload they declare, so the body
     // is not readable as a `PointCloud2` at all. The messages are still there, at the right rate,
@@ -189,6 +200,7 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
         || dead_lidar
         || dead_camera
         || ego_jump
+        || null_island
         || truncated_lidar
         || corrupt_bodies
         || split_rig
@@ -210,6 +222,7 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
                     dead_lidar,
                     dead_camera,
                     ego_jump,
+                    null_island,
                     truncated_lidar,
                     corrupt_bodies,
                     split_rig,
@@ -423,6 +436,7 @@ struct RigFaults {
     dead_lidar: bool,
     dead_camera: bool,
     ego_jump: bool,
+    null_island: bool,
     truncated_lidar: bool,
     corrupt_bodies: bool,
     split_rig: bool,
@@ -442,6 +456,7 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(w: &mut mcap::Writer<W>, faul
         dead_lidar,
         dead_camera,
         ego_jump,
+        null_island,
         truncated_lidar,
         corrupt_bodies,
         split_rig,
@@ -620,13 +635,18 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(w: &mut mcap::Writer<W>, faul
                     drive
                 };
                 // ~37.4°N, 122.1°W, moving north at the odometry's 10 m/s (1 m ≈ 9e-6°).
-                let mut body = nav_sat_fix_body(
-                    if lost_sky { -1 } else { 0 },
-                    37.4 + held * 9.0e-6,
-                    -122.1,
-                    12.0,
-                    stamp,
-                );
+                // The `av-null-island` fault: a receiver that never acquired a fix, reported the
+                // way an unconfigured driver reports it — every coordinate exactly zero while the
+                // status byte still claims a fix. `(0, 0)` is a possible place, so nothing about the
+                // numbers is out of range; only their being *exactly* zero, on every message, says
+                // the receiver never saw a satellite.
+                let (lat, lon, alt) = if null_island {
+                    (0.0, 0.0, 0.0)
+                } else {
+                    (37.4 + held * 9.0e-6, -122.1, 12.0)
+                };
+                let mut body =
+                    nav_sat_fix_body(if lost_sky { -1 } else { 0 }, lat, lon, alt, stamp);
                 // Cut back to a third, not trimmed at the tail: a decoder reads only the fields it
                 // uses, and this message's tail is a covariance matrix the reader deliberately
                 // skips — so shaving the end is invisible, and correctly so. Losing a chunk of the
