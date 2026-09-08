@@ -1061,6 +1061,17 @@ fn odometry_body(x: f64, stamp_ns: u64) -> Vec<u8> {
     for v in [x, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0] {
         f64v(&mut buf, v);
     }
+    // ...its 36-element covariance, and then the twist that is the ego's own *velocity*. A real
+    // `Odometry` always carries both; writing only the pose left the demo rig's ego stream with no
+    // values for the statistical family to grade, which is the very thing reading the twist fixed.
+    for _ in 0..36 {
+        f64v(&mut buf, 0.0);
+    }
+    // Driving forward at a steady 2 m/s with a slight, varying yaw rate, so the stream is neither
+    // degenerate nor saturated — a healthy ego channel.
+    for v in [2.0, 0.0, 0.0, 0.0, 0.0, x * 0.01] {
+        f64v(&mut buf, v);
+    }
     buf
 }
 

@@ -230,7 +230,9 @@ size its frames declared — and a `CompressedImage` the same size, read out of 
 header inside the payload, because most real bags record their cameras compressed and the dead camera
 has to be caught on both spellings of the topic — `CameraInfo` the intrinsics **plus the image dimensions they were computed
 for and the distortion model they belong to**, `TFMessage` the transform tree, and `Odometry` the ego
-trajectory. The bulk payload — the points, the pixels — is fingerprinted, never decoded.
+trajectory **and the ego velocity behind it** — a vehicle's speed and yaw rate, which sit past the
+pose's 36-element covariance. The bulk payload — the points, the pixels — is fingerprinted, never
+decoded.
 
 Every header-first message also supplies its `header.stamp` — the time the **sensor** says it
 sampled, as distinct from the log time the **recorder** wrote it at, which is the only clock a bag's
@@ -249,6 +251,11 @@ against its stop, an accelerometer railed at ±16 g, a mobile base commanded at 
 whole run and a force/torque sensor clipped through every contact episode all scored a clean
 `data 100` with every statistical check listed as run. `/cmd_vel` is to a base what `/joint_states`
 is to an arm: the action channel, and the one a saturated actuator shows up on.
+
+An `Odometry`'s twist is measured like any other value, so a speed pinned at a limiter, stuck at a
+constant or gone NaN is caught on the ego stream — which carried a trajectory and nothing gradable
+before. A body that ends at the pose is still a pose that was read: the velocity is optional, and
+nothing is invented by stopping there.
 
 A `JointState`'s three arrays — `position`, `velocity`, `effort` — are each either empty or one per
 joint. Positions keep the joints' own names, so a recording that reports only positions (the common

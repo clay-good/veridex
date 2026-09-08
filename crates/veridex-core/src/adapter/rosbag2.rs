@@ -599,10 +599,20 @@ fn decode_body(
         }
     } else if super::mcap::schema_is(ros_type, "Odometry") {
         match super::cdr::decode_odometry(data) {
-            Some((pose, child)) => {
-                sink.ego_poses.push(EgoPose { ts, pose });
+            Some(sample) => {
+                sink.ego_poses.push(EgoPose {
+                    ts,
+                    pose: sample.pose,
+                });
                 if sink.ego_frame.is_none() {
-                    *sink.ego_frame = child;
+                    *sink.ego_frame = sample.child_frame;
+                }
+                // The ego's own velocity, where the message carries it: a vehicle's speed and yaw
+                // rate are measurements, and this stream had none to grade.
+                if let Some(twist) = sample.twist {
+                    builder
+                        .values
+                        .push_fixed(&twist, &super::cdr::TWIST_DIM_NAMES);
                 }
                 Some(true)
             }

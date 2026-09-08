@@ -832,12 +832,46 @@ fn read_pose(r: &mut Reader) -> Option<Pose> {
 ///
 /// An empty `child_frame_id` is what an unconfigured publisher emits, and becomes `None` rather than
 /// a frame named `""` — the same rule [`decode_header_frame_id`] follows.
-pub fn decode_odometry(data: &[u8]) -> Option<(Pose, Option<String>)> {
+pub fn decode_odometry(data: &[u8]) -> Option<OdometrySample> {
     let mut r = Reader::new(data)?;
     r.header()?;
     let child_frame_id = r.string()?;
     let pose = read_pose(&mut r)?;
-    Some((pose, (!child_frame_id.is_empty()).then_some(child_frame_id)))
+    // Past the pose: its 36-element covariance, then the `TwistWithCovariance` that is the ego's own
+    // **velocity** — the vehicle's speed and yaw rate, a measurement of the world and not an
+    // estimate about it. It was read past and dropped, so an ego stream carried a trajectory and no
+    // summarizable values at all: a speed pinned at a limiter, stuck at a constant, or gone NaN
+    // reported nothing, while the same faults on the IMU beside it were caught.
+    //
+    // Optional rather than required. A real `Odometry` always encodes all of it, but a body that
+    // ends after the pose is still a pose that was read — nothing is invented by stopping there, and
+    // making the whole message conditional on bytes some synthetic recorders omit would decline a
+    // trajectory this reader can see.
+    let twist = (|| {
+        for _ in 0..36 {
+            r.f64()?; // pose covariance
+        }
+        let twist: Vec<Option<f64>> = (0..6).map(|_| r.f64().map(Some)).collect::<Option<_>>()?;
+        Some(twist)
+    })();
+    Some(OdometrySample {
+        pose,
+        child_frame: (!child_frame_id.is_empty()).then_some(child_frame_id),
+        twist,
+    })
+}
+
+/// One `nav_msgs/msg/Odometry` message: where the body was, what frame that pose is *of*, and how
+/// fast it was going.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OdometrySample {
+    /// The pose, in the stream's own reference frame.
+    pub pose: Pose,
+    /// The **body** frame the trajectory is of, as distinct from the reference frame it is expressed
+    /// in — the frame every sensor's extrinsics hang off.
+    pub child_frame: Option<String>,
+    /// The ego velocity, in [`TWIST_DIM_NAMES`] order, or `None` for a body that ends at the pose.
+    pub twist: Option<Vec<Option<f64>>>,
 }
 
 /// Decode a `sensor_msgs/msg/JointState` body far enough to recover its joint `name`s and its
@@ -1846,10 +1880,58 @@ mod tests {
         for v in [1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0] {
             w.f64(v);
         }
-        let (pose, child) = decode_odometry(&w.buf).expect("decode");
-        assert_eq!(child.as_deref(), Some("base_link"));
-        assert_eq!(pose.translation, [1.0, 2.0, 3.0]);
-        assert_eq!(pose.rotation, [0.0, 0.0, 0.0, 1.0]);
+        let sample = decode_odometry(&w.buf).expect("decode");
+        assert_eq!(sample.child_frame.as_deref(), Some("base_link"));
+        assert_eq!(sample.pose.translation, [1.0, 2.0, 3.0]);
+        assert_eq!(sample.pose.rotation, [0.0, 0.0, 0.0, 1.0]);
+        // A body that ends at the pose is still a pose that was read; nothing is invented by
+        // stopping there.
+        assert_eq!(sample.twist, None);
+    }
+
+    #[test]
+    fn an_odometry_gives_up_the_ego_velocity_behind_its_pose() {
+        // The ego's speed and yaw rate are measurements of the world, and they sit behind the
+        // pose's 36-element covariance — read past and dropped, so the stream carried a trajectory
+        // and nothing the statistical family could grade.
+        let mut w = W::new();
+        w.header("odom");
+        w.string("base_link");
+        for v in [1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0] {
+            w.f64(v);
+        }
+        for _ in 0..36 {
+            w.f64(0.0); // pose covariance
+        }
+        for v in [12.5, 0.0, 0.0, 0.0, 0.0, -0.4] {
+            w.f64(v);
+        }
+        let sample = decode_odometry(&w.buf).expect("decode");
+        assert_eq!(sample.pose.translation, [1.0, 2.0, 3.0]);
+        assert_eq!(
+            sample.twist,
+            Some(vec![
+                Some(12.5),
+                Some(0.0),
+                Some(0.0),
+                Some(0.0),
+                Some(0.0),
+                Some(-0.4)
+            ])
+        );
+        // A body cut short inside the covariance carries no velocity, and still carries its pose.
+        let mut w = W::new();
+        w.header("odom");
+        w.string("base_link");
+        for v in [1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0] {
+            w.f64(v);
+        }
+        for _ in 0..20 {
+            w.f64(0.0);
+        }
+        let sample = decode_odometry(&w.buf).expect("decode");
+        assert_eq!(sample.twist, None);
+        assert_eq!(sample.pose.translation, [1.0, 2.0, 3.0]);
     }
 
     #[test]

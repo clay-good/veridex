@@ -735,10 +735,20 @@ impl Adapter for McapAdapter {
                 }
             } else if schema_is(schema_name, "Odometry") {
                 match super::cdr::decode_odometry(&message.data) {
-                    Some((pose, child)) => {
-                        ego_poses.push(EgoPose { ts, pose });
+                    Some(sample) => {
+                        ego_poses.push(EgoPose {
+                            ts,
+                            pose: sample.pose,
+                        });
                         if ego_frame.is_none() {
-                            ego_frame = child;
+                            ego_frame = sample.child_frame;
+                        }
+                        // The ego's own velocity, where the message carries it: a vehicle's speed
+                        // and yaw rate are measurements, and this stream had none to grade.
+                        if let Some(twist) = sample.twist {
+                            builder
+                                .values
+                                .push_fixed(&twist, &super::cdr::TWIST_DIM_NAMES);
                         }
                         Some(true)
                     }

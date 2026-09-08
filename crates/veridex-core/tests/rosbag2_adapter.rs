@@ -1059,6 +1059,14 @@ fn cdr_body(schema: &str, seq: u32, stamp_ns: u64) -> Vec<u8> {
             for v in [f64::from(seq) * 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0] {
                 f64v(&mut buf, v);
             }
+            // The pose covariance, then the twist that is the ego's own velocity — both read, so a
+            // reader that stopped decoding one of them shows up in the comparison.
+            for _ in 0..36 {
+                f64v(&mut buf, 0.0);
+            }
+            for v in [2.0, 0.0, 0.0, 0.0, 0.0, f64::from(seq) * 0.001] {
+                f64v(&mut buf, v);
+            }
             return buf;
         }
         // A real frame: 8x4 `mono8`, with the pixel bytes its own header declares.

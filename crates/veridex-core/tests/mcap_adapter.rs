@@ -2900,6 +2900,65 @@ fn a_joint_stalled_against_its_limit_is_caught_through_its_effort() {
 }
 
 #[test]
+fn an_ego_speed_pinned_at_a_limiter_is_caught_end_to_end() {
+    // An `Odometry`'s twist is the ego's own velocity — the vehicle's speed and yaw rate — and it
+    // sits behind the pose's 36-element covariance, read past and dropped. So an ego stream carried
+    // a trajectory and no values at all: a speed pinned at a limiter reported nothing, while the
+    // same fault on the IMU beside it was caught.
+    let payloads: Vec<Vec<u8>> = (0..40)
+        .map(|i: i32| {
+            let mut c = Cdr::new();
+            c.header("odom");
+            c.string("base_link");
+            for v in [f64::from(i) * 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0] {
+                c.f64(v);
+            }
+            for _ in 0..36 {
+                c.f64(0.0);
+            }
+            let speed = if i < 30 {
+                25.0
+            } else {
+                5.0 + f64::from(i) * 0.1
+            };
+            for v in [speed, 0.0, 0.0, 0.0, 0.0, 0.01] {
+                c.f64(v);
+            }
+            c.buf
+        })
+        .collect();
+    let stream = measured_stream("nav_msgs/msg/Odometry", "/odom", &payloads);
+    assert_eq!(stream.modality, Modality::EgoPose);
+    assert_eq!(stream.dim_names.as_ref().expect("names")[0], "linear.x");
+    let sat = stream
+        .observed_saturation
+        .expect("the velocity was measured");
+    assert_eq!((sat.dim, sat.at_max), (0, 30), "the speed is pinned");
+
+    // And the trajectory is still read: the velocity is read *beside* the pose, not instead of it.
+    let bytes = build_mcap_series("nav_msgs/msg/Odometry", "/odom", &payloads);
+    let path = write_temp_mcap(&bytes);
+    let ingested = McapAdapter
+        .ingest(
+            &Source::Local(path.to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest");
+    assert_eq!(
+        ingested.dataset.episodes[0]
+            .ego_poses
+            .as_ref()
+            .expect("ego trajectory")
+            .len(),
+        40
+    );
+    assert_eq!(
+        ingested.dataset.episodes[0].ego_frame.as_deref(),
+        Some("base_link")
+    );
+}
+
+#[test]
 fn a_position_only_joint_state_is_summarized_exactly_as_before() {
     // The common case: a driver that publishes no velocity and no effort. Reading the two arrays it
     // does not carry must not widen the cell or rename a dimension, or every existing manipulation
@@ -3447,7 +3506,7 @@ fn the_demo_rig_hashes_the_same_on_every_machine() {
         .dataset;
     assert_eq!(
         veridex_core::content_hash(&d).to_hex(),
-        "7ce249f9dd6b1282808818406190aa172cc5a6a8213b62e375e6560b6c386d30",
+        "00e2d815acc5d2b1120580ef0e484c87e2e58aa4b9833cbea426956868a70b3e",
         "the demo rig's content hash must not depend on the machine that computed it"
     );
 
