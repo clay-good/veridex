@@ -693,6 +693,22 @@ impl Adapter for McapAdapter {
                     }
                     None => Some(false),
                 }
+            } else if schema_is(schema_name, "CompressedImage") {
+                // Most real bags record their cameras compressed, and without this a
+                // `/camera/image_raw/compressed` topic went unmeasured while the raw topic beside it
+                // was graded — the same dead camera caught on one spelling of the topic and not the
+                // other. Only the codec's own frame header is read; no pixel is decoded.
+                match super::cdr::decode_compressed_image_dimensions(&message.data) {
+                    Some(Some((w, h))) => {
+                        builder.image_dims.observe(w, h);
+                        Some(true)
+                    }
+                    // A `CompressedImage` in a codec this reader has no header parser for. Nothing
+                    // was tried, so this is not a body that failed — it is a schema with no decoder,
+                    // and the image rules abstain on the stream out loud.
+                    Some(None) => None,
+                    None => Some(false),
+                }
             } else if schema_is(schema_name, "Image") {
                 // The camera counterpart of the point count above, and there for the same fault: a
                 // driver that lost its sensor keeps publishing well-formed frames at its configured

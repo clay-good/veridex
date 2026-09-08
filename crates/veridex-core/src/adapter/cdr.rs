@@ -507,6 +507,119 @@ pub fn decode_laser_scan_returns(data: &[u8]) -> Option<u64> {
     Some(measured)
 }
 
+/// The most marker segments this reader will walk looking for a JPEG's frame header.
+///
+/// A JPEG's `SOFn` sits within a handful of segments of the start; a file that has not reached one
+/// after this many is not one this reader will keep scanning, because the segment lengths come out
+/// of the file and a crafted chain is otherwise a loop the run pays for.
+const MAX_JPEG_SEGMENTS: usize = 64;
+
+/// The dimensions a JPEG declares in its frame header (`SOFn`), or `None` for a buffer that is not
+/// one.
+///
+/// Walks the marker chain from `SOI`, skipping each segment by the length it declares, until it
+/// reaches a start-of-frame marker — `SOF0`/`SOF1`/`SOF2` (baseline, extended, progressive) and the
+/// lossless and arithmetic-coded variants beside them, all of which carry
+/// `[precision u8][height u16][width u16]` in the same place. `DHT`, `DQT`, `APPn` and the rest are
+/// skipped; the entropy-coded scan is never reached, so no pixel is decoded.
+fn jpeg_dimensions(data: &[u8]) -> Option<(u32, u32)> {
+    if data.get(..2)? != [0xFF, 0xD8] {
+        return None;
+    }
+    let mut at = 2usize;
+    for _ in 0..MAX_JPEG_SEGMENTS {
+        // Markers may be preceded by any number of `0xFF` fill bytes.
+        while data.get(at) == Some(&0xFF) && data.get(at + 1) == Some(&0xFF) {
+            at += 1;
+        }
+        if *data.get(at)? != 0xFF {
+            return None;
+        }
+        let marker = *data.get(at + 1)?;
+        at += 2;
+        match marker {
+            // Standalone markers: no length, nothing to skip.
+            0x01 | 0xD0..=0xD7 => continue,
+            // Start of scan, and end of image: the frame header should have come first.
+            0xDA | 0xD9 => return None,
+            _ => {}
+        }
+        let length = u16::from_be_bytes([*data.get(at)?, *data.get(at + 1)?]) as usize;
+        // A segment's length includes its own two bytes, so anything under two is not a length.
+        if length < 2 {
+            return None;
+        }
+        let is_sof = matches!(marker, 0xC0..=0xCF) && !matches!(marker, 0xC4 | 0xC8 | 0xCC); // DHT, JPG and DAC are not frame headers
+        if is_sof {
+            let height = u16::from_be_bytes([*data.get(at + 3)?, *data.get(at + 4)?]);
+            let width = u16::from_be_bytes([*data.get(at + 5)?, *data.get(at + 6)?]);
+            return Some((u32::from(width), u32::from(height)));
+        }
+        at = at.checked_add(length)?;
+    }
+    None
+}
+
+/// The dimensions a PNG declares in its `IHDR`, or `None` for a buffer that is not one.
+///
+/// `IHDR` is the first chunk by the spec, at a fixed offset behind the 8-byte signature, so there is
+/// no chain to walk and no pixel to decode.
+fn png_dimensions(data: &[u8]) -> Option<(u32, u32)> {
+    if data.get(..8)? != b"\x89PNG\r\n\x1a\n" || data.get(12..16)? != b"IHDR" {
+        return None;
+    }
+    let be = |at: usize| -> Option<u32> {
+        Some(u32::from_be_bytes(data.get(at..at + 4)?.try_into().ok()?))
+    };
+    Some((be(16)?, be(20)?))
+}
+
+/// Decode a `sensor_msgs/msg/CompressedImage` body far enough to recover the frame's dimensions.
+///
+/// Layout: `Header`, `string format`, then the `uint8[] data` blob — the compressed bytes, of which
+/// only the codec's own frame header is read.
+///
+/// Most real bags record cameras compressed; without this a `/camera/image_raw/compressed` topic was
+/// unmeasured while the raw topic beside it was graded, so the same dead camera was caught on one
+/// spelling of the topic and not the other.
+///
+/// Three answers, and the difference between the last two matters:
+/// - `None` — the body is not a `CompressedImage`, or it names a codec this reader *does* read and
+///   its header cannot be read all the same: a truncated write or a dropped chunk, which is a body
+///   that broke.
+/// - `Some(None)` — it is one, in a codec this reader does not read. Nothing was measured and nothing
+///   failed; the caller reports it as a schema with no decoder rather than as a body that broke.
+/// - `Some(Some((w, h)))` — the frame's size, `(0, 0)` for a frame carrying no compressed bytes at
+///   all, which is a driver that lost its sensor and needs no codec to recognize.
+pub fn decode_compressed_image_dimensions(data: &[u8]) -> Option<Option<(u32, u32)>> {
+    let mut r = Reader::new(data)?;
+    r.header()?;
+    let format = r.string()?;
+    // The one field an all-zero body cannot satisfy: a driver publishing empty frames still names
+    // the codec it would have published in. ROS spells this either bare (`jpeg`) or as the full
+    // `rgb8; jpeg compressed bgr8`, so the codec is looked for *in* the string.
+    if format.is_empty() {
+        return None;
+    }
+    let payload = r.u32()? as usize;
+    let bytes = r.take(payload)?;
+    // Nothing compressed is nothing recorded, whatever the codec.
+    if bytes.is_empty() {
+        return Some(Some((0, 0)));
+    }
+    let format = format.to_ascii_lowercase();
+    if format.contains("jpeg") || format.contains("jpg") {
+        // A frame whose codec is named and whose header cannot be read is a body that broke — a
+        // truncated write, a dropped chunk — not a codec this reader declined. `None` says so.
+        jpeg_dimensions(bytes).map(Some)
+    } else if format.contains("png") {
+        png_dimensions(bytes).map(Some)
+    } else {
+        // A codec this reader has no header parser for. Not a failure: nothing was tried.
+        Some(None)
+    }
+}
+
 /// The most bytes per pixel any `sensor_msgs/msg/Image` encoding uses, as a sanity bound on `step`.
 ///
 /// The widest ROS encodings are 4-channel 32-bit float (`32FC4`), which is 16. Doubling that leaves
@@ -1355,6 +1468,129 @@ mod tests {
         w.u32(data);
         w.buf.extend(std::iter::repeat(0u8).take(data as usize));
         w
+    }
+
+    /// A `sensor_msgs/msg/CompressedImage` body: header, format string, then the compressed bytes.
+    fn compressed_image(format: &str, payload: &[u8]) -> W {
+        let mut w = W::new();
+        w.header("camera_front");
+        w.string(format);
+        w.u32(payload.len() as u32);
+        w.buf.extend_from_slice(payload);
+        w
+    }
+
+    /// The smallest byte sequence a JPEG frame header needs: `SOI`, an `APP0` to be skipped, then a
+    /// baseline `SOF0` declaring `height x width`.
+    fn jpeg(width: u16, height: u16) -> Vec<u8> {
+        let mut v = vec![0xFF, 0xD8];
+        v.extend_from_slice(&[0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00]); // APP0, length 4
+        v.extend_from_slice(&[0xFF, 0xC0, 0x00, 0x11, 0x08]); // SOF0, length 17, precision 8
+        v.extend_from_slice(&height.to_be_bytes());
+        v.extend_from_slice(&width.to_be_bytes());
+        v.extend_from_slice(&[0u8; 10]); // component spec, never read
+        v
+    }
+
+    fn png(width: u32, height: u32) -> Vec<u8> {
+        let mut v = b"\x89PNG\r\n\x1a\n".to_vec();
+        v.extend_from_slice(&13u32.to_be_bytes()); // IHDR length
+        v.extend_from_slice(b"IHDR");
+        v.extend_from_slice(&width.to_be_bytes());
+        v.extend_from_slice(&height.to_be_bytes());
+        v.extend_from_slice(&[8, 2, 0, 0, 0]); // bit depth, colour type, and the rest
+        v
+    }
+
+    #[test]
+    fn a_compressed_frame_gives_up_its_size_without_decoding_a_pixel() {
+        let w = compressed_image("jpeg", &jpeg(1920, 1080));
+        assert_eq!(
+            decode_compressed_image_dimensions(&w.buf),
+            Some(Some((1920, 1080)))
+        );
+        // ROS also spells the format in full, and the codec is looked for inside the string.
+        let w = compressed_image("rgb8; jpeg compressed bgr8", &jpeg(640, 480));
+        assert_eq!(
+            decode_compressed_image_dimensions(&w.buf),
+            Some(Some((640, 480)))
+        );
+        let w = compressed_image("png", &png(320, 240));
+        assert_eq!(
+            decode_compressed_image_dimensions(&w.buf),
+            Some(Some((320, 240)))
+        );
+    }
+
+    #[test]
+    fn a_compressed_frame_carrying_nothing_needs_no_codec_to_recognize() {
+        // The fault this feeds: a driver that lost its sensor publishes a well-formed message at the
+        // right rate with nothing compressed in it. No codec has to be understood to see that.
+        let w = compressed_image("jpeg", &[]);
+        assert_eq!(
+            decode_compressed_image_dimensions(&w.buf),
+            Some(Some((0, 0)))
+        );
+        let w = compressed_image("h264", &[]);
+        assert_eq!(
+            decode_compressed_image_dimensions(&w.buf),
+            Some(Some((0, 0)))
+        );
+    }
+
+    #[test]
+    fn a_codec_this_reader_does_not_read_is_untried_rather_than_broken() {
+        // The distinction the caller acts on: nothing was measured *and nothing failed*, so the
+        // stream abstains out loud rather than being accused of carrying bodies that broke.
+        let w = compressed_image("h264", &[0x00, 0x00, 0x01, 0x67, 0x42]);
+        assert_eq!(decode_compressed_image_dimensions(&w.buf), Some(None));
+    }
+
+    #[test]
+    fn a_named_codec_whose_header_is_unreadable_is_a_body_that_broke() {
+        // A JPEG topic whose payload is not a JPEG is a truncated write or a dropped chunk — a
+        // fault, and distinct from a codec this reader declined.
+        let w = compressed_image("jpeg", &[0xFF, 0xD8, 0xFF, 0xC0]);
+        assert_eq!(
+            decode_compressed_image_dimensions(&w.buf),
+            None,
+            "truncated"
+        );
+        let w = compressed_image("jpeg", &[0x89, 0x50, 0x4E, 0x47]);
+        assert_eq!(
+            decode_compressed_image_dimensions(&w.buf),
+            None,
+            "not a jpeg"
+        );
+        let w = compressed_image("png", &png(320, 240)[..12]);
+        assert_eq!(
+            decode_compressed_image_dimensions(&w.buf),
+            None,
+            "not a png"
+        );
+        // And a body that is not a `CompressedImage` at all.
+        assert_eq!(
+            decode_compressed_image_dimensions(&[0x00, 0x01, 0x00, 0x00][..]),
+            None
+        );
+        let w = compressed_image("", &jpeg(64, 64));
+        assert_eq!(
+            decode_compressed_image_dimensions(&w.buf),
+            None,
+            "no format"
+        );
+    }
+
+    #[test]
+    fn a_jpeg_marker_chain_cannot_be_walked_forever() {
+        // The segment lengths come out of the file, so a chain of empty segments is a loop the run
+        // would otherwise pay for. It ends in "not a frame header this reader found".
+        let mut v = vec![0xFF, 0xD8];
+        for _ in 0..(MAX_JPEG_SEGMENTS + 10) {
+            v.extend_from_slice(&[0xFF, 0xE0, 0x00, 0x02]);
+        }
+        v.extend_from_slice(&[0xFF, 0xC0, 0x00, 0x11, 0x08, 0, 64, 0, 64]);
+        assert_eq!(jpeg_dimensions(&v), None);
     }
 
     #[test]

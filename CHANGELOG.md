@@ -10,6 +10,20 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A compressed camera topic is graded like a raw one.** Most real bags record their cameras
+  compressed, and `sensor_msgs/msg/CompressedImage` went unread — so once `Image` was measured, the
+  same dead camera was caught on `/camera/image_raw` and missed on
+  `/camera/image_raw/compressed`. The size now comes out of the **JPEG or PNG frame header inside the
+  payload** (`SOFn`, `IHDR`), which is a marker walk and a fixed offset — no pixel is decoded, and the
+  JPEG chain is bounded because its segment lengths come out of the file.
+
+  The three answers are kept apart, because two of them look alike and mean opposite things. A
+  payload of **zero bytes** needs no codec to recognize: nothing compressed is nothing recorded, and
+  that is `AUTONOMY.IMAGE_EMPTY`. A codec with **no header parser here** is *untried* — nothing was
+  measured and nothing failed — so the stream abstains out loud rather than being accused of carrying
+  bodies that broke. A frame naming a codec this reader *does* read whose header cannot be read all
+  the same is a truncated write or a dropped chunk, and is reported as a body that broke.
+
 - **The rest of the ROS messages that are nothing but their own reading.** Beside `/cmd_vel`, five
   more schemas were fingerprinted rather than measured, so every statistical rule abstained on them:
   `geometry_msgs/msg/Wrench` (and `WrenchStamped`) — a manipulation recording's **contact** channel,

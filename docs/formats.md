@@ -226,7 +226,9 @@ the modality. The AV message *headers* are CDR-decoded exactly as they are from 
 other storage plugin — so a `PointCloud2` supplies the per-point field layout **and its own point
 count**, a `LaserScan` the returns that measured something (the ones inside the scanner's own
 `[range_min, range_max]`, which is how REP 117 says a driver reports nothing there), an `Image` the
-size its frames declared, `CameraInfo` the intrinsics **plus the image dimensions they were computed
+size its frames declared — and a `CompressedImage` the same size, read out of the JPEG or PNG frame
+header inside the payload, because most real bags record their cameras compressed and the dead camera
+has to be caught on both spellings of the topic — `CameraInfo` the intrinsics **plus the image dimensions they were computed
 for and the distortion model they belong to**, `TFMessage` the transform tree, and `Odometry` the ego
 trajectory. The bulk payload — the points, the pixels — is fingerprinted, never decoded.
 
@@ -503,6 +505,13 @@ declined whole and disclosed as unread, never evaluated in part — a plausible 
 is worse than an unevaluated conversion, because nothing downstream can tell it was wrong. An MF4
 channel is measured the same way a LeRobot feature is, so the whole statistical family reaches it — a buried
 NaN, a 250x spike, a dead constant channel.
+
+A `CompressedImage` in a codec this reader has no header parser for is **untried**, not broken: the
+stream carries no measured sizes and `AUTONOMY.IMAGE_UNMEASURED` says so, rather than the frames
+being reported as bodies that failed to decode. A frame that names a codec the reader *does* read and
+whose header cannot be read all the same is the opposite — a truncated write or a dropped chunk — and
+is reported as a body that broke. A payload of zero bytes needs no codec at all to recognize: nothing
+compressed is nothing recorded.
 
 **How the records are stored is not what they mean.** A logger deflates its records into `##DZ`
 blocks and chains them through a `##DL` data list behind an `##HL` header list, flushing a chunk at a
