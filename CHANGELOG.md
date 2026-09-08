@@ -10,6 +10,25 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **Which checks the fixtures actually exercise is pinned, and a tenth of them did not.** "Do not
+  assume a new check fires end to end" was review habit and a note in prose. Nothing enforced it, and
+  nothing noticed the other direction either: a fixture that loses the fault it was built around
+  leaves a check firing on nothing, with the suite green and the catalog one check emptier.
+
+  Ten of the forty-eight produced no finding anywhere in the sweep. Each now carries its reason, and
+  the list distinguishes the two that are **structurally** unreachable from today's readers
+  (`temporal.rate-validity` and `rate-consistency` cannot arise while LeRobot's `fps` is one number
+  for the whole dataset) from the eight that are merely unfixtured. A check that starts firing must
+  be moved out; one that stops fails loudly; a renamed id cannot leave a dead excuse behind.
+
+  It is a census, not a coverage target: a check being absent is a statement about the fixtures.
+
+- **A rig whose localization jumped, reproducible.** The first of the eight, closed:
+  `make_demo_mcap -- <out> av-ego-jump` writes the same rig with one `Odometry` message placing the
+  vehicle 50 m from where it was 20 ms earlier — an implied 2,500 m/s. A jump is not a gap, so no
+  timing check sees it and the trajectory on either side is smooth; `AUTONOMY.EGO_POSE_CONTINUITY` is
+  the only thing that reports the ego path is not a path a vehicle drove.
+
 - **The magnetometer is measured too.** `sensor_msgs/msg/MagneticField` is the third instrument in
   the IMU package a robot carries, and the one heading is estimated from — and it was fingerprinted
   rather than measured, so a magnetometer railed at its full-scale limit near a motor, or frozen at a

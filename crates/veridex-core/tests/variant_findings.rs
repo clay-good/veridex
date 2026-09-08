@@ -943,11 +943,6 @@ fn the_sweep_reaches_every_adapter() {
 /// statement about the *fixtures*, not a defect in the check.
 const NOT_REACHED_BY_THE_SWEEP: &[(&str, &str)] = &[
     (
-        "autonomy.ego-pose-continuity",
-        "needs a trajectory that jumps faster than the max implied speed; the demo rig's odometry \
-         advances smoothly and no fixture teleports the ego",
-    ),
-    (
         "autonomy.gnss-plausibility",
         "needs a coordinate outside the possible range, or a fix at exactly (0,0); the demo \
          receiver sits at a real place, and `av-no-fix` publishes a real last position under \

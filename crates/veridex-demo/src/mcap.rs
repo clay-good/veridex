@@ -50,6 +50,12 @@
 //!   in the tree, and every one of them passes → `AUTONOMY.IMAGE_EMPTY` is the only thing that
 //!   reports the camera recorded nothing.
 //!
+//! - `av-ego-jump` — the same rig whose localization jumped: one `Odometry` message places the
+//!   vehicle 50 m from where it was 20 ms earlier, an implied 2,500 m/s. Every other result is
+//!   untouched — the messages are on time, the trajectory is otherwise smooth, and a jump is not a
+//!   gap so no timing check sees it → `AUTONOMY.EGO_POSE_CONTINUITY` is the only thing that reports
+//!   the ego path is not a path a vehicle drove.
+//!
 //! - `av-truncated-lidar` — the same rig with a LiDAR whose cloud bodies did not survive the
 //!   recording: four sweeps in five are cut short of the point payload their own header declares, so
 //!   the body is not readable as a `PointCloud2` at all. The messages are still there, at the right
@@ -99,7 +105,7 @@
 //!   coordinates — `autonomy.gnss-plausibility` passes on them. Only the status byte says four
 //!   fifths of the trajectory is not measured → `AUTONOMY.GNSS_NO_FIX`.
 //!
-//! Usage: `cargo run -p veridex-demo --example make_demo_mcap -- <output.mcap> [skew|clean|stuck|late-start|av|av-miscalibrated|av-ambiguous-tf|av-dead-lidar|av-dead-camera|av-truncated-lidar|av-corrupt-bodies|av-split-rig|av-unstamped|av-uncalibrated-camera|av-lossy-camera|av-no-fix]`
+//! Usage: `cargo run -p veridex-demo --example make_demo_mcap -- <output.mcap> [skew|clean|stuck|late-start|av|av-miscalibrated|av-ambiguous-tf|av-dead-lidar|av-dead-camera|av-ego-jump|av-truncated-lidar|av-corrupt-bodies|av-split-rig|av-unstamped|av-uncalibrated-camera|av-lossy-camera|av-no-fix]`
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
@@ -118,6 +124,7 @@ pub const VARIANTS: &[&str] = &[
     "av-ambiguous-tf",
     "av-dead-lidar",
     "av-dead-camera",
+    "av-ego-jump",
     "av-truncated-lidar",
     "av-corrupt-bodies",
     "av-split-rig",
@@ -148,6 +155,9 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
     // `av-dead-camera` is the same rig with a camera whose driver lost its sensor: every frame is
     // well-formed, on time, in the right frame, names its encoding — and declares no pixels.
     let dead_camera = variant == "av-dead-camera";
+    // `av-ego-jump` is the same rig whose localization jumped: one pose lands 50 m from the last,
+    // 20 ms earlier. Nothing else about the recording changes, which is the point.
+    let ego_jump = variant == "av-ego-jump";
     // `av-truncated-lidar` is the same rig with a LiDAR whose cloud bodies did not survive the
     // recording: four sweeps in five are cut short of the point payload they declare, so the body
     // is not readable as a `PointCloud2` at all. The messages are still there, at the right rate,
@@ -178,6 +188,7 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
         || ambiguous_tf
         || dead_lidar
         || dead_camera
+        || ego_jump
         || truncated_lidar
         || corrupt_bodies
         || split_rig
@@ -198,6 +209,7 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
                     ambiguous_tf,
                     dead_lidar,
                     dead_camera,
+                    ego_jump,
                     truncated_lidar,
                     corrupt_bodies,
                     split_rig,
@@ -410,6 +422,7 @@ struct RigFaults {
     ambiguous_tf: bool,
     dead_lidar: bool,
     dead_camera: bool,
+    ego_jump: bool,
     truncated_lidar: bool,
     corrupt_bodies: bool,
     split_rig: bool,
@@ -428,6 +441,7 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(w: &mut mcap::Writer<W>, faul
         ambiguous_tf,
         dead_lidar,
         dead_camera,
+        ego_jump,
         truncated_lidar,
         corrupt_bodies,
         split_rig,
@@ -579,7 +593,13 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(w: &mut mcap::Writer<W>, faul
                 // world-model-readiness *candidate* (the profile needs a perception sensor **and** an
                 // ego trajectory). A dummy payload here left `ego_poses` empty, and the flagship demo
                 // reported the profile as N/A.
-                let x = i as f64 * 10.0 * (*interval as f64 / 1e9);
+                let mut x = i as f64 * 10.0 * (*interval as f64 / 1e9);
+                // The `av-ego-jump` fault: one message places the vehicle 50 m further on than the
+                // last, 20 ms earlier — an implied 2,500 m/s. A jump is not a gap, so no timing
+                // check sees it, and the trajectory on either side of it is smooth.
+                if ego_jump && i >= 25 {
+                    x += 50.0;
+                }
                 write_msg(w, channel, i as u32, t, &odometry_body(x, stamp));
             } else if *schema == "sensor_msgs/msg/NavSatFix" {
                 // A real CDR NavSatFix body, for the same reason the Odometry one is real: the

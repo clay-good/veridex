@@ -193,7 +193,7 @@ cargo build
 
 # generate a demo MCAP with a synthetic cross-stream clock skew. Append a variant name to write a
 # different fault instead — `clean`, `stuck`, `late-start`, or one of the autonomy-rig variants
-# `av`, `av-miscalibrated`, `av-ambiguous-tf`, `av-dead-lidar`, `av-dead-camera`,
+# `av`, `av-miscalibrated`, `av-ambiguous-tf`, `av-dead-lidar`, `av-dead-camera`, `av-ego-jump`,
 # `av-truncated-lidar`,
 # `av-corrupt-bodies`, `av-split-rig`, `av-unstamped`, `av-uncalibrated-camera`, `av-lossy-camera`,
 # `av-no-fix`. An unknown variant is refused, never silently
