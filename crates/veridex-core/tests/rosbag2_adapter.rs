@@ -935,6 +935,8 @@ fn cdr_body(schema: &str, seq: u32, stamp_ns: u64) -> Vec<u8> {
     let frame_id = match schema {
         "sensor_msgs/msg/PointCloud2" => "lidar_link",
         "sensor_msgs/msg/Imu" => "imu_link",
+        "sensor_msgs/msg/Image" => "camera_front",
+        "sensor_msgs/msg/LaserScan" => "laser",
         _ => "odom",
     };
     let mut buf: Vec<u8> = vec![0x00, 0x01, 0x00, 0x00]; // encapsulation: CDR_LE
@@ -976,9 +978,102 @@ fn cdr_body(schema: &str, seq: u32, stamp_ns: u64) -> Vec<u8> {
         }
         return buf;
     }
+    let f64v = |buf: &mut Vec<u8>, v: f64| {
+        align(buf, 8);
+        buf.extend_from_slice(&v.to_le_bytes());
+    };
+    let f32v = |buf: &mut Vec<u8>, v: f32| {
+        align(buf, 4);
+        buf.extend_from_slice(&v.to_le_bytes());
+    };
+    // A `Twist` and a `Wrench` are six doubles with no header at all, so they are written before the
+    // header every other message here starts with.
+    if schema == "geometry_msgs/msg/Twist" || schema == "geometry_msgs/msg/Wrench" {
+        for i in 0..6 {
+            f64v(&mut buf, f64::from(seq) * 0.01 + f64::from(i));
+        }
+        return buf;
+    }
     u32v(&mut buf, (stamp_ns / 1_000_000_000) as u32); // stamp.sec
     u32v(&mut buf, (stamp_ns % 1_000_000_000) as u32); // stamp.nanosec
     strv(&mut buf, frame_id);
+    match schema {
+        // Six velocity or force components behind a header.
+        "geometry_msgs/msg/TwistStamped" | "geometry_msgs/msg/WrenchStamped" => {
+            for i in 0..6 {
+                f64v(&mut buf, f64::from(seq) * 0.01 + f64::from(i));
+            }
+            return buf;
+        }
+        // One reading and its variance — the shape `Temperature`, `FluidPressure`,
+        // `RelativeHumidity` and `Illuminance` share.
+        "sensor_msgs/msg/Temperature" => {
+            f64v(&mut buf, 20.0 + f64::from(seq) * 0.1);
+            f64v(&mut buf, 0.01);
+            return buf;
+        }
+        // A rangefinder reading inside its own window, so it counts as a measurement.
+        "sensor_msgs/msg/Range" => {
+            buf.push(0); // radiation_type
+            f32v(&mut buf, 0.5); // field_of_view
+            f32v(&mut buf, 0.2); // min_range
+            f32v(&mut buf, 4.0); // max_range
+            f32v(&mut buf, 1.0 + seq as f32 * 0.01);
+            return buf;
+        }
+        // A planar sweep whose returns are all inside the scanner's window.
+        "sensor_msgs/msg/LaserScan" => {
+            for v in [-1.57f32, 1.57, 0.01, 0.0, 0.1, 0.1, 10.0] {
+                f32v(&mut buf, v);
+            }
+            u32v(&mut buf, 8);
+            for i in 0..8 {
+                f32v(&mut buf, 1.0 + i as f32 * 0.1);
+            }
+            u32v(&mut buf, 0); // no intensities
+            return buf;
+        }
+        // Orientation, angular velocity and linear acceleration, each behind its 9-element
+        // covariance. A leading `-1` in a covariance is ROS's "not provided"; these are zero, so
+        // every value is measured. Deliberately built from exact arithmetic rather than `sin`,
+        // which is not bit-identical across platforms and would make the bytes — and so the
+        // content hash — depend on the machine that wrote them.
+        "sensor_msgs/msg/Imu" => {
+            for values in [
+                vec![0.0, 0.0, 0.0, 1.0],
+                vec![0.0, 0.0, f64::from(seq) * 0.002],
+                vec![0.0, 0.0, 9.81 + f64::from(seq) * 0.01],
+            ] {
+                for v in values {
+                    f64v(&mut buf, v);
+                }
+                for _ in 0..9 {
+                    f64v(&mut buf, 0.0);
+                }
+            }
+            return buf;
+        }
+        // The body frame the trajectory is of, then the pose.
+        "nav_msgs/msg/Odometry" => {
+            strv(&mut buf, "base_link");
+            for v in [f64::from(seq) * 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0] {
+                f64v(&mut buf, v);
+            }
+            return buf;
+        }
+        // A real frame: 8x4 `mono8`, with the pixel bytes its own header declares.
+        "sensor_msgs/msg/Image" => {
+            u32v(&mut buf, 4); // height
+            u32v(&mut buf, 8); // width
+            strv(&mut buf, "mono8");
+            buf.push(0); // is_bigendian
+            u32v(&mut buf, 8); // step
+            u32v(&mut buf, 32); // data length
+            buf.extend(std::iter::repeat(seq as u8).take(32));
+            return buf;
+        }
+        _ => {}
+    }
     if schema != "sensor_msgs/msg/PointCloud2" {
         // Enough to name the frame; the body varies per message so frames stay content-distinct.
         buf.extend_from_slice(&seq.to_le_bytes());
@@ -1285,6 +1380,114 @@ fn which_storage_plugin_recorded_a_bag_does_not_change_what_veridex_sees() {
         "the two storage plugins of one recorder must yield the same CDM, not merely the same \
          stream names and timestamps"
     );
+}
+
+/// One channel per ROS message type either bag reader decodes, so a divergence between the two
+/// dispatches has somewhere to show up.
+fn every_decoded_channel(per_topic: usize) -> Vec<Channel> {
+    [
+        ("sensor_msgs/msg/PointCloud2", "/lidar/points"),
+        ("sensor_msgs/msg/LaserScan", "/scan"),
+        ("sensor_msgs/msg/Image", "/camera/image_raw"),
+        ("sensor_msgs/msg/Imu", "/imu/data"),
+        ("nav_msgs/msg/Odometry", "/odom"),
+        ("geometry_msgs/msg/Twist", "/cmd_vel"),
+        ("geometry_msgs/msg/TwistStamped", "/cmd_vel_stamped"),
+        ("geometry_msgs/msg/Wrench", "/wrench"),
+        ("geometry_msgs/msg/WrenchStamped", "/wrench_stamped"),
+        ("sensor_msgs/msg/Temperature", "/temperature"),
+        ("sensor_msgs/msg/Range", "/sonar"),
+    ]
+    .iter()
+    .map(|(ty, topic)| {
+        let times = (0..per_topic)
+            .map(|i| 1_000_000_000 + i as u64 * 10_000_000)
+            .collect();
+        (ty.to_string(), topic.to_string(), times)
+    })
+    .collect()
+}
+
+#[test]
+fn every_message_type_one_reader_decodes_the_other_decodes_too() {
+    // The MCAP adapter dispatches on schema inline in its ingest loop; the two rosbag2 readers share
+    // their own `decode_body`. They are two hand-written chains over the same list of message types,
+    // maintained by hand, and a type added to one and missed in the other is a stream *measured*
+    // through one storage plugin and merely fingerprinted through the other — a dataset that changes
+    // what Veridex sees when a team switches storage, which is the one thing a cross-format verifier
+    // must not do.
+    //
+    // `which_storage_plugin_recorded_a_bag_does_not_change_what_veridex_sees` already compares the
+    // two CDMs by content hash, which would catch this — but only for the message types its channel
+    // list happens to carry, and it carries three. This one carries every type either reader claims
+    // to decode, with a real body for each, so the comparison has somewhere to fail.
+    let dir = tempfile::tempdir().unwrap();
+    let channels = every_decoded_channel(6);
+    let count = channels.len() as u64 * 6;
+    write_mcap_bag(
+        dir.path(),
+        &[("rec_0.mcap", channels.clone())],
+        "mcap",
+        count,
+    );
+
+    let as_bag = default_registry()
+        .ingest(
+            &Source::Local(dir.path().to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("the bag ingests")
+        .dataset;
+    let bare = dir.path().join("bare.mcap");
+    write_mcap(&bare, &channels);
+    let as_mcap = veridex_core::adapter::mcap::McapAdapter
+        .ingest(&Source::Local(bare), &IngestOptions::default())
+        .expect("the bare recording ingests")
+        .dataset;
+
+    // Everything read out of a message *body*, per stream, which is where the two dispatches can
+    // drift. `signature` deliberately covers only the recording's shape — it is shared with the
+    // test that replays the `.db3` fixture's topics under bodies of this file's own making, where
+    // decoded values could not match by construction. Here both sides are written from the same
+    // bytes, so they must agree on every one of these.
+    let decoded = |d: &veridex_core::cdm::Dataset| {
+        let mut rows: Vec<_> = d.episodes[0]
+            .streams
+            .iter()
+            .map(|s| {
+                (
+                    s.name.clone(),
+                    s.observed_body_decodes,
+                    s.observed_point_counts,
+                    s.observed_image_dims,
+                    s.observed_stats,
+                    s.dim_names.clone(),
+                )
+            })
+            .collect();
+        rows.sort_by(|a, b| a.0.cmp(&b.0));
+        rows
+    };
+    assert_eq!(
+        decoded(&as_bag),
+        decoded(&as_mcap),
+        "a message type decoded by one reader and not the other"
+    );
+
+    // And the comparison is not vacuous: every one of these bodies was actually read. Two paths
+    // that both read nothing agree trivially, which is the failure this test exists to avoid — so a
+    // schema whose body this file writes as a stub would show up here rather than passing silently.
+    for stream in &as_mcap.episodes[0].streams {
+        let decodes = stream
+            .observed_body_decodes
+            .unwrap_or_else(|| panic!("`{}` has a typed decoder", stream.name));
+        assert_eq!(
+            (decodes.attempted, decodes.failed),
+            (6, 0),
+            "`{}` decoded every body it was given",
+            stream.name
+        );
+    }
 }
 
 #[test]
