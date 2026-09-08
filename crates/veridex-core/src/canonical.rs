@@ -106,8 +106,8 @@ use crate::cdm::{
 /// frame with a timestamp, a schema and a coordinate frame, so a sensor whose bodies were four
 /// fifths truncated by the recording and one whose bodies all arrived whole have identical frame
 /// counts, cadences and spans — while every summary drawn from those bodies (the statistics, the
-/// point counts, the capture stamps, the fix availability) is computed from the survivors and
-/// therefore differs *silently* between them. Same rule again.
+/// point counts, the frame sizes, the capture stamps, the fix availability) is computed from the
+/// survivors and therefore differs *silently* between them. Same rule again.
 ///
 /// v19 binds each stream's `observed_image_dims` — the sizes its camera frames declared.
 /// `AUTONOMY.IMAGE_EMPTY` fails a stream on it, and it is the point-cloud story one modality over:

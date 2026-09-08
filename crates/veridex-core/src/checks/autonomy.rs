@@ -2224,8 +2224,9 @@ impl Check for MessageBodyDecode {
                         "The messages still carry a timestamp, a schema and a coordinate frame, so \
                          the structural, temporal and frame-resolution results count them as sound \
                          frames. Everything read out of the bodies — this stream's statistics, its \
-                         point counts, its capture stamps, its fix availability — was computed from \
-                         the ones that decoded and is reported as a property of the whole stream.",
+                         point counts, its frame sizes, its capture stamps, its fix availability — \
+                         was computed from the ones that decoded and is reported as a property of \
+                         the whole stream.",
                     )
                     .with_remedy(
                         "Check the recorder and the transport for the run (a truncated write, a \

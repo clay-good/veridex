@@ -480,9 +480,9 @@ pub struct Stream {
     /// message bodies. Extension for `autonomy-sensor-data`.
     ///
     /// Everything else on this struct that came out of a body — the statistics, the point counts,
-    /// the capture stamps, the fix availability — is summarized over the bodies that *decoded*. This
-    /// is what says how many there were to decode, and so whether those summaries describe the
-    /// stream or a sample of it that the file chose.
+    /// the frame sizes, the capture stamps, the fix availability — is summarized over the bodies
+    /// that *decoded*. This is what says how many there were to decode, and so whether those
+    /// summaries describe the stream or a sample of it that the file chose.
     #[serde(default)]
     pub observed_body_decodes: Option<BodyDecodes>,
     /// What this stream's messages said about **their own** sampling time, against the times the
