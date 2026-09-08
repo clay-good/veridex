@@ -929,6 +929,137 @@ fn the_sweep_reaches_every_adapter() {
     );
 }
 
+/// Which checks the sweep actually exercises, pinned in both directions.
+///
+/// The repo's own rule is "do not assume a new check fires end to end" — several checks guard CDM
+/// invariants that the adapters sanitize away, and fire only on unit-constructed datasets. That rule
+/// lived in review habit and in prose, so nothing noticed when a check *stopped* being exercised: a
+/// fixture that loses the fault it was built around, or a rule that quietly narrows, leaves the
+/// suite green and the catalog one check emptier.
+///
+/// So the partition is pinned. A check that starts firing must be moved into the reached list; one
+/// that stops must be explained or fixed. Both directions matter, and the second is the one that
+/// catches a regression: this is a census, not a coverage target — a check being absent here is a
+/// statement about the *fixtures*, not a defect in the check.
+const NOT_REACHED_BY_THE_SWEEP: &[(&str, &str)] = &[
+    (
+        "autonomy.ego-pose-continuity",
+        "needs a trajectory that jumps faster than the max implied speed; the demo rig's odometry \
+         advances smoothly and no fixture teleports the ego",
+    ),
+    (
+        "autonomy.gnss-plausibility",
+        "needs a coordinate outside the possible range, or a fix at exactly (0,0); the demo \
+         receiver sits at a real place, and `av-no-fix` publishes a real last position under \
+         STATUS_NO_FIX — which is availability, not plausibility",
+    ),
+    (
+        "semantic.stream-key-clarity",
+        "needs two stream keys that differ only by letter case or whitespace; no fixture names a \
+         pair that collides",
+    ),
+    (
+        "statistical.declared-range",
+        "needs values outside the `[min|max]` a DBC declares; the sweep's CAN pair is the one from \
+         `docs/formats.md`, whose frames decode inside their declared ranges",
+    ),
+    (
+        "statistical.range-sanity",
+        "inspects the summary a *source* stored. Only LeRobot ships stored statistics here, and its \
+         `stale-stats` variant disagrees with the recomputed values rather than being internally \
+         impossible (a min above its max, a NaN)",
+    ),
+    (
+        "structural.frozen-episode",
+        "needs enough episodes for `a minority of them` to mean anything, with an actuator frozen \
+         in some; the generators that reach that episode count freeze nothing",
+    ),
+    (
+        "structural.shape-consistency",
+        "needs one stream declaring different shapes or dtypes in different episodes; every \
+         generator writes one schema for the whole dataset",
+    ),
+    (
+        "temporal.rate-conformance",
+        "needs a declared rate the observed mean contradicts; LeRobot's `fps` is dataset-global and \
+         matches, and MCAP, rosbag2, CAN and MF4 declare no nominal rate at all",
+    ),
+    (
+        "temporal.rate-consistency",
+        "structurally unreachable from today's readers, not merely unfixtured: it compares the \
+         rates two episodes declare, and LeRobot's `fps` is one number for the whole dataset",
+    ),
+    (
+        "temporal.rate-validity",
+        "structurally unreachable in the same way: a corrupt `fps` becomes `None` in the LeRobot \
+         adapter rather than a bad `Some`, and no other reader declares a rate to corrupt",
+    ),
+];
+
+#[test]
+fn the_sweep_exercises_the_checks_it_is_pinned_to() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = veridex_core::checks::default_engine().expect("engine");
+    // Every code a check can emit, back to the check that owns it — findings carry the check id
+    // already, but a code with no owner in the catalog would be a finding nothing declared.
+    let mut owner: std::collections::BTreeMap<String, String> = Default::default();
+    for c in engine.catalog() {
+        for code in c.finding_codes {
+            owner.insert((*code).to_string(), c.id.to_string());
+        }
+    }
+
+    let mut reached: BTreeSet<String> = BTreeSet::new();
+    for (name, target) in sweep_datasets(dir.path()) {
+        let Some(checked) = checked_for(&target) else {
+            continue;
+        };
+        for f in &checked.verdict.findings {
+            // The two pseudo-check ids are deliberately unregistered so config cannot switch them
+            // off, so they own no catalog entry and are not part of this census.
+            if f.check_id.starts_with("veridex.") {
+                continue;
+            }
+            assert!(
+                owner.contains_key(&f.code),
+                "{name}: `{}` is not declared by any check's `finding_codes`",
+                f.code
+            );
+            reached.insert(f.check_id.to_string());
+        }
+    }
+
+    let all: BTreeSet<String> = engine.catalog().iter().map(|c| c.id.to_string()).collect();
+    let pinned_absent: BTreeSet<String> = NOT_REACHED_BY_THE_SWEEP
+        .iter()
+        .map(|(id, _)| (*id).to_string())
+        .collect();
+    let unexpectedly_absent: Vec<&String> = all
+        .difference(&reached)
+        .filter(|id| !pinned_absent.contains(*id))
+        .collect();
+    let unexpectedly_present: Vec<&String> = reached.intersection(&pinned_absent).collect();
+
+    assert!(
+        unexpectedly_absent.is_empty(),
+        "no dataset in the sweep produces a finding from {unexpectedly_absent:?}. Either the \
+         fixture that exercised it lost its fault, or the check narrowed — investigate before \
+         adding it to NOT_REACHED_BY_THE_SWEEP with a reason."
+    );
+    assert!(
+        unexpectedly_present.is_empty(),
+        "{unexpectedly_present:?} now fire on the sweep but are listed as unreachable — move them \
+         out of NOT_REACHED_BY_THE_SWEEP, the list has gone stale."
+    );
+    // Every id in the list is a real check, so a rename cannot leave a dead excuse behind.
+    for (id, _) in NOT_REACHED_BY_THE_SWEEP {
+        assert!(
+            all.contains(*id),
+            "`{id}` is listed as unreachable but is not in the catalog"
+        );
+    }
+}
+
 /// Every finding teaches: it names the training risk it is about and a remedy to act on.
 ///
 /// `openspec/specs/checks-catalog/spec.md` requires it of the catalog — "each catalog check SHALL
