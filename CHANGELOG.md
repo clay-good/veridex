@@ -10,6 +10,20 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A planar scanner's returns are counted like a 3-D LiDAR's.** `sensor_msgs/msg/LaserScan` is what
+  most mobile robots publish, and its bodies were never decoded — so a scanner whose driver lost its
+  sensor, publishing a full, well-formed, correctly-timed sweep of infinities, had no point count at
+  all and `autonomy.point-cloud-density` abstained on it out loud. It now feeds the same summary a
+  `PointCloud2` does, and the same `AUTONOMY.POINT_CLOUD_EMPTY` / `_DROPPED` findings: no new check,
+  no new CDM field, the fault was already named.
+
+  A return counts when it falls inside the scanner's **own** declared `[range_min, range_max]`, which
+  is how REP 117 says a driver reports that nothing came back — an infinity, a NaN or a value outside
+  the window is a direction the beam swept with no measurement in it. The body is declined rather
+  than guessed at where it does not prove it is a scan: a sweep with no returns, a zero
+  `angle_increment`, a window that is not a window, an `intensities` array that is neither absent nor
+  one per return.
+
 - **A camera that recorded nothing now says so.** `autonomy.point-cloud-density` exists because a
   LiDAR driver that loses its sensor keeps publishing perfectly-formed empty sweeps at the right
   rate, and every other check passes. The same driver failure on a **camera** was still invisible:

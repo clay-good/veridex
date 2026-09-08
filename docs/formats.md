@@ -223,10 +223,12 @@ rosbag2's `sqlite3` storage plugin keeps the recording in two tables: `topics` (
 topic) and `messages` (one row per message, with its receive timestamp and its serialized body). Each
 topic becomes a stream, each message a frame on the bag's single log clock, and the ROS type names
 the modality. The AV message *headers* are CDR-decoded exactly as they are from MCAP — rosbag2's
-other storage plugin — so a `PointCloud2` supplies the per-point field layout **and its own point count**, `CameraInfo` the
-intrinsics **plus the image dimensions they were computed for and the distortion model they
-belong to**, `TFMessage` the transform tree, and `Odometry` the ego trajectory. The bulk
-payload is fingerprinted, never decoded.
+other storage plugin — so a `PointCloud2` supplies the per-point field layout **and its own point
+count**, a `LaserScan` the returns that measured something (the ones inside the scanner's own
+`[range_min, range_max]`, which is how REP 117 says a driver reports nothing there), an `Image` the
+size its frames declared, `CameraInfo` the intrinsics **plus the image dimensions they were computed
+for and the distortion model they belong to**, `TFMessage` the transform tree, and `Odometry` the ego
+trajectory. The bulk payload — the points, the pixels — is fingerprinted, never decoded.
 
 Every header-first message also supplies its `header.stamp` — the time the **sensor** says it
 sampled, as distinct from the log time the **recorder** wrote it at, which is the only clock a bag's

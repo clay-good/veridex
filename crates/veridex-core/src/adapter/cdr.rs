@@ -74,6 +74,12 @@ impl<'a> Reader<'a> {
         self.u32().map(|v| v as i32)
     }
 
+    fn f32(&mut self) -> Option<f32> {
+        self.align(4);
+        let b = self.take(4)?;
+        Some(f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    }
+
     fn f64(&mut self) -> Option<f64> {
         self.align(8);
         let b = self.take(8)?;
@@ -432,6 +438,69 @@ impl BodyDecodeAccum {
 /// that prove the body is a cloud at all, so an uncapped count is a per-message cost the file
 /// chooses. 64 is far above any real layout and far below anything expensive.
 const MAX_POINT_FIELDS: usize = 64;
+
+/// The most returns a `sensor_msgs/msg/LaserScan` may declare, as a bound on what one message can
+/// make this reader allocate and walk.
+///
+/// A planar scanner publishes hundreds to a few thousand returns a sweep; the densest catalogue
+/// models are under 10,000. This sits far above that and far below a length a corrupt header could
+/// use to spend the run.
+const MAX_LASER_RETURNS: usize = 1 << 20;
+
+/// Decode a `sensor_msgs/msg/LaserScan` body far enough to count the returns that measured
+/// something.
+///
+/// Layout: `Header`, `float32 angle_min`, `angle_max`, `angle_increment`, `time_increment`,
+/// `scan_time`, `range_min`, `range_max`, then `float32[] ranges` and `float32[] intensities`.
+///
+/// The count is of returns that fall **inside the scanner's own declared `[range_min, range_max]`**,
+/// which is how REP 117 says a driver reports "nothing there": a return outside that window, or an
+/// infinity, or a NaN, is a direction the beam came back from with no measurement. So a planar
+/// scanner whose driver lost its sensor — publishing a full, well-formed, correctly-timed sweep of
+/// infinities — counts zero, and `autonomy.point-cloud-density` reports it exactly as it reports a
+/// dead 3-D LiDAR. Nothing else can: the messages have the schema, the rate and the coordinate frame
+/// of a working scanner.
+///
+/// Declined rather than guessed at where the body does not prove it is a scan: a sweep with no
+/// returns at all, an `angle_increment` of zero (no sweep to speak of), a `[range_min, range_max]`
+/// window that is not a window, and an `intensities` array that is neither absent nor one-per-return
+/// — the message definition allows only those two. Those are the invariants an arbitrary buffer does
+/// not satisfy, and a fabricated return count would be a finding about honest data.
+pub fn decode_laser_scan_returns(data: &[u8]) -> Option<u64> {
+    let mut r = Reader::new(data)?;
+    r.header()?;
+    r.f32()?; // angle_min
+    r.f32()?; // angle_max
+    let angle_increment = r.f32()?;
+    r.f32()?; // time_increment
+    r.f32()?; // scan_time
+    let range_min = r.f32()?;
+    let range_max = r.f32()?;
+    if !angle_increment.is_finite() || angle_increment == 0.0 {
+        return None;
+    }
+    if !(range_min.is_finite() && range_max.is_finite() && range_min < range_max) {
+        return None;
+    }
+    let count = r.u32()? as usize;
+    if count == 0 || count > MAX_LASER_RETURNS {
+        return None;
+    }
+    let mut measured = 0u64;
+    for _ in 0..count {
+        let range = r.f32()?;
+        if range.is_finite() && range >= range_min && range <= range_max {
+            measured += 1;
+        }
+    }
+    // `intensities` is either empty or parallel to `ranges`; anything else is not this message.
+    let intensities = r.u32()? as usize;
+    if intensities != 0 && intensities != count {
+        return None;
+    }
+    r.take(intensities.checked_mul(4)?)?;
+    Some(measured)
+}
 
 /// The most bytes per pixel any `sensor_msgs/msg/Image` encoding uses, as a sanity bound on `step`.
 ///
@@ -872,6 +941,10 @@ mod tests {
         fn i32(&mut self, v: i32) {
             self.u32(v as u32);
         }
+        fn f32(&mut self, v: f32) {
+            self.align(4);
+            self.buf.extend_from_slice(&v.to_le_bytes());
+        }
         fn f64(&mut self, v: f64) {
             self.align(8);
             self.buf.extend_from_slice(&v.to_le_bytes());
@@ -890,6 +963,83 @@ mod tests {
             self.u32((stamp_ns % 1_000_000_000) as u32); // stamp.nanosec
             self.string(frame_id);
         }
+    }
+
+    /// A `sensor_msgs/msg/LaserScan` body over `ranges`, with the scanner's own window under the
+    /// caller's control.
+    fn laser_scan(range_min: f32, range_max: f32, ranges: &[f32], intensities: usize) -> W {
+        let mut w = W::new();
+        w.header("laser");
+        w.f32(-1.57); // angle_min
+        w.f32(1.57); // angle_max
+        w.f32(0.01); // angle_increment
+        w.f32(0.0); // time_increment
+        w.f32(0.1); // scan_time
+        w.f32(range_min);
+        w.f32(range_max);
+        w.u32(ranges.len() as u32);
+        for r in ranges {
+            w.f32(*r);
+        }
+        w.u32(intensities as u32);
+        for _ in 0..intensities {
+            w.f32(0.0);
+        }
+        w
+    }
+
+    #[test]
+    fn a_laser_scan_counts_only_the_returns_that_measured_something() {
+        // REP 117: a direction the beam came back from with nothing in it is reported as an
+        // infinity, a NaN, or a value outside the scanner's own window — never as a distance.
+        let w = laser_scan(
+            0.1,
+            10.0,
+            &[1.0, f32::INFINITY, 2.5, f32::NAN, 20.0, 0.05],
+            0,
+        );
+        assert_eq!(decode_laser_scan_returns(&w.buf), Some(2));
+        // An intensities array parallel to the ranges is the other legal shape.
+        let w = laser_scan(0.1, 10.0, &[1.0, 2.0, 3.0], 3);
+        assert_eq!(decode_laser_scan_returns(&w.buf), Some(3));
+    }
+
+    #[test]
+    fn a_scanner_that_measured_nothing_reads_as_zero_rather_than_as_absent() {
+        // The whole point of the check this feeds: a driver that lost its sensor publishes a full,
+        // well-formed, correctly-timed sweep of infinities, and that has to be distinguishable from
+        // a scan nobody counted.
+        let w = laser_scan(0.1, 10.0, &[f32::INFINITY; 8], 0);
+        assert_eq!(decode_laser_scan_returns(&w.buf), Some(0));
+    }
+
+    #[test]
+    fn a_body_that_is_not_a_laser_scan_yields_no_count() {
+        // Each of these is an invariant of the message that an arbitrary buffer does not satisfy,
+        // and a fabricated return count would be a finding about honest data.
+        assert_eq!(
+            decode_laser_scan_returns(&[0x00, 0x01, 0x00, 0x00][..]),
+            None
+        );
+        let w = laser_scan(0.1, 10.0, &[], 0);
+        assert_eq!(
+            decode_laser_scan_returns(&w.buf),
+            None,
+            "a sweep of nothing"
+        );
+        let w = laser_scan(10.0, 0.1, &[1.0], 0);
+        assert_eq!(decode_laser_scan_returns(&w.buf), None, "window inverted");
+        let w = laser_scan(0.1, f32::INFINITY, &[1.0], 0);
+        assert_eq!(decode_laser_scan_returns(&w.buf), None, "window unbounded");
+        let w = laser_scan(0.1, 10.0, &[1.0, 2.0], 1);
+        assert_eq!(
+            decode_laser_scan_returns(&w.buf),
+            None,
+            "intensities neither absent nor one per return"
+        );
+        let mut w = laser_scan(0.1, 10.0, &[1.0, 2.0], 2);
+        w.buf.truncate(w.buf.len() - 1);
+        assert_eq!(decode_laser_scan_returns(&w.buf), None, "body cut short");
     }
 
     /// A `sensor_msgs/msg/Image` body, with every field the decode reads under the caller's control

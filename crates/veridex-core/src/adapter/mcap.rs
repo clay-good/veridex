@@ -635,6 +635,16 @@ impl Adapter for McapAdapter {
                     }
                     None => Some(false),
                 }
+            } else if schema_is(schema_name, "LaserScan") {
+                // A planar scanner's returns feed the same density summary a 3-D cloud's points do:
+                // the fault is the same one, and a `LaserScan` is what most mobile robots publish.
+                match super::cdr::decode_laser_scan_returns(&message.data) {
+                    Some(n) => {
+                        builder.point_counts.observe(n);
+                        Some(true)
+                    }
+                    None => Some(false),
+                }
             } else if schema_is(schema_name, "Image") {
                 // The camera counterpart of the point count above, and there for the same fault: a
                 // driver that lost its sensor keeps publishing well-formed frames at its configured

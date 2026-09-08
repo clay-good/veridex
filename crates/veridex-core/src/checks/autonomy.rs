@@ -1964,7 +1964,10 @@ impl Check for ImageIntegrity {
 /// of it that the recording chose.
 ///
 /// Read from the messages' own `height × width`, never from the point payload — the count is stated
-/// in the header, ahead of the bulk blob. Silent for a source that carries no point counts at all
+/// in the header, ahead of the bulk blob. A planar scanner is graded the same way and by the same
+/// rule: a `LaserScan`'s returns are its points, and the ones that measured something are those
+/// inside the scanner's own `[range_min, range_max]`, which is how REP 117 says a driver reports
+/// that nothing came back. Silent for a source that carries no point counts at all
 /// (every non-ROS format, and a metadata-only run): a stream whose density was never measured is
 /// not a stream that was measured and found empty.
 pub struct PointCloudDensity;

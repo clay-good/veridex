@@ -494,6 +494,16 @@ fn decode_body(
             }
             None => Some(false),
         }
+    } else if super::mcap::schema_is(ros_type, "LaserScan") {
+        // A planar scanner's returns feed the same density summary a 3-D cloud's points do: the
+        // fault is the same one, and a `LaserScan` is what most mobile robots publish.
+        match super::cdr::decode_laser_scan_returns(data) {
+            Some(n) => {
+                builder.point_counts.observe(n);
+                Some(true)
+            }
+            None => Some(false),
+        }
     } else if super::mcap::schema_is(ros_type, "Image") {
         // The camera counterpart of the point count above, and there for the same fault: a driver
         // that lost its sensor keeps publishing well-formed frames at its configured rate with no
