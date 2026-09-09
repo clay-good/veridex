@@ -444,6 +444,13 @@ is the one direct evidence of a message that never reached the recorder — ever
 recording is what arrived. ROS 2 dropped the field, so a `.bag` answers a question the same rig
 recorded to a `.db3` cannot.
 
+A bag that has been *finished* also carries an index section — every connection again, plus one
+chunk-info record per chunk with its time span and per-connection message counts — and the header
+points at it. So `veridex check --metadata-only` inventories a bag without unpacking a single chunk:
+the topics, their ROS types and how many messages each carries, out of a 40 GB archive in the time it
+takes to seek. A bag whose writer never finished names no index, and is refused rather than
+inventoried from whatever its first chunk happens to declare.
+
 There is a demo bag, so none of this has to be taken on trust:
 
 ```sh
@@ -451,6 +458,7 @@ There is a demo bag, so none of this has to be taken on trust:
 cargo run -p veridex-demo --example make_demo_rosbag1 -- /tmp/rig.bag
 cargo run -p veridex-cli -- check /tmp/rig.bag
 cargo run -p veridex-cli -- provenance /tmp/rig.bag   # `calibration` — recorded in-band, not claimed
+cargo run -p veridex-cli -- check /tmp/rig.bag --metadata-only   # the inventory, from the index alone
 ```
 
 It passes — the only warning is the `license` no bag records — with the rig's transform tree and camera intrinsics decoded out of the

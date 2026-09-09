@@ -404,12 +404,14 @@ section it writes about itself, an HDF5 file's `/mask` split group or anything e
 beside the episodes, CAN traffic on an id the `.dbc` never defines. Each raises a warning in the
 verdict, because a clean result over the part that was read is not a clean result over the dataset.
 
-Seven formats support `--metadata-only`, each reading the thing that describes the dataset without
+Eight formats support `--metadata-only`, each reading the thing that describes the dataset without
 being it:
-LeRobot's `meta/`, a bag's `metadata.yaml`, a TFDS export's `dataset_info.json` + `features.json`,
-a Zarr store's `.zarray`/`.zattrs` and episode boundaries, the summary section an MCAP writes at the
-end of itself, an HDF5 file's group tree and array headers, and an MF4's block header tree — which
-names every channel and its raster without opening or decompressing a data block. One test
+LeRobot's `meta/`, a rosbag2's `metadata.yaml`, a TFDS export's `dataset_info.json` +
+`features.json`, a Zarr store's `.zarray`/`.zattrs` and episode boundaries, the summary section an
+MCAP writes at the end of itself, an HDF5 file's group tree and array headers, an MF4's block header
+tree — which names every channel and its raster without opening or decompressing a data block — and
+a **ROS 1 rosbag**'s index section, the connection list and per-chunk message counts a finished
+`rosbag record` writes at the end and its header points at. One test
 holds them to the invariant the mode rests on: the same episodes, streams, datatypes and shapes a
 full read finds, minus the frames. CAN+DBC is a stream of frames with nothing in front of it, and is
 refused by name.

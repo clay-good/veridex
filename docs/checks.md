@@ -281,7 +281,7 @@ the catalog: a check that abstains must say so, or its silence reads as a pass.
 
 ## What a metadata-only run checks
 
-`veridex check --metadata-only <dataset>` (LeRobot, ROS 2 rosbag2, RLDS/TFDS, Zarr, MCAP, HDF5, and MF4) answers a narrower question — *does
+`veridex check --metadata-only <dataset>` (LeRobot, ROS 2 rosbag2, ROS 1 rosbag, RLDS/TFDS, Zarr, MCAP, HDF5, and MF4) answers a narrower question — *does
 the manifest hold together?* — without opening a single Parquet, shard, or video file. It is the
 fast CI gate for a dataset too large to read on every commit, and the shape a remote Hub check takes.
 
@@ -291,6 +291,7 @@ What each format offers is different, because their manifests are:
 |---|---|
 | LeRobot | `meta/` — the declared episode set and per-episode lengths, every feature's dtype/shape/rate, the stored statistics, and the dataset card's licence, source datasets and annotation creators |
 | ROS 2 rosbag2 | `metadata.yaml` — the topic inventory with each topic's ROS type, the declared message total, the recorder and storage |
+| ROS 1 rosbag | the index section the recorder writes at the end, which the bag header points at — every connection with its topic and ROS type, the per-connection message counts the chunk-info records carry, and the recorder the header names, without unpacking a chunk. A bag whose writer never finished names no index, and is refused rather than inventoried from whatever its first chunk declares |
 | RLDS/TFDS | `dataset_info.json` + `features.json` — the per-split shard lengths (so the episode count), the file format and version, the citation and licence, and every per-step feature's dtype and shape |
 | Zarr | `.zarray` / `.zattrs` per array and the `meta/` group — the episode boundaries and their lengths, every array's dtype and per-row shape, and the store's own metadata |
 | MCAP | the summary section at the end of the file — the channel inventory with each topic's schema, the declared message totals and log-time span, the message encodings, the writing library, and (through the summary's own indexes) every Metadata record and attachment name, so the provenance matches a full read |

@@ -10,6 +10,24 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A ROS 1 bag can be inventoried without unpacking a chunk.** `--metadata-only` is how a dataset
+  too large to read on every commit is checked, and every other container supported it — a bag did
+  not, on the grounds that its connection records live inside its chunks. They also live in its
+  **index section**: a finished `rosbag record` writes every connection again at the end of the
+  file, plus one chunk-info record per chunk carrying that chunk's time span and its per-connection
+  message counts, and the bag header points at where it starts.
+
+  So a metadata-only run seeks there and reads the topic inventory, each topic's ROS type, how many
+  messages each carries and the recorder the header names — out of a 40 GB archive in the time it
+  takes to seek, with no chunk opened and every stream carrying zero frames by request. A bag whose
+  writer never finished names no index, and is **refused** rather than inventoried from whatever its
+  first chunk happens to declare: presenting part of a recording as the whole of it is the failure a
+  caller has no way to notice.
+
+  Both reads go through one `connection_of`, so the inventory a metadata-only run reports and the one
+  a full read builds cannot disagree — which the mode's own cross-format invariant test now holds a
+  bag to as well. The demo generator writes a real index for the same reason.
+
 - **A split recording is one recording.** `rosbag record --split` writes `session_0.bag`,
   `session_1.bag`, … for a single session — how any recording long enough to care about is made —
   and Veridex could only be pointed at one file. Read separately, the parts are N datasets: N

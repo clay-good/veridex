@@ -50,6 +50,7 @@ veridex check buffer.zarr/ --metadata-only    # Zarr; reads .zarray/.zattrs + me
 veridex check drive.mcap   --metadata-only    # MCAP; reads the summary section at the end, opens no chunk
 veridex check demos.h5     --metadata-only    # HDF5; reads the group tree and array headers, opens no chunk
 veridex check drive.mf4    --metadata-only    # MF4; reads the block header tree, opens no data block
+veridex check drive.bag    --metadata-only    # ROS 1 rosbag; reads the index section, opens no chunk
 veridex check hf://lerobot/svla_so101_pickplace --metadata-only   # the Hub, without downloading it
 ```
 
@@ -65,7 +66,7 @@ every refusal that comes with one, so it can neither pass a score gate nor be ce
 about Veridex touches a network: a certificate still verifies offline, which is the property the
 whole trust chain rests on.
 
-Seven formats support it, because seven state their structure somewhere other than in their data. For a **rosbag2**
+Eight formats support it, because eight state their structure somewhere other than in their data. For a **rosbag2**
 bag it reads `topics_with_message_count` — every topic's name, its ROS type and so its modality, the
 declared message total, the recording distribution, the storage and any compression — without
 opening a shard, which is the difference between seconds and a terabyte. What it cannot see is
@@ -75,6 +76,13 @@ rather than leaving it inferred, and it refuses two cases outright rather than a
 bare `.db3` has no manifest at all, and a manifest whose per-topic counts do not add up to its own
 total means Veridex did not read the whole inventory — presenting three topics out of twelve as the
 bag's contents is invisible to the caller, so the run is refused naming both numbers.
+
+A **ROS 1 rosbag** answers from the index section a finished `rosbag record` writes at the end of the
+file and its header points at: every connection with its topic and ROS type, plus one chunk-info
+record per chunk carrying that chunk's span and its per-connection message counts. So a 40 GB archive
+is inventoried in the time it takes to seek, with no chunk unpacked — and the same refusal
+discipline applies: a bag whose writer never finished names no index, and is refused rather than
+inventoried from whatever its first chunk happens to declare.
 
 For **LeRobot** this is a real check, not a smoke test: the declared episode set and per-episode lengths, every
 feature's dtype/shape/rate, the stored statistics in `meta/stats.json` (an inverted range or a mean

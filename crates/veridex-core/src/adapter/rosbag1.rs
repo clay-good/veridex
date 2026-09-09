@@ -50,6 +50,9 @@ use crate::cdm::{
 /// The format id this adapter reports, and the `source_format` it records.
 const FORMAT_ID: &str = "rosbag1";
 
+/// The clock every frame in a bag is timed on: one recording, one recorder's clock.
+const CLOCK_ID: &str = "rosbag1-log";
+
 /// The magic line every v2.0 bag opens with, newline included.
 const MAGIC: &[u8] = b"#ROSBAG V2.0\n";
 
@@ -57,6 +60,7 @@ const MAGIC: &[u8] = b"#ROSBAG V2.0\n";
 const OP_MESSAGE_DATA: u8 = 0x02;
 const OP_BAG_HEADER: u8 = 0x03;
 const OP_CHUNK: u8 = 0x05;
+const OP_CHUNK_INFO: u8 = 0x06;
 const OP_CONNECTION: u8 = 0x07;
 
 /// The most a single record's header or data may claim, as a first bound before the buffer's own
@@ -106,10 +110,17 @@ impl Adapter for Rosbag1Adapter {
         }
     }
 
-    /// A bag's connection records live inside its chunks, so naming its topics means walking the
-    /// record stream — there is no index this reader can consult without opening the data.
+    /// A v2.0 bag ends with an **index section** that a metadata-only read can answer from: the
+    /// header names its offset, and what sits there is every connection the recording declared plus
+    /// one chunk-info record per chunk, carrying that chunk's time span and its per-connection
+    /// message counts. So the topic inventory, the recording's span and how many messages each topic
+    /// carries are all readable without unpacking a single chunk — which is the difference between
+    /// inventorying a 40 GB archived bag and not being able to look at it at all.
+    ///
+    /// A bag whose header names no index — one a recorder was killed before it could finish writing
+    /// — is refused by name rather than answered from a guess.
     fn supports_metadata_only(&self) -> bool {
-        false
+        true
     }
 
     /// One bag is one recording, ingested as one episode, so there is no episode axis to sample.
@@ -137,6 +148,10 @@ impl Adapter for Rosbag1Adapter {
                 format_id: FORMAT_ID,
                 message: "not a ROS 1 bag (missing the `#ROSBAG V2.0` line)".into(),
             });
+        }
+
+        if options.metadata_only {
+            return ingest_metadata_only(path, &files, options);
         }
 
         let mut walk = Walk::default();
@@ -207,7 +222,7 @@ impl Adapter for Rosbag1Adapter {
                 name,
                 declared_rate_hz: None,
                 // One bag is one recorder's clock, and every message time is on it.
-                clock_id: "rosbag1-log".into(),
+                clock_id: CLOCK_ID.into(),
                 clock_kind: ClockKind::Measured,
                 dtype: None,
                 shape: None,
@@ -532,32 +547,9 @@ impl Walk {
 
     /// A connection record: the header carries the id, the *data* carries the topic's type.
     fn connection(&mut self, fields: &BTreeMap<String, Vec<u8>>, data: &[u8]) {
-        let Some(conn) = fields.get("conn").and_then(|v| u32_le(v)) else {
-            return;
-        };
-        let inner = header_fields(data);
-        // The topic is written in both places; the connection header's copy is the one rosbag
-        // treats as authoritative, and the data's is the fallback for a writer that omitted it.
-        let Some(name) = fields
-            .get("topic")
-            .and_then(|v| text(v))
-            .or_else(|| inner.get("topic").and_then(|v| text(v)))
-        else {
-            return;
-        };
-        let ros_type = inner.get("type").and_then(|v| text(v)).unwrap_or_default();
-        let latching = inner
-            .get("latching")
-            .and_then(|v| text(v))
-            .map(|v| v.trim() == "1");
-        self.connections.insert(
-            conn,
-            Topic {
-                name,
-                ros_type,
-                latching,
-            },
-        );
+        if let (Some(conn), Some(topic)) = connection_of(fields, data) {
+            self.connections.insert(conn, topic);
+        }
     }
 
     /// A message record: its connection, its time on the recorder's clock, and its body.
@@ -753,6 +745,333 @@ impl Walk {
             }
         }
     }
+}
+
+/// One connection record, as its header and data declare it: the id, the topic, its ROS type, and
+/// whether the topic is latched.
+///
+/// Read the same way wherever a connection record appears — inside a chunk during a full read, and
+/// in the index section during a metadata-only one — so the two paths cannot disagree about what a
+/// bag says its topics are.
+fn connection_of(fields: &BTreeMap<String, Vec<u8>>, data: &[u8]) -> (Option<u32>, Option<Topic>) {
+    let conn = fields.get("conn").and_then(|v| u32_le(v));
+    let inner = header_fields(data);
+    // The topic is written in both places; the connection header's copy is the one rosbag treats as
+    // authoritative, and the data's is the fallback for a writer that omitted it.
+    let name = fields
+        .get("topic")
+        .and_then(|v| text(v))
+        .or_else(|| inner.get("topic").and_then(|v| text(v)));
+    let topic = name.map(|name| Topic {
+        name,
+        ros_type: inner.get("type").and_then(|v| text(v)).unwrap_or_default(),
+        latching: inner
+            .get("latching")
+            .and_then(|v| text(v))
+            .map(|v| v.trim() == "1"),
+    });
+    (conn, topic)
+}
+
+/// What one bag's index section declares: its topics, how many messages each carries, and the span
+/// the chunks were recorded over.
+#[derive(Default)]
+struct Index {
+    /// Topic name -> (ROS type, message count).
+    topics: BTreeMap<String, (String, u64)>,
+    recorder: Option<String>,
+    min_ts: Option<i64>,
+    max_ts: Option<i64>,
+    /// Messages the chunk-info records account for that name a connection the index never declared.
+    orphan_messages: u64,
+}
+
+/// Read a bag's index section — the records past the offset its own header names — without touching
+/// a chunk.
+///
+/// `None` for a bag whose header names no index: a recorder killed mid-write leaves `index_pos` at
+/// zero, and there is nothing to answer from. The caller refuses rather than guessing, because the
+/// alternative is presenting whatever the first chunk happened to declare as the bag's contents.
+///
+/// Every length here comes out of the file, so each is bounded before it is trusted, exactly as in
+/// the full read: the index of a corrupt bag is refused, never allocated for.
+fn read_index(path: &Path, options: &IngestOptions) -> Result<Option<Index>, IngestError> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut f = std::fs::File::open(path).map_err(|e| IngestError::Io(e.to_string()))?;
+    // The bag header is the first record after the magic, and it is small.
+    let mut head = vec![0u8; MAGIC.len() + 4096];
+    let read = f
+        .read(&mut head)
+        .map_err(|e| IngestError::Io(e.to_string()))?;
+    head.truncate(read);
+    let Some((header, _, _)) = head.get(MAGIC.len()..).and_then(split_record) else {
+        return Ok(None);
+    };
+    let fields = header_fields(header);
+    if fields.get("op").and_then(|v| v.first().copied()) != Some(OP_BAG_HEADER) {
+        return Ok(None);
+    }
+    let index_pos = fields
+        .get("index_pos")
+        .and_then(|v| v.get(..8))
+        .and_then(|v| <[u8; 8]>::try_from(v).ok())
+        .map(u64::from_le_bytes)
+        .unwrap_or(0);
+    let size = f
+        .metadata()
+        .map_err(|e| IngestError::Io(e.to_string()))?
+        .len();
+    if index_pos == 0 || index_pos >= size {
+        return Ok(None);
+    }
+    // Only the index is read, and it is charged against the same ceiling a whole-file read is: it is
+    // a slice of the file, chosen by the file.
+    let index_len = size - index_pos;
+    super::check_source_size(
+        index_len,
+        FORMAT_ID,
+        options,
+        "a bag's index section is read whole to answer a metadata-only run",
+    )?;
+    f.seek(SeekFrom::Start(index_pos))
+        .map_err(|e| IngestError::Io(e.to_string()))?;
+    let mut buf = Vec::with_capacity(usize::try_from(index_len).unwrap_or(0));
+    f.take(index_len)
+        .read_to_end(&mut buf)
+        .map_err(|e| IngestError::Io(e.to_string()))?;
+
+    let mut index = Index {
+        recorder: fields.get("callerid").and_then(|v| text(v)),
+        ..Index::default()
+    };
+    // Connection ids are per file, and the index declares them all before the chunk-info records
+    // that reference them.
+    let mut connections: BTreeMap<u32, Topic> = BTreeMap::new();
+    let mut counts: BTreeMap<u32, u64> = BTreeMap::new();
+    let mut rest = buf.as_slice();
+    while let Some((header, data, tail)) = split_record(rest) {
+        rest = tail;
+        let fields = header_fields(header);
+        match fields.get("op").and_then(|v| v.first().copied()) {
+            Some(OP_CONNECTION) => {
+                if let (Some(conn), Some(topic)) = connection_of(&fields, data) {
+                    connections.insert(conn, topic);
+                }
+            }
+            Some(OP_CHUNK_INFO) => {
+                // `start_time`/`end_time` are this chunk's span, and the data is one
+                // `(conn, count)` pair per connection the chunk carries.
+                if let Some(ts) = fields.get("start_time").and_then(|v| ros_time(v)) {
+                    index.min_ts = Some(index.min_ts.map_or(ts, |m: i64| m.min(ts)));
+                }
+                if let Some(ts) = fields.get("end_time").and_then(|v| ros_time(v)) {
+                    index.max_ts = Some(index.max_ts.map_or(ts, |m: i64| m.max(ts)));
+                }
+                for pair in data.chunks_exact(8) {
+                    let Some(conn) = u32_at(pair, 0) else {
+                        continue;
+                    };
+                    let Some(n) = u32_at(pair, 4) else { continue };
+                    *counts.entry(conn).or_default() += u64::from(n);
+                }
+            }
+            _ => {}
+        }
+    }
+    for (conn, n) in counts {
+        match connections.get(&conn) {
+            Some(topic) => {
+                let entry = index
+                    .topics
+                    .entry(topic.name.clone())
+                    .or_insert_with(|| (topic.ros_type.clone(), 0));
+                entry.1 += n;
+            }
+            // A count against a connection the index never declared belongs to a topic nothing
+            // names, exactly as in the full read.
+            None => index.orphan_messages += n,
+        }
+    }
+    // A connection that carried nothing is still a topic the recording declared.
+    for topic in connections.into_values() {
+        index
+            .topics
+            .entry(topic.name)
+            .or_insert((topic.ros_type, 0));
+    }
+    Ok(Some(index))
+}
+
+/// Ingest from the index sections alone, without opening a chunk.
+///
+/// What this covers, honestly: the topic inventory each bag's index declares — every topic's name,
+/// its ROS type, and the modality that type implies — the recorder the header names, and how many
+/// messages the recording holds. What it does not cover is everything a chunk would answer: no
+/// timestamps on any frame, no message bytes, no content hashes, no decoded rig calibration or ego
+/// trajectory. Every stream therefore carries zero frames *by request*, which is what
+/// [`Coverage::MetadataOnly`] tells the checks that reason about frames, so they abstain rather than
+/// reading that absence as a defect — and a certificate cannot be issued from it.
+///
+/// Refused, not approximated, when a file names no index: that bag's messages would simply be absent
+/// from an inventory presented as the recording's, which is the shape of failure this tool exists to
+/// prevent and the one a caller has no way to notice.
+fn ingest_metadata_only(
+    path: &Path,
+    files: &[std::path::PathBuf],
+    options: &IngestOptions,
+) -> Result<Ingested, IngestError> {
+    let mut topics: BTreeMap<String, (String, u64)> = BTreeMap::new();
+    let mut recorder = None;
+    let mut orphans = 0u64;
+    for file in files {
+        let Some(index) = read_index(file, options)? else {
+            return Err(IngestError::Parse {
+                format_id: FORMAT_ID,
+                message: format!(
+                    "`{}` names no index section — it is a bag whose writer did not finish, and \
+                     there is nothing to inventory without opening its chunks; drop \
+                     --metadata-only to read them",
+                    display(file)
+                ),
+            });
+        };
+        if recorder.is_none() {
+            recorder = index.recorder;
+        }
+        orphans += index.orphan_messages;
+        for (name, (ros_type, count)) in index.topics {
+            let entry = topics.entry(name).or_insert((ros_type, 0));
+            entry.1 += count;
+        }
+    }
+    if topics.is_empty() {
+        return Err(IngestError::Parse {
+            format_id: FORMAT_ID,
+            message: "the bag's index section declares no topic, so there is nothing to check \
+                      without opening its chunks"
+                .into(),
+        });
+    }
+
+    let declared: u64 = topics.values().map(|(_, n)| n).sum();
+    let streams: Vec<Stream> = topics
+        .iter()
+        .map(|(name, (ros_type, _))| Stream {
+            name: name.clone(),
+            modality: super::mcap::infer_modality(ros_type, name),
+            declared_rate_hz: None,
+            clock_id: CLOCK_ID.to_string(),
+            clock_kind: ClockKind::Measured,
+            dtype: None,
+            shape: None,
+            dim_names: None,
+            frames: Vec::new(),
+            stats: None,
+            dim_stats: None,
+            observed_stats: None,
+            observed_saturation: None,
+            observed_non_finite: None,
+            observed_dim_stats: None,
+            // The index carries no QoS, so nothing is claimed about latching: the connection records
+            // that state it are the ones inside the chunks.
+            latched: None,
+            declared_range: None,
+            point_fields: None,
+            observed_point_counts: None,
+            observed_image_dims: None,
+            observed_body_decodes: None,
+            observed_header_stamps: None,
+            observed_sequence: None,
+            observed_fix_availability: None,
+            media: None,
+            frame_id: None,
+        })
+        .collect();
+
+    let mut unread = vec![UnmappedField {
+        source_path: "chunks".into(),
+        note: format!(
+            "the recording's {declared} declared message(s) were not read: this is a \
+             metadata-only ingest"
+        ),
+    }];
+    if orphans > 0 {
+        unread.push(UnmappedField {
+            source_path: "index chunk info".into(),
+            note: format!(
+                "{orphans} message(s) are counted against a connection the index never declares, so \
+                 the topic they belong to is unknown"
+            ),
+        });
+    }
+
+    let dataset = Dataset {
+        id: super::dataset_id_from_path(path, FORMAT_ID),
+        metadata: {
+            let mut m = vec![("source_format".into(), FORMAT_ID.to_string())];
+            if let Some(r) = &recorder {
+                m.push(("recorder".into(), r.clone()));
+            }
+            m
+        },
+        provenance: vec![Provenance {
+            scope: ProvenanceScope::Dataset,
+            elements: {
+                let mut elements = vec![ProvenanceElement {
+                    key: "source_format".into(),
+                    value: Some(FORMAT_ID.to_string()),
+                    class: ProvenanceClass::Known,
+                }];
+                if let Some(r) = &recorder {
+                    elements.push(ProvenanceElement {
+                        key: "recorder".into(),
+                        value: Some(r.clone()),
+                        class: ProvenanceClass::Known,
+                    });
+                }
+                elements
+            },
+        }],
+        episodes: vec![Episode {
+            index: 0,
+            // No frames were read, so there is no measured span to state. The index's own chunk
+            // times describe the recording, not the streams in this CDM, and stamping them here
+            // would put a timeline on an episode with no frames to support it.
+            start_ts: None,
+            end_ts: None,
+            streams,
+            task: None,
+            labels: Vec::new(),
+            ego_poses: None,
+            ego_frame: None,
+            declared_frame_count: None,
+        }],
+        calibration: None,
+    };
+
+    Ok(Ingested {
+        dataset,
+        report: IngestReport {
+            unread_sources: unread,
+            format_id: FORMAT_ID,
+            source_version: Some("2.0".into()),
+            coverage: Coverage::MetadataOnly {
+                episodes_declared: 1,
+            },
+            mapped_fields: vec![
+                "index connection record topic + ROS type -> stream (and its modality)".into(),
+                "bag header callerid -> recorder".into(),
+            ],
+            unmapped_fields: Vec::new(),
+            omitted_fields: vec![
+                "episode segmentation (a bag records one continuous session)".into(),
+                "everything a chunk holds (frames, bodies, calibration, trajectory): not read by \
+                 request"
+                    .into(),
+            ],
+        },
+    })
 }
 
 /// Every bag file this source names, in the order they were recorded.

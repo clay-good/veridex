@@ -38,7 +38,7 @@
       in `seq`.
 - [x] `docs/formats.md` and the CHANGELOG say what a bag now yields.
 
-## R5 — bz2 and split recordings
+## R5 — bz2, split recordings, and the index
 
 - [x] Decompress `bz2` chunks (`rosbag compress`'s default) through the pure-Rust `bzip2` backend,
       under the same declared-size budget and one-byte-past cap as LZ4, sharing one `unpack`.
@@ -48,3 +48,5 @@
       `adapter::natural_key`, with streams keyed by topic name rather than by per-file connection id.
 - [x] Disclose what a multi-file read has to decide: a message whose file never declared its
       connection, and a part naming a different recorder.
+- [x] Support `--metadata-only` from the bag's index section (connections + chunk-info counts),
+      refusing a bag whose header names no index rather than inventorying from its first chunk.

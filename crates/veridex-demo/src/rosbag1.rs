@@ -41,6 +41,17 @@ const RECORDING_EPOCH_NS: u64 = 1_767_225_600_000_000_000;
 /// constant offset between the two clocks, not a disagreement between them.
 const SENSOR_LATENCY_NS: u64 = 5_000_000; // 5 ms
 
+/// The rig's topics, with the connection id each is recorded under.
+const TOPICS: [(u32, &str, &str, bool); 7] = [
+    (0, "/lidar/points", "sensor_msgs/PointCloud2", false),
+    (1, "/camera/image_raw", "sensor_msgs/Image", false),
+    (2, "/camera/camera_info", "sensor_msgs/CameraInfo", false),
+    (3, "/imu/data", "sensor_msgs/Imu", false),
+    (4, "/odom", "nav_msgs/Odometry", false),
+    (5, "/joint_states", "sensor_msgs/JointState", false),
+    (6, "/tf_static", "tf2_msgs/TFMessage", true),
+];
+
 /// A ROS 1 message body under construction: little-endian, no padding, no encapsulation header.
 #[derive(Default)]
 struct Msg {
@@ -277,10 +288,16 @@ fn connection(conn: u32, topic: &str, ros_type: &str, latching: bool) -> Vec<u8>
     )
 }
 
+/// A ROS 1 `time` header value: seconds then nanoseconds, both `u32` little-endian.
+fn ros_time(ns: u64) -> Vec<u8> {
+    let mut v = ((ns / 1_000_000_000) as u32).to_le_bytes().to_vec();
+    v.extend_from_slice(&((ns % 1_000_000_000) as u32).to_le_bytes());
+    v
+}
+
 /// A message record: its connection, the time the recorder wrote it, and the serialized body.
 fn message(conn: u32, log_ns: u64, body: &[u8]) -> Vec<u8> {
-    let mut time = ((log_ns / 1_000_000_000) as u32).to_le_bytes().to_vec();
-    time.extend_from_slice(&((log_ns % 1_000_000_000) as u32).to_le_bytes());
+    let time = ros_time(log_ns);
     record(
         &[
             ("op", vec![0x02]),
@@ -297,17 +314,12 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
     let lossy_camera = variant == "lossy-camera";
 
     let mut records = Vec::new();
-    for (conn, topic, ros_type, latching) in [
-        (0u32, "/lidar/points", "sensor_msgs/PointCloud2", false),
-        (1, "/camera/image_raw", "sensor_msgs/Image", false),
-        (2, "/camera/camera_info", "sensor_msgs/CameraInfo", false),
-        (3, "/imu/data", "sensor_msgs/Imu", false),
-        (4, "/odom", "nav_msgs/Odometry", false),
-        (5, "/joint_states", "sensor_msgs/JointState", false),
-        (6, "/tf_static", "tf2_msgs/TFMessage", true),
-    ] {
+    for (conn, topic, ros_type, latching) in TOPICS {
         records.extend_from_slice(&connection(conn, topic, ros_type, latching));
     }
+    // What each connection carried, for the index section written at the end. A recorder counts as
+    // it writes; so does this.
+    let mut counts: [u32; TOPICS.len()] = [0; TOPICS.len()];
 
     // The transform tree, published once and retained — which is what a latched topic is for, and
     // why the single-frame rule exempts one.
@@ -316,6 +328,7 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
         RECORDING_EPOCH_NS,
         &tf_static(RECORDING_EPOCH_NS),
     ));
+    counts[6] += 1;
 
     // Every sensor spans the same ~2.0 s window, at its own rate.
     for i in 0..20u32 {
@@ -325,6 +338,7 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
             sample + SENSOR_LATENCY_NS,
             &point_cloud(i, sample, 1024),
         ));
+        counts[0] += 1;
     }
     for i in 0..40u32 {
         let sample = RECORDING_EPOCH_NS + u64::from(i) * 50_000_000; // 20 Hz
@@ -344,6 +358,7 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
                     crate::mcap::DEMO_IMAGE_HEIGHT,
                 ),
             ));
+            counts[1] += 1;
         }
         records.extend_from_slice(&message(
             2,
@@ -355,8 +370,11 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
                 crate::mcap::DEMO_IMAGE_HEIGHT,
             ),
         ));
+        counts[2] += 1;
         records.extend_from_slice(&message(4, log, &odometry(i, sample, t * 2.0)));
+        counts[4] += 1;
         records.extend_from_slice(&message(5, log, &joint_state(i, sample, t)));
+        counts[5] += 1;
     }
     for i in 0..200u32 {
         let sample = RECORDING_EPOCH_NS + u64::from(i) * 10_000_000; // 100 Hz
@@ -365,26 +383,62 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
             sample + SENSOR_LATENCY_NS,
             &imu(i, sample, f64::from(i) / 200.0),
         ));
+        counts[3] += 1;
     }
 
-    let mut bag = b"#ROSBAG V2.0\n".to_vec();
-    bag.extend_from_slice(&record(
-        &[
-            ("op", vec![0x03]),
-            ("conn_count", 7u32.to_le_bytes().to_vec()),
-            ("chunk_count", 1u32.to_le_bytes().to_vec()),
-            ("index_pos", 0u64.to_le_bytes().to_vec()),
-            ("callerid", b"/rosbag_record".to_vec()),
-        ],
-        &[],
-    ));
-    bag.extend_from_slice(&record(
+    // The index section a finished `rosbag record` writes: every connection again, then one
+    // chunk-info record carrying the chunk's span and its per-connection message counts. It is what
+    // a metadata-only run answers from, so a demo bag without one would not demonstrate the thing.
+    let header = |index_pos: u64| {
+        record(
+            &[
+                ("op", vec![0x03]),
+                ("conn_count", (TOPICS.len() as u32).to_le_bytes().to_vec()),
+                ("chunk_count", 1u32.to_le_bytes().to_vec()),
+                ("index_pos", index_pos.to_le_bytes().to_vec()),
+                ("callerid", b"/rosbag_record".to_vec()),
+            ],
+            &[],
+        )
+    };
+    let chunk = record(
         &[
             ("op", vec![0x05]),
             ("compression", b"none".to_vec()),
             ("size", (records.len() as u32).to_le_bytes().to_vec()),
         ],
         &records,
+    );
+    let magic = b"#ROSBAG V2.0\n";
+    // The header is written twice — once to size it, once carrying the offset it turned out to be —
+    // which is what a recorder does, and why its length must not depend on that offset's value.
+    let chunk_pos = (magic.len() + header(0).len()) as u64;
+    let index_pos = chunk_pos + chunk.len() as u64;
+
+    let mut bag = magic.to_vec();
+    bag.extend_from_slice(&header(index_pos));
+    bag.extend_from_slice(&chunk);
+    for (conn, topic, ros_type, latching) in TOPICS {
+        bag.extend_from_slice(&connection(conn, topic, ros_type, latching));
+    }
+    let mut pairs = Vec::new();
+    for (conn, count) in counts.iter().enumerate() {
+        pairs.extend_from_slice(&(conn as u32).to_le_bytes());
+        pairs.extend_from_slice(&count.to_le_bytes());
+    }
+    bag.extend_from_slice(&record(
+        &[
+            ("op", vec![0x06]),
+            ("ver", 1u32.to_le_bytes().to_vec()),
+            ("chunk_pos", chunk_pos.to_le_bytes().to_vec()),
+            ("start_time", ros_time(RECORDING_EPOCH_NS)),
+            (
+                "end_time",
+                ros_time(RECORDING_EPOCH_NS + 2_000_000_000 + SENSOR_LATENCY_NS),
+            ),
+            ("count", (counts.len() as u32).to_le_bytes().to_vec()),
+        ],
+        &pairs,
     ));
     std::fs::write(path, &bag)?;
     Ok(())

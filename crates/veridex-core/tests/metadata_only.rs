@@ -543,6 +543,7 @@ fn every_format_that_supports_it_is_named_in_the_docs() {
             "hdf5" => "HDF5",
             "zarr" => "Zarr",
             "mf4" => "MF4",
+            "rosbag1" => "ROS 1 rosbag",
             other => panic!("no documented name known for the `{other}` adapter — add one here, and name the format in the three documents below"),
         }
     };
@@ -593,6 +594,12 @@ fn one_dataset_per_supporting_format() -> Vec<Sample2> {
     )
     .expect("the CLI's committed MCAP fixture");
 
+    // The demo ROS 1 rig, which writes the index section a finished recorder does — the thing a
+    // metadata-only run answers from.
+    let bag = tempfile::tempdir().unwrap();
+    let bag_path = bag.path().join("rig.bag");
+    veridex_demo::rosbag1::write(&bag_path, "rig").expect("the demo bag");
+
     vec![
         Sample2 {
             format: "lerobot",
@@ -603,6 +610,11 @@ fn one_dataset_per_supporting_format() -> Vec<Sample2> {
             format: "mcap",
             path: mcap_path,
             _keep: Some(mcap),
+        },
+        Sample2 {
+            format: "rosbag1",
+            path: bag_path,
+            _keep: Some(bag),
         },
         Sample2 {
             format: "rosbag2",

@@ -934,3 +934,174 @@ fn a_part_naming_a_different_recorder_is_disclosed_not_overwritten() {
         ingested.report.unread_sources
     );
 }
+
+/// A whole bag with the **index section** a finished recorder writes: the connections again, then
+/// one chunk-info record naming the chunk's span and its per-connection message counts. The bag
+/// header's `index_pos` points at it, which is what a metadata-only read follows.
+fn bag_with_index(inner: &[u8], counts: &[(u32, u32)], start_ns: u64, end_ns: u64) -> Vec<u8> {
+    let mut out = b"#ROSBAG V2.0\n".to_vec();
+    // The header is written twice: once with a placeholder offset, and again once the real one is
+    // known — which is exactly what `rosbag record` does, and why its length must not change.
+    let header = |index_pos: u64| {
+        record(
+            &[
+                ("op", vec![0x03]),
+                ("conn_count", (counts.len() as u32).to_le_bytes().to_vec()),
+                ("chunk_count", 1u32.to_le_bytes().to_vec()),
+                ("index_pos", index_pos.to_le_bytes().to_vec()),
+                ("callerid", b"/rosbag_record".to_vec()),
+            ],
+            &[],
+        )
+    };
+    let chunk_record = chunk("none", inner, inner);
+    let index_pos = (out.len() + header(0).len() + chunk_record.len()) as u64;
+    out.extend_from_slice(&header(index_pos));
+    out.extend_from_slice(&chunk_record);
+
+    // The index: every connection, then the chunk-info records.
+    let mut index = Vec::new();
+    index.extend_from_slice(&connection(
+        0,
+        "/lidar/points",
+        "sensor_msgs/PointCloud2",
+        false,
+    ));
+    index.extend_from_slice(&connection(1, "/imu/data", "sensor_msgs/Imu", false));
+    let mut pairs = Vec::new();
+    for (conn, n) in counts {
+        pairs.extend_from_slice(&conn.to_le_bytes());
+        pairs.extend_from_slice(&n.to_le_bytes());
+    }
+    index.extend_from_slice(&record(
+        &[
+            ("op", vec![0x06]),
+            ("ver", 1u32.to_le_bytes().to_vec()),
+            ("chunk_pos", 13u64.to_le_bytes().to_vec()),
+            ("start_time", ros_time(start_ns)),
+            ("end_time", ros_time(end_ns)),
+            ("count", (counts.len() as u32).to_le_bytes().to_vec()),
+        ],
+        &pairs,
+    ));
+    out.extend_from_slice(&index);
+    out
+}
+
+#[test]
+fn a_metadata_only_run_inventories_a_bag_from_its_index() {
+    // The point of the index: a 40 GB archived bag can be inventoried without unpacking a chunk.
+    // What comes back is the topic list, typed, and no frames — because none were read.
+    let inner = rig_records();
+    let bytes = bag_with_index(&inner, &[(0, 10), (1, 10)], 1_000_000_000, 1_900_000_000);
+    let path = write_temp(&bytes);
+    let options = IngestOptions {
+        metadata_only: true,
+        ..IngestOptions::default()
+    };
+    let ingested = Rosbag1Adapter
+        .ingest(&Source::Local(path.to_path_buf()), &options)
+        .expect("the index answers");
+
+    let ep = &ingested.dataset.episodes[0];
+    let names: Vec<&str> = ep.streams.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, vec!["/imu/data", "/lidar/points"]);
+    assert_eq!(
+        ep.streams
+            .iter()
+            .find(|s| s.name == "/lidar/points")
+            .unwrap()
+            .modality,
+        Modality::PointCloud
+    );
+    // No frames, and no timeline claimed from chunk times nothing in this CDM rests on.
+    assert!(ep.streams.iter().all(|s| s.frames.is_empty()));
+    assert_eq!((ep.start_ts, ep.end_ts), (None, None));
+    assert!(matches!(
+        ingested.report.coverage,
+        veridex_core::adapter::Coverage::MetadataOnly { .. }
+    ));
+    // What was not read is stated, with the count the index declares.
+    assert!(
+        ingested
+            .report
+            .unread_sources
+            .iter()
+            .any(|u| u.note.contains("20 declared message(s) were not read")),
+        "{:?}",
+        ingested.report.unread_sources
+    );
+    // The recorder is still read: it is in the header, not in a chunk.
+    assert!(ingested.dataset.provenance[0]
+        .elements
+        .iter()
+        .any(|e| e.key == "recorder" && e.value.as_deref() == Some("/rosbag_record")));
+}
+
+#[test]
+fn the_two_reads_describe_one_bag_the_same_way() {
+    // A metadata-only run and a full run of the same bag must agree about what the bag *is*: the
+    // same topics, typed the same way. Only the frames differ — that is what --metadata-only means,
+    // and a reader that answered the inventory from a different code path could disagree silently.
+    let inner = rig_records();
+    let bytes = bag_with_index(&inner, &[(0, 10), (1, 10)], 1_000_000_000, 1_900_000_000);
+    let path = write_temp(&bytes);
+    let full = Rosbag1Adapter
+        .ingest(
+            &Source::Local(path.to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("full read");
+    let meta = Rosbag1Adapter
+        .ingest(
+            &Source::Local(path.to_path_buf()),
+            &IngestOptions {
+                metadata_only: true,
+                ..IngestOptions::default()
+            },
+        )
+        .expect("metadata-only read");
+
+    let inventory = |i: &veridex_core::adapter::Ingested| -> Vec<(String, Modality)> {
+        i.dataset.episodes[0]
+            .streams
+            .iter()
+            .map(|s| (s.name.clone(), s.modality))
+            .collect()
+    };
+    // The full read sees `/tf_static` too, which carries messages but no chunk-info count here; the
+    // topics the index declares are the ones compared.
+    for (name, modality) in inventory(&meta) {
+        assert!(
+            inventory(&full).contains(&(name.clone(), modality)),
+            "{name} is described differently by the two reads"
+        );
+    }
+    assert!(meta.dataset.episodes[0]
+        .streams
+        .iter()
+        .all(|s| s.frames.is_empty()));
+    assert!(full.dataset.episodes[0]
+        .streams
+        .iter()
+        .all(|s| !s.frames.is_empty()));
+}
+
+#[test]
+fn a_bag_with_no_index_is_refused_rather_than_inventoried_from_a_guess() {
+    // A recorder killed before it finished writing leaves `index_pos` at zero. Answering from
+    // whatever the first chunk happens to declare would present part of a recording as the whole of
+    // it — the failure a caller has no way to notice.
+    let inner = rig_records();
+    let path = write_temp(&bag(&chunk("none", &inner, &inner)));
+    let err = Rosbag1Adapter
+        .ingest(
+            &Source::Local(path.to_path_buf()),
+            &IngestOptions {
+                metadata_only: true,
+                ..IngestOptions::default()
+            },
+        )
+        .expect_err("refused");
+    assert!(format!("{err}").contains("names no index section"), "{err}");
+}
