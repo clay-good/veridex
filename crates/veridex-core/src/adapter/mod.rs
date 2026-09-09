@@ -20,6 +20,7 @@ pub mod lerobot;
 pub mod mcap;
 pub mod mdf4;
 pub mod rlds;
+pub mod rosbag1;
 pub mod rosbag2;
 pub(crate) mod sqlite;
 pub(crate) mod stats;
@@ -1083,6 +1084,7 @@ pub fn default_registry() -> AdapterRegistry {
     let mut reg = AdapterRegistry::new();
     reg.register(Box::new(lerobot::LeRobotAdapter));
     reg.register(Box::new(mcap::McapAdapter));
+    reg.register(Box::new(rosbag1::Rosbag1Adapter));
     reg.register(Box::new(rosbag2::Rosbag2Adapter));
     reg.register(Box::new(candbc::CanDbcAdapter));
     reg.register(Box::new(mdf4::Mdf4Adapter));

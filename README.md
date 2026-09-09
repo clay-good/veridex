@@ -43,7 +43,8 @@ Findings:
 - **One command, any format.** LeRobot (v2.0/2.1/3.0), RLDS/TFDS (what Open X-Embodiment ships in), HDF5 (what
   robomimic and most lab collectors write), Zarr (what Diffusion Policy and UMI ship in), MCAP,
   ROS 2 rosbag2 (both storage plugins — `.db3` / `.db3.zstd` and the `.mcap` shards Jazzy records by
-  default), CAN+DBC, and ASAM MDF/MF4 all map
+  default), ROS 1 rosbag (`.bag`, where a great deal of pre-ROS 2 robot data still sits), CAN+DBC,
+  and ASAM MDF/MF4 all map
   into one Canonical Dataset Model, so you check them the same way — no per-format tooling.
 - **Catches the failures that quietly ruin training.** Clock skew across sensors, broken episode
   boundaries, timeline gaps, duplicate frames, a video whose frame count no longer matches the
@@ -96,7 +97,7 @@ also captures **provenance**.
 
 ```mermaid
 flowchart LR
-    A[Your dataset<br/>LeRobot · RLDS/TFDS · HDF5 · Zarr · MCAP · rosbag2 · CAN+DBC · MF4] --> B[Adapter]
+    A[Your dataset<br/>LeRobot · RLDS/TFDS · HDF5 · Zarr · MCAP · rosbag2 · rosbag · CAN+DBC · MF4] --> B[Adapter]
     B --> C[Canonical Dataset Model<br/>one neutral shape]
     C --> D[Validation engine<br/>structural · temporal · statistical · semantic<br/>video · autonomy · provenance checks]
     D --> E[Trust score<br/>0–100 · A–F grade]
@@ -315,7 +316,7 @@ verdict, and unknown keys, check ids, or invalid tolerances are rejected, not si
 
 | If you want to | Read |
 | --- | --- |
-| See it read LeRobot, RLDS/TFDS, HDF5, Zarr, MCAP, rosbag2, CAN+DBC, MF4 | [docs/formats.md](docs/formats.md) |
+| See it read LeRobot, RLDS/TFDS, HDF5, Zarr, MCAP, rosbag2, ROS 1 rosbag, CAN+DBC, MF4 | [docs/formats.md](docs/formats.md) |
 | Sign, verify, and share a verdict — including producer attestation | [docs/trust-chain.md](docs/trust-chain.md) |
 | Check a dataset too large to read in full, and what that costs | [docs/partial-runs.md](docs/partial-runs.md) |
 | Run it in CI (GitHub Actions, GitLab, SARIF upload, regression gating) | [docs/ci-recipes.md](docs/ci-recipes.md) |
@@ -386,7 +387,7 @@ is in and tested:
 | **Video/media checks** | Read an `.mp4`'s container headers — never a pixel — and catch the missing, unparseable, desynced, or re-encoded video behind a camera stream |
 | **Trust score** | The v1 rubric, the `standard` / `strict` threshold profiles, and the `world-model-ready` readiness profile |
 | **Reporting** | Terminal, JSON, SARIF 2.1.0 and self-contained HTML, each with rollups by category, episode and stream, and each shareable through `--redact` |
-| **Adapters** | LeRobot v2.0/2.1/3.0, RLDS/TFDS, HDF5, Zarr, MCAP, ROS 2 rosbag2, CAN+DBC, ASAM MDF/MF4 — with a passing cross-format neutrality gate (the same logical dataset yields equivalent CDMs as LeRobot v3 and as MCAP, and as rosbag2 and as MCAP) |
+| **Adapters** | LeRobot v2.0/2.1/3.0, RLDS/TFDS, HDF5, Zarr, MCAP, ROS 2 rosbag2, ROS 1 rosbag, CAN+DBC, ASAM MDF/MF4 — with a passing cross-format neutrality gate (the same logical dataset yields equivalent CDMs as LeRobot v3 and as MCAP, and as rosbag2 and as MCAP) |
 | **Provenance** | Per-format extraction into the six scored elements — see [what each format can supply](docs/checks.md#what-each-format-can-supply) — with one curated key table shared by every source that carries free-form metadata, so `sensor` means the same thing in an MCAP record, a rosbag2 `custom_data` entry, an HDF5 attribute, a Zarr `.zattrs` and an MF4 header comment's `<common_properties>` — the place CANape, INCA and the fleet loggers write what a run was, and the reason an MF4 reads 4/6 rather than 1/6. Plus scenario-dimension coverage and scenario/map/sim reference extraction (OpenSCENARIO / OpenDRIVE / OSI / simulator, version read from the referenced sidecar's own ASAM header), emitted as Croissant + W3C PROV |
 | **Certificates** | Ed25519 signing with offline verification (tamper and transplant rejection), and **producer attestation** — provenance a producer signs for, bound to the dataset's content hash and disclosed by the key that signed it. Findings are named **by code**, not only by family, because a family count cannot tell a check that measured nothing from one that measured something wrong; the trust label carries the same in a `Could not measure` row |
 | **CLI** | `check`, `inspect`, `checks`, `certify`, `verify`, `provenance`, `keygen`, `diff`, `watch`, `label`, `attest`, plus `check --print-config` and `check --redact`. `veridex <command> --help` shows just that command's options and its real argument shape, derived from the same table the parser enforces — see the [Quickstart](#quickstart) |

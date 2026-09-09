@@ -10,6 +10,35 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **ROS 1 rosbag (`.bag`) is read.** A ninth adapter, and the largest remaining hole in the claim
+  this tool is built on. ROS 1 is still where a great deal of the world's robot data sits — every lab
+  that recorded before ROS 2, every fleet that has not migrated, every public dataset shipped as
+  `.bag` — and until now every one of them was *refused at ingest*: no report, no score, no
+  certificate. "Which format a team chose does not change whether their data can be checked" cannot
+  survive a whole generation of recordings sitting outside it.
+
+  A bag is recognized by its `#ROSBAG V2.0` line rather than its extension. Connection records become
+  streams, typed through the **same modality classifier the two ROS 2 readers use**, so a rig
+  recorded to a `.bag` types the way the same rig recorded to an MCAP does. Message records become
+  frames on the recorder's clock, with each body fingerprinted.
+
+  Uncompressed and **lz4** chunks are read. `bz2` — `rosbag compress`'s default — needs a
+  decompressor this workspace does not carry and is disclosed as **unread**, not skipped: the
+  messages are in the file and nobody read them. A message naming a connection the bag never declared
+  is reported the same way, because the topic those frames belong to is unknown and attributing them
+  to a stream anyway would invent one. A chunk cut short keeps the records written before the cut and
+  says what it could not reach; a bag from which *nothing* could be read is refused outright, because
+  a dataset with no streams is not a dataset that was checked.
+
+  Message **bodies** are fingerprinted, not decoded, so a bag reaches the structural, temporal,
+  semantic and provenance families in full and the value-reading families abstain on it out loud. ROS
+  1 serialization is the CDR field layout without its encapsulation header, so the typed decoders are
+  reachable from here — a follow-up, tracked in
+  [`add-rosbag1-support`](openspec/changes/add-rosbag1-support/).
+
+  No CDM change, no `CANONICAL_VERSION` bump, no new check: everything a bag produces is a shape the
+  CDM already had.
+
 - **Which checks the fixtures actually exercise is pinned, and a tenth of them did not.** "Do not
   assume a new check fires end to end" was review habit and a note in prose. Nothing enforced it, and
   nothing noticed the other direction either: a fixture that loses the fault it was built around

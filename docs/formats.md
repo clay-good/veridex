@@ -391,6 +391,35 @@ the payload it will assemble before the bytes are copied. It is tested against f
 Python's own `sqlite3` — a reader proven only against a writer from the same repository proves the
 two agree with each other, not that either matches the format.
 
+And on a **ROS 1 rosbag** (`.bag`) — where a large share of the world's robot data still sits. Every
+lab that recorded before ROS 2, every fleet that has not migrated, and every public dataset shipped as
+`.bag` was, until this reader, a dataset Veridex refused at ingest: no report, no score, no
+certificate. That is the one failure a cross-format verifier cannot have, because the whole claim is
+that *which* format a team chose does not change whether their data can be checked.
+
+A bag is recognized by its `#ROSBAG V2.0` line rather than by its extension, so a file named `.bag`
+that is something else is left to whichever reader really owns it. Past that line it is a record
+stream — `header_len | header | data_len | data`, with the header a run of `name=value` fields, one
+of which names the record's kind. Connection records give each topic and its ROS message type;
+message records give a connection, a timestamp on the recorder's clock, and the serialized body. The
+type goes through the same modality classifier the two ROS 2 readers use, so **a rig recorded to a
+`.bag` types the way the same rig recorded to an MCAP does** — a `sensor_msgs/PointCloud2` is a
+point-cloud stream in either.
+
+Uncompressed and **lz4** chunks are read, which is what `rosbag record` and `rosbag record --lz4`
+write. `bz2` — `rosbag compress`'s default — needs a decompressor this workspace does not carry, and
+is **disclosed as unread** rather than skipped in silence: the messages are in the file and nobody
+read them, so the run says so and the verdict carries `COVERAGE.SOURCE_UNREAD`. A message naming a
+connection the bag never declared is reported the same way, because the topic and type those frames
+belong to are unknown and attributing them to a stream anyway would invent one.
+
+What a bag does **not** yet give is decoded message bodies. They are fingerprinted into per-frame
+content hashes, never interpreted — so a `.bag` reaches the structural, temporal, semantic and
+provenance families in full, and the statistical and autonomy families abstain on it out loud the way
+they do for any container whose payloads are not decoded. ROS 1 serialization is the same field
+layout as CDR without its four-byte encapsulation header, so the typed decoders are reachable from
+here; wiring them is the next step rather than part of this one.
+
 And on a **CAN + DBC** log — raw vehicle-bus traffic, which on its own is opaque bytes. The `.dbc` is
 the signal database that gives those bytes meaning, so Veridex ingests the two together: point it at a
 directory holding one `.dbc` and one or more candump logs, and it decodes each frame per the database

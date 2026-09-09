@@ -497,7 +497,7 @@ fn which_formats_have_an_episode_axis_is_declared_not_left_to_each_adapter() {
     single_episode.sort();
     assert_eq!(
         single_episode,
-        vec!["candbc", "mcap", "mf4", "rosbag2"],
+        vec!["candbc", "mcap", "mf4", "rosbag1", "rosbag2"],
         "each of these ingests a recording as one episode"
     );
 }
