@@ -186,6 +186,21 @@ fn write_generated(dir: &Path) -> Vec<(String, std::path::PathBuf)> {
         {
             out.push(("candbc/drive".to_string(), can));
         }
+
+        // The same drive against a database that declares a range the bus does not respect: this
+        // `EngineRPM` is bounded at 1,000 rpm while every frame decodes to 1,500. A DBC is a
+        // *claim* about the bus, and pairing a log with the wrong revision of one is how a fleet
+        // ends up decoding real traffic against limits it never had — the values are honest and the
+        // database is wrong, which is exactly what `STATISTICAL.OUT_OF_DECLARED_RANGE` is for.
+        let mismatched = dir.join("can-mismatched-db");
+        if std::fs::create_dir_all(&mismatched).is_ok() {
+            let narrow = dbc.replace("[0|16383.75]", "[0|1000]");
+            if std::fs::write(mismatched.join("vehicle.dbc"), narrow).is_ok()
+                && std::fs::write(mismatched.join("drive.log"), log).is_ok()
+            {
+                out.push(("candbc/mismatched-db".to_string(), mismatched));
+            }
+        }
     }
 
     for (label, variants, write, extension) in fixtures() {
@@ -942,11 +957,6 @@ fn the_sweep_reaches_every_adapter() {
 /// catches a regression: this is a census, not a coverage target — a check being absent here is a
 /// statement about the *fixtures*, not a defect in the check.
 const NOT_REACHED_BY_THE_SWEEP: &[(&str, &str)] = &[
-    (
-        "statistical.declared-range",
-        "needs values outside the `[min|max]` a DBC declares; the sweep's CAN pair is the one from \
-         `docs/formats.md`, whose frames decode inside their declared ranges",
-    ),
     (
         "structural.shape-consistency",
         "needs one stream declaring different shapes or dtypes in different episodes; every \

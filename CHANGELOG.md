@@ -23,6 +23,13 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
   It is a census, not a coverage target: a check being absent is a statement about the fixtures.
 
+- **A database that declares a range the bus does not respect, reproducible.** The seventh of the
+  eight, and one I had called blocked a commit too early: the sweep writes its CAN pair inline, so a
+  second pair is a few lines. The same drive is paired with a DBC bounding `EngineRPM` at 1,000 rpm
+  while every frame decodes to 1,500 — a log paired with the wrong revision of its database, which
+  is how a fleet ends up decoding real traffic against limits it never had. The values are honest
+  and the database is wrong → `STATISTICAL.OUT_OF_DECLARED_RANGE`.
+
 - **Two feature names that differ only by letter case, reproducible.** The sixth of the eight:
   `make_demo_lerobot -- <dir> confusable-keys` carries both `observation.state` and
   `observation.State`, the shape of a merge between datasets that spelled the same signal two ways.
