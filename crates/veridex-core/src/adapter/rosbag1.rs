@@ -13,11 +13,11 @@
 //!
 //! Scope, stated rather than guessed at. **Read:** topics, their ROS types, the recorder's clock,
 //! each message's bytes (fingerprinted), and the bodies themselves — through
-//! [`super::rosmsg::decode_body`], the one dispatch from a ROS message type to the CDM that the MCAP
+//! `rosmsg::decode_body`, the one dispatch from a ROS message type to the CDM that the MCAP
 //! adapter and both rosbag2 storage plugins also call. ROS 1 is a different *encoding* of the same
 //! fields in the same order — no encapsulation header, no alignment padding between primitives, and
 //! a `seq` at the front of every `std_msgs/Header` — and that difference lives in
-//! [`super::cdr::Encoding`], not here. **Unread** (a `COVERAGE.SOURCE_UNREAD` warning in the
+//! `cdr::Encoding`, not here. **Unread** (a `COVERAGE.SOURCE_UNREAD` warning in the
 //! verdict): a chunk in a compression this workspace carries no decompressor for — `bz2`, and
 //! anything a future rosbag writes — because the messages are in the file and nobody read them.
 //! **Unmapped** (a note about shape): the bulk payload of a body — an image's pixels, a cloud's

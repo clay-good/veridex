@@ -19,6 +19,7 @@ pub mod lerobot;
 pub mod mcap;
 pub mod mf4;
 pub mod rlds;
+pub mod rosbag1;
 
 /// What went wrong writing a demo dataset.
 #[derive(Debug)]
