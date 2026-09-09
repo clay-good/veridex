@@ -23,6 +23,20 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
   It is a census, not a coverage target: a check being absent is a statement about the fixtures.
 
+- **A replay buffer whose episodes disagree about a stream's width, reproducible — and the census
+  is now empty of unfixtured checks.** The eighth and last: a Zarr store whose `action` is `(4, 2)`
+  in one episode and `(4, 3)` in the other, the shape of a re-export that widened an actuator vector
+  and left the earlier episodes behind. Each episode is well-formed on its own, so only a
+  cross-episode comparison sees it → `STRUCTURAL.SHAPE_MISMATCH`.
+
+  I had called this one blocked too: no generator writes Zarr, and the committed fixtures are all
+  blosc-compressed binaries. But a Zarr store is JSON plus raw chunks when the compressor is `null`,
+  so the sweep writes this one inline the way it writes its CAN pair.
+
+  `NOT_REACHED_BY_THE_SWEEP` now holds only the two checks that **cannot** arise from any reader this
+  repo has. An entry in it is no longer a statement about the fixtures but about the adapters — so a
+  reader that starts declaring a nominal rate will hear about it from this test.
+
 - **A database that declares a range the bus does not respect, reproducible.** The seventh of the
   eight, and one I had called blocked a commit too early: the sweep writes its CAN pair inline, so a
   second pair is a few lines. The same drive is paired with a DBC bounding `EngineRPM` at 1,000 rpm

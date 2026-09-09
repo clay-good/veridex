@@ -203,6 +203,37 @@ fn write_generated(dir: &Path) -> Vec<(String, std::path::PathBuf)> {
         }
     }
 
+    // A Zarr replay buffer whose two episodes disagree about the width of the same stream: `action`
+    // is (4, 2) in one and (4, 3) in the other, the shape of a re-export that widened an actuator
+    // vector and left the earlier episodes behind. Every episode is well-formed on its own, so only
+    // a cross-episode comparison sees it — and no generator writes Zarr, whose committed fixtures
+    // are all blosc-compressed binaries. A Zarr store is JSON plus raw chunks when the compressor is
+    // null, so this one is written here the way the CAN pair above is.
+    let drift = dir.join("zarr-shape-drift.zarr");
+    let zarray = |cols: usize| {
+        format!(
+            "{{\"chunks\":[4,{cols}],\"compressor\":null,\"dtype\":\"<f4\",\"fill_value\":0.0,\
+             \"filters\":null,\"order\":\"C\",\"shape\":[4,{cols}],\"zarr_format\":2}}"
+        )
+    };
+    let chunk = |cols: usize| -> Vec<u8> {
+        (0..4 * cols)
+            .flat_map(|i| (i as f32).to_le_bytes())
+            .collect()
+    };
+    let mut wrote = std::fs::create_dir_all(&drift).is_ok()
+        && std::fs::write(drift.join(".zgroup"), "{\"zarr_format\":2}").is_ok();
+    for (episode, cols) in [("ep_0", 2usize), ("ep_1", 3usize)] {
+        let array = drift.join(episode).join("action");
+        wrote &= std::fs::create_dir_all(&array).is_ok()
+            && std::fs::write(drift.join(episode).join(".zgroup"), "{\"zarr_format\":2}").is_ok()
+            && std::fs::write(array.join(".zarray"), zarray(cols)).is_ok()
+            && std::fs::write(array.join("0.0"), chunk(cols)).is_ok();
+    }
+    if wrote {
+        out.push(("zarr/shape-drift".to_string(), drift));
+    }
+
     for (label, variants, write, extension) in fixtures() {
         for variant in variants {
             let target = match extension {
@@ -956,12 +987,12 @@ fn the_sweep_reaches_every_adapter() {
 /// that stops must be explained or fixed. Both directions matter, and the second is the one that
 /// catches a regression: this is a census, not a coverage target — a check being absent here is a
 /// statement about the *fixtures*, not a defect in the check.
+///
+/// It began with ten entries. Eight were merely unfixtured and each was closed by building the
+/// fixture the check had been waiting for. What is left is the two that **cannot** arise from any
+/// reader this repo has — so an entry here is now a statement about the *adapters*, and a reader
+/// that starts declaring a nominal rate should expect this test to tell it so.
 const NOT_REACHED_BY_THE_SWEEP: &[(&str, &str)] = &[
-    (
-        "structural.shape-consistency",
-        "needs one stream declaring different shapes or dtypes in different episodes; every \
-         generator writes one schema for the whole dataset",
-    ),
     (
         "temporal.rate-consistency",
         "structurally unreachable from today's readers, not merely unfixtured: it compares the \
