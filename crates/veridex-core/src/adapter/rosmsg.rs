@@ -244,3 +244,396 @@ pub(crate) fn decode_body(
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One field of a ROS message, written independently of how it is encoded.
+    ///
+    /// The point of the tests below is that a decoder reads the *same message* out of either
+    /// encoding, so each fixture is described once and rendered twice. Writing the two by hand would
+    /// let a fixture drift into describing two different messages, which is the one way this test
+    /// could pass while the claim it guards is false.
+    enum F<'a> {
+        U8(u8),
+        U32(u32),
+        F32(f32),
+        F64(f64),
+        Str(&'a str),
+        /// A `std_msgs/Header`: the ROS 1 `seq` where there is one, the stamp, and the frame.
+        Header(&'a str),
+        /// `n` bytes of payload — a cloud's points, an image's pixels. Never interpreted.
+        Bytes(usize),
+    }
+
+    /// Render one message in `enc`.
+    ///
+    /// CDR aligns every primitive to its own size from the start of the body, counts a string's NUL
+    /// in its length, and opens with a four-byte encapsulation header. ROS 1 does none of that and
+    /// puts a `uint32 seq` in front of every header. Both are written here from the specifications,
+    /// not from the reader.
+    fn render(fields: &[F], enc: Encoding) -> Vec<u8> {
+        let mut buf: Vec<u8> = match enc {
+            Encoding::Cdr => vec![0x00, 0x01, 0x00, 0x00],
+            Encoding::Ros1 => Vec::new(),
+        };
+        let origin = buf.len();
+        let align = |buf: &mut Vec<u8>, n: usize| {
+            if enc == Encoding::Cdr {
+                while (buf.len() - origin) % n != 0 {
+                    buf.push(0);
+                }
+            }
+        };
+        let put = |buf: &mut Vec<u8>, f: &F| match f {
+            F::U8(v) => buf.push(*v),
+            F::U32(v) => {
+                align(buf, 4);
+                buf.extend_from_slice(&v.to_le_bytes());
+            }
+            F::F32(v) => {
+                align(buf, 4);
+                buf.extend_from_slice(&v.to_le_bytes());
+            }
+            F::F64(v) => {
+                align(buf, 8);
+                buf.extend_from_slice(&v.to_le_bytes());
+            }
+            F::Str(s) => {
+                align(buf, 4);
+                let len = match enc {
+                    Encoding::Cdr => s.len() + 1,
+                    Encoding::Ros1 => s.len(),
+                };
+                buf.extend_from_slice(&(len as u32).to_le_bytes());
+                buf.extend_from_slice(s.as_bytes());
+                if enc == Encoding::Cdr {
+                    buf.push(0);
+                }
+            }
+            F::Header(frame) => {
+                if enc == Encoding::Ros1 {
+                    buf.extend_from_slice(&7u32.to_le_bytes()); // seq
+                }
+                align(buf, 4);
+                buf.extend_from_slice(&1_767_225_600u32.to_le_bytes()); // stamp.sec
+                align(buf, 4);
+                buf.extend_from_slice(&250_000_000u32.to_le_bytes()); // stamp.nanosec
+                let len = match enc {
+                    Encoding::Cdr => frame.len() + 1,
+                    Encoding::Ros1 => frame.len(),
+                };
+                align(buf, 4);
+                buf.extend_from_slice(&(len as u32).to_le_bytes());
+                buf.extend_from_slice(frame.as_bytes());
+                if enc == Encoding::Cdr {
+                    buf.push(0);
+                }
+            }
+            F::Bytes(n) => buf.extend(std::iter::repeat_n(0x5au8, *n)),
+        };
+        for f in fields {
+            put(&mut buf, f);
+        }
+        buf
+    }
+
+    /// Everything one body contributed, as text — the comparison the parity assertion makes.
+    #[derive(Default)]
+    struct Sink {
+        point_fields: Option<Vec<PointField>>,
+        point_counts: super::super::cdr::PointCountAccum,
+        image_dims: super::super::cdr::ImageDimAccum,
+        fix_availability: super::super::cdr::FixAvailabilityAccum,
+        values: super::super::stats::StreamValues,
+        ego_poses: Vec<EgoPose>,
+        ego_frame: Option<String>,
+        intrinsics: BTreeMap<String, CameraIntrinsics>,
+        transforms: BTreeMap<(String, String), Transform>,
+        moved_frames: super::super::cdr::MovingFrames,
+    }
+
+    impl Sink {
+        fn decode(&mut self, ros_type: &str, data: &[u8], enc: Encoding) -> Option<bool> {
+            decode_body(
+                &mut BodyTargets {
+                    point_fields: &mut self.point_fields,
+                    point_counts: &mut self.point_counts,
+                    image_dims: &mut self.image_dims,
+                    fix_availability: &mut self.fix_availability,
+                    values: &mut self.values,
+                    ego_poses: &mut self.ego_poses,
+                    ego_frame: &mut self.ego_frame,
+                    intrinsics: &mut self.intrinsics,
+                    transforms: &mut self.transforms,
+                    moved_frames: &mut self.moved_frames,
+                },
+                enc,
+                ros_type,
+                "/topic",
+                data,
+                1_767_225_600_250_000_000,
+            )
+        }
+
+        /// What the body left behind, rendered so two runs can be compared exactly.
+        fn summary(self) -> String {
+            let measured = self.values.finish();
+            format!(
+                "fields={:?} points={:?} images={:?} fix={:?} values={:?} poses={:?} frame={:?} intrinsics={:?} transforms={:?}",
+                self.point_fields,
+                self.point_counts.finish(),
+                self.image_dims.finish(),
+                self.fix_availability.finish(),
+                measured.map(|(a, names)| (a.stats(), a.dim_stats(), names)),
+                self.ego_poses,
+                self.ego_frame,
+                self.intrinsics,
+                self.transforms,
+            )
+        }
+    }
+
+    /// A `sensor_msgs/PointCloud2` of one `float32 x` field and `width` points.
+    fn point_cloud(width: u32) -> Vec<F<'static>> {
+        let mut f = vec![
+            F::Header("lidar_top"),
+            F::U32(1),
+            F::U32(width),
+            F::U32(1),
+            F::Str("x"),
+            F::U32(0),
+            F::U8(7),
+            F::U32(1),
+            F::U8(0),
+            F::U32(4),
+            F::U32(4 * width),
+            F::U32(4 * width),
+        ];
+        f.push(F::Bytes(4 * width as usize));
+        f.push(F::U8(1));
+        f
+    }
+
+    /// Every message type the dispatch decodes, each as one body described once.
+    ///
+    /// A schema missing from here is a decoder nothing holds to the parity claim, which is how a
+    /// reader that quietly depends on one encoding's field offsets would get in.
+    fn fixtures() -> Vec<(&'static str, Vec<F<'static>>)> {
+        let covariance = |n: usize| std::iter::repeat_with(|| F::F64(0.0)).take(n);
+        vec![
+            ("sensor_msgs/PointCloud2", point_cloud(4)),
+            (
+                "geometry_msgs/Twist",
+                vec![
+                    F::F64(1.5),
+                    F::F64(0.0),
+                    F::F64(0.0),
+                    F::F64(0.0),
+                    F::F64(0.0),
+                    F::F64(0.2),
+                ],
+            ),
+            (
+                "geometry_msgs/TwistStamped",
+                std::iter::once(F::Header("base_link"))
+                    .chain([1.5, 0.0, 0.0, 0.0, 0.0, 0.2].map(F::F64))
+                    .collect(),
+            ),
+            (
+                "geometry_msgs/Wrench",
+                vec![
+                    F::F64(3.0),
+                    F::F64(0.0),
+                    F::F64(-9.0),
+                    F::F64(0.0),
+                    F::F64(0.1),
+                    F::F64(0.0),
+                ],
+            ),
+            (
+                "geometry_msgs/WrenchStamped",
+                std::iter::once(F::Header("ft_sensor"))
+                    .chain([3.0, 0.0, -9.0, 0.0, 0.1, 0.0].map(F::F64))
+                    .collect(),
+            ),
+            (
+                "sensor_msgs/MagneticField",
+                std::iter::once(F::Header("imu_link"))
+                    .chain([2.1e-5, -1.4e-5, 4.6e-5].map(F::F64))
+                    .chain(covariance(9))
+                    .collect(),
+            ),
+            (
+                "sensor_msgs/Temperature",
+                vec![F::Header("probe"), F::F64(21.5), F::F64(0.01)],
+            ),
+            (
+                "sensor_msgs/FluidPressure",
+                vec![F::Header("baro"), F::F64(101_325.0), F::F64(1.0)],
+            ),
+            (
+                "sensor_msgs/Range",
+                vec![
+                    F::Header("sonar"),
+                    F::U8(0),
+                    F::F32(0.5),
+                    F::F32(0.2),
+                    F::F32(4.0),
+                    F::F32(1.5),
+                ],
+            ),
+            (
+                "sensor_msgs/LaserScan",
+                vec![
+                    F::Header("laser"),
+                    F::F32(-1.5),
+                    F::F32(1.5),
+                    F::F32(0.01),
+                    F::F32(0.0),
+                    F::F32(0.1),
+                    F::F32(0.1),
+                    F::F32(30.0),
+                    F::U32(3),
+                    F::F32(1.0),
+                    F::F32(2.0),
+                    F::F32(f32::INFINITY),
+                    F::U32(0),
+                ],
+            ),
+            (
+                "sensor_msgs/CompressedImage",
+                vec![
+                    F::Header("camera_front"),
+                    F::Str("rgb8; jpeg compressed bgr8"),
+                    F::U32(0),
+                ],
+            ),
+            (
+                "sensor_msgs/Image",
+                vec![
+                    F::Header("camera_front"),
+                    F::U32(48),
+                    F::U32(64),
+                    F::Str("rgb8"),
+                    F::U8(0),
+                    F::U32(192),
+                    F::U32(192 * 48),
+                    F::Bytes(192 * 48),
+                ],
+            ),
+            (
+                "sensor_msgs/CameraInfo",
+                std::iter::once(F::Header("camera_front"))
+                    .chain([F::U32(48), F::U32(64), F::Str("plumb_bob"), F::U32(5)])
+                    .chain(covariance(5))
+                    .chain([640.0, 0.0, 32.0, 0.0, 640.0, 24.0, 0.0, 0.0, 1.0].map(F::F64))
+                    .collect(),
+            ),
+            (
+                "nav_msgs/Odometry",
+                std::iter::once(F::Header("odom"))
+                    .chain([F::Str("base_link")])
+                    .chain([2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0].map(F::F64))
+                    .chain(covariance(36))
+                    .chain([1.5, 0.0, 0.0, 0.0, 0.0, 0.05].map(F::F64))
+                    .collect(),
+            ),
+            (
+                "sensor_msgs/JointState",
+                vec![
+                    F::Header("base_link"),
+                    F::U32(2),
+                    F::Str("head_pan"),
+                    F::Str("head_tilt"),
+                    F::U32(2),
+                    F::F64(0.4),
+                    F::F64(-0.2),
+                    F::U32(0),
+                    F::U32(0),
+                ],
+            ),
+            (
+                "sensor_msgs/Imu",
+                std::iter::once(F::Header("imu_link"))
+                    .chain([0.0, 0.0, 0.0, 1.0].map(F::F64))
+                    .chain(covariance(9))
+                    .chain([0.1, 0.2, 0.3].map(F::F64))
+                    .chain(covariance(9))
+                    .chain([0.0, 0.0, 9.81].map(F::F64))
+                    .chain(covariance(9))
+                    .collect(),
+            ),
+            (
+                "sensor_msgs/NavSatFix",
+                vec![
+                    F::Header("gnss"),
+                    F::U8(0),
+                    F::U8(0),
+                    F::U8(1),
+                    F::F64(37.4),
+                    F::F64(-122.1),
+                    F::F64(30.0),
+                ],
+            ),
+            (
+                "tf2_msgs/TFMessage",
+                std::iter::once(F::U32(1))
+                    .chain([F::Header("base_link"), F::Str("lidar_top")])
+                    .chain([0.0, 0.0, 1.6, 0.0, 0.0, 0.0, 1.0].map(F::F64))
+                    .collect(),
+            ),
+        ]
+    }
+
+    #[test]
+    fn every_message_reads_the_same_in_both_encodings() {
+        // The neutrality claim at the level it is actually made: which generation of ROS recorded a
+        // rig must not change what Veridex sees on it. A decoder that reached a field through one
+        // encoding's offsets would pass every test written against that encoding alone.
+        for (ros_type, fields) in fixtures() {
+            let mut as_cdr = Sink::default();
+            let cdr = as_cdr.decode(ros_type, &render(&fields, Encoding::Cdr), Encoding::Cdr);
+            let mut as_ros1 = Sink::default();
+            let ros1 = as_ros1.decode(ros_type, &render(&fields, Encoding::Ros1), Encoding::Ros1);
+
+            assert_eq!(
+                cdr, ros1,
+                "{ros_type}: the two encodings disagree about whether the body decoded"
+            );
+            assert_eq!(
+                cdr,
+                Some(true),
+                "{ros_type}: the fixture does not decode at all, so it proves nothing"
+            );
+            assert_eq!(
+                as_cdr.summary(),
+                as_ros1.summary(),
+                "{ros_type}: the same message yields a different CDM depending on its encoding"
+            );
+        }
+    }
+
+    #[test]
+    fn a_body_in_the_other_encoding_is_not_read_as_a_reading() {
+        // The other half of the claim: the encodings really are different, so reading a body the
+        // wrong way must not quietly produce the right answer. Where a wrong read still decodes —
+        // a run of doubles satisfies few invariants — it must at least not agree with the truth.
+        for (ros_type, fields) in fixtures() {
+            let mut truth = Sink::default();
+            truth.decode(ros_type, &render(&fields, Encoding::Ros1), Encoding::Ros1);
+            let truth = truth.summary();
+
+            let mut wrong = Sink::default();
+            wrong.decode(ros_type, &render(&fields, Encoding::Ros1), Encoding::Cdr);
+            assert_ne!(
+                wrong.summary(),
+                truth,
+                "{ros_type}: a ROS 1 body read as CDR produced the right answer, so this fixture \
+                 cannot tell the two encodings apart — give it a frame name whose length forces \
+                 CDR padding"
+            );
+        }
+    }
+}

@@ -10,6 +10,19 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **The encoding a rig was recorded in is held to changing nothing.** Every ROS message type the
+  shared dispatch decodes now has a fixture written *once* and rendered in both encodings — CDR with
+  its encapsulation header, alignment padding and NUL-counted strings, ROS 1 with none of those and a
+  `seq` in front of every header — and the test asserts the two produce the same CDM: the same point
+  layout and counts, image dimensions, intrinsics, transforms, trajectory and measured values, down
+  to the same answer about whether the body decoded at all.
+
+  Seventeen message types, one description each, because two hand-written fixtures per type would
+  let them drift into describing two different messages — the one way a parity test passes while the
+  claim it guards is false. A second test asserts the converse: read a body in the wrong encoding and
+  it must *not* report the right answer, which is what stops a fixture whose frame name happens to
+  make the two encodings coincide from proving nothing.
+
 - **A ROS 1 bag can be inventoried without unpacking a chunk.** `--metadata-only` is how a dataset
   too large to read on every commit is checked, and every other container supported it — a bag did
   not, on the grounds that its connection records live inside its chunks. They also live in its
