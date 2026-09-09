@@ -786,18 +786,21 @@ pub struct MediaParams {
 pub fn canonical_codec(name: &str) -> Option<&'static str> {
     match name.trim().to_ascii_lowercase().as_str() {
         "h264" | "avc" | "avc1" | "x264" | "libx264" | "libopenh264" | "openh264"
-        | "h264_videotoolbox" | "h264_nvenc" | "h264_qsv" | "h264_vaapi" | "h264_amf" => {
-            Some("avc1")
-        }
+        | "h264_videotoolbox" | "h264_nvenc" | "h264_qsv" | "h264_vaapi" | "h264_amf"
+        | "v_mpeg4/iso/avc" => Some("avc1"),
         "h265" | "hevc" | "hvc1" | "hev1" | "x265" | "libx265" | "hevc_videotoolbox"
-        | "hevc_nvenc" | "hevc_qsv" | "hevc_vaapi" | "hevc_amf" => Some("hvc1"),
+        | "hevc_nvenc" | "hevc_qsv" | "hevc_vaapi" | "hevc_amf" | "v_mpegh/iso/hevc" => {
+            Some("hvc1")
+        }
         "av1" | "av01" | "libaom-av1" | "libsvtav1" | "librav1e" | "av1_nvenc" | "av1_qsv"
-        | "av1_vaapi" => Some("av01"),
-        "vp9" | "vp09" | "libvpx-vp9" | "vp9_vaapi" | "vp9_qsv" => Some("vp09"),
-        "vp8" | "vp08" | "libvpx" => Some("vp08"),
-        "mpeg4" | "mp4v" | "libxvid" | "xvid" => Some("mp4v"),
-        "mjpeg" | "jpeg" | "mjpg" => Some("mjpg"),
-        "prores" | "apcn" | "prores_ks" | "prores_videotoolbox" => Some("apcn"),
+        | "av1_vaapi" | "v_av1" => Some("av01"),
+        "vp9" | "vp09" | "libvpx-vp9" | "vp9_vaapi" | "vp9_qsv" | "v_vp9" => Some("vp09"),
+        "vp8" | "vp08" | "libvpx" | "v_vp8" => Some("vp08"),
+        "mpeg4" | "mp4v" | "libxvid" | "xvid" | "v_mpeg4/iso/asp" | "v_mpeg4/iso/sp" => {
+            Some("mp4v")
+        }
+        "mjpeg" | "jpeg" | "mjpg" | "v_mjpeg" => Some("mjpg"),
+        "prores" | "apcn" | "prores_ks" | "prores_videotoolbox" | "v_prores" => Some("apcn"),
         _ => None,
     }
 }

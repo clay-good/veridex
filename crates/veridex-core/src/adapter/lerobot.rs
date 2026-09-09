@@ -425,8 +425,13 @@ fn walk_entry(path: &Path) -> Option<EntryKind> {
     target.is_file().then_some(EntryKind::File)
 }
 
-/// Container extensions Veridex knows how to read headers from (all ISO base media format).
-const MEDIA_EXTENSIONS: &[&str] = &["mp4", "m4v", "mov"];
+/// Container extensions Veridex knows how to read headers from: the ISO base media formats, and
+/// Matroska with its WebM subset — what an `ffmpeg` pipeline writes when it is not asked for MP4.
+///
+/// A video file whose extension is not here is not *found*, which is the one failure mode that
+/// misdiagnoses itself: every episode is then reported as having no video at all, sending a team to
+/// re-fetch files that are already sitting on their disk.
+const MEDIA_EXTENSIONS: &[&str] = &["mp4", "m4v", "mov", "mkv", "webm"];
 
 /// Where a video feature's media files live, resolved from the `videos/` tree.
 #[derive(Default)]
@@ -674,7 +679,7 @@ fn probe_stream_media(dataset_root: &Path, expected: &Path, declared: MediaParam
             frame_count: None,
         };
     }
-    match crate::media::probe_mp4(expected) {
+    match crate::media::probe(expected) {
         Ok(probe) => Media {
             uri,
             declared,
@@ -2022,8 +2027,8 @@ impl Adapter for LeRobotAdapter {
         }
         if !media.is_empty() {
             mapped_fields.push(
-                "videos/**.mp4 container headers -> stream.media (frame count, resolution, codec, \
-                 rate)"
+                "videos/** container headers (MP4 / Matroska) -> stream.media (frame count, \
+                 resolution, codec, rate)"
                     .into(),
             );
         }

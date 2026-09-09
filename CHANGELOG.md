@@ -10,6 +10,28 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A dataset whose videos are Matroska is read, not reported as having no video at all.** LeRobot
+  names a codec and a rate in its manifest, never a container, and an `ffmpeg` pipeline that was not
+  asked for MP4 writes `.mkv` or `.webm`. Veridex only collected ISO base media extensions, so those
+  files were never *found*: every episode came back `VIDEO.MEDIA_ABSENT` — "no episode of 2 has any
+  imagery", remedy `git lfs pull` — about video sitting on the caller's own disk. A wrong diagnosis
+  of an honest dataset is worse than an abstention, because it sends a team to re-fetch what is not
+  missing.
+
+  Matroska and WebM are read now, through an EBML walk held to the same untrusted-input discipline as
+  the MP4 one: every declared size validated against the bytes that remain, an iterative walk, and
+  ceilings on the two elements read into memory. Which container a file *is* comes from its magic
+  bytes rather than its name, so a converter that muxed Matroska into a `.mp4` is read rather than
+  called corrupt.
+
+  A Matroska has no sample table — nothing in it states how many frames it holds — so the count is
+  taken the only way the format allows: by walking the cluster tree and reading each block's header,
+  seeking over every payload, so this stays a metadata read with no decoder and no compressed frame
+  in memory. A laced block counts the frames it laces rather than one. Where the walk cannot finish —
+  a live-muxed file whose clusters declare no size — the count is **absent**, never zero: a zero is a
+  frame-count mismatch against every episode of a good recording, which is a claim about the data
+  made out of a limit of the reader.
+
 - **The bag index reader is held to the same untrusted-input discipline as the rest.** The
   metadata-only path follows an offset the *file* chose, to records the file wrote, and it is
   precisely the path a caller points at a huge archive they do not want to read whole — so every one

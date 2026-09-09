@@ -5,6 +5,10 @@
 //! rate. All four live in an MP4's `moov` box, which is metadata — so this module walks the ISO
 //! base media file format (ISO/IEC 14496-12) box tree and stops there. No decoder, no `mdat`.
 //!
+//! [`probe`] dispatches on the file's own magic bytes rather than on its name, to the ISO walk here
+//! or to the EBML walk in [`matroska`] — a container is what its bytes say it is, and a `.mp4` a
+//! converter wrote Matroska into is read rather than reported as corrupt.
+//!
 //! The file is untrusted, so the walk is bounded the same way ingestion is: box sizes are validated
 //! against what is actually left in the file rather than believed (so every box advances the cursor
 //! and no declared size reaches past the end), the walk is iterative rather than recursive, and only
@@ -17,6 +21,8 @@ use std::path::Path;
 
 use crate::cdm::MediaParams;
 
+pub mod matroska;
+
 /// Ceiling on the `moov` box Veridex will read into memory.
 ///
 /// `moov` is metadata: even an hour-long recording's sample tables are a few megabytes. The declared
@@ -24,16 +30,41 @@ use crate::cdm::MediaParams;
 /// than allocated for.
 const MAX_MOOV_BYTES: u64 = 64 * 1024 * 1024;
 
-/// What an MP4's headers say about its video track.
+/// What a container's headers say about its video track.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Mp4Probe {
+pub struct MediaProbe {
     /// The track's encoding parameters, as far as the container states them.
     pub params: MediaParams,
     /// The video track's sample count — the frames the file holds.
     pub frame_count: Option<u64>,
 }
 
-/// Read `path`'s headers and report what its video track holds.
+/// Read `path`'s headers and report what its video track holds, whichever container it is.
+///
+/// The choice is made on the file's first bytes, not its extension: a container is what its bytes
+/// say it is, and a dataset whose videos are named one thing and written as another is a dataset
+/// whose frames can still be counted.
+pub fn probe(path: &Path) -> Result<MediaProbe, String> {
+    if is_matroska(path) {
+        return matroska::probe(path);
+    }
+    probe_mp4(path)
+}
+
+/// Whether `path` opens with the EBML magic. An unreadable file answers `false` and is handed to the
+/// MP4 walk, which reports the I/O failure by name — one place to describe it rather than two.
+fn is_matroska(path: &Path) -> bool {
+    let Ok(mut file) = File::open(path) else {
+        return false;
+    };
+    let mut magic = [0u8; 4];
+    match file.read_exact(&mut magic) {
+        Ok(()) => matroska::is_ebml(&magic),
+        Err(_) => false,
+    }
+}
+
+/// Read `path`'s headers as an MP4 and report what its video track holds.
 ///
 /// Returns `Err` with a human-readable reason when the file is not a readable MP4: that reason is
 /// what `VIDEO.MEDIA_UNREADABLE` reports, so it names the specific structure that was wrong rather
@@ -43,7 +74,7 @@ pub struct Mp4Probe {
 /// [`std::io::ErrorKind`] rather than the operating system's error text — which is
 /// platform- and locale-dependent, and would otherwise make the same dataset report differently on
 /// two machines.
-pub fn probe_mp4(path: &Path) -> Result<Mp4Probe, String> {
+pub fn probe_mp4(path: &Path) -> Result<MediaProbe, String> {
     let mut file = File::open(path).map_err(|e| format!("cannot open: {:?}", e.kind()))?;
     let file_len = file
         .metadata()
@@ -242,7 +273,7 @@ fn descend<'a>(buf: &'a [u8], path: &[&[u8; 4]]) -> Option<&'a [u8]> {
 /// The *first* such track deliberately: a LeRobot video file holds one video track, and picking by
 /// position rather than by "the largest" or "the longest" keeps the probe a pure function of the
 /// bytes, so the same file always probes identically.
-fn video_track(moov: &[u8]) -> Option<Mp4Probe> {
+fn video_track(moov: &[u8]) -> Option<MediaProbe> {
     // A **fragmented** file (`ffmpeg -movflags frag_keyframe+empty_moov`, DASH/CMAF, most hardware
     // recorders) declares `mvex` in its `moov` and carries every sample in `moof` fragments, leaving
     // the sample table in `moov` empty. Its `stsz` therefore says zero — which is "the table is not
@@ -285,7 +316,7 @@ fn video_track(moov: &[u8]) -> Option<Mp4Probe> {
             (Some(n), Some((ts, d))) if ts > 0 && d > 0 => Some(n as f64 * ts as f64 / d as f64),
             _ => None,
         };
-        return Some(Mp4Probe {
+        return Some(MediaProbe {
             params: MediaParams {
                 codec,
                 width,

@@ -114,8 +114,9 @@ the build plan.
       (`STATISTICAL.OUTLIER`), and non-finite values in the data (`STATISTICAL.NON_FINITE_OBSERVED`,
       scanned across every dimension). MCAP abstains from value-based checks (opaque payloads).
 - [x] Video/media: the container against the data it is paired with. The LeRobot adapter resolves
-      each video stream's `videos/**/<feature>/episode_<n>.mp4`, reads its ISO-BMFF headers (never a
-      pixel), and carries both the manifest's declared encoding and the container's own into the CDM
+      each video stream's `videos/**/<feature>/episode_<n>.<ext>`, reads its ISO-BMFF or Matroska
+      headers (never a pixel, and the container decided by magic bytes rather than by extension), and
+      carries both the manifest's declared encoding and the container's own into the CDM
       — so `video.media-readable` catches a missing or unparseable file (`VIDEO.MEDIA_MISSING` /
       `VIDEO.MEDIA_UNREADABLE`) and `video.media-conformance` catches the video/data desync and the
       re-export drift (`VIDEO.FRAME_COUNT_MISMATCH` / `RESOLUTION_MISMATCH` / `CODEC_MISMATCH` /

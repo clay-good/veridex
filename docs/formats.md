@@ -105,6 +105,20 @@ than once per episode). Veridex reads the container's **headers only** — it ne
 and it compares the codec across the names for one encoder, so a manifest saying `h264` against a
 container stamped `avc1` is not reported as a mismatch.
 
+**MP4 and Matroska, chosen by the bytes.** Both container families a robot dataset ships video in are
+read: the ISO base media formats (`.mp4`, `.m4v`, `.mov`) and Matroska with its WebM subset (`.mkv`,
+`.webm`) — what an `ffmpeg` pipeline writes when it is not asked for MP4. Which one a file is is
+decided by its **magic bytes**, not its extension, so a converter that muxed Matroska into a `.mp4`
+produces a dataset whose frames are still counted.
+
+A Matroska carries no sample table: nothing in it states how many frames it holds. So the count is
+taken the only way the format allows, by walking the cluster tree and reading each block's *header* —
+payloads are seeked over, never read, and a laced block counts the frames it laces rather than one.
+Where that walk cannot be completed — a live-muxed file whose clusters declare no size — the frame
+count is **absent** rather than zero, and everything the `Tracks` element stated is still reported. A
+zero would be a frame-count mismatch against every episode of an honest recording, which is a claim
+about the data made out of a limit of the reader.
+
 It works on an **RLDS/TFDS** dataset too — the layout Open X-Embodiment and most TFDS-published
 robot datasets ship in, and the third format behind the same command:
 

@@ -3,7 +3,9 @@
 //! The MP4s here are built by hand from the *minimum* set of boxes the ISO base media format
 //! requires to describe a video track — deliberately fewer than the demo generator writes, so these
 //! tests prove the probe reads the structure it is supposed to read rather than relying on anything
-//! extra a particular writer happens to emit.
+//! extra a particular writer happens to emit. The Matroska files are built the same way, and to the
+//! same standard: a Matroska carries no sample table, so its frame count exists only as the blocks
+//! in its clusters, and the fixtures state that count in the one way the format does.
 
 use std::fs;
 use std::path::Path;
@@ -123,6 +125,113 @@ fn mdia_trak(mdia: &[u8]) -> Vec<u8> {
     bx(b"mdia", mdia)
 }
 
+// ---- Matroska construction ----------------------------------------------------------------------
+
+/// One EBML element: the id bytes verbatim, then the payload length as a variable-length integer in
+/// its shortest form (what a real writer emits), then the payload.
+fn el(id: &[u8], payload: &[u8]) -> Vec<u8> {
+    let mut out = id.to_vec();
+    out.extend_from_slice(&size_vint(payload.len() as u64));
+    out.extend_from_slice(payload);
+    out
+}
+
+/// A length as an EBML vint, in the shortest width that holds it without colliding with the
+/// all-ones value the format reserves for "unknown".
+fn size_vint(n: u64) -> Vec<u8> {
+    for width in 1..=8u32 {
+        let bits = 7 * width;
+        // The all-ones value is reserved for "unknown", so a length that would encode as it needs
+        // the next width up.
+        if n < (1u64 << bits) - 1 {
+            let mut bytes = n.to_be_bytes()[8 - width as usize..].to_vec();
+            bytes[0] |= 0x80u8 >> (width - 1);
+            return bytes;
+        }
+    }
+    unreachable!("a length this large is not written by these fixtures")
+}
+
+/// An EBML unsigned integer, big-endian, in its shortest whole-byte form.
+fn uint_el(id: &[u8], v: u64) -> Vec<u8> {
+    let mut bytes = v.to_be_bytes().to_vec();
+    while bytes.len() > 1 && bytes[0] == 0 {
+        bytes.remove(0);
+    }
+    el(id, &bytes)
+}
+
+/// How a Matroska fixture should differ from the plain one-frame-per-block file.
+#[derive(Clone, Copy, Default, PartialEq)]
+struct Mkv {
+    /// Put `lace` frames in each block using EBML lacing, instead of one.
+    lace: Option<u8>,
+    /// Declare the cluster's size as the all-ones "unknown" vint, as a live muxer does.
+    unknown_cluster_size: bool,
+    /// Write `DocType` `webm` instead of `matroska`.
+    webm: bool,
+}
+
+/// A minimal Matroska describing `frames` frames of `width`x`height` in `codec` at `fps`.
+fn build_mkv(frames: u32, width: u16, height: u16, codec: &str, fps: u32, shape: Mkv) -> Vec<u8> {
+    let doc_type = if shape.webm { "webm" } else { "matroska" };
+    let mut ebml = Vec::new();
+    ebml.extend(uint_el(&[0x42, 0x86], 1)); // EBMLVersion
+    ebml.extend(el(&[0x42, 0x82], doc_type.as_bytes())); // DocType
+    let header = el(&[0x1A, 0x45, 0xDF, 0xA3], &ebml);
+
+    let mut video = Vec::new();
+    video.extend(uint_el(&[0xB0], width as u64)); // PixelWidth
+    video.extend(uint_el(&[0xBA], height as u64)); // PixelHeight
+    let mut entry = Vec::new();
+    entry.extend(uint_el(&[0xD7], 1)); // TrackNumber
+    entry.extend(uint_el(&[0x83], 1)); // TrackType: video
+    entry.extend(el(&[0x86], codec.as_bytes())); // CodecID
+    entry.extend(uint_el(
+        &[0x23, 0xE3, 0x83],
+        1_000_000_000 / fps.max(1) as u64,
+    )); // DefaultDuration
+    entry.extend(el(&[0xE0], &video));
+    let tracks = el(&[0x16, 0x54, 0xAE, 0x6B], &el(&[0xAE], &entry));
+
+    // One cluster holding every frame, as `SimpleBlock`s on track 1. The payload is a single byte:
+    // the probe must never look at it, and a fixture that carried real pixels could not prove that.
+    let per_block = shape.lace.map_or(1, |n| n as u32);
+    let mut cluster = uint_el(&[0xE7], 0); // Timestamp
+    let mut written = 0u32;
+    while written < frames {
+        let mut block = vec![0x81]; // track number 1, as a one-byte vint
+        block.extend_from_slice(&0i16.to_be_bytes()); // relative timestamp
+        match shape.lace {
+            // Flags with fixed lacing set, then the lace count minus one, then one byte per frame.
+            Some(n) => {
+                block.push(0x84);
+                block.push(n - 1);
+                block.extend(std::iter::repeat(0u8).take(n as usize));
+            }
+            None => {
+                block.push(0x80);
+                block.push(0);
+            }
+        }
+        cluster.extend(el(&[0xA3], &block));
+        written += per_block;
+    }
+    let cluster = if shape.unknown_cluster_size {
+        let mut out = vec![0x1F, 0x43, 0xB6, 0x75, 0xFF];
+        out.extend_from_slice(&cluster);
+        out
+    } else {
+        el(&[0x1F, 0x43, 0xB6, 0x75], &cluster)
+    };
+
+    let mut segment = tracks;
+    segment.extend(cluster);
+    let mut out = header;
+    out.extend(el(&[0x18, 0x53, 0x80, 0x67], &segment));
+    out
+}
+
 // ---- dataset construction -----------------------------------------------------------------------
 
 /// How a variant's video files should differ from what the manifest declares.
@@ -144,6 +253,26 @@ struct VideoPlan {
     aggregated: bool,
     /// Write no `videos/` tree at all.
     no_videos: bool,
+    /// The container the videos are written in. The manifest says the same thing either way: a
+    /// LeRobot manifest names a codec and a rate, never a container.
+    container: Container,
+}
+
+/// Which container a variant's videos are written in.
+#[derive(Clone, Copy, Default)]
+enum Container {
+    #[default]
+    Mp4,
+    Matroska(Mkv),
+}
+
+impl Container {
+    fn extension(self) -> &'static str {
+        match self {
+            Container::Mp4 => "mp4",
+            Container::Matroska(_) => "mkv",
+        }
+    }
 }
 
 /// Write a two-episode LeRobot dataset of `rows_per_episode` frames with one camera feature, its
@@ -195,10 +324,11 @@ fn write_dataset(dir: &Path, rows_per_episode: u64, plan: VideoPlan) {
         if plan.skip_episode && episode == plan.episode {
             continue;
         }
+        let extension = plan.container.extension();
         let name = if plan.aggregated {
-            format!("file-{episode:03}.mp4")
+            format!("file-{episode:03}.{extension}")
         } else {
-            format!("episode_{episode:06}.mp4")
+            format!("episode_{episode:06}.{extension}")
         };
         let path = dest.join(name);
         if plan.corrupt_episode && episode == plan.episode {
@@ -209,7 +339,30 @@ fn write_dataset(dir: &Path, rows_per_episode: u64, plan: VideoPlan) {
             Some(n) if episode == plan.episode => n,
             _ => rows_per_episode as u32,
         };
-        fs::write(&path, build_mp4(frames, width, height, &codec, FPS as u32)).unwrap();
+        let bytes = match plan.container {
+            Container::Mp4 => build_mp4(frames, width, height, &codec, FPS as u32),
+            Container::Matroska(shape) => build_mkv(
+                frames,
+                width,
+                height,
+                &matroska_codec_id(&codec),
+                FPS as u32,
+                shape,
+            ),
+        };
+        fs::write(&path, bytes).unwrap();
+    }
+}
+
+/// The Matroska `CodecID` for the encoding an MP4 names by this fourcc — the same encoder, spelled
+/// the way each container spells it.
+fn matroska_codec_id(fourcc: &[u8; 4]) -> String {
+    match fourcc {
+        b"avc1" => "V_MPEG4/ISO/AVC".to_string(),
+        b"hvc1" => "V_MPEGH/ISO/HEVC".to_string(),
+        b"av01" => "V_AV1".to_string(),
+        b"vp09" => "V_VP9".to_string(),
+        other => String::from_utf8_lossy(other).to_string(),
     }
 }
 
@@ -1017,6 +1170,194 @@ fn no_damaged_container_takes_the_probe_down() {
             // containers any more.
             let _ = std::panic::catch_unwind(|| veridex_core::media::probe_mp4(&path))
                 .unwrap_or_else(|_| panic!("`{shape}` / `{what}` panicked the probe"));
+        }
+    }
+}
+
+/// The camera stream's media in episode 0 — the one the manifest declares as video.
+fn camera_media(dataset: &Dataset) -> &veridex_core::cdm::Media {
+    dataset.episodes[0]
+        .streams
+        .iter()
+        .find(|s| s.name == FEATURE)
+        .and_then(|s| s.media.as_ref())
+        .expect("the camera stream carries its media file")
+}
+
+// ---- Matroska ------------------------------------------------------------------------------------
+
+/// The `.mkv` a dataset ships is *its* video, not a missing one.
+///
+/// Before the EBML walk existed, a container Veridex could not read was not even looked for: the
+/// video index only collected ISO base media extensions, so every episode of an honest dataset
+/// reported `VIDEO.MEDIA_ABSENT` — "no video files present at all", remedy `git lfs pull` — about
+/// files sitting on the caller's disk. A wrong diagnosis of a real dataset is worse than an
+/// abstention, because it sends someone to fix what is not broken.
+#[test]
+fn a_matroska_dataset_is_read_rather_than_reported_as_having_no_video() {
+    let (dataset, findings) = run(
+        VideoPlan {
+            container: Container::Matroska(Mkv::default()),
+            ..VideoPlan::default()
+        },
+        10,
+    );
+    assert!(findings.is_empty(), "{findings:#?}");
+    let media = camera_media(&dataset);
+    assert_eq!(media.status, MediaStatus::Read);
+    // Every one of the four facts the video checks need, measured from the container rather than
+    // copied from the manifest that is being checked against it.
+    assert_eq!(media.frame_count, Some(10));
+    assert_eq!(media.observed.width, Some(640));
+    assert_eq!(media.observed.height, Some(480));
+    // A Matroska states a frame *duration* in whole nanoseconds, so 30 fps is stored as 33333333 ns
+    // and reads back a hair over 30 — the value the file actually holds, not a rounded one.
+    assert!(
+        (media.observed.fps.unwrap() - 30.0).abs() < 1e-5,
+        "{:?}",
+        media.observed.fps
+    );
+    assert_eq!(media.observed.codec.as_deref(), Some("V_MPEG4/ISO/AVC"));
+}
+
+/// The count comes from the blocks, so a short Matroska is caught the same way a short MP4 is —
+/// which is the whole point of reading the container rather than trusting the manifest.
+#[test]
+fn a_matroska_shorter_than_its_episode_is_caught() {
+    let (_, findings) = run(
+        VideoPlan {
+            container: Container::Matroska(Mkv::default()),
+            frames_override: Some(7),
+            episode: 1,
+            ..VideoPlan::default()
+        },
+        10,
+    );
+    assert_eq!(findings.len(), 1, "{findings:#?}");
+    assert_eq!(findings[0].code, "VIDEO.FRAME_COUNT_MISMATCH");
+    assert!(findings[0].message.contains("episode 1"), "{findings:#?}");
+}
+
+/// WebM is Matroska with a different `DocType`, and a dataset written in it is not a different
+/// dataset.
+#[test]
+fn a_webm_dataset_reads_the_same_as_a_matroska_one() {
+    let (_, findings) = run(
+        VideoPlan {
+            container: Container::Matroska(Mkv {
+                webm: true,
+                ..Mkv::default()
+            }),
+            ..VideoPlan::default()
+        },
+        10,
+    );
+    assert!(findings.is_empty(), "{findings:#?}");
+}
+
+/// A laced block carries several frames under one block header. Counting blocks instead of frames
+/// would report every such file as holding a fraction of its own footage — a frame-count mismatch
+/// on a perfectly good dataset, which is the same false alarm in a different costume.
+#[test]
+fn a_laced_block_counts_the_frames_it_laces_not_one() {
+    let (dataset, findings) = run(
+        VideoPlan {
+            container: Container::Matroska(Mkv {
+                lace: Some(5),
+                ..Mkv::default()
+            }),
+            ..VideoPlan::default()
+        },
+        10,
+    );
+    assert!(findings.is_empty(), "{findings:#?}");
+    // Ten frames in two blocks of five, not two.
+    let media = camera_media(&dataset);
+    assert_eq!(media.frame_count, Some(10));
+}
+
+/// A live muxer writes clusters of unknown size, and their end cannot be found without guessing.
+/// The count is then *absent*, never zero: a zero would be reported as a frame-count mismatch
+/// against every episode, which is a claim about the recording made out of a limit of the reader.
+#[test]
+fn a_cluster_of_unknown_size_yields_no_count_rather_than_a_wrong_one() {
+    let (dataset, findings) = run(
+        VideoPlan {
+            container: Container::Matroska(Mkv {
+                unknown_cluster_size: true,
+                ..Mkv::default()
+            }),
+            ..VideoPlan::default()
+        },
+        10,
+    );
+    assert!(findings.is_empty(), "{findings:#?}");
+    let media = camera_media(&dataset);
+    assert_eq!(media.status, MediaStatus::Read);
+    assert_eq!(media.frame_count, None);
+    // What the Tracks element stated is still reported: an abstention on the count is not an
+    // abstention on the file.
+    assert_eq!(media.observed.width, Some(640));
+    assert!(media.observed.fps.is_some());
+}
+
+/// The container is decided by the file's bytes, not its name. A pipeline that muxed Matroska into
+/// a `.mp4` — `ffmpeg` does exactly this when told `-f matroska` with an `.mp4` output — ships a
+/// dataset whose videos are readable, and calling them corrupt would be a claim about the file made
+/// out of its file name.
+#[test]
+fn a_matroska_named_mp4_is_read_as_what_its_bytes_say_it_is() {
+    let dir = tempfile::tempdir().unwrap();
+    write_dataset(dir.path(), 10, VideoPlan::default());
+    let dest = dir.path().join("videos").join(FEATURE);
+    for episode in 0..2u64 {
+        fs::write(
+            dest.join(format!("episode_{episode:06}.mp4")),
+            build_mkv(10, 640, 480, "V_MPEG4/ISO/AVC", FPS as u32, Mkv::default()),
+        )
+        .unwrap();
+    }
+    let dataset = ingest(dir.path());
+    assert!(video_findings(&dataset).is_empty());
+    assert_eq!(camera_media(&dataset).frame_count, Some(10));
+}
+
+/// Every prefix of a Matroska is a file some interrupted transfer left behind, and every one of
+/// them must produce a verdict or a reason — never a panic, and never a frame count assembled out
+/// of whatever the truncation happened to leave.
+#[test]
+fn a_truncated_matroska_is_refused_rather_than_read_past_its_end() {
+    let whole = build_mkv(10, 640, 480, "V_AV1", FPS as u32, Mkv::default());
+    let dir = tempfile::tempdir().unwrap();
+    for cut in 1..whole.len() {
+        let path = dir.path().join("cut.mkv");
+        fs::write(&path, &whole[..cut]).unwrap();
+        match veridex_core::media::probe(&path) {
+            // A prefix that happens to hold the whole Tracks element is legitimately readable; what
+            // it must never do is report more frames than the bytes it kept can hold.
+            Ok(probe) => assert!(
+                probe.frame_count.unwrap_or(0) <= 10,
+                "cut at {cut} reported {:?} frames",
+                probe.frame_count
+            ),
+            Err(reason) => assert!(!reason.is_empty(), "cut at {cut}"),
+        }
+    }
+}
+
+/// A byte flipped anywhere in a container is the shape a corrupted download takes, and the walk is
+/// pointed at attacker-controlled files: the only two acceptable answers are a probe and a reason.
+#[test]
+fn a_bit_flipped_matroska_never_panics() {
+    let whole = build_mkv(6, 320, 240, "V_VP9", FPS as u32, Mkv::default());
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("flip.mkv");
+    for byte in 0..whole.len() {
+        for bit in [0x01u8, 0x40, 0x80] {
+            let mut bytes = whole.clone();
+            bytes[byte] ^= bit;
+            fs::write(&path, &bytes).unwrap();
+            let _ = veridex_core::media::probe(&path);
         }
     }
 }
