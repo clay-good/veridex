@@ -624,3 +624,101 @@ fn the_seq_on_a_ros_1_header_counts_what_the_publisher_sent() {
     assert_eq!(seq.missing, 2, "3 and 4 never reached the bag");
     assert_eq!(seq.non_increasing, 0);
 }
+
+/// The demo ROS 1 rig, through the whole pipeline.
+///
+/// The tests above prove each decoder against a body built for it. This one proves the *recording*:
+/// a seven-topic bag the demo generator writes from the format's specification, ingested and checked
+/// the way a user's would be.
+fn demo_bag(dir: &std::path::Path, variant: &str) -> veridex_core::cdm::Dataset {
+    let path = dir.join(format!("{variant}.bag"));
+    veridex_demo::rosbag1::write(&path, variant).expect("write the demo bag");
+    Rosbag1Adapter
+        .ingest(&Source::Local(path), &IngestOptions::default())
+        .expect("the demo bag ingests")
+        .dataset
+}
+
+fn finding_codes(d: &veridex_core::cdm::Dataset) -> Vec<String> {
+    let engine = veridex_core::checks::default_engine().expect("the standard catalog");
+    let hash = veridex_core::content_hash(d);
+    let mut codes: Vec<String> = engine
+        .run(d, hash, &veridex_core::RunConfig::default())
+        .findings
+        .into_iter()
+        .map(|f| f.code)
+        .collect();
+    codes.sort();
+    codes
+}
+
+#[test]
+fn the_demo_rig_describes_itself_out_of_its_own_message_bodies() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let d = demo_bag(dir.path(), "rig");
+
+    // The rig's geometry, decoded from the recording rather than claimed by a sidecar: three
+    // transforms off `/tf_static` and the camera's intrinsics off its `CameraInfo`.
+    let calib = d.calibration.as_ref().expect("a calibration");
+    assert_eq!(calib.transforms.len(), 3);
+    assert_eq!(calib.intrinsics.len(), 1);
+    assert_eq!(calib.intrinsics[0].fx, 640.0);
+
+    // The ego trajectory, off `/odom`, in the frame the messages name.
+    let ep = &d.episodes[0];
+    assert_eq!(ep.ego_poses.as_ref().map(|p| p.len()), Some(40));
+    assert_eq!(ep.ego_frame.as_deref(), Some("base_link"));
+
+    let by = |n: &str| ep.streams.iter().find(|s| s.name == n).expect(n);
+    // The streams whose payload *is* their measurement are measured.
+    for name in ["/imu/data", "/joint_states", "/odom"] {
+        assert!(by(name).observed_stats.is_some(), "{name} is measured");
+    }
+    // The two whose payload is bulk are counted, not interpreted: returns per sweep, pixels per
+    // frame. That is what catches a driver that kept publishing after it lost its sensor.
+    assert_eq!(
+        by("/lidar/points")
+            .observed_point_counts
+            .map(|c| (c.min, c.max)),
+        Some((1024, 1024))
+    );
+    let dims = by("/camera/image_raw")
+        .observed_image_dims
+        .expect("the camera's frames are sized");
+    assert_eq!((dims.min_width, dims.min_height), (64, 48));
+    // Every body decoded — a rig fixture whose bodies fail is not exercising the decoders.
+    for s in &ep.streams {
+        if let Some(b) = s.observed_body_decodes {
+            assert_eq!(b.failed, 0, "{} had bodies that did not decode", s.name);
+        }
+    }
+
+    // A healthy rig, and the checks that grade one had something to grade.
+    let codes = finding_codes(&d);
+    assert!(
+        !codes.iter().any(|c| c.starts_with("AUTONOMY.")),
+        "the healthy rig raises no autonomy finding: {codes:?}"
+    );
+}
+
+#[test]
+fn a_camera_losing_a_fifth_of_its_messages_moves_nothing_but_the_count() {
+    // The same rig with a camera whose transport dropped one message in five. The survivors keep
+    // the times they were published at, so nothing in the timeline records the loss — and ROS 2
+    // dropped the field that does. On a `.bag` the publisher's `header.seq` still carries it, which
+    // is the whole point of reading it.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let healthy = finding_codes(&demo_bag(dir.path(), "rig"));
+    let lossy = finding_codes(&demo_bag(dir.path(), "lossy-camera"));
+    let added: Vec<&String> = lossy.iter().filter(|c| !healthy.contains(c)).collect();
+    let removed: Vec<&String> = healthy.iter().filter(|c| !lossy.contains(c)).collect();
+    assert_eq!(
+        added,
+        ["AUTONOMY.SEQUENCE_DROPPED"].iter().collect::<Vec<_>>(),
+        "losing a fifth of a camera must add exactly the finding that counts it"
+    );
+    assert!(
+        removed.is_empty(),
+        "and must take nothing away: {removed:?}"
+    );
+}

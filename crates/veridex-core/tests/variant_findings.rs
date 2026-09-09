@@ -203,63 +203,13 @@ fn write_generated(dir: &Path) -> Vec<(String, std::path::PathBuf)> {
         }
     }
 
-    // A ROS 1 bag, the ninth adapter and the second with no generator: its own tests build bags
-    // inline, so without this every property in this file would be held over the other eight
-    // readers only. One uncompressed chunk carrying two topics, which is all a bag needs to be one.
-    let bag_path = dir.join("rosbag1-drive.bag");
-    {
-        let field = |name: &str, value: &[u8]| {
-            let mut f = name.as_bytes().to_vec();
-            f.push(b'=');
-            f.extend_from_slice(value);
-            let mut out = (f.len() as u32).to_le_bytes().to_vec();
-            out.extend_from_slice(&f);
-            out
-        };
-        let rec = |header: Vec<u8>, data: &[u8]| {
-            let mut out = (header.len() as u32).to_le_bytes().to_vec();
-            out.extend_from_slice(&header);
-            out.extend_from_slice(&(data.len() as u32).to_le_bytes());
-            out.extend_from_slice(data);
-            out
-        };
-        let mut inner = Vec::new();
-        for (conn, topic, ty) in [
-            (0u32, "/lidar/points", "sensor_msgs/PointCloud2"),
-            (1u32, "/imu/data", "sensor_msgs/Imu"),
-        ] {
-            let mut body = field("topic", topic.as_bytes());
-            body.extend_from_slice(&field("type", ty.as_bytes()));
-            body.extend_from_slice(&field("md5sum", b"0123456789abcdef0123456789abcdef"));
-            body.extend_from_slice(&field("message_definition", b"# empty\n"));
-            let mut header = field("op", &[0x07]);
-            header.extend_from_slice(&field("conn", &conn.to_le_bytes()));
-            header.extend_from_slice(&field("topic", topic.as_bytes()));
-            inner.extend_from_slice(&rec(header, &body));
-        }
-        for i in 0..12u32 {
-            for conn in [0u32, 1] {
-                let ns = 1_700_000_000_000_000_000u64 + u64::from(i) * 100_000_000;
-                let mut time = ((ns / 1_000_000_000) as u32).to_le_bytes().to_vec();
-                time.extend_from_slice(&((ns % 1_000_000_000) as u32).to_le_bytes());
-                let mut header = field("op", &[0x02]);
-                header.extend_from_slice(&field("conn", &conn.to_le_bytes()));
-                header.extend_from_slice(&field("time", &time));
-                inner.extend_from_slice(&rec(header, &[conn as u8, i as u8, 0, 0, 0, 0, 0, 0]));
-            }
-        }
-        let mut whole = b"#ROSBAG V2.0\n".to_vec();
-        let mut bag_header = field("op", &[0x03]);
-        bag_header.extend_from_slice(&field("conn_count", &2u32.to_le_bytes()));
-        bag_header.extend_from_slice(&field("chunk_count", &1u32.to_le_bytes()));
-        bag_header.extend_from_slice(&field("callerid", b"/rosbag_record"));
-        whole.extend_from_slice(&rec(bag_header, &[]));
-        let mut chunk_header = field("op", &[0x05]);
-        chunk_header.extend_from_slice(&field("compression", b"none"));
-        chunk_header.extend_from_slice(&field("size", &(inner.len() as u32).to_le_bytes()));
-        whole.extend_from_slice(&rec(chunk_header, &inner));
-        if std::fs::write(&bag_path, &whole).is_ok() {
-            out.push(("rosbag1/drive".to_string(), bag_path));
+    // A ROS 1 bag, the ninth adapter. Two variants of the demo rig: a healthy seven-topic
+    // recording, and the same one with a camera whose transport dropped a fifth of its messages —
+    // a loss nothing in the timeline records, and that only a `.bag` carries the evidence of.
+    for variant in veridex_demo::rosbag1::VARIANTS {
+        let path = dir.join(format!("rosbag1-{variant}.bag"));
+        if veridex_demo::rosbag1::write(&path, variant).is_ok() {
+            out.push((format!("rosbag1/{variant}"), path));
         }
     }
 

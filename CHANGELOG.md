@@ -10,6 +10,24 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A demo ROS 1 rig, so the bag path is exercised end to end rather than asserted.** The reader's
+  own tests prove each decoder against a body built for it; nothing ran a whole `.bag` through
+  ingest → validate → score. The sweep's bag fixture was two topics of filler bytes, so every
+  property in `variant_findings` was being held over a bag that decoded nothing.
+
+  `veridex-demo` now writes one: a seven-topic recording over ~2.0 s — LiDAR at 10 Hz, camera and
+  its `CameraInfo` at 20 Hz, IMU at 100 Hz, odometry and joint states at 20 Hz, and a latched
+  `/tf_static` carrying the tree that relates them — built from the ROS 1 specification rather than
+  from the reader's idea of it. It checks clean, and its calibration and ego trajectory come out of
+  its own message bodies (`veridex provenance` reports `calibration` as recorded in-band).
+
+  Its second variant is the case only a `.bag` can answer: a camera whose transport dropped one
+  message in five, with the survivors at the times they were published. The timeline holds no trace
+  — every rate, gap, jitter and sync check passes on both bags identically — and the two reports
+  differ by exactly one finding, `AUTONOMY.SEQUENCE_DROPPED`, counted from the publisher's own
+  `header.seq`. Both variants are in the sweep, so the nine properties there now run over a bag that
+  really decodes.
+
 - **A ROS 1 bag's message bodies are decoded, through the one dispatch every ROS reader shares.**
   A `.bag` reached the structural, temporal, semantic and provenance families and stopped there: its
   bodies were fingerprinted, so the statistical and autonomy families abstained on every stream in

@@ -434,6 +434,30 @@ is the one direct evidence of a message that never reached the recorder — ever
 recording is what arrived. ROS 2 dropped the field, so a `.bag` answers a question the same rig
 recorded to a `.db3` cannot.
 
+There is a demo bag, so none of this has to be taken on trust:
+
+```sh
+# a seven-topic rig recording: LiDAR, camera + CameraInfo, IMU, odometry, joint states, /tf_static
+cargo run -p veridex-demo --example make_demo_rosbag1 -- /tmp/rig.bag
+cargo run -p veridex-cli -- check /tmp/rig.bag
+cargo run -p veridex-cli -- provenance /tmp/rig.bag   # `calibration` — recorded in-band, not claimed
+```
+
+It passes — the only warning is the `license` no bag records — with the rig's transform tree and camera intrinsics decoded out of the
+recording's own `/tf_static` and `CameraInfo` messages, an ego trajectory out of `/odom`, and the
+IMU, joint states and ego velocity measured per dimension. The second variant is the case only a
+ROS 1 bag can answer:
+
+```sh
+cargo run -p veridex-demo --example make_demo_rosbag1 -- /tmp/lossy.bag lossy-camera
+cargo run -p veridex-cli -- check /tmp/lossy.bag
+```
+
+The camera's transport dropped one message in five. The survivors keep the times they were published
+at, so the timeline holds no trace of the loss — every rate, gap, jitter and sync check passes, on
+both bags, identically. The two reports differ by exactly one finding,
+`AUTONOMY.SEQUENCE_DROPPED`, counted from the publisher's own `header.seq`.
+
 And on a **CAN + DBC** log — raw vehicle-bus traffic, which on its own is opaque bytes. The `.dbc` is
 the signal database that gives those bytes meaning, so Veridex ingests the two together: point it at a
 directory holding one `.dbc` and one or more candump logs, and it decodes each frame per the database
