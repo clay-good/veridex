@@ -413,15 +413,26 @@ read them, so the run says so and the verdict carries `COVERAGE.SOURCE_UNREAD`. 
 connection the bag never declared is reported the same way, because the topic and type those frames
 belong to are unknown and attributing them to a stream anyway would invent one.
 
-What a bag does **not** yet give is decoded message bodies. They are fingerprinted into per-frame
-content hashes, never interpreted — so a `.bag` reaches the structural, temporal, semantic and
-provenance families in full, and the statistical and autonomy families abstain on it out loud the way
-they do for any container whose payloads are not decoded. ROS 1 serialization puts the same fields
-in the same order as CDR, but it is not the same encoding: there is no four-byte encapsulation
-header, there is no alignment padding between primitives, and every `std_msgs/Header` carries a
-`seq` counter that ROS 2's does not. So the typed decoders are reachable from here — but through a
-reader that knows those three differences, not by handing bag bytes to the CDR one. Wiring that is
-the next step rather than part of this one.
+Message **bodies** are decoded, so a `.bag` reaches every family a rosbag2 recording does: a
+`PointCloud2`'s point layout and per-sweep return count, an `Image`'s or `CompressedImage`'s
+dimensions, a `CameraInfo`'s intrinsics and a `TFMessage`'s transform tree into `dataset.calibration`,
+an `Odometry`'s pose into the episode's ego trajectory, and the messages whose whole payload is their
+measurement — `JointState`, `Imu`, `NavSatFix`, `Twist`, `Wrench`, `Range` and the one-reading
+scalars — into the observed values the statistical family grades. The bulk payload (the pixels, the
+points) is still only fingerprinted, and a message type with no typed decoder is fingerprinted whole,
+which the run says out loud.
+
+ROS 1 serialization puts the same fields in the same order as CDR, but it is not the same encoding:
+there is no four-byte encapsulation header, there is no alignment padding between primitives, and
+every `std_msgs/Header` carries a `seq` counter that ROS 2's does not. All three are handled in one
+place — the encoding is a parameter of the reader — so **there is a single dispatch from a ROS
+message to the CDM**, shared by the MCAP adapter, both rosbag2 storage plugins and this one. A
+decoder added for one container is a decoder every container gets.
+
+That `seq` is worth its own line: it is the publisher's own count of what it sent, and a hole in it
+is the one direct evidence of a message that never reached the recorder — everything else in a
+recording is what arrived. ROS 2 dropped the field, so a `.bag` answers a question the same rig
+recorded to a `.db3` cannot.
 
 And on a **CAN + DBC** log — raw vehicle-bus traffic, which on its own is opaque bytes. The `.dbc` is
 the signal database that gives those bytes meaning, so Veridex ingests the two together: point it at a

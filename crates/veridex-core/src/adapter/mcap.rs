@@ -601,14 +601,17 @@ impl Adapter for McapAdapter {
             // is what lets a check ask whether this sensor is actually related to the others by the
             // TF tree, rather than only whether a TF tree exists at all.
             if builder.frame_id.is_none() {
-                builder.frame_id = super::cdr::decode_header_frame_id(&message.data);
+                builder.frame_id =
+                    super::cdr::decode_header_frame_id(&message.data, super::cdr::Encoding::Cdr);
             }
 
             // The same header carries the sensor's own clock. `ts` above is the recorder's — the
             // moment the message reached the bag — and it is the only clock every temporal and
             // cross-sensor result on this bag is computed from. Reading both is what says whether
             // the recorder's clock is standing in for a sensor clock that agrees with it.
-            if let Some(stamp) = super::cdr::decode_header_stamp(&message.data) {
+            if let Some(stamp) =
+                super::cdr::decode_header_stamp(&message.data, super::cdr::Encoding::Cdr)
+            {
                 builder.header_stamps.observe(ts, stamp);
             }
 
@@ -616,210 +619,28 @@ impl Adapter for McapAdapter {
             // a dropped message a recording can hold: everything else in this file is what arrived.
             builder.sequence.observe(message.sequence);
 
-            // Decode the AV message header (never the bulk payload) to populate the autonomy CDM.
-            //
-            // Every arm answers whether the body decoded, and the answer is recorded below. The
-            // decoders are strict on purpose — a body yields a reading only once its own invariants
-            // prove it is the message it claims to be — and each arm used to drop the failures on
-            // the floor, so a stream whose bodies mostly did not survive the recording was
-            // summarized from the ones that did and reported as a property of the stream. `None` is
-            // for a schema with no typed decoder, whose body nothing tried to read.
-            let decoded: Option<bool> = if schema_is(schema_name, "PointCloud2") {
-                if builder.point_fields.is_none() {
-                    builder.point_fields = super::cdr::decode_point_cloud2_fields(&message.data);
-                }
-                // Per message, unlike the layout above: the layout is a property of the stream and
-                // the first message settles it, while whether a sweep held any points is a property
-                // of each message and only the messages can settle it.
-                match super::cdr::decode_point_cloud2_point_count(&message.data) {
-                    Some(n) => {
-                        builder.point_counts.observe(n);
-                        Some(true)
-                    }
-                    None => Some(false),
-                }
-            } else if schema_is(schema_name, "Twist") || schema_is(schema_name, "TwistStamped") {
-                // A mobile base's action channel. `/cmd_vel` is to a base what `/joint_states` is to
-                // an arm, and a commanded velocity pinned at its rail is exactly what the
-                // statistical family exists to catch on an actuator.
-                match super::cdr::decode_twist_values(
-                    &message.data,
-                    schema_is(schema_name, "TwistStamped"),
-                ) {
-                    Some(values) => {
-                        builder
-                            .values
-                            .push_fixed(&values, &super::cdr::TWIST_DIM_NAMES);
-                        Some(true)
-                    }
-                    None => Some(false),
-                }
-            } else if schema_is(schema_name, "Wrench") || schema_is(schema_name, "WrenchStamped") {
-                // A manipulation recording's contact channel, and the same shape as a `Twist`.
-                match super::cdr::decode_wrench_values(
-                    &message.data,
-                    schema_is(schema_name, "WrenchStamped"),
-                ) {
-                    Some(values) => {
-                        builder
-                            .values
-                            .push_fixed(&values, &super::cdr::WRENCH_DIM_NAMES);
-                        Some(true)
-                    }
-                    None => Some(false),
-                }
-            } else if schema_is(schema_name, "MagneticField") {
-                // The third instrument in the IMU package, and the one heading is estimated from.
-                match super::cdr::decode_magnetic_field(&message.data) {
-                    Some(values) => {
-                        builder
-                            .values
-                            .push_fixed(&values, &super::cdr::MAGNETIC_FIELD_DIM_NAMES);
-                        Some(true)
-                    }
-                    None => Some(false),
-                }
-            } else if let Some(name) = super::cdr::scalar_measurement_name(schema_name) {
-                // Four schemas, one layout: a header, the reading, and its variance.
-                match super::cdr::decode_scalar_measurement(&message.data) {
-                    Some(value) => {
-                        builder.values.push_fixed(&[Some(value)], &[name]);
-                        Some(true)
-                    }
-                    None => Some(false),
-                }
-            } else if schema_is(schema_name, "Range") {
-                // A reading the rangefinder's own window disowns is "nothing there", not a distance.
-                match super::cdr::decode_range_value(&message.data) {
-                    Some(value) => {
-                        builder.values.push_fixed(&[value], &["range"]);
-                        Some(true)
-                    }
-                    None => Some(false),
-                }
-            } else if schema_is(schema_name, "LaserScan") {
-                // A planar scanner's returns feed the same density summary a 3-D cloud's points do:
-                // the fault is the same one, and a `LaserScan` is what most mobile robots publish.
-                match super::cdr::decode_laser_scan_returns(&message.data) {
-                    Some(n) => {
-                        builder.point_counts.observe(n);
-                        Some(true)
-                    }
-                    None => Some(false),
-                }
-            } else if schema_is(schema_name, "CompressedImage") {
-                // Most real bags record their cameras compressed, and without this a
-                // `/camera/image_raw/compressed` topic went unmeasured while the raw topic beside it
-                // was graded — the same dead camera caught on one spelling of the topic and not the
-                // other. Only the codec's own frame header is read; no pixel is decoded.
-                match super::cdr::decode_compressed_image_dimensions(&message.data) {
-                    Some(Some((w, h))) => {
-                        builder.image_dims.observe(w, h);
-                        Some(true)
-                    }
-                    // A `CompressedImage` in a codec this reader has no header parser for. Nothing
-                    // was tried, so this is not a body that failed — it is a schema with no decoder,
-                    // and the image rules abstain on the stream out loud.
-                    Some(None) => None,
-                    None => Some(false),
-                }
-            } else if schema_is(schema_name, "Image") {
-                // The camera counterpart of the point count above, and there for the same fault: a
-                // driver that lost its sensor keeps publishing well-formed frames at its configured
-                // rate with no pixels in them. Read from the message's own `height`/`width`; the
-                // pixel blob is never opened.
-                match super::cdr::decode_image_dimensions(&message.data) {
-                    Some((w, h)) => {
-                        builder.image_dims.observe(w, h);
-                        Some(true)
-                    }
-                    None => Some(false),
-                }
-            } else if schema_is(schema_name, "CameraInfo") {
-                match super::cdr::decode_camera_info(&message.data, &topic) {
-                    Some(ci) => {
-                        // First successfully-decoded intrinsics per camera topic wins.
-                        intrinsics.entry(topic.clone()).or_insert(ci);
-                        Some(true)
-                    }
-                    None => Some(false),
-                }
-            } else if schema_is(schema_name, "Odometry") {
-                match super::cdr::decode_odometry(&message.data) {
-                    Some(sample) => {
-                        ego_poses.push(EgoPose {
-                            ts,
-                            pose: sample.pose,
-                        });
-                        if ego_frame.is_none() {
-                            ego_frame = sample.child_frame;
-                        }
-                        // The ego's own velocity, where the message carries it: a vehicle's speed
-                        // and yaw rate are measurements, and this stream had none to grade.
-                        if let Some(twist) = sample.twist {
-                            builder
-                                .values
-                                .push_fixed(&twist, &super::cdr::TWIST_DIM_NAMES);
-                        }
-                        Some(true)
-                    }
-                    None => Some(false),
-                }
-            } else if schema_is(schema_name, "JointState") {
-                // The one message whose entire payload is the measurement: a handful of joint
-                // angles. Measuring them is what lets the statistical family grade an arm recorded
-                // to a bag, instead of abstaining on the stream that would show a pinned joint.
-                match super::cdr::decode_joint_state(&message.data) {
-                    Some(sample) => {
-                        builder.values.push_joint_state(sample);
-                        Some(true)
-                    }
-                    None => Some(false),
-                }
-            } else if schema_is(schema_name, "Imu") {
-                // Thirty-seven doubles and no bulk payload: an IMU message is entirely its own
-                // measurement. A driver that publishes no orientation says so through a `-1`
-                // covariance, and those slots are held out rather than summarized as zeros.
-                match super::cdr::decode_imu_values(&message.data) {
-                    Some(values) => {
-                        builder
-                            .values
-                            .push_fixed(&values, &super::cdr::IMU_DIM_NAMES);
-                        Some(true)
-                    }
-                    None => Some(false),
-                }
-            } else if schema_is(schema_name, "NavSatFix") {
-                // The last AV message body that went unread. A GNSS stream was fingerprinted rather
-                // than measured, so a receiver frozen at one fix, publishing NaNs, or railed at a
-                // coordinate limit reported nothing — while the same faults on the IMU beside it
-                // were caught. A message declaring no fix carries fields the driver left behind, not
-                // a position, and contributes none.
-                match super::cdr::decode_nav_sat_fix(&message.data) {
-                    Some(sample) => {
-                        builder.fix_availability.observe(&sample);
-                        if let super::cdr::NavSatSample::Fix(values) = sample {
-                            builder
-                                .values
-                                .push_fixed(&values, &super::cdr::NAV_SAT_FIX_DIM_NAMES);
-                        }
-                        Some(true)
-                    }
-                    None => Some(false),
-                }
-            } else if schema_is(schema_name, "TFMessage") {
-                match super::cdr::decode_tf_message(&message.data) {
-                    Some(edges) => {
-                        for t in edges {
-                            super::cdr::insert_transform(&mut transforms, &mut moved_frames, t);
-                        }
-                        Some(true)
-                    }
-                    None => Some(false),
-                }
-            } else {
-                None
-            };
+            // Decode the AV message header (never the bulk payload) to populate the autonomy CDM,
+            // through the one dispatch every ROS-carrying reader shares. `None` is for a schema
+            // with no typed decoder, whose body nothing tried to read.
+            let decoded = super::rosmsg::decode_body(
+                &mut super::rosmsg::BodyTargets {
+                    point_fields: &mut builder.point_fields,
+                    point_counts: &mut builder.point_counts,
+                    image_dims: &mut builder.image_dims,
+                    fix_availability: &mut builder.fix_availability,
+                    values: &mut builder.values,
+                    ego_poses: &mut ego_poses,
+                    ego_frame: &mut ego_frame,
+                    intrinsics: &mut intrinsics,
+                    transforms: &mut transforms,
+                    moved_frames: &mut moved_frames,
+                },
+                super::cdr::Encoding::Cdr,
+                schema_name,
+                &topic,
+                &message.data,
+                ts,
+            );
             builder.body_decodes.observe(decoded);
         }
 

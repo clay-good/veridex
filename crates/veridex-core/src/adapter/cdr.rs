@@ -23,33 +23,69 @@ use crate::cdm::{
 /// magnitude while still bounding what an untrusted message can make the CDM retain.
 const MAX_NAME_BYTES: usize = 4096;
 
-/// A cursor over a CDR message body (the bytes *after* the 4-byte encapsulation header). `pos` is the
-/// offset from the body start, which is the origin all alignment is measured against.
+/// Which wire encoding a message body is in.
+///
+/// The same ROS message types are recorded in two encodings, and every decoder below reads both.
+/// They put the same fields in the same order, and differ in exactly three ways — all three are
+/// handled by [`Reader`], so a decoder never has to know which one it is reading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Encoding {
+    /// ROS 2 (`rmw_fastrtps` / XCDR1), as an MCAP or a rosbag2 shard carries it: a four-byte
+    /// encapsulation header, and every primitive aligned to its own size.
+    Cdr,
+    /// ROS 1, as a `.bag` carries it: no encapsulation header, no alignment padding at all, and a
+    /// `uint32 seq` at the front of every `std_msgs/Header` that ROS 2 dropped.
+    Ros1,
+}
+
+/// A cursor over a message body — for CDR, the bytes *after* the 4-byte encapsulation header. `pos`
+/// is the offset from the body start, which is the origin all alignment is measured against.
 struct Reader<'a> {
     buf: &'a [u8],
     pos: usize,
+    enc: Encoding,
 }
 
 impl<'a> Reader<'a> {
-    /// Open a reader over a full CDR message, validating the encapsulation header and requiring the
-    /// little-endian representation. Returns `None` for a truncated header or a big-endian body.
-    fn new(data: &'a [u8]) -> Option<Reader<'a>> {
-        if data.len() < 4 {
-            return None;
-        }
-        // Representation identifier byte 1: 0x01 = CDR_LE, 0x03 = PL_CDR_LE (both little-endian).
-        // 0x00 / 0x02 are the big-endian variants, which we decline.
-        match data[1] {
-            0x01 | 0x03 => Some(Reader {
-                buf: &data[4..],
+    /// Open a reader over a full message body.
+    ///
+    /// For [`Encoding::Cdr`], the encapsulation header is validated and the little-endian
+    /// representation required: `None` for a truncated header or a big-endian body. A ROS 1 body
+    /// has no header to validate — every field starts at byte 0 — so only the encoding it was
+    /// recorded in says how to read it, and the caller knows that from the container.
+    fn new(data: &'a [u8], enc: Encoding) -> Option<Reader<'a>> {
+        match enc {
+            Encoding::Ros1 => Some(Reader {
+                buf: data,
                 pos: 0,
+                enc,
             }),
-            _ => None,
+            Encoding::Cdr => {
+                if data.len() < 4 {
+                    return None;
+                }
+                // Representation identifier byte 1: 0x01 = CDR_LE, 0x03 = PL_CDR_LE (both
+                // little-endian). 0x00 / 0x02 are the big-endian variants, which we decline.
+                match data[1] {
+                    0x01 | 0x03 => Some(Reader {
+                        buf: &data[4..],
+                        pos: 0,
+                        enc,
+                    }),
+                    _ => None,
+                }
+            }
         }
     }
 
     /// Advance `pos` to the next multiple of `n` (the size of the primitive about to be read).
+    ///
+    /// ROS 1 pads nothing: a `float64` behind an odd-length `frame_id` begins on the very next byte,
+    /// so there is no alignment to apply.
     fn align(&mut self, n: usize) {
+        if self.enc == Encoding::Ros1 {
+            return;
+        }
         self.pos = (self.pos + n - 1) & !(n - 1);
     }
 
@@ -117,9 +153,20 @@ impl<'a> Reader<'a> {
         Some((self.i32()?, self.u32()?))
     }
 
-    /// Skip a `std_msgs/Header`: `{ int32 sec, uint32 nanosec }` then a `string frame_id`. Returns the
-    /// `frame_id` (some messages, e.g. a `TransformStamped`, use it as the parent frame).
+    /// Consume the `uint32 seq` a ROS 1 `std_msgs/Header` opens with, which ROS 2's dropped. A no-op
+    /// on a CDR body, so every header-first decoder can call it unconditionally.
+    fn header_seq(&mut self) -> Option<()> {
+        if self.enc == Encoding::Ros1 {
+            self.u32()?;
+        }
+        Some(())
+    }
+
+    /// Skip a `std_msgs/Header`: the ROS 1 `seq` where there is one, `{ int32 sec, uint32 nanosec }`,
+    /// then a `string frame_id`. Returns the `frame_id` (some messages, e.g. a `TransformStamped`,
+    /// use it as the parent frame).
     fn header(&mut self) -> Option<String> {
+        self.header_seq()?;
         self.stamp()?;
         self.string()
     }
@@ -137,14 +184,37 @@ impl<'a> Reader<'a> {
 /// normalized `builtin_interfaces/Time` keeps `nanosec` under a full second and no recording carries
 /// a `sec` before 1970, and the `frame_id` string behind the stamp has to decode. A fabricated clock
 /// reading would be a finding about honest data, which is worse than reading no clock at all.
-pub fn decode_header_stamp(data: &[u8]) -> Option<i64> {
-    let mut r = Reader::new(data)?;
+pub fn decode_header_stamp(data: &[u8], enc: Encoding) -> Option<i64> {
+    let mut r = Reader::new(data, enc)?;
+    r.header_seq()?;
     let (sec, nanosec) = r.stamp()?;
     if sec < 0 || nanosec >= 1_000_000_000 {
         return None;
     }
     r.string()?;
     Some(i64::from(sec) * 1_000_000_000 + i64::from(nanosec))
+}
+
+/// Recover the `seq` at the front of a ROS 1 `std_msgs/Header` — the publisher's own count of the
+/// messages it sent on this topic, and the one direct evidence of a dropped message a ROS 1
+/// recording can hold: everything else in a bag is what arrived.
+///
+/// `None` for a CDR body, because ROS 2 dropped the field: a `seq` read out of a ROS 2 message would
+/// be four bytes of whatever the first field happens to be. `None`, too, for a body that is not
+/// header-shaped — the same two invariants [`decode_header_stamp`] requires have to hold before the
+/// counter behind them is believed, or a payload that begins with any `u32` would report a sequence.
+pub fn decode_header_seq(data: &[u8], enc: Encoding) -> Option<u32> {
+    if enc != Encoding::Ros1 {
+        return None;
+    }
+    let mut r = Reader::new(data, enc)?;
+    let seq = r.u32()?;
+    let (sec, nanosec) = r.stamp()?;
+    if sec < 0 || nanosec >= 1_000_000_000 {
+        return None;
+    }
+    r.string()?;
+    Some(seq)
 }
 
 /// Accumulates a stream's `header.stamp` readings against the log times they were recorded at.
@@ -236,8 +306,8 @@ fn point_datatype(tag: u8) -> &'static str {
 /// Returns `None` for a message that is not header-first, is truncated, or names an empty frame:
 /// an empty `frame_id` is what an unconfigured driver publishes, and recording it as a frame would
 /// turn "this sensor declares no frame" into "this sensor declares the frame `""`".
-pub fn decode_header_frame_id(data: &[u8]) -> Option<String> {
-    let mut r = Reader::new(data)?;
+pub fn decode_header_frame_id(data: &[u8], enc: Encoding) -> Option<String> {
+    let mut r = Reader::new(data, enc)?;
     let frame_id = r.header()?;
     (!frame_id.is_empty()).then_some(frame_id)
 }
@@ -245,8 +315,8 @@ pub fn decode_header_frame_id(data: &[u8]) -> Option<String> {
 /// Decode a `sensor_msgs/msg/PointCloud2` body far enough to recover its per-point field layout
 /// (`fields`): `Header`, `uint32 height`, `uint32 width`, then a sequence of `PointField`
 /// `{ string name, uint32 offset, uint8 datatype, uint32 count }`. The bulk `data` blob is never read.
-pub fn decode_point_cloud2_fields(data: &[u8]) -> Option<Vec<PointField>> {
-    let mut r = Reader::new(data)?;
+pub fn decode_point_cloud2_fields(data: &[u8], enc: Encoding) -> Option<Vec<PointField>> {
+    let mut r = Reader::new(data, enc)?;
     r.header()?; // header (stamp + frame_id)
     let _height = r.u32()?;
     let _width = r.u32()?;
@@ -471,8 +541,8 @@ const MAX_LASER_RETURNS: usize = 1 << 20;
 /// window that is not a window, and an `intensities` array that is neither absent nor one-per-return
 /// — the message definition allows only those two. Those are the invariants an arbitrary buffer does
 /// not satisfy, and a fabricated return count would be a finding about honest data.
-pub fn decode_laser_scan_returns(data: &[u8]) -> Option<u64> {
-    let mut r = Reader::new(data)?;
+pub fn decode_laser_scan_returns(data: &[u8], enc: Encoding) -> Option<u64> {
+    let mut r = Reader::new(data, enc)?;
     r.header()?;
     r.f32()?; // angle_min
     r.f32()?; // angle_max
@@ -591,8 +661,11 @@ fn png_dimensions(data: &[u8]) -> Option<(u32, u32)> {
 ///   failed; the caller reports it as a schema with no decoder rather than as a body that broke.
 /// - `Some(Some((w, h)))` — the frame's size, `(0, 0)` for a frame carrying no compressed bytes at
 ///   all, which is a driver that lost its sensor and needs no codec to recognize.
-pub fn decode_compressed_image_dimensions(data: &[u8]) -> Option<Option<(u32, u32)>> {
-    let mut r = Reader::new(data)?;
+pub fn decode_compressed_image_dimensions(
+    data: &[u8],
+    enc: Encoding,
+) -> Option<Option<(u32, u32)>> {
+    let mut r = Reader::new(data, enc)?;
     r.header()?;
     let format = r.string()?;
     // The one field an all-zero body cannot satisfy: a driver publishing empty frames still names
@@ -643,8 +716,8 @@ const MAX_IMAGE_BYTES_PER_PIXEL: u64 = 32;
 /// pixel and no more than [`MAX_IMAGE_BYTES_PER_PIXEL`], `data` is exactly `step × height` bytes,
 /// and those bytes are there. A fabricated resolution is worse than silence: it is a finding about
 /// honest data.
-pub fn decode_image_dimensions(data: &[u8]) -> Option<(u32, u32)> {
-    let mut r = Reader::new(data)?;
+pub fn decode_image_dimensions(data: &[u8], enc: Encoding) -> Option<(u32, u32)> {
+    let mut r = Reader::new(data, enc)?;
     r.header()?;
     let height = r.u32()?;
     let width = r.u32()?;
@@ -691,8 +764,8 @@ pub fn decode_image_dimensions(data: &[u8]) -> Option<(u32, u32)> {
 /// and the first message settles it, while whether a sweep held any points is a property of each
 /// message. Nothing here reads the point payload — `data`'s length is its `uint32` prefix, and the
 /// bytes are only bounds-checked.
-pub fn decode_point_cloud2_point_count(data: &[u8]) -> Option<u64> {
-    let mut r = Reader::new(data)?;
+pub fn decode_point_cloud2_point_count(data: &[u8], enc: Encoding) -> Option<u64> {
+    let mut r = Reader::new(data, enc)?;
     r.header()?;
     let height = r.u32()? as u64;
     let width = r.u32()? as u64;
@@ -761,8 +834,8 @@ pub fn decode_point_cloud2_point_count(data: &[u8]) -> Option<u64> {
 /// matrix, and they are what makes `cx`/`cy` checkable as the pixel coordinates they are. A zero is
 /// the field's unset value and becomes `None`. `valid_from`/`_to` are left open — the caller stamps
 /// the validity range from the message time if it wishes.
-pub fn decode_camera_info(data: &[u8], stream: &str) -> Option<CameraIntrinsics> {
-    let mut r = Reader::new(data)?;
+pub fn decode_camera_info(data: &[u8], enc: Encoding, stream: &str) -> Option<CameraIntrinsics> {
+    let mut r = Reader::new(data, enc)?;
     r.header()?;
     // Recorded, not discarded: `cx`/`cy` are pixel coordinates, and these are the only thing that
     // says which image they are coordinates *in*. A driver that has not been configured publishes
@@ -832,8 +905,8 @@ fn read_pose(r: &mut Reader) -> Option<Pose> {
 ///
 /// An empty `child_frame_id` is what an unconfigured publisher emits, and becomes `None` rather than
 /// a frame named `""` — the same rule [`decode_header_frame_id`] follows.
-pub fn decode_odometry(data: &[u8]) -> Option<OdometrySample> {
-    let mut r = Reader::new(data)?;
+pub fn decode_odometry(data: &[u8], enc: Encoding) -> Option<OdometrySample> {
+    let mut r = Reader::new(data, enc)?;
     r.header()?;
     let child_frame_id = r.string()?;
     let pose = read_pose(&mut r)?;
@@ -887,8 +960,8 @@ pub struct OdometrySample {
 /// Returns `None` for a message that is truncated, big-endian, or publishes no positions at all (a
 /// `JointState` may carry effort alone); an empty result would otherwise read as "measured, and
 /// there was nothing there".
-pub fn decode_joint_state(data: &[u8]) -> Option<JointSample> {
-    let mut r = Reader::new(data)?;
+pub fn decode_joint_state(data: &[u8], enc: Encoding) -> Option<JointSample> {
+    let mut r = Reader::new(data, enc)?;
     r.header()?;
     let name_count = r.u32()? as usize;
     // A declared count is attacker-controlled. The smallest a CDR string can encode is its 4-byte
@@ -1033,8 +1106,8 @@ pub const TWIST_DIM_NAMES: [&str; 6] = [
 /// `STATISTICAL.NON_FINITE_OBSERVED` is what reports it). Its **length** is the invariant instead —
 /// the message is exactly six doubles, so a body carrying more than its own padding past them is not
 /// a `Twist`, and reading one would summarize whatever else it is as a velocity.
-pub fn decode_twist_values(data: &[u8], stamped: bool) -> Option<Vec<Option<f64>>> {
-    six_doubles(data, stamped)
+pub fn decode_twist_values(data: &[u8], enc: Encoding, stamped: bool) -> Option<Vec<Option<f64>>> {
+    six_doubles(data, enc, stamped)
 }
 
 /// The name of each scalar [`decode_magnetic_field`] returns, in the same order.
@@ -1055,8 +1128,8 @@ pub const MAGNETIC_FIELD_DIM_NAMES: [&str; 3] =
 /// [`decode_imu_values`] gives an IMU's unprovided fields: recording them would report a driver that
 /// publishes no field as a magnetometer frozen at the origin — a defect it does not have, hiding the
 /// ones it might.
-pub fn decode_magnetic_field(data: &[u8]) -> Option<Vec<Option<f64>>> {
-    let mut r = Reader::new(data)?;
+pub fn decode_magnetic_field(data: &[u8], enc: Encoding) -> Option<Vec<Option<f64>>> {
+    let mut r = Reader::new(data, enc)?;
     r.header()?;
     let field: Vec<f64> = (0..3).map(|_| r.f64()).collect::<Option<_>>()?;
     let covariance0 = r.f64()?;
@@ -1087,8 +1160,8 @@ pub const WRENCH_DIM_NAMES: [&str; 6] = [
 /// A force/torque sensor is a manipulation recording's contact channel, and it went unread: a sensor
 /// clipped at its rail through a whole run of contact-rich episodes — the exact fault
 /// `STATISTICAL.SATURATED` exists for — carried no values to grade.
-pub fn decode_wrench_values(data: &[u8], stamped: bool) -> Option<Vec<Option<f64>>> {
-    six_doubles(data, stamped)
+pub fn decode_wrench_values(data: &[u8], enc: Encoding, stamped: bool) -> Option<Vec<Option<f64>>> {
+    six_doubles(data, enc, stamped)
 }
 
 /// Six doubles behind an optional `std_msgs/Header`, and nothing else in the body.
@@ -1099,8 +1172,8 @@ pub fn decode_wrench_values(data: &[u8], stamped: bool) -> Option<Vec<Option<f64
 /// message's **length** is the invariant instead: a body carrying more than its own padding past
 /// those six is not one of these, and reading it would summarize whatever else it is as a
 /// measurement.
-fn six_doubles(data: &[u8], stamped: bool) -> Option<Vec<Option<f64>>> {
-    let mut r = Reader::new(data)?;
+fn six_doubles(data: &[u8], enc: Encoding, stamped: bool) -> Option<Vec<Option<f64>>> {
+    let mut r = Reader::new(data, enc)?;
     if stamped {
         r.header()?;
     }
@@ -1141,8 +1214,8 @@ pub fn scalar_measurement_name(schema_name: &str) -> Option<&'static str> {
 ///
 /// The variance is read only to prove the body ends where the message says it does; the value it
 /// holds is the sensor's own uncertainty, which is not a measurement of the world.
-pub fn decode_scalar_measurement(data: &[u8]) -> Option<f64> {
-    let mut r = Reader::new(data)?;
+pub fn decode_scalar_measurement(data: &[u8], enc: Encoding) -> Option<f64> {
+    let mut r = Reader::new(data, enc)?;
     r.header()?;
     let value = r.f64()?;
     r.f64()?; // variance
@@ -1160,8 +1233,8 @@ pub fn decode_scalar_measurement(data: &[u8]) -> Option<f64> {
 ///
 /// The outer `Option` says whether the body is a `Range` at all; the inner one whether that message
 /// measured something.
-pub fn decode_range_value(data: &[u8]) -> Option<Option<f64>> {
-    let mut r = Reader::new(data)?;
+pub fn decode_range_value(data: &[u8], enc: Encoding) -> Option<Option<f64>> {
+    let mut r = Reader::new(data, enc)?;
     r.header()?;
     r.u8()?; // radiation_type
     let field_of_view = r.f32()?;
@@ -1210,8 +1283,8 @@ pub const IMU_DIM_NAMES: [&str; 10] = [
     "linear_acceleration.z",
 ];
 
-pub fn decode_imu_values(data: &[u8]) -> Option<Vec<Option<f64>>> {
-    let mut r = Reader::new(data)?;
+pub fn decode_imu_values(data: &[u8], enc: Encoding) -> Option<Vec<Option<f64>>> {
+    let mut r = Reader::new(data, enc)?;
     r.header()?;
     let read = |r: &mut Reader, n: usize| -> Option<Vec<f64>> { (0..n).map(|_| r.f64()).collect() };
     let orientation = read(&mut r, 4)?;
@@ -1271,8 +1344,8 @@ pub enum NavSatSample {
 ///
 /// The coordinates are read before the status is judged, so a truncated body is `None` — not a
 /// no-fix. A message that cannot be parsed is not the receiver saying anything.
-pub fn decode_nav_sat_fix(data: &[u8]) -> Option<NavSatSample> {
-    let mut r = Reader::new(data)?;
+pub fn decode_nav_sat_fix(data: &[u8], enc: Encoding) -> Option<NavSatSample> {
+    let mut r = Reader::new(data, enc)?;
     r.header()?;
     // `NavSatStatus`: int8 then uint16. The uint16 is 2-aligned, and the f64 that follows is
     // 8-aligned, both of which `Reader` handles when the field is read.
@@ -1295,8 +1368,8 @@ pub fn decode_nav_sat_fix(data: &[u8]) -> Option<NavSatSample> {
 /// Decode a `tf2_msgs/msg/TFMessage` body: a sequence of `TransformStamped`
 /// `{ Header header (frame_id = parent), string child_frame_id, Transform { Vector3 translation,
 /// Quaternion rotation } }`. Returns each edge as a CDM [`Transform`] with open validity.
-pub fn decode_tf_message(data: &[u8]) -> Option<Vec<Transform>> {
-    let mut r = Reader::new(data)?;
+pub fn decode_tf_message(data: &[u8], enc: Encoding) -> Option<Vec<Transform>> {
+    let mut r = Reader::new(data, enc)?;
     let count = r.u32()? as usize;
     // A declared element count is attacker-controlled. Bound it by the smallest a `TransformStamped`
     // can encode (its header plus 7 f64s), so a tiny message can never reserve gigabytes; comparing
@@ -1389,13 +1462,120 @@ mod tests {
         }
     }
 
+    /// A ROS 1 body: no encapsulation header, no alignment padding, and a `seq` in front of the
+    /// header. The counterpart of [`W`], and deliberately not built on it: the point of the tests
+    /// below is that the two encodings really differ, which a writer shared between them could not
+    /// show.
+    struct R1 {
+        buf: Vec<u8>,
+    }
+    impl R1 {
+        fn u32(&mut self, v: u32) {
+            self.buf.extend_from_slice(&v.to_le_bytes());
+        }
+        fn f64(&mut self, v: f64) {
+            self.buf.extend_from_slice(&v.to_le_bytes());
+        }
+        fn string(&mut self, s: &str) {
+            self.u32(s.len() as u32);
+            self.buf.extend_from_slice(s.as_bytes());
+        }
+        /// `uint32 seq`, `time stamp`, `string frame_id`.
+        fn header(&mut self, seq: u32, stamp_ns: u64, frame: &str) {
+            self.u32(seq);
+            self.u32((stamp_ns / 1_000_000_000) as u32);
+            self.u32((stamp_ns % 1_000_000_000) as u32);
+            self.string(frame);
+        }
+    }
+
+    /// The 37 doubles of a `sensor_msgs/Imu`, written into whichever writer is handed the closures.
+    fn imu_values(mut f64s: impl FnMut(f64), accel_z: f64) {
+        for v in [0.0, 0.0, 0.0, 1.0] {
+            f64s(v); // orientation
+        }
+        f64s(0.01); // orientation_covariance[0]: provided
+        for _ in 0..8 {
+            f64s(0.0);
+        }
+        for v in [0.1, 0.2, 0.3] {
+            f64s(v); // angular velocity
+        }
+        f64s(0.01);
+        for _ in 0..8 {
+            f64s(0.0);
+        }
+        for v in [0.0, 0.0, accel_z] {
+            f64s(v); // linear acceleration
+        }
+        f64s(0.01);
+        for _ in 0..8 {
+            f64s(0.0);
+        }
+    }
+
+    /// The same `Imu`, in each encoding.
+    ///
+    /// The frame name is eight characters on purpose. A CDR header ends 21 bytes in and the first
+    /// double is aligned to 24; the ROS 1 header ends at 24 with nothing between. Shorter names can
+    /// make the two encodings land on the *same* offsets — a four-byte encapsulation header is
+    /// exactly the width of the `seq` that replaces it, and a CDR string counts its NUL — so a test
+    /// that picked one of those would pass no matter which encoding the reader used.
+    fn imu_both_encodings(accel_z: f64) -> (Vec<u8>, Vec<u8>) {
+        let mut cdr = W::new();
+        cdr.header_at("imu_link", 1_000_000_000);
+        imu_values(|v| cdr.f64(v), accel_z);
+        let mut ros1 = R1 { buf: Vec::new() };
+        ros1.header(7, 1_000_000_000, "imu_link");
+        imu_values(|v| ros1.f64(v), accel_z);
+        (cdr.buf, ros1.buf)
+    }
+
+    #[test]
+    fn the_same_message_reads_alike_in_both_encodings() {
+        let (cdr, ros1) = imu_both_encodings(9.81);
+        // Neither body is the other's length — the padding and the `seq` are really there.
+        assert_ne!(cdr.len(), ros1.len());
+        let expected = decode_imu_values(&cdr, Encoding::Cdr).expect("the CDR body decodes");
+        assert_eq!(expected[9], Some(9.81));
+        assert_eq!(
+            decode_imu_values(&ros1, Encoding::Ros1),
+            Some(expected),
+            "a bag's `Imu` yields exactly what an MCAP's does"
+        );
+        // The header behind them reads the same way, and the `seq` ROS 2 dropped is read only where
+        // it exists — four bytes of a CDR body's first field are not a sequence number.
+        assert_eq!(
+            decode_header_stamp(&ros1, Encoding::Ros1),
+            decode_header_stamp(&cdr, Encoding::Cdr)
+        );
+        assert_eq!(
+            decode_header_frame_id(&ros1, Encoding::Ros1).as_deref(),
+            Some("imu_link")
+        );
+        assert_eq!(decode_header_seq(&ros1, Encoding::Ros1), Some(7));
+        assert_eq!(decode_header_seq(&cdr, Encoding::Cdr), None);
+    }
+
+    #[test]
+    fn a_body_read_in_the_wrong_encoding_does_not_report_its_values() {
+        // The encoding is not a detail a decoder can shrug off: read either body the other way and
+        // the numbers that come out are not the numbers that went in. Nothing here says the wrong
+        // read must *fail* — a run of doubles satisfies few invariants — only that it must not be
+        // mistaken for a reading of the message.
+        let (cdr, ros1) = imu_both_encodings(9.81);
+        let truth = decode_imu_values(&cdr, Encoding::Cdr).expect("the CDR body decodes");
+        assert_ne!(decode_imu_values(&cdr, Encoding::Ros1), Some(truth.clone()));
+        assert_ne!(decode_imu_values(&ros1, Encoding::Cdr), Some(truth));
+    }
+
     #[test]
     fn a_wrench_is_six_force_and_torque_components() {
         let mut w = W::new();
         for v in [1.0, 2.0, 3.0, 0.1, 0.2, 0.3] {
             w.f64(v);
         }
-        let values = decode_wrench_values(&w.buf, false).expect("decodes");
+        let values = decode_wrench_values(&w.buf, Encoding::Cdr, false).expect("decodes");
         assert_eq!(values[0], Some(1.0));
         assert_eq!(values[5], Some(0.3));
         assert_eq!(WRENCH_DIM_NAMES.len(), 6);
@@ -1406,8 +1586,8 @@ mod tests {
         for _ in 0..6 {
             w.f64(0.0);
         }
-        assert!(decode_wrench_values(&w.buf, true).is_some());
-        assert_eq!(decode_wrench_values(&w.buf, false), None);
+        assert!(decode_wrench_values(&w.buf, Encoding::Cdr, true).is_some());
+        assert_eq!(decode_wrench_values(&w.buf, Encoding::Cdr, false), None);
     }
 
     /// A `sensor_msgs/msg/MagneticField` body: header, the field vector, then its 9-element
@@ -1429,14 +1609,17 @@ mod tests {
     fn a_magnetic_field_is_read_unless_the_driver_disclaims_it() {
         let w = magnetic_field([2.1e-5, -1.4e-5, 4.6e-5], 0.0);
         assert_eq!(
-            decode_magnetic_field(&w.buf),
+            decode_magnetic_field(&w.buf, Encoding::Cdr),
             Some(vec![Some(2.1e-5), Some(-1.4e-5), Some(4.6e-5)])
         );
         // `covariance[0] == -1` is ROS's "not provided", and the field is zero-filled there.
         // Recording those zeros would report a driver that publishes no field as a magnetometer
         // frozen at the origin.
         let w = magnetic_field([0.0, 0.0, 0.0], -1.0);
-        assert_eq!(decode_magnetic_field(&w.buf), Some(vec![None, None, None]));
+        assert_eq!(
+            decode_magnetic_field(&w.buf, Encoding::Cdr),
+            Some(vec![None, None, None])
+        );
         assert_eq!(MAGNETIC_FIELD_DIM_NAMES.len(), 3);
     }
 
@@ -1446,10 +1629,18 @@ mod tests {
         // message's length is the only thing that says a body is one.
         let mut w = magnetic_field([1.0, 2.0, 3.0], 0.0);
         w.buf.truncate(w.buf.len() - 8);
-        assert_eq!(decode_magnetic_field(&w.buf), None, "too short");
+        assert_eq!(
+            decode_magnetic_field(&w.buf, Encoding::Cdr),
+            None,
+            "too short"
+        );
         let mut w = magnetic_field([1.0, 2.0, 3.0], 0.0);
         w.f64(0.0);
-        assert_eq!(decode_magnetic_field(&w.buf), None, "too long");
+        assert_eq!(
+            decode_magnetic_field(&w.buf, Encoding::Cdr),
+            None,
+            "too long"
+        );
     }
 
     #[test]
@@ -1458,7 +1649,7 @@ mod tests {
         w.header("probe");
         w.f64(21.5); // the reading
         w.f64(0.01); // variance
-        assert_eq!(decode_scalar_measurement(&w.buf), Some(21.5));
+        assert_eq!(decode_scalar_measurement(&w.buf, Encoding::Cdr), Some(21.5));
 
         // The table that says which schemas have this shape is closed, and names the quantity
         // rather than calling all four of them `value`.
@@ -1476,13 +1667,21 @@ mod tests {
         let mut w = W::new();
         w.header("probe");
         w.f64(21.5);
-        assert_eq!(decode_scalar_measurement(&w.buf), None, "no variance");
+        assert_eq!(
+            decode_scalar_measurement(&w.buf, Encoding::Cdr),
+            None,
+            "no variance"
+        );
         let mut w = W::new();
         w.header("probe");
         for _ in 0..4 {
             w.f64(0.0);
         }
-        assert_eq!(decode_scalar_measurement(&w.buf), None, "too long");
+        assert_eq!(
+            decode_scalar_measurement(&w.buf, Encoding::Cdr),
+            None,
+            "too long"
+        );
     }
 
     /// A `sensor_msgs/msg/Range` body, with the rangefinder's own window under the caller's control.
@@ -1503,26 +1702,29 @@ mod tests {
         // that as a distance would report a beam that saw nothing as a measurement — and a probe
         // that saw nothing all run as a perfectly steady one.
         assert_eq!(
-            decode_range_value(&range_msg(0.2, 4.0, 1.5).buf),
+            decode_range_value(&range_msg(0.2, 4.0, 1.5).buf, Encoding::Cdr),
             Some(Some(1.5))
         );
         assert_eq!(
-            decode_range_value(&range_msg(0.2, 4.0, 9.0).buf),
+            decode_range_value(&range_msg(0.2, 4.0, 9.0).buf, Encoding::Cdr),
             Some(None)
         );
         assert_eq!(
-            decode_range_value(&range_msg(0.2, 4.0, 0.05).buf),
+            decode_range_value(&range_msg(0.2, 4.0, 0.05).buf, Encoding::Cdr),
             Some(None)
         );
         assert_eq!(
-            decode_range_value(&range_msg(0.2, 4.0, f32::INFINITY).buf),
+            decode_range_value(&range_msg(0.2, 4.0, f32::INFINITY).buf, Encoding::Cdr),
             Some(None)
         );
         // And a body whose window is not a window, or that is not a `Range` at all, yields nothing.
-        assert_eq!(decode_range_value(&range_msg(4.0, 0.2, 1.5).buf), None);
+        assert_eq!(
+            decode_range_value(&range_msg(4.0, 0.2, 1.5).buf, Encoding::Cdr),
+            None
+        );
         let mut w = range_msg(0.2, 4.0, 1.5);
         w.f32(0.0);
-        assert_eq!(decode_range_value(&w.buf), None, "too long");
+        assert_eq!(decode_range_value(&w.buf, Encoding::Cdr), None, "too long");
     }
 
     #[test]
@@ -1532,7 +1734,7 @@ mod tests {
             w.f64(v);
         }
         assert_eq!(
-            decode_twist_values(&w.buf, false),
+            decode_twist_values(&w.buf, Encoding::Cdr, false),
             Some(vec![
                 Some(0.5),
                 Some(0.0),
@@ -1549,9 +1751,11 @@ mod tests {
         for _ in 0..5 {
             w.f64(0.0);
         }
-        assert!(decode_twist_values(&w.buf, false).expect("decodes")[0]
-            .expect("a value")
-            .is_nan());
+        assert!(
+            decode_twist_values(&w.buf, Encoding::Cdr, false).expect("decodes")[0]
+                .expect("a value")
+                .is_nan()
+        );
     }
 
     #[test]
@@ -1561,11 +1765,11 @@ mod tests {
         for v in [1.0, 2.0, 3.0, 4.0, 5.0, 6.0] {
             w.f64(v);
         }
-        let values = decode_twist_values(&w.buf, true).expect("decodes");
+        let values = decode_twist_values(&w.buf, Encoding::Cdr, true).expect("decodes");
         assert_eq!(values[0], Some(1.0));
         assert_eq!(values[5], Some(6.0));
         // Read without the header, the same bytes are not a `Twist`: the length no longer fits.
-        assert_eq!(decode_twist_values(&w.buf, false), None);
+        assert_eq!(decode_twist_values(&w.buf, Encoding::Cdr, false), None);
     }
 
     #[test]
@@ -1577,12 +1781,20 @@ mod tests {
         for _ in 0..5 {
             w.f64(0.0);
         }
-        assert_eq!(decode_twist_values(&w.buf, false), None, "too short");
+        assert_eq!(
+            decode_twist_values(&w.buf, Encoding::Cdr, false),
+            None,
+            "too short"
+        );
         let mut w = W::new();
         for _ in 0..8 {
             w.f64(0.0);
         }
-        assert_eq!(decode_twist_values(&w.buf, false), None, "too long");
+        assert_eq!(
+            decode_twist_values(&w.buf, Encoding::Cdr, false),
+            None,
+            "too long"
+        );
         assert_eq!(TWIST_DIM_NAMES.len(), 6);
     }
 
@@ -1619,10 +1831,10 @@ mod tests {
             &[1.0, f32::INFINITY, 2.5, f32::NAN, 20.0, 0.05],
             0,
         );
-        assert_eq!(decode_laser_scan_returns(&w.buf), Some(2));
+        assert_eq!(decode_laser_scan_returns(&w.buf, Encoding::Cdr), Some(2));
         // An intensities array parallel to the ranges is the other legal shape.
         let w = laser_scan(0.1, 10.0, &[1.0, 2.0, 3.0], 3);
-        assert_eq!(decode_laser_scan_returns(&w.buf), Some(3));
+        assert_eq!(decode_laser_scan_returns(&w.buf, Encoding::Cdr), Some(3));
     }
 
     #[test]
@@ -1631,7 +1843,7 @@ mod tests {
         // well-formed, correctly-timed sweep of infinities, and that has to be distinguishable from
         // a scan nobody counted.
         let w = laser_scan(0.1, 10.0, &[f32::INFINITY; 8], 0);
-        assert_eq!(decode_laser_scan_returns(&w.buf), Some(0));
+        assert_eq!(decode_laser_scan_returns(&w.buf, Encoding::Cdr), Some(0));
     }
 
     #[test]
@@ -1639,28 +1851,40 @@ mod tests {
         // Each of these is an invariant of the message that an arbitrary buffer does not satisfy,
         // and a fabricated return count would be a finding about honest data.
         assert_eq!(
-            decode_laser_scan_returns(&[0x00, 0x01, 0x00, 0x00][..]),
+            decode_laser_scan_returns(&[0x00, 0x01, 0x00, 0x00][..], Encoding::Cdr),
             None
         );
         let w = laser_scan(0.1, 10.0, &[], 0);
         assert_eq!(
-            decode_laser_scan_returns(&w.buf),
+            decode_laser_scan_returns(&w.buf, Encoding::Cdr),
             None,
             "a sweep of nothing"
         );
         let w = laser_scan(10.0, 0.1, &[1.0], 0);
-        assert_eq!(decode_laser_scan_returns(&w.buf), None, "window inverted");
+        assert_eq!(
+            decode_laser_scan_returns(&w.buf, Encoding::Cdr),
+            None,
+            "window inverted"
+        );
         let w = laser_scan(0.1, f32::INFINITY, &[1.0], 0);
-        assert_eq!(decode_laser_scan_returns(&w.buf), None, "window unbounded");
+        assert_eq!(
+            decode_laser_scan_returns(&w.buf, Encoding::Cdr),
+            None,
+            "window unbounded"
+        );
         let w = laser_scan(0.1, 10.0, &[1.0, 2.0], 1);
         assert_eq!(
-            decode_laser_scan_returns(&w.buf),
+            decode_laser_scan_returns(&w.buf, Encoding::Cdr),
             None,
             "intensities neither absent nor one per return"
         );
         let mut w = laser_scan(0.1, 10.0, &[1.0, 2.0], 2);
         w.buf.truncate(w.buf.len() - 1);
-        assert_eq!(decode_laser_scan_returns(&w.buf), None, "body cut short");
+        assert_eq!(
+            decode_laser_scan_returns(&w.buf, Encoding::Cdr),
+            None,
+            "body cut short"
+        );
     }
 
     /// A `sensor_msgs/msg/Image` body, with every field the decode reads under the caller's control
@@ -1714,18 +1938,18 @@ mod tests {
     fn a_compressed_frame_gives_up_its_size_without_decoding_a_pixel() {
         let w = compressed_image("jpeg", &jpeg(1920, 1080));
         assert_eq!(
-            decode_compressed_image_dimensions(&w.buf),
+            decode_compressed_image_dimensions(&w.buf, Encoding::Cdr),
             Some(Some((1920, 1080)))
         );
         // ROS also spells the format in full, and the codec is looked for inside the string.
         let w = compressed_image("rgb8; jpeg compressed bgr8", &jpeg(640, 480));
         assert_eq!(
-            decode_compressed_image_dimensions(&w.buf),
+            decode_compressed_image_dimensions(&w.buf, Encoding::Cdr),
             Some(Some((640, 480)))
         );
         let w = compressed_image("png", &png(320, 240));
         assert_eq!(
-            decode_compressed_image_dimensions(&w.buf),
+            decode_compressed_image_dimensions(&w.buf, Encoding::Cdr),
             Some(Some((320, 240)))
         );
     }
@@ -1736,12 +1960,12 @@ mod tests {
         // right rate with nothing compressed in it. No codec has to be understood to see that.
         let w = compressed_image("jpeg", &[]);
         assert_eq!(
-            decode_compressed_image_dimensions(&w.buf),
+            decode_compressed_image_dimensions(&w.buf, Encoding::Cdr),
             Some(Some((0, 0)))
         );
         let w = compressed_image("h264", &[]);
         assert_eq!(
-            decode_compressed_image_dimensions(&w.buf),
+            decode_compressed_image_dimensions(&w.buf, Encoding::Cdr),
             Some(Some((0, 0)))
         );
     }
@@ -1751,7 +1975,10 @@ mod tests {
         // The distinction the caller acts on: nothing was measured *and nothing failed*, so the
         // stream abstains out loud rather than being accused of carrying bodies that broke.
         let w = compressed_image("h264", &[0x00, 0x00, 0x01, 0x67, 0x42]);
-        assert_eq!(decode_compressed_image_dimensions(&w.buf), Some(None));
+        assert_eq!(
+            decode_compressed_image_dimensions(&w.buf, Encoding::Cdr),
+            Some(None)
+        );
     }
 
     #[test]
@@ -1760,30 +1987,30 @@ mod tests {
         // fault, and distinct from a codec this reader declined.
         let w = compressed_image("jpeg", &[0xFF, 0xD8, 0xFF, 0xC0]);
         assert_eq!(
-            decode_compressed_image_dimensions(&w.buf),
+            decode_compressed_image_dimensions(&w.buf, Encoding::Cdr),
             None,
             "truncated"
         );
         let w = compressed_image("jpeg", &[0x89, 0x50, 0x4E, 0x47]);
         assert_eq!(
-            decode_compressed_image_dimensions(&w.buf),
+            decode_compressed_image_dimensions(&w.buf, Encoding::Cdr),
             None,
             "not a jpeg"
         );
         let w = compressed_image("png", &png(320, 240)[..12]);
         assert_eq!(
-            decode_compressed_image_dimensions(&w.buf),
+            decode_compressed_image_dimensions(&w.buf, Encoding::Cdr),
             None,
             "not a png"
         );
         // And a body that is not a `CompressedImage` at all.
         assert_eq!(
-            decode_compressed_image_dimensions(&[0x00, 0x01, 0x00, 0x00][..]),
+            decode_compressed_image_dimensions(&[0x00, 0x01, 0x00, 0x00][..], Encoding::Cdr),
             None
         );
         let w = compressed_image("", &jpeg(64, 64));
         assert_eq!(
-            decode_compressed_image_dimensions(&w.buf),
+            decode_compressed_image_dimensions(&w.buf, Encoding::Cdr),
             None,
             "no format"
         );
@@ -1804,10 +2031,13 @@ mod tests {
     #[test]
     fn an_image_body_yields_the_size_it_declares() {
         let w = image("camera_front", 720, 1280, "mono8", 1280, 1280 * 720);
-        assert_eq!(decode_image_dimensions(&w.buf), Some((1280, 720)));
+        assert_eq!(
+            decode_image_dimensions(&w.buf, Encoding::Cdr),
+            Some((1280, 720))
+        );
         // Three bytes a pixel is an ordinary `rgb8` frame, not a suspicious stride.
         let w = image("camera_front", 4, 8, "rgb8", 24, 96);
-        assert_eq!(decode_image_dimensions(&w.buf), Some((8, 4)));
+        assert_eq!(decode_image_dimensions(&w.buf, Encoding::Cdr), Some((8, 4)));
     }
 
     #[test]
@@ -1816,26 +2046,41 @@ mod tests {
         // well-formed frame declaring no pixels, and that has to be distinguishable from a body
         // whose size was never read.
         let w = image("camera_front", 0, 0, "mono8", 0, 0);
-        assert_eq!(decode_image_dimensions(&w.buf), Some((0, 0)));
+        assert_eq!(decode_image_dimensions(&w.buf, Encoding::Cdr), Some((0, 0)));
     }
 
     #[test]
     fn a_body_that_is_not_an_image_yields_no_size() {
         // A buffer of zeroes satisfies every length invariant trivially, so the non-empty
         // `encoding` is what stands between it and being reported as a dead camera.
-        assert_eq!(decode_image_dimensions(&[0x00, 0x01, 0x00, 0x00][..]), None);
+        assert_eq!(
+            decode_image_dimensions(&[0x00, 0x01, 0x00, 0x00][..], Encoding::Cdr),
+            None
+        );
         let w = image("camera_front", 4, 8, "", 8, 32);
-        assert_eq!(decode_image_dimensions(&w.buf), None, "no encoding named");
+        assert_eq!(
+            decode_image_dimensions(&w.buf, Encoding::Cdr),
+            None,
+            "no encoding named"
+        );
         // A row that cannot hold its own pixels, and one far too wide to be an image's.
         let w = image("camera_front", 4, 8, "mono8", 4, 16);
-        assert_eq!(decode_image_dimensions(&w.buf), None, "step below width");
+        assert_eq!(
+            decode_image_dimensions(&w.buf, Encoding::Cdr),
+            None,
+            "step below width"
+        );
         let w = image("camera_front", 4, 8, "mono8", 8 * 33, 8 * 33 * 4);
-        assert_eq!(decode_image_dimensions(&w.buf), None, "step absurdly wide");
+        assert_eq!(
+            decode_image_dimensions(&w.buf, Encoding::Cdr),
+            None,
+            "step absurdly wide"
+        );
         // `data` is exactly `step × height` — the invariant an arbitrary body will not satisfy by
         // accident.
         let w = image("camera_front", 4, 8, "mono8", 8, 31);
         assert_eq!(
-            decode_image_dimensions(&w.buf),
+            decode_image_dimensions(&w.buf, Encoding::Cdr),
             None,
             "data length disagrees"
         );
@@ -1843,14 +2088,21 @@ mod tests {
         // when its numbers agree with each other.
         let mut w = image("camera_front", 4, 8, "mono8", 8, 32);
         w.buf.truncate(w.buf.len() - 1);
-        assert_eq!(decode_image_dimensions(&w.buf), None, "pixels not present");
+        assert_eq!(
+            decode_image_dimensions(&w.buf, Encoding::Cdr),
+            None,
+            "pixels not present"
+        );
     }
 
     #[test]
     fn decodes_a_header_stamp() {
         let mut w = W::new();
         w.header_at("lidar_top", 1_767_225_600_123_456_789);
-        assert_eq!(decode_header_stamp(&w.buf), Some(1_767_225_600_123_456_789));
+        assert_eq!(
+            decode_header_stamp(&w.buf, Encoding::Cdr),
+            Some(1_767_225_600_123_456_789)
+        );
     }
 
     #[test]
@@ -1859,7 +2111,7 @@ mod tests {
         // and that has to be distinguishable from a body whose stamp was never read.
         let mut w = W::new();
         w.header("lidar_top");
-        assert_eq!(decode_header_stamp(&w.buf), Some(0));
+        assert_eq!(decode_header_stamp(&w.buf, Encoding::Cdr), Some(0));
     }
 
     #[test]
@@ -1871,18 +2123,18 @@ mod tests {
         w.i32(0);
         w.u32(1_000_000_000); // nanosec at a full second: not a normalized ROS time
         w.string("lidar_top");
-        assert_eq!(decode_header_stamp(&w.buf), None);
+        assert_eq!(decode_header_stamp(&w.buf, Encoding::Cdr), None);
 
         let mut w = W::new();
         w.i32(-1); // a stamp before 1970
         w.u32(0);
         w.string("lidar_top");
-        assert_eq!(decode_header_stamp(&w.buf), None);
+        assert_eq!(decode_header_stamp(&w.buf, Encoding::Cdr), None);
 
         let mut w = W::new();
         w.i32(5);
         w.u32(0); // and then nothing where the frame_id should be
-        assert_eq!(decode_header_stamp(&w.buf), None);
+        assert_eq!(decode_header_stamp(&w.buf, Encoding::Cdr), None);
     }
 
     #[test]
@@ -1920,7 +2172,7 @@ mod tests {
             w.u8(7); // datatype FLOAT32
             w.u32(1); // count
         }
-        let fields = decode_point_cloud2_fields(&w.buf).expect("decode");
+        let fields = decode_point_cloud2_fields(&w.buf, Encoding::Cdr).expect("decode");
         let names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(names, ["x", "y", "z", "intensity"]);
         assert!(fields.iter().all(|f| f.dtype.as_deref() == Some("float32")));
@@ -1941,7 +2193,7 @@ mod tests {
         for v in [600.0, 0.0, 320.0, 0.0, 600.0, 240.0, 0.0, 0.0, 1.0] {
             w.f64(v);
         }
-        let ci = decode_camera_info(&w.buf, "/cam/info").expect("decode");
+        let ci = decode_camera_info(&w.buf, Encoding::Cdr, "/cam/info").expect("decode");
         assert_eq!(ci.fx, 600.0);
         assert_eq!(ci.fy, 600.0);
         assert_eq!(ci.cx, 320.0);
@@ -1958,7 +2210,7 @@ mod tests {
         for v in [1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0] {
             w.f64(v);
         }
-        let sample = decode_odometry(&w.buf).expect("decode");
+        let sample = decode_odometry(&w.buf, Encoding::Cdr).expect("decode");
         assert_eq!(sample.child_frame.as_deref(), Some("base_link"));
         assert_eq!(sample.pose.translation, [1.0, 2.0, 3.0]);
         assert_eq!(sample.pose.rotation, [0.0, 0.0, 0.0, 1.0]);
@@ -1984,7 +2236,7 @@ mod tests {
         for v in [12.5, 0.0, 0.0, 0.0, 0.0, -0.4] {
             w.f64(v);
         }
-        let sample = decode_odometry(&w.buf).expect("decode");
+        let sample = decode_odometry(&w.buf, Encoding::Cdr).expect("decode");
         assert_eq!(sample.pose.translation, [1.0, 2.0, 3.0]);
         assert_eq!(
             sample.twist,
@@ -2007,7 +2259,7 @@ mod tests {
         for _ in 0..20 {
             w.f64(0.0);
         }
-        let sample = decode_odometry(&w.buf).expect("decode");
+        let sample = decode_odometry(&w.buf, Encoding::Cdr).expect("decode");
         assert_eq!(sample.twist, None);
         assert_eq!(sample.pose.translation, [1.0, 2.0, 3.0]);
     }
@@ -2021,7 +2273,7 @@ mod tests {
         for v in [0.1, 0.2, 0.3, 0.0, 0.0, 0.0, 1.0] {
             w.f64(v);
         }
-        let ts = decode_tf_message(&w.buf).expect("decode");
+        let ts = decode_tf_message(&w.buf, Encoding::Cdr).expect("decode");
         assert_eq!(ts.len(), 1);
         assert_eq!(ts[0].parent_frame, "base_link");
         assert_eq!(ts[0].child_frame, "lidar_top");
@@ -2042,7 +2294,7 @@ mod tests {
         }
         w.u32(0); // velocity[]
         w.u32(0); // effort[]
-        let sample = decode_joint_state(&w.buf).expect("decode");
+        let sample = decode_joint_state(&w.buf, Encoding::Cdr).expect("decode");
         assert_eq!(sample.positions, vec![0.5, -1.25, 0.0]);
         assert!(sample.velocities.is_empty() && sample.efforts.is_empty());
     }
@@ -2069,7 +2321,7 @@ mod tests {
         for v in [12.5, -3.0] {
             w.f64(v);
         }
-        let sample = decode_joint_state(&w.buf).expect("decode");
+        let sample = decode_joint_state(&w.buf, Encoding::Cdr).expect("decode");
         assert_eq!(sample.names, vec!["shoulder", "elbow"]);
         assert_eq!(sample.positions, vec![0.5, -1.25]);
         assert_eq!(sample.velocities, vec![0.01, -0.02]);
@@ -2088,7 +2340,7 @@ mod tests {
         w.u32(0); // velocity[]
         w.u32(1); // effort[]
         w.f64(2.5);
-        assert!(decode_joint_state(&w.buf).is_none());
+        assert!(decode_joint_state(&w.buf, Encoding::Cdr).is_none());
     }
 
     #[test]
@@ -2097,13 +2349,13 @@ mod tests {
         let mut w = W::new();
         w.header("");
         w.u32(4_000_000_000); // name[] count
-        assert!(decode_joint_state(&w.buf).is_none());
+        assert!(decode_joint_state(&w.buf, Encoding::Cdr).is_none());
 
         let mut w = W::new();
         w.header("");
         w.u32(0); // name[]
         w.u32(4_000_000_000); // position[] count
-        assert!(decode_joint_state(&w.buf).is_none());
+        assert!(decode_joint_state(&w.buf, Encoding::Cdr).is_none());
     }
 
     /// One `sensor_msgs/msg/Imu` body. Each `*_cov0` is that field's `covariance[0]`; `-1.0` is the
@@ -2153,7 +2405,7 @@ mod tests {
             0.03,
         );
         assert_eq!(
-            decode_imu_values(&body).expect("decode"),
+            decode_imu_values(&body, Encoding::Cdr).expect("decode"),
             vec![
                 Some(0.0),
                 Some(0.0),
@@ -2182,7 +2434,7 @@ mod tests {
             [0.0, 0.0, 9.81],
             0.03,
         );
-        let values = decode_imu_values(&body).expect("decode");
+        let values = decode_imu_values(&body, Encoding::Cdr).expect("decode");
         assert_eq!(&values[..4], &[None, None, None, None]);
         assert_eq!(values[4], Some(0.1));
         assert_eq!(values[9], Some(9.81));
@@ -2191,9 +2443,9 @@ mod tests {
     #[test]
     fn an_imu_that_provides_nothing_is_not_a_measurement() {
         let body = imu([0.0; 4], -1.0, [0.0; 3], -1.0, [0.0; 3], -1.0);
-        assert!(decode_imu_values(&body).is_none());
+        assert!(decode_imu_values(&body, Encoding::Cdr).is_none());
         // And a body that stops short of the ten values is declined rather than half-read.
-        assert!(decode_imu_values(&body[..40]).is_none());
+        assert!(decode_imu_values(&body[..40], Encoding::Cdr).is_none());
     }
 
     /// Every decoder in this module, over every truncation and a spread of byte flips of a valid
@@ -2277,14 +2529,14 @@ mod tests {
         // content, so a `CameraInfo` decoder can be handed a `PointCloud2` body by a mislabelled
         // channel, and must decline it rather than misread it into a panic.
         let decode_all = |b: &[u8]| {
-            let _ = decode_header_frame_id(b);
-            let _ = decode_point_cloud2_fields(b);
-            let _ = decode_camera_info(b, "/topic");
-            let _ = decode_odometry(b);
-            let _ = decode_joint_state(b);
-            let _ = decode_imu_values(b);
-            let _ = decode_nav_sat_fix(b);
-            let _ = decode_tf_message(b);
+            let _ = decode_header_frame_id(b, Encoding::Cdr);
+            let _ = decode_point_cloud2_fields(b, Encoding::Cdr);
+            let _ = decode_camera_info(b, Encoding::Cdr, "/topic");
+            let _ = decode_odometry(b, Encoding::Cdr);
+            let _ = decode_joint_state(b, Encoding::Cdr);
+            let _ = decode_imu_values(b, Encoding::Cdr);
+            let _ = decode_nav_sat_fix(b, Encoding::Cdr);
+            let _ = decode_tf_message(b, Encoding::Cdr);
         };
 
         for body in &bodies {
@@ -2325,7 +2577,7 @@ mod tests {
         }
         w.u8(0); // position_covariance_type
         assert_eq!(
-            super::decode_nav_sat_fix(&w.buf),
+            super::decode_nav_sat_fix(&w.buf, Encoding::Cdr),
             Some(super::NavSatSample::Fix(vec![
                 Some(37.4),
                 Some(-122.1),
@@ -2350,7 +2602,7 @@ mod tests {
         // Read as the receiver's own verdict, not as an unreadable message: those are opposite
         // facts, and only the first can be counted.
         assert_eq!(
-            super::decode_nav_sat_fix(&w.buf),
+            super::decode_nav_sat_fix(&w.buf, Encoding::Cdr),
             Some(super::NavSatSample::NoFix)
         );
     }
@@ -2363,24 +2615,26 @@ mod tests {
         w.align(2);
         w.buf.extend_from_slice(&1u16.to_le_bytes());
         w.f64(37.4); // latitude only
-        assert_eq!(super::decode_nav_sat_fix(&w.buf), None);
+        assert_eq!(super::decode_nav_sat_fix(&w.buf, Encoding::Cdr), None);
     }
 
     #[test]
     fn malformed_or_big_endian_bodies_are_declined_not_panicked() {
         // Big-endian encapsulation.
-        assert!(decode_odometry(&[0x00, 0x00, 0x00, 0x00]).is_none());
+        assert!(decode_odometry(&[0x00, 0x00, 0x00, 0x00], Encoding::Cdr).is_none());
         // Truncated after the header.
-        assert!(decode_point_cloud2_fields(&[0x00, 0x01, 0x00, 0x00, 0x01]).is_none());
+        assert!(
+            decode_point_cloud2_fields(&[0x00, 0x01, 0x00, 0x00, 0x01], Encoding::Cdr).is_none()
+        );
         // A field count far larger than the buffer must not over-allocate or panic.
         let mut w = W::new();
         w.header("x");
         w.u32(1);
         w.u32(1);
         w.u32(4_000_000_000); // absurd field count
-        assert!(decode_point_cloud2_fields(&w.buf).is_none());
+        assert!(decode_point_cloud2_fields(&w.buf, Encoding::Cdr).is_none());
         // Empty input.
-        assert!(decode_tf_message(&[]).is_none());
+        assert!(decode_tf_message(&[], Encoding::Cdr).is_none());
     }
 
     /// A `PointCloud2` point count is believed only when the body proves it is a `PointCloud2`.
@@ -2413,10 +2667,13 @@ mod tests {
         // A real cloud, and a real *empty* cloud: both counted. The empty one is the case the
         // check exists for, so it must survive every rule above.
         assert_eq!(
-            decode_point_cloud2_point_count(&cloud(1, 100, 1600)),
+            decode_point_cloud2_point_count(&cloud(1, 100, 1600), Encoding::Cdr),
             Some(100)
         );
-        assert_eq!(decode_point_cloud2_point_count(&cloud(1, 0, 0)), Some(0));
+        assert_eq!(
+            decode_point_cloud2_point_count(&cloud(1, 0, 0), Encoding::Cdr),
+            Some(0)
+        );
 
         // The stub body a demo recorder writes: a header and a payload that is not a cloud. Read as
         // two `uint32`s it yields a count; read as a message it is not one.
@@ -2424,14 +2681,14 @@ mod tests {
         stub.header("lidar");
         stub.buf.extend_from_slice(&0u64.to_le_bytes());
         stub.buf.extend_from_slice(&[0u8; 32]);
-        assert!(decode_point_cloud2_point_count(&stub.buf).is_none());
+        assert!(decode_point_cloud2_point_count(&stub.buf, Encoding::Cdr).is_none());
 
         // `data` shorter than `row_step × height` claims — the shape a truncated write leaves.
-        assert!(decode_point_cloud2_point_count(&cloud(1, 100, 0)).is_none());
+        assert!(decode_point_cloud2_point_count(&cloud(1, 100, 0), Encoding::Cdr).is_none());
         // ...and a `data` length the buffer does not actually hold.
         let mut short = cloud(1, 100, 1600);
         short.truncate(short.len() - 1);
-        assert!(decode_point_cloud2_point_count(&short).is_none());
+        assert!(decode_point_cloud2_point_count(&short, Encoding::Cdr).is_none());
 
         // A record layout that does not fit the stride it declares: `intensity` at offset 12 is
         // four bytes wide, so it runs to 16 in a 12-byte point. A hand-rolled publisher that adds a
@@ -2459,18 +2716,23 @@ mod tests {
         };
         // Three float32s in twelve bytes is exactly right.
         assert_eq!(
-            decode_point_cloud2_point_count(&layout(&[(0, 7), (4, 7), (8, 7)], 12)),
+            decode_point_cloud2_point_count(&layout(&[(0, 7), (4, 7), (8, 7)], 12), Encoding::Cdr),
             Some(1)
         );
         // A fourth that runs past the stride is not.
-        assert!(
-            decode_point_cloud2_point_count(&layout(&[(0, 7), (4, 7), (8, 7), (12, 7)], 12))
-                .is_none()
-        );
+        assert!(decode_point_cloud2_point_count(
+            &layout(&[(0, 7), (4, 7), (8, 7), (12, 7)], 12),
+            Encoding::Cdr
+        )
+        .is_none());
         // Nor is one that overlaps the field before it.
-        assert!(decode_point_cloud2_point_count(&layout(&[(0, 7), (2, 7), (8, 7)], 12)).is_none());
+        assert!(decode_point_cloud2_point_count(
+            &layout(&[(0, 7), (2, 7), (8, 7)], 12),
+            Encoding::Cdr
+        )
+        .is_none());
         // Nor a datatype tag the message definition does not define — that is not a width to guess.
-        assert!(decode_point_cloud2_point_count(&layout(&[(0, 99)], 12)).is_none());
+        assert!(decode_point_cloud2_point_count(&layout(&[(0, 99)], 12), Encoding::Cdr).is_none());
 
         // A field count past the cap is declined rather than walked: it is a `uint32` out of the
         // file, and the walk to the length invariants is a per-message cost.
@@ -2479,6 +2741,6 @@ mod tests {
         many.u32(1);
         many.u32(1);
         many.u32(4_000_000_000);
-        assert!(decode_point_cloud2_point_count(&many.buf).is_none());
+        assert!(decode_point_cloud2_point_count(&many.buf, Encoding::Cdr).is_none());
     }
 }

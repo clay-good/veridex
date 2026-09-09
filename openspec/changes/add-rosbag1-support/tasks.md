@@ -25,6 +25,15 @@
 - [x] The sweep reaches the new reader (`the_sweep_reaches_every_adapter`).
 - [x] `docs/formats.md` and the README say what it reads and what it does not.
 
-## R4 — bodies (follow-up, not this change)
+## R4 — bodies
 
-- [ ] Reach the existing typed decoders through a ROS 1 (no-encapsulation) reader.
+- [x] Teach the message reader the ROS 1 encoding: no encapsulation header, no alignment padding,
+      a `seq` at the front of every `std_msgs/Header`.
+- [x] One dispatch from a ROS message type to the CDM (`adapter::rosmsg`), shared by the MCAP
+      adapter, both rosbag2 storage plugins and this reader, with the encoding as a parameter.
+- [x] Read `header.seq` as the publisher's own count — the one direct evidence of a dropped message
+      a recording holds, and a field ROS 2 does not carry.
+- [x] Prove it on hand-built ROS 1 bodies: the values decoded, an unpadded field behind an
+      odd-length `frame_id`, a CDR body in a bag counted as failed rather than misread, and a hole
+      in `seq`.
+- [x] `docs/formats.md` and the CHANGELOG say what a bag now yields.

@@ -22,6 +22,7 @@ pub mod mdf4;
 pub mod rlds;
 pub mod rosbag1;
 pub mod rosbag2;
+pub(crate) mod rosmsg;
 pub(crate) mod sqlite;
 pub(crate) mod stats;
 pub mod zarr;

@@ -361,3 +361,266 @@ fn a_corrupted_or_hostile_bag_errors_or_yields_nothing_but_never_panics() {
         &IngestOptions::default(),
     );
 }
+
+/// A ROS 1 message body, written the way a ROS 1 publisher serializes one: no encapsulation header,
+/// no alignment padding anywhere, and a `uint32 seq` at the front of every `std_msgs/Header`.
+///
+/// Written out by hand for the same reason the records above are: the point of these tests is that
+/// the decoders read what a `.bag` really holds, which a writer sharing their assumptions could not
+/// prove.
+struct R1 {
+    buf: Vec<u8>,
+}
+
+impl R1 {
+    fn new() -> R1 {
+        R1 { buf: Vec::new() }
+    }
+    fn u8(&mut self, v: u8) {
+        self.buf.push(v);
+    }
+    fn u32(&mut self, v: u32) {
+        self.buf.extend_from_slice(&v.to_le_bytes());
+    }
+    fn f64(&mut self, v: f64) {
+        self.buf.extend_from_slice(&v.to_le_bytes());
+    }
+    /// A ROS 1 string: a `u32` byte length and the bytes, with no NUL terminator.
+    fn string(&mut self, s: &str) {
+        self.u32(s.len() as u32);
+        self.buf.extend_from_slice(s.as_bytes());
+    }
+    /// A `std_msgs/Header`: `uint32 seq`, `time stamp`, `string frame_id`.
+    fn header(&mut self, seq: u32, stamp_ns: u64, frame_id: &str) {
+        self.u32(seq);
+        self.u32((stamp_ns / 1_000_000_000) as u32);
+        self.u32((stamp_ns % 1_000_000_000) as u32);
+        self.string(frame_id);
+    }
+}
+
+/// A `sensor_msgs/Imu`: orientation, angular velocity and linear acceleration, each behind the
+/// covariance whose first element says whether the driver provides the field at all.
+fn imu_body(seq: u32, stamp_ns: u64, accel_z: f64) -> Vec<u8> {
+    let mut w = R1::new();
+    // An eight-character frame, so the doubles behind the header start at 24 with no padding
+    // between. A reader that aligned them to 8 the way CDR does would read every value that
+    // follows out of the middle of two doubles.
+    w.header(seq, stamp_ns, "imu_link");
+    for v in [0.0, 0.0, 0.0, 1.0] {
+        w.f64(v);
+    }
+    w.f64(0.01); // orientation_covariance[0]: provided
+    for _ in 0..8 {
+        w.f64(0.0);
+    }
+    for v in [0.1, 0.2, 0.3] {
+        w.f64(v);
+    }
+    w.f64(0.01);
+    for _ in 0..8 {
+        w.f64(0.0);
+    }
+    for v in [0.0, 0.0, accel_z] {
+        w.f64(v);
+    }
+    w.f64(0.01);
+    for _ in 0..8 {
+        w.f64(0.0);
+    }
+    w.buf
+}
+
+/// A `sensor_msgs/PointCloud2` carrying `width` points of one `float32 x` field each.
+fn point_cloud_body(stamp_ns: u64, width: u32) -> Vec<u8> {
+    let mut w = R1::new();
+    w.header(0, stamp_ns, "lidar");
+    w.u32(1); // height
+    w.u32(width);
+    w.u32(1); // one field
+    w.string("x");
+    w.u32(0); // offset
+    w.u8(7); // float32
+    w.u32(1); // count
+    w.u8(0); // is_bigendian
+    w.u32(4); // point_step
+    w.u32(4 * width); // row_step
+    w.u32(4 * width); // data length
+    for _ in 0..width {
+        w.buf.extend_from_slice(&1.0f32.to_le_bytes());
+    }
+    w.u8(1); // is_dense
+    w.buf
+}
+
+/// A `sensor_msgs/CameraInfo` for a 640x480 camera.
+fn camera_info_body(stamp_ns: u64) -> Vec<u8> {
+    let mut w = R1::new();
+    w.header(0, stamp_ns, "camera");
+    w.u32(480); // height
+    w.u32(640); // width
+    w.string("plumb_bob");
+    w.u32(5);
+    for _ in 0..5 {
+        w.f64(0.0);
+    }
+    for v in [600.0, 0.0, 320.0, 0.0, 600.0, 240.0, 0.0, 0.0, 1.0] {
+        w.f64(v); // k
+    }
+    w.buf
+}
+
+/// A `nav_msgs/Odometry`: the pose, its covariance, and the ego's own velocity.
+fn odometry_body(stamp_ns: u64, x: f64) -> Vec<u8> {
+    let mut w = R1::new();
+    w.header(0, stamp_ns, "odom");
+    w.string("base_link");
+    for v in [x, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0] {
+        w.f64(v);
+    }
+    for _ in 0..36 {
+        w.f64(0.0);
+    }
+    for v in [1.5, 0.0, 0.0, 0.0, 0.0, 0.1] {
+        w.f64(v); // twist: 1.5 m/s forward, 0.1 rad/s yaw
+    }
+    w.buf
+}
+
+/// A rig whose bodies are real ROS 1 messages rather than filler bytes.
+fn decodable_rig() -> Vec<u8> {
+    let mut inner = Vec::new();
+    inner.extend_from_slice(&connection(0, "/imu/data", "sensor_msgs/Imu", false));
+    inner.extend_from_slice(&connection(
+        1,
+        "/lidar/points",
+        "sensor_msgs/PointCloud2",
+        false,
+    ));
+    inner.extend_from_slice(&connection(
+        2,
+        "/camera/camera_info",
+        "sensor_msgs/CameraInfo",
+        false,
+    ));
+    inner.extend_from_slice(&connection(3, "/odom", "nav_msgs/Odometry", false));
+    for i in 0..5u64 {
+        let ts = 1_000_000_000 + i * 100_000_000;
+        inner.extend_from_slice(&message(0, ts, &imu_body(i as u32, ts, 9.81)));
+        inner.extend_from_slice(&message(1, ts, &point_cloud_body(ts, 100)));
+        inner.extend_from_slice(&message(2, ts, &camera_info_body(ts)));
+        inner.extend_from_slice(&message(3, ts, &odometry_body(ts, i as f64)));
+    }
+    inner
+}
+
+#[test]
+fn a_bag_body_is_read_the_way_a_ros_2_body_is() {
+    let inner = decodable_rig();
+    let ingested = ingest(&bag(&chunk("none", &inner, &inner)));
+    let ep = &ingested.dataset.episodes[0];
+    let by = |n: &str| ep.streams.iter().find(|s| s.name == n).unwrap();
+
+    // The IMU's whole payload is its measurement, and it is measured — with no padding between the
+    // odd-length `frame_id` and the doubles behind it, which is where a CDR reader would go wrong.
+    let imu = by("/imu/data");
+    assert!(imu.observed_stats.is_some(), "the IMU is measured");
+    let names = imu.dim_names.as_ref().expect("the dimensions are named");
+    let z = names
+        .iter()
+        .position(|n| n == "linear_acceleration.z")
+        .expect("the acceleration is one of them");
+    let dim = imu
+        .observed_dim_stats
+        .as_ref()
+        .expect("per-dimension stats")
+        .iter()
+        .find(|d| d.dim as usize == z)
+        .expect("the acceleration's own summary");
+    assert_eq!(
+        (dim.stats.min, dim.stats.max),
+        (9.81, 9.81),
+        "the acceleration is read exactly, out of a body with no padding behind its frame_id"
+    );
+    let decodes = imu.observed_body_decodes.expect("bodies were decoded");
+    assert_eq!((decodes.attempted, decodes.failed), (5, 0));
+
+    // The sensor's own clock, out of the header the recorder's clock stands beside.
+    let stamps = imu.observed_header_stamps.expect("stamps were read");
+    assert_eq!(stamps.message_count, 5);
+    assert_eq!(stamps.unset, 0);
+    assert_eq!(imu.frame_id.as_deref(), Some("imu_link"));
+
+    // The LiDAR's returns are counted, which is what catches a driver publishing empty sweeps.
+    let counts = by("/lidar/points")
+        .observed_point_counts
+        .expect("points were counted");
+    assert_eq!((counts.min, counts.max), (100, 100));
+    assert_eq!(
+        by("/lidar/points")
+            .point_fields
+            .as_ref()
+            .map(|f| f.len())
+            .unwrap_or(0),
+        1
+    );
+
+    // The rig the recording describes: intrinsics out of `CameraInfo`, a trajectory out of
+    // `Odometry`, both decoded from bodies rather than claimed by a sidecar.
+    let calib = ingested
+        .dataset
+        .calibration
+        .as_ref()
+        .expect("a calibration");
+    assert_eq!(calib.intrinsics.len(), 1);
+    assert_eq!(calib.intrinsics[0].fx, 600.0);
+    assert_eq!(calib.intrinsics[0].width, Some(640u64));
+    let poses = ep.ego_poses.as_ref().expect("a trajectory");
+    assert_eq!(poses.len(), 5);
+    assert_eq!(poses[4].pose.translation[0], 4.0);
+    assert_eq!(ep.ego_frame.as_deref(), Some("base_link"));
+    // The ego's own velocity is a measurement too.
+    assert!(by("/odom").observed_stats.is_some());
+}
+
+#[test]
+fn a_body_that_is_not_the_message_it_claims_is_counted_as_a_failure() {
+    // Truncated `Imu` bodies: present, and their own invariants do not hold. The count has to say
+    // so, because everything summarized about a stream is otherwise computed from whichever bodies
+    // did survive and reported as a property of the stream.
+    let mut inner = Vec::new();
+    inner.extend_from_slice(&connection(0, "/imu/data", "sensor_msgs/Imu", false));
+    for i in 0..4u64 {
+        let ts = 1_000_000_000 + i * 100_000_000;
+        let mut body = imu_body(i as u32, ts, 9.81);
+        body.truncate(40);
+        inner.extend_from_slice(&message(0, ts, &body));
+    }
+    let ingested = ingest(&bag(&chunk("none", &inner, &inner)));
+    let imu = &ingested.dataset.episodes[0].streams[0];
+    let decodes = imu.observed_body_decodes.expect("the attempts are counted");
+    assert_eq!((decodes.attempted, decodes.failed), (4, 4));
+    assert!(
+        imu.observed_stats.is_none(),
+        "nothing is summarized out of bodies that did not decode"
+    );
+}
+
+#[test]
+fn the_seq_on_a_ros_1_header_counts_what_the_publisher_sent() {
+    // ROS 1 keeps the `seq` counter ROS 2 dropped, so a `.bag` holds the one direct evidence of a
+    // message that never reached the recorder: a hole in the publisher's own numbering.
+    let mut inner = Vec::new();
+    inner.extend_from_slice(&connection(0, "/imu/data", "sensor_msgs/Imu", false));
+    for (i, seq) in [0u32, 1, 2, 5].iter().enumerate() {
+        let ts = 1_000_000_000 + i as u64 * 100_000_000;
+        inner.extend_from_slice(&message(0, ts, &imu_body(*seq, ts, 9.81)));
+    }
+    let ingested = ingest(&bag(&chunk("none", &inner, &inner)));
+    let seq = ingested.dataset.episodes[0].streams[0]
+        .observed_sequence
+        .expect("the publisher's numbering was read");
+    assert_eq!(seq.message_count, 4);
+    assert_eq!(seq.missing, 2, "3 and 4 never reached the bag");
+    assert_eq!(seq.non_increasing, 0);
+}

@@ -453,7 +453,7 @@ statistical findings, over a certificate listing all five statistical checks as 
 skipped. (That example was a CAN log, and neither a CAN log nor an MF4
 measurement abstains any more — a DBC decodes each frame into named signal values, an MF4 applies its
 conversion to each sample, and Veridex measures both. Nor does a robot arm or an IMU recorded to an
-MCAP or a ROS 2 bag: a `sensor_msgs/msg/JointState`, a `sensor_msgs/msg/Imu`, the
+MCAP or to a bag of either ROS generation: a `sensor_msgs/msg/JointState`, a `sensor_msgs/msg/Imu`, the
 `geometry_msgs/msg/Twist` a mobile base is driven by, the `Wrench` its gripper feels, and the
 one-scalar readings beside them (`Temperature`, `Range`, …) carry nothing but
 their measurements, so those are read and summarized per dimension. The abstention remains for every

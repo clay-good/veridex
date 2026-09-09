@@ -11,17 +11,21 @@
 //! kind. Connection records give a topic and its ROS message type; message records give a
 //! connection, a timestamp on the recorder's clock, and the serialized body.
 //!
-//! Scope, stated rather than guessed at. **Read:** topics, their ROS types, the recorder's clock and
-//! each message's bytes, fingerprinted. **Unread** (a `COVERAGE.SOURCE_UNREAD` warning in the
+//! Scope, stated rather than guessed at. **Read:** topics, their ROS types, the recorder's clock,
+//! each message's bytes (fingerprinted), and the bodies themselves — through
+//! [`super::rosmsg::decode_body`], the one dispatch from a ROS message type to the CDM that the MCAP
+//! adapter and both rosbag2 storage plugins also call. ROS 1 is a different *encoding* of the same
+//! fields in the same order — no encapsulation header, no alignment padding between primitives, and
+//! a `seq` at the front of every `std_msgs/Header` — and that difference lives in
+//! [`super::cdr::Encoding`], not here. **Unread** (a `COVERAGE.SOURCE_UNREAD` warning in the
 //! verdict): a chunk in a compression this workspace carries no decompressor for — `bz2`, and
 //! anything a future rosbag writes — because the messages are in the file and nobody read them.
-//! **Unmapped** (a note about shape): the message *bodies*, which are fingerprinted rather than
-//! decoded. ROS 1 puts the same fields in the same order as CDR, but it is not the same encoding:
-//! no encapsulation header, no alignment padding between primitives, and a `seq` counter at the
-//! front of every `std_msgs/Header`. The typed decoders are reachable from here through a reader
-//! that knows those three differences — deliberately a later change, because a bag whose topics,
-//! types, clock and fingerprints are read already reaches the structural, temporal, semantic and
-//! provenance families.
+//! **Unmapped** (a note about shape): the bulk payload of a body — an image's pixels, a cloud's
+//! points — which is fingerprinted and never interpreted, as it is in every reader here.
+//!
+//! One field a bag carries that a rosbag2 does not: `header.seq`, the publisher's own count of what
+//! it sent. A hole in it is the only direct evidence a recording holds of a message that never
+//! reached the recorder.
 //!
 //! Every length in a bag is a number the file chose, so each one is bounded against what the buffer
 //! actually holds before it is trusted: a corrupt or hostile bag is refused by name, never allocated
@@ -37,8 +41,8 @@ use super::{
     IngestReport, Ingested, Source, UnmappedField,
 };
 use crate::cdm::{
-    ClockKind, Dataset, Episode, Frame, Provenance, ProvenanceClass, ProvenanceElement,
-    ProvenanceScope, Stream, ValueRef,
+    Calibration, CameraIntrinsics, ClockKind, Dataset, EgoPose, Episode, Frame, PointField,
+    Provenance, ProvenanceClass, ProvenanceElement, ProvenanceScope, Stream, Transform, ValueRef,
 };
 
 /// The format id this adapter reports, and the `source_format` it records.
@@ -138,7 +142,7 @@ impl Adapter for Rosbag1Adapter {
         let mut budget = FrameBudget::new(options);
         let mut streams: Vec<Stream> = Vec::new();
         let (mut min_ts, mut max_ts) = (i64::MAX, i64::MIN);
-        for (conn, mut msgs) in walk.messages {
+        for (conn, mut acc) in walk.messages {
             let Some(topic) = walk.connections.get(&conn) else {
                 // A message referring to a connection the bag never declared names a topic nothing
                 // can identify. Reported rather than counted into a stream it cannot belong to.
@@ -146,16 +150,17 @@ impl Adapter for Rosbag1Adapter {
                     source_path: format!("connection {conn}"),
                     note: format!(
                         "{} message(s) name connection {conn}, which no connection record declares, so the topic and type they belong to are unknown; they contribute no frames",
-                        msgs.len()
+                        acc.msgs.len()
                     ),
                 });
                 continue;
             };
             // A bag writes messages in chunk order, which is time order per chunk but not across
             // them once a recorder buffers.
-            msgs.sort_by_key(|(ts, _)| *ts);
-            budget.take(FORMAT_ID, msgs.len() as u64)?;
-            let frames: Vec<Frame> = msgs
+            acc.msgs.sort_by_key(|(ts, _)| *ts);
+            budget.take(FORMAT_ID, acc.msgs.len() as u64)?;
+            let frames: Vec<Frame> = acc
+                .msgs
                 .iter()
                 .map(|(ts, hash)| {
                     min_ts = min_ts.min(*ts);
@@ -174,6 +179,16 @@ impl Adapter for Rosbag1Adapter {
             if frames.is_empty() {
                 continue;
             }
+            // A topic whose values this read declined to summarize is disclosed, not left looking
+            // like a topic that had nothing to say. See `StreamValues::refusal`.
+            if let Some(why) = acc.values.refusal() {
+                walk.unread.push(UnmappedField {
+                    source_path: topic.name.clone(),
+                    note: why.into(),
+                });
+            }
+            let measured = acc.values.finish();
+            let values = measured.as_ref().map(|(a, _)| a);
             streams.push(Stream {
                 name: topic.name.clone(),
                 // The same classifier the two ROS 2 readers use, over the same ROS type names: a rig
@@ -185,28 +200,29 @@ impl Adapter for Rosbag1Adapter {
                 clock_kind: ClockKind::Measured,
                 dtype: None,
                 shape: None,
-                dim_names: None,
+                dim_names: measured.as_ref().and_then(|(_, n)| n.clone()),
                 frames,
                 stats: None,
                 dim_stats: None,
-                // The bodies are fingerprinted, not decoded, so there is nothing summarized to
-                // report — and saying `Some(0)` here would claim a measurement nobody made.
-                observed_stats: None,
-                observed_saturation: None,
-                observed_non_finite: None,
-                observed_dim_stats: None,
+                // Every message whose whole payload is its measurement — a `JointState`, an `Imu`,
+                // a `NavSatFix` — is summarized here; every other topic's payload stays opaque and
+                // says so through `STATISTICAL.UNMEASURED_VALUES`.
+                observed_stats: values.and_then(|a| a.stats()),
+                observed_saturation: values.and_then(|a| a.saturation()),
+                observed_non_finite: values.map(|a| a.non_finite()),
+                observed_dim_stats: values.and_then(|a| a.dim_stats()),
                 latched: topic.latching,
                 // A bag declares no range for a topic; there is nothing to compare values against.
                 declared_range: None,
-                point_fields: None,
-                observed_point_counts: None,
-                observed_image_dims: None,
-                observed_body_decodes: None,
-                observed_header_stamps: None,
-                observed_sequence: None,
-                observed_fix_availability: None,
+                point_fields: acc.point_fields,
+                observed_point_counts: acc.point_counts.finish(),
+                observed_image_dims: acc.image_dims.finish(),
+                observed_body_decodes: acc.body_decodes.finish(),
+                observed_header_stamps: acc.header_stamps.finish(),
+                observed_sequence: acc.sequence.finish(),
+                observed_fix_availability: acc.fix_availability.finish(),
                 media: None,
-                frame_id: None,
+                frame_id: acc.frame_id,
             });
         }
         streams.sort_by(|a, b| a.name.cmp(&b.name));
@@ -217,6 +233,43 @@ impl Adapter for Rosbag1Adapter {
                 message: "the bag declares no topic carrying messages this reader could place in \
                           time"
                     .into(),
+            });
+        }
+
+        // The rig, as the recording's own messages describe it: the transform tree its `TFMessage`s
+        // publish and the intrinsics its `CameraInfo`s carry, both decoded from bodies rather than
+        // claimed by a sidecar.
+        let calibration = if walk.transforms.is_empty() && walk.intrinsics.is_empty() {
+            None
+        } else {
+            Some(Calibration {
+                transforms: std::mem::take(&mut walk.transforms).into_values().collect(),
+                intrinsics: std::mem::take(&mut walk.intrinsics).into_values().collect(),
+            })
+        };
+        let ego_poses = if walk.ego_poses.is_empty() {
+            None
+        } else {
+            let mut poses = std::mem::take(&mut walk.ego_poses);
+            poses.sort_by_key(|p| p.ts);
+            Some(poses)
+        };
+        // An edge the recording republished with a different pose: a rig whose frames moved, read as
+        // one that stood still. Disclosed rather than dropped.
+        if !walk.moved_frames.is_empty() {
+            walk.unread.push(UnmappedField {
+                source_path: "tf".into(),
+                note: walk.moved_frames.note(),
+            });
+        }
+        if walk.bodies_before_their_connection > 0 {
+            walk.unread.push(UnmappedField {
+                source_path: "message data".into(),
+                note: format!(
+                    "{} message(s) appear before the connection record naming their type, so their \
+                     bodies were not decoded; their times and bytes are read",
+                    walk.bodies_before_their_connection
+                ),
             });
         }
 
@@ -246,6 +299,16 @@ impl Adapter for Rosbag1Adapter {
                             class: ProvenanceClass::Known,
                         });
                     }
+                    // A bag that carries its own transform tree and camera intrinsics identifies the
+                    // calibration that produced it — in the recording, and bound into the CDM
+                    // content hash.
+                    if let Some(calib) = &calibration {
+                        elements.push(ProvenanceElement {
+                            key: "calibration".into(),
+                            value: Some(super::in_band_calibration(calib)),
+                            class: ProvenanceClass::Known,
+                        });
+                    }
                     elements
                 },
             }],
@@ -256,11 +319,42 @@ impl Adapter for Rosbag1Adapter {
                 streams,
                 task: None,
                 labels: vec![],
-                ego_poses: None,
-                ego_frame: None,
+                ego_poses,
+                ego_frame: walk.ego_frame.clone(),
                 declared_frame_count: None,
             }],
-            calibration: None,
+            calibration,
+        };
+
+        // What this run read, from the CDM it actually produced rather than from what the reader
+        // hoped to find: a bag with no `CameraInfo` on it claims no calibration mapping.
+        let mapped_fields = {
+            let mut mapped = vec![
+                "connection record topic + ROS type -> stream (and its modality)".into(),
+                "message record time -> frame.ts".into(),
+                "message body bytes -> frame.value_ref.content_hash (SHA-256)".into(),
+                "std_msgs/Header stamp + frame_id -> stream.observed_header_stamps, stream.frame_id"
+                    .into(),
+                "std_msgs/Header seq -> stream.observed_sequence".into(),
+            ];
+            if dataset.calibration.is_some() {
+                mapped.push("CameraInfo.k/d + TFMessage -> dataset.calibration".into());
+            }
+            if dataset.episodes.iter().any(|e| e.ego_poses.is_some()) {
+                mapped.push("Odometry.pose -> episode.ego_poses".into());
+            }
+            if dataset
+                .episodes
+                .iter()
+                .flat_map(|e| &e.streams)
+                .any(|s| s.observed_stats.is_some())
+            {
+                mapped.push(
+                    "JointState / Imu / NavSatFix / Twist / Wrench values -> stream.observed_stats"
+                        .into(),
+                );
+            }
+            mapped
         };
 
         Ok(Ingested {
@@ -270,16 +364,15 @@ impl Adapter for Rosbag1Adapter {
                 format_id: FORMAT_ID,
                 source_version: Some("2.0".into()),
                 coverage: Coverage::Full,
-                mapped_fields: vec![
-                    "connection record topic + ROS type -> stream (and its modality)".into(),
-                    "message record time -> frame.ts".into(),
-                    "message body bytes -> frame.value_ref.content_hash (SHA-256)".into(),
-                ],
+                mapped_fields,
                 unmapped_fields: vec![UnmappedField {
                     source_path: "message data".into(),
-                    note:
-                        "message bodies are fingerprinted, never decoded: ROS 1 puts the same fields in the same order as CDR but with no encapsulation header, no alignment padding and a `seq` at the front of every Header, so the typed decoders are reachable from here but are not wired to it yet"
-                            .into(),
+                    note: "a message body is read only as far as the fields the CDM holds — a \
+                           cloud's point layout and count, an image's dimensions, a rig's \
+                           transforms and intrinsics, a sensor's readings. The bulk payload (the \
+                           pixels, the points) is fingerprinted, never interpreted, and a message \
+                           type with no typed decoder is fingerprinted whole"
+                        .into(),
                 }],
                 omitted_fields: vec![
                     "episode segmentation (a bag records one continuous session)".into(),
@@ -299,14 +392,45 @@ struct Topic {
     latching: Option<bool>,
 }
 
+/// Everything one topic's messages contributed, accumulated as they were read.
+///
+/// Kept as running summaries rather than retained bodies: how many messages a topic carries is a
+/// number the file chose, and a bag holds the whole recording.
+#[derive(Default)]
+struct TopicAccum {
+    /// Each message's time and the fingerprint of its body.
+    msgs: Vec<(i64, [u8; 32])>,
+    point_fields: Option<Vec<PointField>>,
+    point_counts: super::cdr::PointCountAccum,
+    image_dims: super::cdr::ImageDimAccum,
+    body_decodes: super::cdr::BodyDecodeAccum,
+    header_stamps: super::cdr::HeaderStampAccum,
+    /// What this topic's publisher said about how many messages it sent, from the `seq` on each
+    /// header. Empty for a topic whose bodies are not header-first.
+    sequence: super::mcap::SequenceAccum,
+    fix_availability: super::cdr::FixAvailabilityAccum,
+    frame_id: Option<String>,
+    values: super::stats::StreamValues,
+}
+
 /// What one walk of a bag's record stream collected.
 #[derive(Default)]
 struct Walk {
     connections: BTreeMap<u32, Topic>,
-    /// Per connection: each message's time and the fingerprint of its body.
-    messages: BTreeMap<u32, Vec<(i64, [u8; 32])>>,
+    /// Per connection: everything its messages said.
+    messages: BTreeMap<u32, TopicAccum>,
     /// The `callerid` the bag header names, where it names one.
     recorder: Option<String>,
+    /// The rig, as the recording's own messages describe it.
+    ego_poses: Vec<EgoPose>,
+    ego_frame: Option<String>,
+    intrinsics: BTreeMap<String, CameraIntrinsics>,
+    transforms: BTreeMap<(String, String), Transform>,
+    moved_frames: super::cdr::MovingFrames,
+    /// Messages whose connection record the bag had not written yet when they were read. Their
+    /// bytes are still fingerprinted into frames; their bodies are not decoded, because nothing
+    /// says which message type to read them as.
+    bodies_before_their_connection: u64,
     unread: Vec<UnmappedField>,
 }
 
@@ -396,10 +520,69 @@ impl Walk {
         ) else {
             return;
         };
-        // The body is fingerprinted, never interpreted — the same discipline every container reader
-        // here follows for a payload it does not decode.
+        // The bytes are fingerprinted whatever else happens to them — the discipline every container
+        // reader here follows, and what gives the content-level checks something exact to compare.
         let hash: [u8; 32] = Sha256::digest(data).into();
-        self.messages.entry(conn).or_default().push((ts, hash));
+        // Field by field, so the connection this message names can be read while its accumulator and
+        // the bag-wide collections are written.
+        let Self {
+            connections,
+            messages,
+            ego_poses,
+            ego_frame,
+            intrinsics,
+            transforms,
+            moved_frames,
+            bodies_before_their_connection,
+            ..
+        } = self;
+        let Some(topic) = connections.get(&conn) else {
+            // A message ahead of its own connection record. Recorded as a frame — the time and the
+            // bytes are not in doubt — but there is no message type to read the body as, and
+            // guessing one would be inventing the measurement.
+            *bodies_before_their_connection += 1;
+            messages.entry(conn).or_default().msgs.push((ts, hash));
+            return;
+        };
+        let acc = messages.entry(conn).or_default();
+        acc.msgs.push((ts, hash));
+
+        // The frame this sensor's data is expressed in, and the sensor's own clock against the
+        // recorder's — both out of the `std_msgs/Header` a ROS message begins with, read here the
+        // way the two ROS 2 readers read theirs.
+        if acc.frame_id.is_none() {
+            acc.frame_id = super::cdr::decode_header_frame_id(data, super::cdr::Encoding::Ros1);
+        }
+        if let Some(stamp) = super::cdr::decode_header_stamp(data, super::cdr::Encoding::Ros1) {
+            acc.header_stamps.observe(ts, stamp);
+        }
+        // The publisher's own count of what it sent. ROS 1 keeps it on the header ROS 2 dropped, so
+        // a `.bag` answers "did a message go missing before the recorder saw it?" — which the same
+        // rig recorded to a `.db3` cannot.
+        if let Some(seq) = super::cdr::decode_header_seq(data, super::cdr::Encoding::Ros1) {
+            acc.sequence.observe(seq);
+        }
+
+        let decoded = super::rosmsg::decode_body(
+            &mut super::rosmsg::BodyTargets {
+                point_fields: &mut acc.point_fields,
+                point_counts: &mut acc.point_counts,
+                image_dims: &mut acc.image_dims,
+                fix_availability: &mut acc.fix_availability,
+                values: &mut acc.values,
+                ego_poses,
+                ego_frame,
+                intrinsics,
+                transforms,
+                moved_frames,
+            },
+            super::cdr::Encoding::Ros1,
+            &topic.ros_type,
+            &topic.name,
+            data,
+            ts,
+        );
+        acc.body_decodes.observe(decoded);
     }
 
     /// A chunk record: a compressed or raw run of connection and message records.

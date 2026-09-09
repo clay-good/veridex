@@ -453,236 +453,6 @@ struct BagContents {
     orphan_topics: BTreeMap<i64, u64>,
 }
 
-/// The bag-wide collections a message body can contribute to, borrowed apart from the per-stream
-/// builder so [`decode_body`] can hold both at once — the builder itself lives inside
-/// [`BagContents::streams`], so the two cannot be reached through one borrow.
-struct BodySink<'a> {
-    ego_poses: &'a mut Vec<EgoPose>,
-    ego_frame: &'a mut Option<String>,
-    intrinsics: &'a mut BTreeMap<String, CameraIntrinsics>,
-    transforms: &'a mut BTreeMap<(String, String), Transform>,
-    moved_frames: &'a mut super::cdr::MovingFrames,
-}
-
-/// Decode one message body into the autonomy CDM, returning whether the body decoded — or `None`
-/// for a schema this reader has no typed decoder for, whose body nothing tried to read.
-///
-/// Shared by the two paths that read message rows (the `.db3` reader and the MCAP-shard reader),
-/// which carried a byte-identical copy of this dispatch each. A decoder added to one and not the
-/// other made the same bag grade differently depending on which storage plugin recorded it.
-///
-/// The three-way return is what [`super::cdr::BodyDecodeAccum`] records. Each decoder here is
-/// strict — it yields a reading only once the body's own invariants prove it is the message it
-/// claims to be — and the failures have to be counted, not dropped: everything derived from the
-/// bodies is otherwise summarized from whichever ones survived the recording and reported as a
-/// property of the stream.
-fn decode_body(
-    builder: &mut StreamBuilder,
-    sink: &mut BodySink<'_>,
-    ros_type: &str,
-    topic: &str,
-    data: &[u8],
-    ts: i64,
-) -> Option<bool> {
-    if super::mcap::schema_is(ros_type, "PointCloud2") {
-        if builder.point_fields.is_none() {
-            builder.point_fields = super::cdr::decode_point_cloud2_fields(data);
-        }
-        // Per message, unlike the layout above: the layout is a property of the stream and the
-        // first message settles it, while whether a sweep held any points is a property of each
-        // message and only the messages can settle it.
-        match super::cdr::decode_point_cloud2_point_count(data) {
-            Some(n) => {
-                builder.point_counts.observe(n);
-                Some(true)
-            }
-            None => Some(false),
-        }
-    } else if super::mcap::schema_is(ros_type, "Twist")
-        || super::mcap::schema_is(ros_type, "TwistStamped")
-    {
-        // A mobile base's action channel. `/cmd_vel` is to a base what `/joint_states` is to an arm,
-        // and a commanded velocity pinned at its rail is exactly what the statistical family exists
-        // to catch on an actuator.
-        match super::cdr::decode_twist_values(
-            data,
-            super::mcap::schema_is(ros_type, "TwistStamped"),
-        ) {
-            Some(values) => {
-                builder
-                    .values
-                    .push_fixed(&values, &super::cdr::TWIST_DIM_NAMES);
-                Some(true)
-            }
-            None => Some(false),
-        }
-    } else if super::mcap::schema_is(ros_type, "Wrench")
-        || super::mcap::schema_is(ros_type, "WrenchStamped")
-    {
-        // A manipulation recording's contact channel, and the same shape as a `Twist`.
-        match super::cdr::decode_wrench_values(
-            data,
-            super::mcap::schema_is(ros_type, "WrenchStamped"),
-        ) {
-            Some(values) => {
-                builder
-                    .values
-                    .push_fixed(&values, &super::cdr::WRENCH_DIM_NAMES);
-                Some(true)
-            }
-            None => Some(false),
-        }
-    } else if super::mcap::schema_is(ros_type, "MagneticField") {
-        // The third instrument in the IMU package, and the one heading is estimated from.
-        match super::cdr::decode_magnetic_field(data) {
-            Some(values) => {
-                builder
-                    .values
-                    .push_fixed(&values, &super::cdr::MAGNETIC_FIELD_DIM_NAMES);
-                Some(true)
-            }
-            None => Some(false),
-        }
-    } else if let Some(name) = super::cdr::scalar_measurement_name(ros_type) {
-        // Four schemas, one layout: a header, the reading, and its variance.
-        match super::cdr::decode_scalar_measurement(data) {
-            Some(value) => {
-                builder.values.push_fixed(&[Some(value)], &[name]);
-                Some(true)
-            }
-            None => Some(false),
-        }
-    } else if super::mcap::schema_is(ros_type, "Range") {
-        // A reading the rangefinder's own window disowns is "nothing there", not a distance.
-        match super::cdr::decode_range_value(data) {
-            Some(value) => {
-                builder.values.push_fixed(&[value], &["range"]);
-                Some(true)
-            }
-            None => Some(false),
-        }
-    } else if super::mcap::schema_is(ros_type, "LaserScan") {
-        // A planar scanner's returns feed the same density summary a 3-D cloud's points do: the
-        // fault is the same one, and a `LaserScan` is what most mobile robots publish.
-        match super::cdr::decode_laser_scan_returns(data) {
-            Some(n) => {
-                builder.point_counts.observe(n);
-                Some(true)
-            }
-            None => Some(false),
-        }
-    } else if super::mcap::schema_is(ros_type, "CompressedImage") {
-        // Most real bags record their cameras compressed, and without this a
-        // `/camera/image_raw/compressed` topic went unmeasured while the raw topic beside it was
-        // graded — the same dead camera caught on one spelling of the topic and not the other.
-        // Only the codec's own frame header is read; no pixel is decoded.
-        match super::cdr::decode_compressed_image_dimensions(data) {
-            Some(Some((w, h))) => {
-                builder.image_dims.observe(w, h);
-                Some(true)
-            }
-            // A `CompressedImage` in a codec this reader has no header parser for. Nothing was
-            // tried, so this is not a body that failed — it is a schema with no decoder, and the
-            // image rules abstain on the stream out loud.
-            Some(None) => None,
-            None => Some(false),
-        }
-    } else if super::mcap::schema_is(ros_type, "Image") {
-        // The camera counterpart of the point count above, and there for the same fault: a driver
-        // that lost its sensor keeps publishing well-formed frames at its configured rate with no
-        // pixels in them. Read from the message's own `height`/`width`; the pixel blob is never
-        // opened.
-        match super::cdr::decode_image_dimensions(data) {
-            Some((w, h)) => {
-                builder.image_dims.observe(w, h);
-                Some(true)
-            }
-            None => Some(false),
-        }
-    } else if super::mcap::schema_is(ros_type, "CameraInfo") {
-        match super::cdr::decode_camera_info(data, topic) {
-            Some(ci) => {
-                // First successfully-decoded intrinsics per camera topic wins.
-                sink.intrinsics.entry(topic.to_string()).or_insert(ci);
-                Some(true)
-            }
-            None => Some(false),
-        }
-    } else if super::mcap::schema_is(ros_type, "Odometry") {
-        match super::cdr::decode_odometry(data) {
-            Some(sample) => {
-                sink.ego_poses.push(EgoPose {
-                    ts,
-                    pose: sample.pose,
-                });
-                if sink.ego_frame.is_none() {
-                    *sink.ego_frame = sample.child_frame;
-                }
-                // The ego's own velocity, where the message carries it: a vehicle's speed and yaw
-                // rate are measurements, and this stream had none to grade.
-                if let Some(twist) = sample.twist {
-                    builder
-                        .values
-                        .push_fixed(&twist, &super::cdr::TWIST_DIM_NAMES);
-                }
-                Some(true)
-            }
-            None => Some(false),
-        }
-    } else if super::mcap::schema_is(ros_type, "JointState") {
-        // The one message whose entire payload is the measurement: a handful of joint angles.
-        // Measuring them is what lets the statistical family grade an arm recorded to a bag.
-        match super::cdr::decode_joint_state(data) {
-            Some(sample) => {
-                builder.values.push_joint_state(sample);
-                Some(true)
-            }
-            None => Some(false),
-        }
-    } else if super::mcap::schema_is(ros_type, "Imu") {
-        // Thirty-seven doubles and no bulk payload: an IMU message is entirely its own
-        // measurement. Slots a `-1` covariance declares absent are held out, not read as zeros.
-        match super::cdr::decode_imu_values(data) {
-            Some(values) => {
-                builder
-                    .values
-                    .push_fixed(&values, &super::cdr::IMU_DIM_NAMES);
-                Some(true)
-            }
-            None => Some(false),
-        }
-    } else if super::mcap::schema_is(ros_type, "NavSatFix") {
-        // The last AV message body that went unread. A GNSS stream was fingerprinted rather than
-        // measured, so a receiver frozen at one fix, publishing NaNs, or railed at a coordinate
-        // limit reported nothing — while the same faults on the IMU beside it were caught. A
-        // message declaring no fix carries fields the driver left behind, not a position.
-        match super::cdr::decode_nav_sat_fix(data) {
-            Some(sample) => {
-                builder.fix_availability.observe(&sample);
-                if let super::cdr::NavSatSample::Fix(values) = sample {
-                    builder
-                        .values
-                        .push_fixed(&values, &super::cdr::NAV_SAT_FIX_DIM_NAMES);
-                }
-                Some(true)
-            }
-            None => Some(false),
-        }
-    } else if super::mcap::schema_is(ros_type, "TFMessage") {
-        match super::cdr::decode_tf_message(data) {
-            Some(edges) => {
-                for t in edges {
-                    super::cdr::insert_transform(sink.transforms, sink.moved_frames, t);
-                }
-                Some(true)
-            }
-            None => Some(false),
-        }
-    } else {
-        None
-    }
-}
-
 fn parse_error(message: impl Into<String>) -> IngestError {
     IngestError::Parse {
         format_id: FORMAT,
@@ -1007,22 +777,27 @@ fn read_shard(
         });
 
         if builder.frame_id.is_none() {
-            builder.frame_id = super::cdr::decode_header_frame_id(data);
+            builder.frame_id = super::cdr::decode_header_frame_id(data, super::cdr::Encoding::Cdr);
         }
         // The recorder's clock against the sensor's: see the same pair in the MCAP reader.
-        if let Some(stamp) = super::cdr::decode_header_stamp(data) {
+        if let Some(stamp) = super::cdr::decode_header_stamp(data, super::cdr::Encoding::Cdr) {
             builder.header_stamps.observe(ts, stamp);
         }
 
-        let decoded = decode_body(
-            builder,
-            &mut BodySink {
+        let decoded = super::rosmsg::decode_body(
+            &mut super::rosmsg::BodyTargets {
+                point_fields: &mut builder.point_fields,
+                point_counts: &mut builder.point_counts,
+                image_dims: &mut builder.image_dims,
+                fix_availability: &mut builder.fix_availability,
+                values: &mut builder.values,
                 ego_poses: &mut contents.ego_poses,
                 ego_frame: &mut contents.ego_frame,
                 intrinsics: &mut contents.intrinsics,
                 transforms: &mut contents.transforms,
                 moved_frames: &mut contents.moved_frames,
             },
+            super::cdr::Encoding::Cdr,
             &topic.ros_type,
             &topic.name,
             data,
@@ -1127,24 +902,29 @@ fn read_mcap_shard(
         });
 
         if builder.frame_id.is_none() {
-            builder.frame_id = super::cdr::decode_header_frame_id(data);
+            builder.frame_id = super::cdr::decode_header_frame_id(data, super::cdr::Encoding::Cdr);
         }
         // The recorder's clock against the sensor's: see the same pair in the MCAP reader.
-        if let Some(stamp) = super::cdr::decode_header_stamp(data) {
+        if let Some(stamp) = super::cdr::decode_header_stamp(data, super::cdr::Encoding::Cdr) {
             builder.header_stamps.observe(ts, stamp);
         }
         // The publisher's own count of what it sent — carried by the MCAP storage plugin only. A
         // `.db3` shard has no such column, so the same bag recorded the other way leaves it empty.
         builder.sequence.observe(message.sequence);
-        let decoded = decode_body(
-            builder,
-            &mut BodySink {
+        let decoded = super::rosmsg::decode_body(
+            &mut super::rosmsg::BodyTargets {
+                point_fields: &mut builder.point_fields,
+                point_counts: &mut builder.point_counts,
+                image_dims: &mut builder.image_dims,
+                fix_availability: &mut builder.fix_availability,
+                values: &mut builder.values,
                 ego_poses: &mut contents.ego_poses,
                 ego_frame: &mut contents.ego_frame,
                 intrinsics: &mut contents.intrinsics,
                 transforms: &mut contents.transforms,
                 moved_frames: &mut contents.moved_frames,
             },
+            super::cdr::Encoding::Cdr,
             &ros_type,
             &topic,
             data,

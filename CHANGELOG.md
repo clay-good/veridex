@@ -10,6 +10,35 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A ROS 1 bag's message bodies are decoded, through the one dispatch every ROS reader shares.**
+  A `.bag` reached the structural, temporal, semantic and provenance families and stopped there: its
+  bodies were fingerprinted, so the statistical and autonomy families abstained on every stream in
+  it. The same rig recorded to a rosbag2 was measured. That is a dataset grading differently because
+  of which generation of ROS recorded it, which is the failure this tool exists not to have.
+
+  ROS 1 puts the same fields in the same order as CDR and encodes them differently in three ways: no
+  encapsulation header, no alignment padding between primitives, and a `uint32 seq` at the front of
+  every `std_msgs/Header`. All three now live in the reader — the encoding is a parameter, `Cdr` or
+  `Ros1` — so every existing decoder reads both. A bag now yields point layouts and per-sweep return
+  counts, image dimensions, `CameraInfo` intrinsics and a `TFMessage` transform tree as
+  `dataset.calibration`, `Odometry` poses as the episode's ego trajectory, and `JointState`, `Imu`,
+  `NavSatFix`, `Twist`, `Wrench`, `Range` and the one-reading scalars as observed values the
+  statistical family grades.
+
+  The dispatch from a ROS message type to the CDM existed **twice** — inline in the MCAP adapter's
+  ingest loop and as `rosbag2::decode_body` — and a third copy for ROS 1 would have made "a decoder
+  added to one and missed in the other" three ways to get it wrong instead of two. There is one now
+  (`adapter::rosmsg`), and all three readers call it.
+
+  One thing a bag says that a rosbag2 cannot: `header.seq` is the publisher's own count of what it
+  sent, and a hole in it is the only direct evidence a recording holds of a message that never
+  reached the recorder — everything else in a file is what arrived. ROS 2 dropped the field. It is
+  read here, under the same invariants the stamp is read under, so a body that merely begins with a
+  `u32` cannot report a sequence.
+
+  No CDM change and no `CANONICAL_VERSION` bump: every field a bag now fills is one the CDM already
+  had, filled from the same containers' worth of message types.
+
 - **ROS 1 rosbag (`.bag`) is read.** A ninth adapter, and the largest remaining hole in the claim
   this tool is built on. ROS 1 is still where a great deal of the world's robot data sits — every lab
   that recorded before ROS 2, every fleet that has not migrated, every public dataset shipped as
@@ -30,12 +59,9 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   says what it could not reach; a bag from which *nothing* could be read is refused outright, because
   a dataset with no streams is not a dataset that was checked.
 
-  Message **bodies** are fingerprinted, not decoded, so a bag reaches the structural, temporal,
-  semantic and provenance families in full and the value-reading families abstain on it out loud. ROS
-  1 puts the same fields in the same order as CDR but with no encapsulation header, no alignment
-  padding and a `seq` at the front of every `std_msgs/Header`, so the typed decoders are reachable
-  from here through a reader that knows those three differences — a follow-up, tracked in
-  [`add-rosbag1-support`](openspec/changes/add-rosbag1-support/).
+  Message **bodies** were fingerprinted, not decoded, in this first change: a bag reached the
+  structural, temporal, semantic and provenance families in full and the value-reading families
+  abstained on it out loud. The follow-up above wired the typed decoders to it.
 
   No CDM change, no `CANONICAL_VERSION` bump, no new check: everything a bag produces is a shape the
   CDM already had.
