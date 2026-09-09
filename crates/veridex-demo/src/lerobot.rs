@@ -21,6 +21,15 @@
 //!   The feature is a *vector* because the check is — one joint holding still is a joint at rest,
 //!   while a whole arm that never moved is a recording of nothing.
 //!
+//! - `corrupt-stats` — a well-formed two-episode dataset whose `meta/stats.json` declares a minimum
+//!   *above* its maximum for both features: a summary that cannot describe any data at all, the
+//!   shape of a bad merge or a hand-edited file. The Parquet is untouched, so nothing about the data
+//!   is wrong — only the file a normalization layer would read before touching it →
+//!   `STATISTICAL.RANGE_INVERTED`. A range that cannot bound anything does not bound *this* data
+//!   either, so the stale-summary comparison fires beside it → `STATISTICAL.STATS_STALE`; the two
+//!   are one corruption seen from two sides, and reporting only the second would leave a reader
+//!   re-recording data that was never the problem.
+//!
 //! - `duplicate` — two episodes with byte-for-byte identical content (a re-upload) →
 //!   `STRUCTURAL.DUPLICATE_EPISODE`.
 //! - `near-duplicate` — episode 1 re-uploads 11 of episode 0's 12 frames, one value changed so the
@@ -52,7 +61,7 @@
 //! - `video-reencoded` — the videos were re-encoded at 320x240 while the manifest still declares
 //!   640x480 → `VIDEO.RESOLUTION_MISMATCH`, charged once for the stream rather than once per episode.
 //!
-//! Usage: `cargo run -p veridex-demo --example make_demo_lerobot -- <output-dir> [non-monotonic|clean|truncated|boundary|jitter|short-episode|frozen-episode|duplicate|near-duplicate|saturated|spike|nan|stale-stats|multi-joint|video|video-desync|video-missing|video-reencoded]`
+//! Usage: `cargo run -p veridex-demo --example make_demo_lerobot -- <output-dir> [non-monotonic|clean|truncated|boundary|jitter|short-episode|frozen-episode|duplicate|near-duplicate|saturated|spike|nan|stale-stats|corrupt-stats|multi-joint|video|video-desync|video-missing|video-reencoded]`
 //!
 //! Then: `veridex check <output-dir>`.
 
@@ -76,6 +85,7 @@ pub const VARIANTS: &[&str] = &[
     "spike",
     "nan",
     "stale-stats",
+    "corrupt-stats",
     "multi-joint",
     "video",
     "video-desync",
@@ -105,6 +115,7 @@ enum Mode {
     Spike,
     Nan,
     StaleStats,
+    CorruptStats,
     MultiJoint,
     Video,
     VideoDesync,
@@ -149,6 +160,7 @@ fn mode_of(variant: &str) -> Result<Mode, DemoError> {
         "spike" => Mode::Spike,
         "nan" => Mode::Nan,
         "stale-stats" => Mode::StaleStats,
+        "corrupt-stats" => Mode::CorruptStats,
         "multi-joint" => Mode::MultiJoint,
         "video" => Mode::Video,
         "video-desync" => Mode::VideoDesync,
@@ -206,6 +218,10 @@ pub fn describe(variant: &str) -> Result<&'static str, DemoError> {
         Mode::StaleStats => {
             "stale-stats (meta/stats.json was computed on earlier data and no longer bounds it → \
              STATISTICAL.STATS_STALE)"
+        }
+        Mode::CorruptStats => {
+            "corrupt-stats (meta/stats.json declares a minimum above its maximum → \
+             STATISTICAL.RANGE_INVERTED)"
         }
         Mode::MultiJoint => {
             "multi-joint (a 3-DoF `action` whose gripper — dimension 2 — saturates → STATISTICAL.SATURATED naming the dimension)"
@@ -287,6 +303,7 @@ fn write_dataset(dir: &Path, mode: Mode) {
         dir,
         &rows,
         if mode == Mode::StaleStats { -2.0 } else { 0.0 },
+        mode == Mode::CorruptStats,
     );
     write_parquet(&dir.join("data/chunk-000/file-000.parquet"), &rows);
 
@@ -316,14 +333,15 @@ fn write_dataset(dir: &Path, mode: Mode) {
 ///
 /// The summary is computed from the rows actually written, so it agrees with the data by
 /// construction — except under [`Mode::StaleStats`], where `widen` is negative and the stored range
-/// is *narrower* than the values: the file a team exported before re-recording, still sitting beside
-/// the new data.
+/// is *narrower* than the values (the file a team exported before re-recording, still sitting beside
+/// the new data), and under [`Mode::CorruptStats`], where `invert` writes the bounds the wrong way
+/// round so the summary describes no data at all.
 ///
 /// NaNs are skipped the way `numpy.nanmin` skips them, which is what an exporter actually does — so
 /// the `nan` variant's summary looks perfectly healthy, and only the recompute finds the bad frame.
 /// That is a stronger demo than shipping no summary at all: the file agrees with itself and is still
 /// blind.
-fn write_stats(dir: &Path, rows: &[DemoRow], widen: f32) {
+fn write_stats(dir: &Path, rows: &[DemoRow], widen: f32, invert: bool) {
     let values: Vec<f32> = rows
         .iter()
         .map(|(_, _, v)| *v)
@@ -332,8 +350,12 @@ fn write_stats(dir: &Path, rows: &[DemoRow], widen: f32) {
     if values.is_empty() {
         return;
     }
-    let min = values.iter().copied().fold(f32::INFINITY, f32::min) - widen;
-    let max = values.iter().copied().fold(f32::NEG_INFINITY, f32::max) + widen;
+    let low = values.iter().copied().fold(f32::INFINITY, f32::min) - widen;
+    let high = values.iter().copied().fold(f32::NEG_INFINITY, f32::max) + widen;
+    // `corrupt-stats` writes the two the wrong way round: a summary declaring a minimum above its
+    // maximum describes no data at all, which is what a bad merge or a hand-edited file leaves
+    // behind. The Parquet is untouched — only the file a normalization layer reads first is wrong.
+    let (min, max) = if invert { (high, low) } else { (low, high) };
     let mean = values.iter().copied().sum::<f32>() / values.len() as f32;
     let var = values.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / values.len() as f32;
     let per_feature = serde_json::json!({

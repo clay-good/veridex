@@ -23,6 +23,15 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
   It is a census, not a coverage target: a check being absent is a statement about the fixtures.
 
+- **A summary that describes no data at all, reproducible.** The fourth of the eight:
+  `make_demo_lerobot -- <dir> corrupt-stats` writes a well-formed two-episode dataset whose
+  `meta/stats.json` declares a minimum *above* its maximum — the shape of a bad merge or a
+  hand-edited file. The Parquet is untouched, so nothing about the data is wrong; only the file a
+  normalization layer reads before touching it → `STATISTICAL.RANGE_INVERTED`, with
+  `STATISTICAL.STATS_STALE` beside it, because a range that cannot bound anything does not bound
+  this data either. Reporting only the second would send a reader off to re-record data that was
+  never the problem.
+
 - **The teleoperation session that dropped, reproducible.** The third of the eight, and one the
   README's headline already claimed to catch with nothing demonstrating it:
   `make_demo_lerobot -- <dir> frozen-episode` writes five 10-frame episodes of a 3-DoF `action` in

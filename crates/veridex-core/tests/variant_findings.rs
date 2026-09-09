@@ -953,12 +953,6 @@ const NOT_REACHED_BY_THE_SWEEP: &[(&str, &str)] = &[
          `docs/formats.md`, whose frames decode inside their declared ranges",
     ),
     (
-        "statistical.range-sanity",
-        "inspects the summary a *source* stored. Only LeRobot ships stored statistics here, and its \
-         `stale-stats` variant disagrees with the recomputed values rather than being internally \
-         impossible (a min above its max, a NaN)",
-    ),
-    (
         "structural.shape-consistency",
         "needs one stream declaring different shapes or dtypes in different episodes; every \
          generator writes one schema for the whole dataset",
