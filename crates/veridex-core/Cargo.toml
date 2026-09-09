@@ -31,6 +31,10 @@ toml = "0.8"
 flate2 = "1"
 zstd = "0.13"
 lz4_flex = { version = "0.14", default-features = false, features = ["std", "frame"] }
+# `rosbag compress`'s default, and so the compression a great deal of archived ROS 1 data is in.
+# The pure-Rust backend deliberately: this decompressor is pointed at untrusted files, and a C
+# library reached through FFI is the one place in this workspace an ingest budget could not save.
+bzip2 = "0.6"
 # Only the remote manifest read (`hf://…` with `--metadata-only`) uses these, so they sit behind the
 # `remote` feature: a library user embedding the core does not compile a TLS stack to validate a
 # local dataset, and nothing else in the crate acquires a network dependency.
@@ -48,6 +52,8 @@ remote = ["dep:ureq", "dep:tempfile"]
 
 [dev-dependencies]
 proptest = "1"
+# The bag fixtures compress their own chunks, which means really bzipping them.
+bzip2 = "0.6"
 tempfile = "3"
 # The MF4 fixtures build real `##DZ` blocks, which means really deflating their records.
 flate2 = "1"

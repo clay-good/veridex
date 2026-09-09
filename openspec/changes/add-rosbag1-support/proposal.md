@@ -22,9 +22,11 @@ A ninth adapter, `rosbag1`, reading ROS 1 bag format v2.0:
 - **Topics to streams, messages to frames.** Connection records name each topic and its ROS type;
   the type feeds the existing modality classifier, so a `.bag` rig types the same way an MCAP one
   does. Message records supply the recorder's clock and the body bytes to fingerprint.
-- **Chunk storage.** Uncompressed and LZ4 chunks are read. `bz2` needs a decompressor this
-  workspace does not carry, and is **disclosed as unread** rather than guessed at — the same
-  treatment an MF4 `##DZ` in an unknown zip type gets.
+- **Chunk storage.** Uncompressed, LZ4 and bz2 chunks are read (the last through the pure-Rust
+  `bzip2` backend, added in the follow-up below — `rosbag compress` writes bz2 by default, so it is
+  how most archived ROS 1 data is stored). A chunk in any other compression, or one whose stream is
+  corrupt or past the run's decompression budget, is **disclosed as unread** rather than guessed at
+  — the same treatment an MF4 `##DZ` in an unknown zip type gets.
 - **Bodies, in a second step.** ROS 1 puts the same fields in the same order as CDR, but with no
   encapsulation header, no alignment padding and a `seq` at the front of every `std_msgs/Header`, so
   the existing typed decoders can be reached from it through a reader that knows those. That is

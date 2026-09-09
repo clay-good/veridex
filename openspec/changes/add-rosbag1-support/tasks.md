@@ -7,7 +7,7 @@
       op-coded record types the format defines.
 - [x] Read connection records into (topic, ROS type), and message records into (conn, time, body).
 - [x] Read chunk records: uncompressed and LZ4; disclose `bz2` and any unknown compression as
-      unread rather than skipping it in silence.
+      unread rather than skipping it in silence. (`bz2` is read as of R5.)
 - [x] Bound every length the file declares, so a corrupt or hostile bag is refused rather than
       allocated for.
 
@@ -37,3 +37,10 @@
       odd-length `frame_id`, a CDR body in a bag counted as failed rather than misread, and a hole
       in `seq`.
 - [x] `docs/formats.md` and the CHANGELOG say what a bag now yields.
+
+## R5 — bz2
+
+- [x] Decompress `bz2` chunks (`rosbag compress`'s default) through the pure-Rust `bzip2` backend,
+      under the same declared-size budget and one-byte-past cap as LZ4, sharing one `unpack`.
+- [x] Prove all three compressions yield the same recording, that a chunk that unpacks past its own
+      declaration is disclosed rather than trusted, and that an unknown compression still is.

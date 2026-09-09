@@ -17,9 +17,11 @@
 //! adapter and both rosbag2 storage plugins also call. ROS 1 is a different *encoding* of the same
 //! fields in the same order — no encapsulation header, no alignment padding between primitives, and
 //! a `seq` at the front of every `std_msgs/Header` — and that difference lives in
-//! `cdr::Encoding`, not here. **Unread** (a `COVERAGE.SOURCE_UNREAD` warning in the
-//! verdict): a chunk in a compression this workspace carries no decompressor for — `bz2`, and
-//! anything a future rosbag writes — because the messages are in the file and nobody read them.
+//! `cdr::Encoding`, not here. Chunks are read uncompressed, **lz4** (`rosbag record --lz4`) and
+//! **bz2** (`rosbag compress`'s default, and so most of what sits in an archive). **Unread** (a
+//! `COVERAGE.SOURCE_UNREAD` warning in the verdict): a chunk in any other compression a future
+//! rosbag writes, and one whose stream is corrupt or past this run's decompression budget —
+//! because the messages are in the file and nobody read them.
 //! **Unmapped** (a note about shape): the bulk payload of a body — an image's pixels, a cloud's
 //! points — which is fingerprinted and never interpreted, as it is in every reader here.
 //!
@@ -601,51 +603,33 @@ impl Walk {
         let declared = fields.get("size").and_then(|v| u32_le(v)).unwrap_or(0) as usize;
         match compression.as_str() {
             "none" => self.records(data, options, false),
+            // The two compressions `rosbag record --lz4` and `rosbag compress` write, read the same
+            // way: charge the budget with what the chunk *declares* before a decompressor is pointed
+            // at anything, then cap the read at one byte past that.
             "lz4" => {
-                // Charged before a decompressor is pointed at the stream, and the read is capped at
-                // one byte past what the chunk declared: a chunk whose compressed stream produces
-                // more than it says it holds is corrupt, and unpacking it would not terminate at a
-                // size the file chose.
-                let mut budget = super::DecompressionBudget::new(options, data.len() as u64);
-                if budget.take(FORMAT_ID, declared as u64).is_err() {
-                    self.unread.push(UnmappedField {
-                        source_path: "chunk".into(),
-                        note: format!(
-                            "an lz4 chunk declaring {declared} uncompressed byte(s) is past this run's decompression budget; its messages were not read"
-                        ),
-                    });
-                    return Ok(());
+                let unpacked = self.unpack(
+                    "lz4",
+                    declared,
+                    options,
+                    lz4_flex::frame::FrameDecoder::new(data),
+                    data.len(),
+                );
+                match unpacked {
+                    Some(out) => self.records(&out, options, false),
+                    None => Ok(()),
                 }
-                let cap = (declared as u64).saturating_add(1).min(
-                    budget
-                        .remaining()
-                        .map_or(u64::MAX, |left| left.saturating_add(1)),
+            }
+            "bz2" => {
+                let unpacked = self.unpack(
+                    "bz2",
+                    declared,
+                    options,
+                    bzip2::read::BzDecoder::new(data),
+                    data.len(),
                 );
-                let mut out = Vec::new();
-                let produced = std::io::copy(
-                    &mut std::io::Read::take(lz4_flex::frame::FrameDecoder::new(data), cap),
-                    &mut out,
-                );
-                match produced {
-                    Ok(n) if n as usize <= declared => self.records(&out, options, false),
-                    Ok(_) => {
-                        self.unread.push(UnmappedField {
-                            source_path: "chunk".into(),
-                            note: format!(
-                                "an lz4 chunk declares {declared} uncompressed byte(s) but its stream produces more; the chunk is corrupt and its messages were not read"
-                            ),
-                        });
-                        Ok(())
-                    }
-                    Err(e) => {
-                        self.unread.push(UnmappedField {
-                            source_path: "chunk".into(),
-                            note: format!(
-                                "an lz4 chunk declaring {declared} byte(s) did not decompress ({e}); its messages contribute no frames"
-                            ),
-                        });
-                        Ok(())
-                    }
+                match unpacked {
+                    Some(out) => self.records(&out, options, false),
+                    None => Ok(()),
                 }
             }
             other => {
@@ -658,6 +642,65 @@ impl Walk {
                     ),
                 });
                 Ok(())
+            }
+        }
+    }
+
+    /// Decompress one chunk's stream under this run's decompression budget, or disclose why not.
+    ///
+    /// `None` means the messages in that chunk were not read, and the reason is already on
+    /// [`Walk::unread`] — a coverage hole the verdict carries, never a silent skip.
+    ///
+    /// Three ways a chunk goes unread, and each is a defence rather than a nicety. The declared
+    /// size is charged to the budget *before* a decompressor sees a byte, so a chunk that claims to
+    /// unpack to more than this run allows costs nothing. The read is then capped at one byte past
+    /// what the chunk declared, so a stream that keeps producing — the shape of a decompression
+    /// bomb, and of a corrupt chunk — stops at a size the file cannot choose. And a stream that
+    /// produces more than its own header promised is corrupt by its own account, so what it did
+    /// produce is not read as messages.
+    fn unpack(
+        &mut self,
+        compression: &str,
+        declared: usize,
+        options: &IngestOptions,
+        reader: impl std::io::Read,
+        compressed_len: usize,
+    ) -> Option<Vec<u8>> {
+        let mut budget = super::DecompressionBudget::new(options, compressed_len as u64);
+        if budget.take(FORMAT_ID, declared as u64).is_err() {
+            self.unread.push(UnmappedField {
+                source_path: "chunk".into(),
+                note: format!(
+                    "a {compression} chunk declaring {declared} uncompressed byte(s) is past this run's decompression budget; its messages were not read"
+                ),
+            });
+            return None;
+        }
+        let cap = (declared as u64).saturating_add(1).min(
+            budget
+                .remaining()
+                .map_or(u64::MAX, |left| left.saturating_add(1)),
+        );
+        let mut out = Vec::new();
+        match std::io::copy(&mut std::io::Read::take(reader, cap), &mut out) {
+            Ok(n) if n as usize <= declared => Some(out),
+            Ok(_) => {
+                self.unread.push(UnmappedField {
+                    source_path: "chunk".into(),
+                    note: format!(
+                        "a {compression} chunk declares {declared} uncompressed byte(s) but its stream produces more; the chunk is corrupt and its messages were not read"
+                    ),
+                });
+                None
+            }
+            Err(e) => {
+                self.unread.push(UnmappedField {
+                    source_path: "chunk".into(),
+                    note: format!(
+                        "a {compression} chunk declaring {declared} byte(s) did not decompress ({e}); its messages contribute no frames"
+                    ),
+                });
+                None
             }
         }
     }

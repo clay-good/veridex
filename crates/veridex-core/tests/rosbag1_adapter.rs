@@ -223,30 +223,97 @@ fn the_bag_header_supplies_the_recorder_it_names() {
 }
 
 #[test]
-fn an_lz4_chunk_is_read_and_a_bz2_one_is_disclosed() {
-    // lz4 is what `rosbag record --lz4` writes, and it is read.
+fn every_compression_rosbag_writes_is_read() {
+    // The three a `rosbag` produces: plain, `--lz4`, and `rosbag compress`'s bz2 — which is how most
+    // archived ROS 1 data is stored, and which was disclosed as unread until this reader carried a
+    // decompressor for it. All three must yield the same recording; which flag a team passed cannot
+    // change what Veridex sees.
     let inner = rig_records();
-    let mut packed = Vec::new();
+    let plain = ingest(&bag(&chunk("none", &inner, &inner)));
+
+    let mut lz4 = Vec::new();
     {
-        let mut enc = lz4_flex::frame::FrameEncoder::new(&mut packed);
+        let mut enc = lz4_flex::frame::FrameEncoder::new(&mut lz4);
         enc.write_all(&inner).unwrap();
         enc.finish().unwrap();
     }
-    let ingested = ingest(&bag(&chunk("lz4", &inner, &packed)));
-    assert_eq!(ingested.dataset.episodes[0].streams.len(), 3);
+    let mut bz2 = Vec::new();
+    {
+        let mut enc = bzip2::write::BzEncoder::new(&mut bz2, bzip2::Compression::default());
+        enc.write_all(&inner).unwrap();
+        enc.finish().unwrap();
+    }
+    assert!(bz2.starts_with(b"BZh"), "a real bzip2 stream");
 
-    // bz2 is `rosbag compress`'s default, and this workspace carries no decompressor for it. The
-    // messages are in the file and nobody read them, which is a coverage hole rather than a shape
-    // the CDM cannot hold — so it is disclosed as unread, not skipped in silence.
+    for (name, packed) in [("lz4", lz4), ("bz2", bz2)] {
+        let ingested = ingest(&bag(&chunk(name, &inner, &packed)));
+        assert!(
+            ingested.report.unread_sources.is_empty(),
+            "{name}: {:?}",
+            ingested.report.unread_sources
+        );
+        let streams = |i: &veridex_core::adapter::Ingested| -> Vec<(String, usize)> {
+            i.dataset.episodes[0]
+                .streams
+                .iter()
+                .map(|s| (s.name.clone(), s.frames.len()))
+                .collect()
+        };
+        assert_eq!(streams(&ingested), streams(&plain), "{name}");
+    }
+}
+
+#[test]
+fn a_compressed_chunk_that_will_not_stop_unpacking_is_refused_by_its_own_declaration() {
+    // A chunk's `size` is what the reader charges the decompression budget before pointing a
+    // decompressor at anything, and the read is capped one byte past it. So a chunk that declares a
+    // little and unpacks to a lot — a bomb, or a corrupt stream — is stopped at a size the file did
+    // not choose, and the messages it holds are disclosed as unread rather than trusted.
+    let inner = rig_records();
+    let mut packed = Vec::new();
+    {
+        let mut enc = bzip2::write::BzEncoder::new(&mut packed, bzip2::Compression::default());
+        enc.write_all(&inner).unwrap();
+        enc.finish().unwrap();
+    }
+    // The chunk header claims 64 bytes; the stream holds the whole rig.
+    let lying = record(
+        &[
+            ("op", vec![0x05]),
+            ("compression", b"bz2".to_vec()),
+            ("size", 64u32.to_le_bytes().to_vec()),
+        ],
+        &packed,
+    );
+    // A readable chunk beside it, so the bag still produces a dataset to report against.
     let mut body = chunk("none", &inner, &inner);
-    body.extend_from_slice(&chunk("bz2", &inner, b"BZh9compressed"));
+    body.extend_from_slice(&lying);
     let ingested = ingest(&bag(&body));
     assert!(
         ingested
             .report
             .unread_sources
             .iter()
-            .any(|u| u.note.contains("`bz2` is not decompressed")),
+            .any(|u| u.note.contains("produces more")),
+        "{:?}",
+        ingested.report.unread_sources
+    );
+}
+
+#[test]
+fn a_chunk_in_a_compression_this_reader_has_none_for_is_disclosed() {
+    // Not every rosbag will only ever write three compressions. One it does not know is a coverage
+    // hole — the messages are in the file and nobody read them — not a shape the CDM cannot hold.
+    let inner = rig_records();
+    let mut body = chunk("none", &inner, &inner);
+    body.extend_from_slice(&chunk("brotli", &inner, b"whatever a future rosbag writes"));
+    let ingested = ingest(&bag(&body));
+    assert!(
+        ingested
+            .report
+            .unread_sources
+            .iter()
+            .any(|u| u.note.contains("`brotli` is not decompressed")),
         "{:?}",
         ingested.report.unread_sources
     );

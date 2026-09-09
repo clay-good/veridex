@@ -406,10 +406,14 @@ type goes through the same modality classifier the two ROS 2 readers use, so **a
 `.bag` types the way the same rig recorded to an MCAP does** — a `sensor_msgs/PointCloud2` is a
 point-cloud stream in either.
 
-Uncompressed and **lz4** chunks are read, which is what `rosbag record` and `rosbag record --lz4`
-write. `bz2` — `rosbag compress`'s default — needs a decompressor this workspace does not carry, and
-is **disclosed as unread** rather than skipped in silence: the messages are in the file and nobody
-read them, so the run says so and the verdict carries `COVERAGE.SOURCE_UNREAD`. A message naming a
+Uncompressed, **lz4** and **bz2** chunks are all read — which is `rosbag record`,
+`rosbag record --lz4`, and `rosbag compress`, whose default is bz2 and which is therefore how most
+archived ROS 1 data is stored. Each compressed chunk is charged to the run's decompression budget by
+the size it *declares*, before a decompressor sees a byte, and the read is then capped one byte past
+that: a chunk whose stream keeps producing — a bomb, or a corrupt chunk — is stopped at a size the
+file cannot choose, and disclosed as unread rather than trusted. A chunk in any other compression is
+disclosed the same way rather than skipped in silence: the messages are in the file and nobody read
+them, so the run says so and the verdict carries `COVERAGE.SOURCE_UNREAD`. A message naming a
 connection the bag never declared is reported the same way, because the topic and type those frames
 belong to are unknown and attributing them to a stream anyway would invent one.
 

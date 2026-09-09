@@ -10,6 +10,20 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A bz2 bag is read, not disclosed as unread.** `rosbag compress` writes bz2 by default, so it is
+  how most archived ROS 1 data is stored — and it was the one compression this workspace carried no
+  decompressor for. Such a bag ingested to nothing but a `COVERAGE.SOURCE_UNREAD` warning: honest,
+  and useless to the team holding it.
+
+  Read now, through the pure-Rust `bzip2` backend (`libbz2-rs-sys`) deliberately — this decompressor
+  is pointed at untrusted files, and a C library reached through FFI is the one place in this
+  workspace an ingest budget could not save. The lz4 and bz2 paths share one `unpack`, so both are
+  bounded the same way: a chunk is charged to the run's decompression budget by the size it
+  *declares*, before a decompressor sees a byte, and the read is then capped one byte past that. A
+  chunk whose stream keeps producing — a bomb, or corruption — stops at a size the file cannot
+  choose and is disclosed as unread rather than trusted, which is now its own test. A compression
+  the reader has none for is disclosed exactly as before.
+
 - **A demo ROS 1 rig, so the bag path is exercised end to end rather than asserted.** The reader's
   own tests prove each decoder against a body built for it; nothing ran a whole `.bag` through
   ingest → validate → score. The sweep's bag fixture was two topics of filler bytes, so every
@@ -69,9 +83,9 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   recorded to a `.bag` types the way the same rig recorded to an MCAP does. Message records become
   frames on the recorder's clock, with each body fingerprinted.
 
-  Uncompressed and **lz4** chunks are read. `bz2` — `rosbag compress`'s default — needs a
-  decompressor this workspace does not carry and is disclosed as **unread**, not skipped: the
-  messages are in the file and nobody read them. A message naming a connection the bag never declared
+  Uncompressed and **lz4** chunks were read in this first change; `bz2` — `rosbag compress`'s
+  default — was disclosed as **unread**, not skipped, because the messages are in the file and
+  nobody read them. The entry above carries a decompressor for it. A message naming a connection the bag never declared
   is reported the same way, because the topic those frames belong to is unknown and attributing them
   to a stream anyway would invent one. A chunk cut short keeps the records written before the cut and
   says what it could not reach; a bag from which *nothing* could be read is refused outright, because
