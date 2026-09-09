@@ -943,11 +943,6 @@ fn the_sweep_reaches_every_adapter() {
 /// statement about the *fixtures*, not a defect in the check.
 const NOT_REACHED_BY_THE_SWEEP: &[(&str, &str)] = &[
     (
-        "semantic.stream-key-clarity",
-        "needs two stream keys that differ only by letter case or whitespace; no fixture names a \
-         pair that collides",
-    ),
-    (
         "statistical.declared-range",
         "needs values outside the `[min|max]` a DBC declares; the sweep's CAN pair is the one from \
          `docs/formats.md`, whose frames decode inside their declared ranges",

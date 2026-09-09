@@ -37,6 +37,12 @@
 //!   captured at, and everything that normalizes or resamples by `fps` is off by a quarter →
 //!   `TEMPORAL.RATE`.
 //!
+//! - `confusable-keys` — a well-formed two-episode dataset carrying both `observation.state` and
+//!   `observation.State`: two features whose names differ only by letter case, the shape of a merge
+//!   between datasets that spelled the same signal two ways. Every key is unique, so nothing is a
+//!   duplicate, and both streams are well-formed — a person reading the manifest, or a policy keyed
+//!   on the wrong one, is what breaks → `SEMANTIC.AMBIGUOUS_STREAM_KEY`.
+//!
 //! - `duplicate` — two episodes with byte-for-byte identical content (a re-upload) →
 //!   `STRUCTURAL.DUPLICATE_EPISODE`.
 //! - `near-duplicate` — episode 1 re-uploads 11 of episode 0's 12 frames, one value changed so the
@@ -68,7 +74,7 @@
 //! - `video-reencoded` — the videos were re-encoded at 320x240 while the manifest still declares
 //!   640x480 → `VIDEO.RESOLUTION_MISMATCH`, charged once for the stream rather than once per episode.
 //!
-//! Usage: `cargo run -p veridex-demo --example make_demo_lerobot -- <output-dir> [non-monotonic|clean|truncated|boundary|jitter|wrong-fps|short-episode|frozen-episode|duplicate|near-duplicate|saturated|spike|nan|stale-stats|corrupt-stats|multi-joint|video|video-desync|video-missing|video-reencoded]`
+//! Usage: `cargo run -p veridex-demo --example make_demo_lerobot -- <output-dir> [non-monotonic|clean|truncated|boundary|jitter|wrong-fps|short-episode|frozen-episode|duplicate|near-duplicate|saturated|spike|nan|stale-stats|corrupt-stats|confusable-keys|multi-joint|video|video-desync|video-missing|video-reencoded]`
 //!
 //! Then: `veridex check <output-dir>`.
 
@@ -94,6 +100,7 @@ pub const VARIANTS: &[&str] = &[
     "nan",
     "stale-stats",
     "corrupt-stats",
+    "confusable-keys",
     "multi-joint",
     "video",
     "video-desync",
@@ -125,6 +132,7 @@ enum Mode {
     Nan,
     StaleStats,
     CorruptStats,
+    ConfusableKeys,
     MultiJoint,
     Video,
     VideoDesync,
@@ -171,6 +179,7 @@ fn mode_of(variant: &str) -> Result<Mode, DemoError> {
         "nan" => Mode::Nan,
         "stale-stats" => Mode::StaleStats,
         "corrupt-stats" => Mode::CorruptStats,
+        "confusable-keys" => Mode::ConfusableKeys,
         "multi-joint" => Mode::MultiJoint,
         "video" => Mode::Video,
         "video-desync" => Mode::VideoDesync,
@@ -236,6 +245,10 @@ pub fn describe(variant: &str) -> Result<&'static str, DemoError> {
             "corrupt-stats (meta/stats.json declares a minimum above its maximum → \
              STATISTICAL.RANGE_INVERTED)"
         }
+        Mode::ConfusableKeys => {
+            "confusable-keys (two features whose names differ only by letter case → \
+             SEMANTIC.AMBIGUOUS_STREAM_KEY)"
+        }
         Mode::MultiJoint => {
             "multi-joint (a 3-DoF `action` whose gripper — dimension 2 — saturates → STATISTICAL.SATURATED naming the dimension)"
         }
@@ -277,6 +290,12 @@ fn write_dataset(dir: &Path, mode: Mode) {
         "observation.state": { "dtype": "float32", "shape": [1] },
         "action": { "dtype": "float32", "shape": [1] },
     });
+    if mode == Mode::ConfusableKeys {
+        // A second feature whose name differs from the first only by letter case — what a merge
+        // between two datasets that spelled the same signal differently leaves behind. Both keys are
+        // unique, so neither is a duplicate; the ambiguity is the fault.
+        features["observation.State"] = serde_json::json!({ "dtype": "float32", "shape": [1] });
+    }
     if mode.has_video() {
         // A LeRobot video feature: the manifest declares the encoding, the Parquet carries one row
         // per frame, and the pixels live in `videos/`. `video.codec` is spelled `h264` while the
@@ -318,7 +337,11 @@ fn write_dataset(dir: &Path, mode: Mode) {
         if mode == Mode::StaleStats { -2.0 } else { 0.0 },
         mode == Mode::CorruptStats,
     );
-    write_parquet(&dir.join("data/chunk-000/file-000.parquet"), &rows);
+    write_parquet(
+        &dir.join("data/chunk-000/file-000.parquet"),
+        &rows,
+        mode == Mode::ConfusableKeys,
+    );
 
     if mode.has_video() {
         write_videos(dir, mode, &rows, fps);
@@ -705,15 +728,19 @@ fn build_rows(mode: Mode, fps: f64) -> (Vec<DemoRow>, u64, u64) {
 
 /// Write the per-frame Parquet table: bookkeeping columns plus the two feature-value columns
 /// (`observation.state`, `action`) whose cell bytes Veridex fingerprints into frame content hashes.
-fn write_parquet(path: &Path, rows: &[DemoRow]) {
-    let schema = Arc::new(Schema::new(vec![
+fn write_parquet(path: &Path, rows: &[DemoRow], confusable: bool) {
+    let mut fields = vec![
         Field::new("episode_index", DataType::Int64, false),
         Field::new("frame_index", DataType::Int64, false),
         Field::new("timestamp", DataType::Float64, false),
         Field::new("task_index", DataType::Int64, false),
         Field::new("observation.state", DataType::Float32, false),
         Field::new("action", DataType::Float32, false),
-    ]));
+    ];
+    if confusable {
+        fields.push(Field::new("observation.State", DataType::Float32, false));
+    }
+    let schema = Arc::new(Schema::new(fields));
     let eps: Vec<i64> = rows.iter().map(|(e, _, _)| *e).collect();
     let frames: Vec<i64> = (0..rows.len() as i64).collect();
     let ts: Vec<f64> = rows.iter().map(|(_, t, _)| *t).collect();
@@ -721,18 +748,22 @@ fn write_parquet(path: &Path, rows: &[DemoRow]) {
     let state: Vec<f32> = rows.iter().map(|(_, _, v)| *v).collect();
     // `action` mirrors `state` here; distinct content isn't needed to demonstrate the checks.
     let action: Vec<f32> = state.clone();
-    let batch = RecordBatch::try_new(
-        schema.clone(),
-        vec![
-            Arc::new(Int64Array::from(eps)),
-            Arc::new(Int64Array::from(frames)),
-            Arc::new(Float64Array::from(ts)),
-            Arc::new(Int64Array::from(task_index)),
-            Arc::new(Float32Array::from(state)),
-            Arc::new(Float32Array::from(action)),
-        ],
-    )
-    .expect("build record batch");
+    let mut columns: Vec<ArrayRef> = vec![
+        Arc::new(Int64Array::from(eps)),
+        Arc::new(Int64Array::from(frames)),
+        Arc::new(Float64Array::from(ts)),
+        Arc::new(Int64Array::from(task_index)),
+        Arc::new(Float32Array::from(state.clone())),
+        Arc::new(Float32Array::from(action)),
+    ];
+    if confusable {
+        // Its own values, so the two are genuinely different signals rather than one column read
+        // twice — which is what makes picking the wrong one a real mistake.
+        columns.push(Arc::new(Float32Array::from(
+            state.iter().map(|v| v * -1.0).collect::<Vec<f32>>(),
+        )));
+    }
+    let batch = RecordBatch::try_new(schema.clone(), columns).expect("build record batch");
 
     let file = fs::File::create(path).expect("create parquet file");
     let mut writer = ArrowWriter::try_new(file, schema, None).expect("parquet writer");

@@ -23,6 +23,14 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
   It is a census, not a coverage target: a check being absent is a statement about the fixtures.
 
+- **Two feature names that differ only by letter case, reproducible.** The sixth of the eight:
+  `make_demo_lerobot -- <dir> confusable-keys` carries both `observation.state` and
+  `observation.State`, the shape of a merge between datasets that spelled the same signal two ways.
+  Every key is unique, so nothing is a duplicate, and both streams are well-formed — the person
+  reading the manifest, or the policy keyed on the wrong one, is what breaks →
+  `SEMANTIC.AMBIGUOUS_STREAM_KEY`. The two columns carry genuinely different values, so picking the
+  wrong one is a real mistake rather than a harmless alias.
+
 - **A manifest whose declared rate is not the rate the data was captured at, reproducible.** The
   fifth of the eight: `make_demo_lerobot -- <dir> wrong-fps` writes two well-formed episodes spaced
   at 24 Hz while `meta/info.json` still declares `fps: 30` — a re-record whose manifest was never
