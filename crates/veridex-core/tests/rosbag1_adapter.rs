@@ -1021,13 +1021,20 @@ fn a_metadata_only_run_inventories_a_bag_from_its_index() {
         ingested.report.coverage,
         veridex_core::adapter::Coverage::MetadataOnly { .. }
     ));
-    // What was not read is stated, with the count the index declares.
+    // What was not read is stated, with the count the index declares — as `unmapped`, not as a
+    // coverage hole: the chunks went unopened because the caller asked for that, and a warning that
+    // appears only when Veridex is asked to look at less describes the request, not the recording.
     assert!(
         ingested
             .report
-            .unread_sources
+            .unmapped_fields
             .iter()
             .any(|u| u.note.contains("20 declared message(s) were not read")),
+        "{:?}",
+        ingested.report.unmapped_fields
+    );
+    assert!(
+        ingested.report.unread_sources.is_empty(),
         "{:?}",
         ingested.report.unread_sources
     );

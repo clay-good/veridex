@@ -989,14 +989,21 @@ fn ingest_metadata_only(
         })
         .collect();
 
-    let mut unread = vec![UnmappedField {
+    // Not unread *data*, which is a coverage hole the verdict warns about: the chunks were not
+    // opened because the caller asked for that, and `Coverage::MetadataOnly` already says so. A
+    // finding that appears only when Veridex is asked to look at less describes the request rather
+    // than the recording.
+    let not_read = UnmappedField {
         source_path: "chunks".into(),
         note: format!(
             "the recording's {declared} declared message(s) were not read: this is a \
              metadata-only ingest"
         ),
-    }];
+    };
+    let mut unread = Vec::new();
     if orphans > 0 {
+        // This one *is* a hole in the recording, and a full read of the same bag reports it too:
+        // the index counts messages against a connection it never declares.
         unread.push(UnmappedField {
             source_path: "index chunk info".into(),
             note: format!(
@@ -1063,7 +1070,7 @@ fn ingest_metadata_only(
                 "index connection record topic + ROS type -> stream (and its modality)".into(),
                 "bag header callerid -> recorder".into(),
             ],
-            unmapped_fields: Vec::new(),
+            unmapped_fields: vec![not_read],
             omitted_fields: vec![
                 "episode segmentation (a bag records one continuous session)".into(),
                 "everything a chunk holds (frames, bodies, calibration, trajectory): not read by \
