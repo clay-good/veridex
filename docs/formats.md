@@ -398,7 +398,13 @@ certificate. That is the one failure a cross-format verifier cannot have, becaus
 that *which* format a team chose does not change whether their data can be checked.
 
 A bag is recognized by its `#ROSBAG V2.0` line rather than by its extension, so a file named `.bag`
-that is something else is left to whichever reader really owns it. Past that line it is a record
+that is something else is left to whichever reader really owns it. Point Veridex at a **directory**
+and every bag in it is read as **one recording** — which is what `rosbag record --split` writes for
+any session long enough to care about, and reading its parts separately would give each one its own
+verdict, its own score, its own certificate, and every cross-episode check a single episode to
+compare. The parts are ordered the way the recorder wrote them (`session_9.bag` before
+`session_10.bag`), and streams are matched by **topic name**, because a connection id is a per-file
+handle that different parts hand to different topics. Past that line it is a record
 stream — `header_len | header | data_len | data`, with the header a run of `name=value` fields, one
 of which names the record's kind. Connection records give each topic and its ROS message type;
 message records give a connection, a timestamp on the recorder's clock, and the serialized body. The

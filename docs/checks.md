@@ -405,9 +405,12 @@ bag's `metadata.yaml` lists but does not ship, a rosbag2 recording that falls sh
 total its own manifest declares, a rosbag2 message on a topic the bag's `topics` table never
 declares (there is no topic name to file it under, and inventing one would name a topic the bag does
 not), an HDF5 object holding rows that sits outside the episodes — `robomimic`'s `/mask` split
-group, a reward table parked at the root, an array beside the `demo_N` groups — and CAN traffic that
+group, a reward table parked at the root, an array beside the `demo_N` groups — CAN traffic that
 went into no signal stream: frames on an id the `.dbc` never defines, and log lines that are not
-candump frames (CAN-FD `##`, RTR). The
+candump frames (CAN-FD `##`, RTR) — and, in a ROS 1 bag, a chunk in a compression this reader has
+none for, a chunk whose stream unpacks past the size it declares or past the run's decompression
+budget, a message naming a connection its own file never declared, and the trailing bytes of a bag
+the recorder was killed part-way through writing. The
 verdict's `coverage` field cannot express this, because a `Coverage::Full` ingest is one that read
 everything it was *willing* to read, which is not the same as everything the dataset declared. Until
 this existed, a LeRobot dataset with one of its two Parquet shards symlinked out of the directory

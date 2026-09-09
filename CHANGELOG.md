@@ -10,6 +10,25 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A split recording is one recording.** `rosbag record --split` writes `session_0.bag`,
+  `session_1.bag`, … for a single session — how any recording long enough to care about is made —
+  and Veridex could only be pointed at one file. Read separately, the parts are N datasets: N
+  verdicts, N scores, N certificates, and every cross-episode check with one episode to compare.
+
+  Point it at the **directory** now and every bag inside is read as one recording, ordered the way
+  the recorder wrote them (`session_9.bag` before `session_10.bag`, through the shared
+  `natural_key`). Streams are keyed by **topic name** rather than by connection id — an id is a
+  per-file handle, and the second part of a real recording hands `conn 0` to whichever topic it
+  declared first, so keying by it silently files one sensor's messages under another's. A test swaps
+  the two ids between parts for exactly that reason.
+
+  Two things a multi-file read has to decide, and both are decided out loud: a message naming a
+  connection *its own file* never declared contributes no frames and is disclosed (the topic it
+  belongs to is unknown, and inventing one would name a topic the recording does not have), and a
+  part naming a different `callerid` keeps the first part's recorder and discloses the disagreement
+  as `unmapped` — a second answer the CDM has one field for, not a coverage hole, because every byte
+  of both headers was read.
+
 - **A bz2 bag is read, not disclosed as unread.** `rosbag compress` writes bz2 by default, so it is
   how most archived ROS 1 data is stored — and it was the one compression this workspace carried no
   decompressor for. Such a bag ingested to nothing but a `COVERAGE.SOURCE_UNREAD` warning: honest,

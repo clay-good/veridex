@@ -38,9 +38,13 @@
       in `seq`.
 - [x] `docs/formats.md` and the CHANGELOG say what a bag now yields.
 
-## R5 — bz2
+## R5 — bz2 and split recordings
 
 - [x] Decompress `bz2` chunks (`rosbag compress`'s default) through the pure-Rust `bzip2` backend,
       under the same declared-size budget and one-byte-past cap as LZ4, sharing one `unpack`.
 - [x] Prove all three compressions yield the same recording, that a chunk that unpacks past its own
       declaration is disclosed rather than trusted, and that an unknown compression still is.
+- [x] Read a directory of bags as one recording (`rosbag record --split`), ordered by
+      `adapter::natural_key`, with streams keyed by topic name rather than by per-file connection id.
+- [x] Disclose what a multi-file read has to decide: a message whose file never declared its
+      connection, and a part naming a different recorder.

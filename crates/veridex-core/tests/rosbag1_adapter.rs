@@ -328,11 +328,9 @@ fn a_message_naming_a_connection_the_bag_never_declared_is_reported() {
     let ingested = ingest(&bag(&chunk("none", &inner, &inner)));
     assert_eq!(ingested.dataset.episodes[0].streams.len(), 3);
     assert!(
-        ingested
-            .report
-            .unread_sources
-            .iter()
-            .any(|u| u.note.contains("no connection record declares")),
+        ingested.report.unread_sources.iter().any(|u| u
+            .note
+            .contains("name a connection no connection record in their file declares")),
         "{:?}",
         ingested.report.unread_sources
     );
@@ -787,5 +785,152 @@ fn a_camera_losing_a_fifth_of_its_messages_moves_nothing_but_the_count() {
     assert!(
         removed.is_empty(),
         "and must take nothing away: {removed:?}"
+    );
+}
+
+/// A recording written in parts, the way `rosbag record --split` writes any recording long enough
+/// to care about.
+fn split_recording(dir: &std::path::Path, parts: usize) {
+    for part in 0..parts {
+        let mut inner = Vec::new();
+        // Each part declares its own connections, and a real recorder does not reuse the same ids
+        // for the same topics across parts — so the two are swapped here, which is exactly the case
+        // that keying streams by connection id gets wrong.
+        let (lidar, imu) = if part % 2 == 0 { (0u32, 1u32) } else { (1, 0) };
+        inner.extend_from_slice(&connection(
+            lidar,
+            "/lidar/points",
+            "sensor_msgs/PointCloud2",
+            false,
+        ));
+        inner.extend_from_slice(&connection(imu, "/imu/data", "sensor_msgs/Imu", false));
+        for i in 0..5u64 {
+            let ns = 1_000_000_000 + (part as u64 * 5 + i) * 100_000_000;
+            inner.extend_from_slice(&message(lidar, ns, &[part as u8, i as u8, 0, 0]));
+            inner.extend_from_slice(&message(imu, ns, &imu_body(i as u32, ns, 9.81)));
+        }
+        std::fs::write(
+            dir.join(format!("session_{part}.bag")),
+            bag(&chunk("none", &inner, &inner)),
+        )
+        .expect("write a part");
+    }
+}
+
+#[test]
+fn a_split_recording_is_one_recording() {
+    // `rosbag record --split` writes `session_0.bag`, `session_1.bag`, … for one session. Read
+    // separately they are N datasets, each with its own verdict and its own certificate, and every
+    // cross-episode check with one episode to compare. Read as the directory they sit in, they are
+    // the recording they were.
+    let dir = tempfile::tempdir().expect("tempdir");
+    split_recording(dir.path(), 3);
+    let ingested = Rosbag1Adapter
+        .ingest(
+            &Source::Local(dir.path().to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("the split recording ingests");
+
+    let ep = &ingested.dataset.episodes[0];
+    let by = |n: &str| ep.streams.iter().find(|s| s.name == n).expect(n);
+    // Two topics, not six, and every part's messages under the topic that carried them — including
+    // the parts that gave those topics the other's connection id.
+    assert_eq!(ep.streams.len(), 2);
+    assert_eq!(by("/lidar/points").frames.len(), 15);
+    assert_eq!(by("/imu/data").frames.len(), 15);
+    // One timeline, in order, spanning every part.
+    assert_eq!(ep.start_ts, Some(1_000_000_000));
+    assert_eq!(ep.end_ts, Some(2_400_000_000));
+    assert!(by("/lidar/points")
+        .frames
+        .windows(2)
+        .all(|w| w[0].ts <= w[1].ts));
+    // And the bodies are still read: a split recording is not a lesser one.
+    assert!(by("/imu/data").observed_stats.is_some());
+
+    // Pointed at one part, it is still one part — the reader claims a directory, not a sibling.
+    let one = Rosbag1Adapter
+        .ingest(
+            &Source::Local(dir.path().join("session_1.bag")),
+            &IngestOptions::default(),
+        )
+        .expect("one part ingests");
+    assert_eq!(one.dataset.episodes[0].streams[0].frames.len(), 5);
+}
+
+#[test]
+fn the_registry_reads_a_directory_of_bags_as_a_bag() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    split_recording(dir.path(), 2);
+    let registry = default_registry();
+    let ingested = registry
+        .ingest(
+            &Source::Local(dir.path().to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("the registry picks the bag reader for the directory");
+    assert_eq!(ingested.report.format_id, "rosbag1");
+    assert_eq!(ingested.dataset.episodes[0].streams.len(), 2);
+}
+
+#[test]
+fn a_part_naming_a_different_recorder_is_disclosed_not_overwritten() {
+    // Two files in a directory that name different recorders are not obviously one session. The
+    // first one's name is the one reported — taking the last would report the recording as whoever
+    // happened to be last — and the disagreement is disclosed as the second answer the CDM has one
+    // field for.
+    let dir = tempfile::tempdir().expect("tempdir");
+    split_recording(dir.path(), 1);
+    let mut other = b"#ROSBAG V2.0\n".to_vec();
+    other.extend_from_slice(&record(
+        &[
+            ("op", vec![0x03]),
+            ("conn_count", 1u32.to_le_bytes().to_vec()),
+            ("chunk_count", 1u32.to_le_bytes().to_vec()),
+            ("index_pos", 0u64.to_le_bytes().to_vec()),
+            ("callerid", b"/some_other_recorder".to_vec()),
+        ],
+        &[],
+    ));
+    let mut inner = connection(0, "/imu/data", "sensor_msgs/Imu", false);
+    inner.extend_from_slice(&message(
+        0,
+        3_000_000_000,
+        &imu_body(0, 3_000_000_000, 9.81),
+    ));
+    other.extend_from_slice(&chunk("none", &inner, &inner));
+    std::fs::write(dir.path().join("session_1.bag"), other).expect("write the odd part");
+
+    let ingested = Rosbag1Adapter
+        .ingest(
+            &Source::Local(dir.path().to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingests");
+    let recorder = ingested.dataset.provenance[0]
+        .elements
+        .iter()
+        .find(|e| e.key == "recorder")
+        .and_then(|e| e.value.clone());
+    assert_eq!(recorder.as_deref(), Some("/rosbag_record"));
+    assert!(
+        ingested
+            .report
+            .unmapped_fields
+            .iter()
+            .any(|u| u.note.contains("/some_other_recorder")),
+        "{:?}",
+        ingested.report.unmapped_fields
+    );
+    // It is not a coverage hole: every byte of both headers was read.
+    assert!(
+        !ingested
+            .report
+            .unread_sources
+            .iter()
+            .any(|u| u.note.contains("recorder")),
+        "{:?}",
+        ingested.report.unread_sources
     );
 }

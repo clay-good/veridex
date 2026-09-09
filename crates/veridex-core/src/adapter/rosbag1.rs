@@ -95,9 +95,11 @@ impl Adapter for Rosbag1Adapter {
         &["2.0"]
     }
 
+    /// A file that says it is a bag, or a directory holding at least one — the shape
+    /// `rosbag record --split` leaves behind.
     fn detect(&self, source: &Source) -> Detection {
         match source {
-            Source::Local(path) if Rosbag1Adapter::is_bag(path) => Detection::Yes {
+            Source::Local(path) if !bag_files(path).is_empty() => Detection::Yes {
                 version: Some("2.0".into()),
             },
             _ => Detection::No,
@@ -125,13 +127,12 @@ impl Adapter for Rosbag1Adapter {
                 })
             }
         };
-        let bytes = read_source_whole(
-            path,
-            FORMAT_ID,
-            options,
-            "a bag's records are chained by length, so the stream is read whole",
-        )?;
-        if bytes.get(..MAGIC.len()) != Some(MAGIC) {
+        // One recording, however many files it was written to. `rosbag record --split` is how any
+        // recording long enough to care about is made, and its parts are one session: reading them
+        // separately gives each part its own verdict, its own score and its own certificate, and
+        // leaves every cross-episode check with one episode to compare.
+        let files = bag_files(path);
+        if files.is_empty() {
             return Err(IngestError::Parse {
                 format_id: FORMAT_ID,
                 message: "not a ROS 1 bag (missing the `#ROSBAG V2.0` line)".into(),
@@ -139,26 +140,34 @@ impl Adapter for Rosbag1Adapter {
         }
 
         let mut walk = Walk::default();
-        walk.records(&bytes[MAGIC.len()..], options, true)?;
+        for file in &files {
+            let bytes = read_source_whole(
+                file,
+                FORMAT_ID,
+                options,
+                "a bag's records are chained by length, so the stream is read whole",
+            )?;
+            // Each file is its own record stream, with its own connection ids: `conn 0` in the
+            // second part of a split recording is whichever topic that part declared first, not the
+            // one the first part called `conn 0`.
+            walk.connections.clear();
+            walk.file = display(file);
+            // The magic was what identified the file; a file that changed underneath the detection
+            // is read as the nothing it now is rather than sliced past its end.
+            let Some(records) = bytes.get(MAGIC.len()..) else {
+                continue;
+            };
+            walk.records(records, options, true)?;
+        }
 
         let mut budget = FrameBudget::new(options);
         let mut streams: Vec<Stream> = Vec::new();
         let (mut min_ts, mut max_ts) = (i64::MAX, i64::MIN);
-        for (conn, mut acc) in walk.messages {
-            let Some(topic) = walk.connections.get(&conn) else {
-                // A message referring to a connection the bag never declared names a topic nothing
-                // can identify. Reported rather than counted into a stream it cannot belong to.
-                walk.unread.push(UnmappedField {
-                    source_path: format!("connection {conn}"),
-                    note: format!(
-                        "{} message(s) name connection {conn}, which no connection record declares, so the topic and type they belong to are unknown; they contribute no frames",
-                        acc.msgs.len()
-                    ),
-                });
-                continue;
-            };
+        let messages = std::mem::take(&mut walk.messages);
+        for (name, mut acc) in messages {
             // A bag writes messages in chunk order, which is time order per chunk but not across
-            // them once a recorder buffers.
+            // them once a recorder buffers — and across the files of a split recording, later parts
+            // hold later messages but nothing in the format promises it.
             acc.msgs.sort_by_key(|(ts, _)| *ts);
             budget.take(FORMAT_ID, acc.msgs.len() as u64)?;
             let frames: Vec<Frame> = acc
@@ -170,7 +179,7 @@ impl Adapter for Rosbag1Adapter {
                     Frame {
                         ts: *ts,
                         value_ref: ValueRef {
-                            uri: format!("rosbag1:{}", topic.name),
+                            uri: format!("rosbag1:{name}"),
                             byte_offset: None,
                             byte_len: None,
                             content_hash: Some(*hash),
@@ -185,17 +194,17 @@ impl Adapter for Rosbag1Adapter {
             // like a topic that had nothing to say. See `StreamValues::refusal`.
             if let Some(why) = acc.values.refusal() {
                 walk.unread.push(UnmappedField {
-                    source_path: topic.name.clone(),
+                    source_path: name.clone(),
                     note: why.into(),
                 });
             }
             let measured = acc.values.finish();
             let values = measured.as_ref().map(|(a, _)| a);
             streams.push(Stream {
-                name: topic.name.clone(),
                 // The same classifier the two ROS 2 readers use, over the same ROS type names: a rig
                 // recorded to a bag types the way the same rig recorded to an MCAP does.
-                modality: super::mcap::infer_modality(&topic.ros_type, &topic.name),
+                modality: super::mcap::infer_modality(&acc.ros_type, &name),
+                name,
                 declared_rate_hz: None,
                 // One bag is one recorder's clock, and every message time is on it.
                 clock_id: "rosbag1-log".into(),
@@ -213,7 +222,7 @@ impl Adapter for Rosbag1Adapter {
                 observed_saturation: values.and_then(|a| a.saturation()),
                 observed_non_finite: values.map(|a| a.non_finite()),
                 observed_dim_stats: values.and_then(|a| a.dim_stats()),
-                latched: topic.latching,
+                latched: acc.latching,
                 // A bag declares no range for a topic; there is nothing to compare values against.
                 declared_range: None,
                 point_fields: acc.point_fields,
@@ -264,13 +273,13 @@ impl Adapter for Rosbag1Adapter {
                 note: walk.moved_frames.note(),
             });
         }
-        if walk.bodies_before_their_connection > 0 {
+        if walk.orphan_messages > 0 {
             walk.unread.push(UnmappedField {
-                source_path: "message data".into(),
+                source_path: "message records".into(),
                 note: format!(
-                    "{} message(s) appear before the connection record naming their type, so their \
-                     bodies were not decoded; their times and bytes are read",
-                    walk.bodies_before_their_connection
+                    "{} message(s) name a connection no connection record in their file declares, \
+                     so the topic and type they belong to are unknown; they contribute no frames",
+                    walk.orphan_messages
                 ),
             });
         }
@@ -367,7 +376,7 @@ impl Adapter for Rosbag1Adapter {
                 source_version: Some("2.0".into()),
                 coverage: Coverage::Full,
                 mapped_fields,
-                unmapped_fields: vec![UnmappedField {
+                unmapped_fields: std::iter::once(UnmappedField {
                     source_path: "message data".into(),
                     note: "a message body is read only as far as the fields the CDM holds — a \
                            cloud's point layout and count, an image's dimensions, a rig's \
@@ -375,7 +384,9 @@ impl Adapter for Rosbag1Adapter {
                            pixels, the points) is fingerprinted, never interpreted, and a message \
                            type with no typed decoder is fingerprinted whole"
                         .into(),
-                }],
+                })
+                .chain(walk.unmapped)
+                .collect(),
                 omitted_fields: vec![
                     "episode segmentation (a bag records one continuous session)".into(),
                     "declared-rate (a bag declares no nominal rate for a topic)".into(),
@@ -400,6 +411,10 @@ struct Topic {
 /// number the file chose, and a bag holds the whole recording.
 #[derive(Default)]
 struct TopicAccum {
+    /// The ROS type the first connection record to name this topic declared, and whether that
+    /// connection said the topic is latched.
+    ros_type: String,
+    latching: Option<bool>,
     /// Each message's time and the fingerprint of its body.
     msgs: Vec<(i64, [u8; 32])>,
     point_fields: Option<Vec<PointField>>,
@@ -415,12 +430,18 @@ struct TopicAccum {
     values: super::stats::StreamValues,
 }
 
-/// What one walk of a bag's record stream collected.
+/// What one walk of a recording's record streams collected.
+///
+/// One `Walk` spans every file of the recording, because a split one is still one recording: the
+/// accumulators are keyed by **topic name**, which is what a topic is called in every file, rather
+/// than by connection id, which is a per-file handle that different files reuse for different
+/// topics.
 #[derive(Default)]
 struct Walk {
+    /// The connections the file being read declares. Cleared between files.
     connections: BTreeMap<u32, Topic>,
-    /// Per connection: everything its messages said.
-    messages: BTreeMap<u32, TopicAccum>,
+    /// Per topic, across every file: everything its messages said.
+    messages: BTreeMap<String, TopicAccum>,
     /// The `callerid` the bag header names, where it names one.
     recorder: Option<String>,
     /// The rig, as the recording's own messages describe it.
@@ -429,10 +450,14 @@ struct Walk {
     intrinsics: BTreeMap<String, CameraIntrinsics>,
     transforms: BTreeMap<(String, String), Transform>,
     moved_frames: super::cdr::MovingFrames,
-    /// Messages whose connection record the bag had not written yet when they were read. Their
-    /// bytes are still fingerprinted into frames; their bodies are not decoded, because nothing
-    /// says which message type to read them as.
-    bodies_before_their_connection: u64,
+    /// Messages naming a connection the file they are in never declared. There is no topic name to
+    /// file them under, so they contribute no frames — and inventing one would attribute frames to a
+    /// topic the recording does not have.
+    orphan_messages: u64,
+    /// The file being read, for the disclosures that name one.
+    file: String,
+    /// What the recording said that the CDM has one field for, and this run kept one of.
+    unmapped: Vec<UnmappedField>,
     unread: Vec<UnmappedField>,
 }
 
@@ -472,7 +497,28 @@ impl Walk {
             match op {
                 OP_BAG_HEADER if top => {
                     if let Some(id) = fields.get("callerid").and_then(|v| text(v)) {
-                        self.recorder = Some(id);
+                        // The first part of a split recording settles who recorded it. A later part
+                        // naming someone else is not the same session, and quietly taking the last
+                        // name would report the recording as that one's.
+                        match &self.recorder {
+                            None => self.recorder = Some(id),
+                            Some(first) if *first != id => {
+                                let note = format!(
+                                    "`{}` names `{id}` as its recorder while the recording's first \
+                                     file names `{first}`; the files were read as one recording and \
+                                     the first name is the one reported",
+                                    self.file
+                                );
+                                // Not unread data — every byte of both headers was read. It is a
+                                // second answer the CDM holds one field for, which is what
+                                // `unmapped` is: a note about shape, not a coverage hole.
+                                self.unmapped.push(UnmappedField {
+                                    source_path: "bag header callerid".into(),
+                                    note,
+                                });
+                            }
+                            Some(_) => {}
+                        }
                     }
                 }
                 OP_CONNECTION => self.connection(&fields, data),
@@ -535,18 +581,21 @@ impl Walk {
             intrinsics,
             transforms,
             moved_frames,
-            bodies_before_their_connection,
+            orphan_messages,
             ..
         } = self;
         let Some(topic) = connections.get(&conn) else {
-            // A message ahead of its own connection record. Recorded as a frame — the time and the
-            // bytes are not in doubt — but there is no message type to read the body as, and
-            // guessing one would be inventing the measurement.
-            *bodies_before_their_connection += 1;
-            messages.entry(conn).or_default().msgs.push((ts, hash));
+            // A message referring to a connection this file never declared names a topic nothing can
+            // identify. Counted and reported rather than filed under a stream it cannot belong to —
+            // inventing one would attribute frames to a topic the bag does not have.
+            *orphan_messages += 1;
             return;
         };
-        let acc = messages.entry(conn).or_default();
+        let acc = messages.entry(topic.name.clone()).or_default();
+        if acc.msgs.is_empty() {
+            acc.ros_type = topic.ros_type.clone();
+            acc.latching = topic.latching;
+        }
         acc.msgs.push((ts, hash));
 
         // The frame this sensor's data is expressed in, and the sensor's own clock against the
@@ -704,6 +753,42 @@ impl Walk {
             }
         }
     }
+}
+
+/// Every bag file this source names, in the order they were recorded.
+///
+/// A single `.bag` is itself; a directory is every `.bag`-shaped file directly inside it, ordered by
+/// [`super::natural_key`] so `foo_10.bag` follows `foo_9.bag` rather than `foo_1.bag` — which is the
+/// order `rosbag record --split` wrote them in, and so the order the recording ran in. Files are
+/// recognized by their `#ROSBAG V2.0` line, never by their name, so a directory holding a bag beside
+/// unrelated files still reads as one recording of the bags.
+fn bag_files(path: &Path) -> Vec<std::path::PathBuf> {
+    if path.is_file() {
+        return if Rosbag1Adapter::is_bag(path) {
+            vec![path.to_path_buf()]
+        } else {
+            Vec::new()
+        };
+    }
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return Vec::new();
+    };
+    let mut found: Vec<std::path::PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && Rosbag1Adapter::is_bag(p))
+        .collect();
+    found.sort_by_key(|p| super::natural_key(&display(p)));
+    found
+}
+
+/// A path as it should appear in a disclosure: the file name, which is what identifies one part of a
+/// split recording, rather than the caller's whole path.
+fn display(path: &Path) -> String {
+    path.file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("<bag>")
+        .to_string()
 }
 
 /// Split one `header_len | header | data_len | data` record off the front of `buf`.
