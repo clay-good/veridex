@@ -959,11 +959,6 @@ const NOT_REACHED_BY_THE_SWEEP: &[(&str, &str)] = &[
          impossible (a min above its max, a NaN)",
     ),
     (
-        "structural.frozen-episode",
-        "needs enough episodes for `a minority of them` to mean anything, with an actuator frozen \
-         in some; the generators that reach that episode count freeze nothing",
-    ),
-    (
         "structural.shape-consistency",
         "needs one stream declaring different shapes or dtypes in different episodes; every \
          generator writes one schema for the whole dataset",

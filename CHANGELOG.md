@@ -23,6 +23,16 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
   It is a census, not a coverage target: a check being absent is a statement about the fixtures.
 
+- **The teleoperation session that dropped, reproducible.** The third of the eight, and one the
+  README's headline already claimed to catch with nothing demonstrating it:
+  `make_demo_lerobot -- <dir> frozen-episode` writes five 10-frame episodes of a 3-DoF `action` in
+  which episode 2's arm never moved. The episode is present, the right length, on time and evenly
+  spaced, so no structural or temporal rule sees anything → `STRUCTURAL.FROZEN_EPISODE`.
+
+  The feature is a **vector** because the check is: one joint holding a position is a joint at rest,
+  and only a whole arm that never moved is a recording of nothing. A first attempt wrote a scalar and
+  produced no finding — the check was right and the fixture was wrong.
+
 - **A receiver that never acquired a fix, reproducible.** The second of the eight:
   `make_demo_mcap -- <out> av-null-island` writes the same rig with every coordinate exactly `0.0`
   while the status byte still claims a fix — the way an unconfigured driver reports a receiver that
