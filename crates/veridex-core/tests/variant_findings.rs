@@ -958,11 +958,6 @@ const NOT_REACHED_BY_THE_SWEEP: &[(&str, &str)] = &[
          generator writes one schema for the whole dataset",
     ),
     (
-        "temporal.rate-conformance",
-        "needs a declared rate the observed mean contradicts; LeRobot's `fps` is dataset-global and \
-         matches, and MCAP, rosbag2, CAN and MF4 declare no nominal rate at all",
-    ),
-    (
         "temporal.rate-consistency",
         "structurally unreachable from today's readers, not merely unfixtured: it compares the \
          rates two episodes declare, and LeRobot's `fps` is one number for the whole dataset",

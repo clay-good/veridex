@@ -30,6 +30,13 @@
 //!   are one corruption seen from two sides, and reporting only the second would leave a reader
 //!   re-recording data that was never the problem.
 //!
+//! - `wrong-fps` — two well-formed 20-frame episodes whose frames are spaced at 24 Hz while
+//!   `meta/info.json` still declares `fps: 30`: a dataset re-recorded at a different rate whose
+//!   manifest was never updated. The spacing is perfectly regular, so nothing reads as jitter, and
+//!   the interval is nowhere near a gap — the declared rate is simply not the rate the data was
+//!   captured at, and everything that normalizes or resamples by `fps` is off by a quarter →
+//!   `TEMPORAL.RATE`.
+//!
 //! - `duplicate` — two episodes with byte-for-byte identical content (a re-upload) →
 //!   `STRUCTURAL.DUPLICATE_EPISODE`.
 //! - `near-duplicate` — episode 1 re-uploads 11 of episode 0's 12 frames, one value changed so the
@@ -61,7 +68,7 @@
 //! - `video-reencoded` — the videos were re-encoded at 320x240 while the manifest still declares
 //!   640x480 → `VIDEO.RESOLUTION_MISMATCH`, charged once for the stream rather than once per episode.
 //!
-//! Usage: `cargo run -p veridex-demo --example make_demo_lerobot -- <output-dir> [non-monotonic|clean|truncated|boundary|jitter|short-episode|frozen-episode|duplicate|near-duplicate|saturated|spike|nan|stale-stats|corrupt-stats|multi-joint|video|video-desync|video-missing|video-reencoded]`
+//! Usage: `cargo run -p veridex-demo --example make_demo_lerobot -- <output-dir> [non-monotonic|clean|truncated|boundary|jitter|wrong-fps|short-episode|frozen-episode|duplicate|near-duplicate|saturated|spike|nan|stale-stats|corrupt-stats|multi-joint|video|video-desync|video-missing|video-reencoded]`
 //!
 //! Then: `veridex check <output-dir>`.
 
@@ -77,6 +84,7 @@ pub const VARIANTS: &[&str] = &[
     "truncated",
     "boundary",
     "jitter",
+    "wrong-fps",
     "short-episode",
     "frozen-episode",
     "duplicate",
@@ -107,6 +115,7 @@ enum Mode {
     Truncated,
     Boundary,
     Jitter,
+    WrongFps,
     ShortEpisode,
     FrozenEpisode,
     Duplicate,
@@ -152,6 +161,7 @@ fn mode_of(variant: &str) -> Result<Mode, DemoError> {
         "truncated" => Mode::Truncated,
         "boundary" => Mode::Boundary,
         "jitter" => Mode::Jitter,
+        "wrong-fps" => Mode::WrongFps,
         "short-episode" => Mode::ShortEpisode,
         "frozen-episode" => Mode::FrozenEpisode,
         "duplicate" => Mode::Duplicate,
@@ -192,6 +202,9 @@ pub fn describe(variant: &str) -> Result<&'static str, DemoError> {
         }
         Mode::Jitter => {
             "jitter (episode 1 has an irregular inter-frame spacing → TEMPORAL.JITTER)"
+        }
+        Mode::WrongFps => {
+            "wrong-fps (captured at 24 Hz while info.json declares 30 → TEMPORAL.RATE)"
         }
         Mode::ShortEpisode => {
             "short-episode (episode 4 was cut short right after it began → TEMPORAL.EPISODE_DURATION_OUTLIER)"
@@ -653,9 +666,14 @@ fn build_rows(mode: Mode, fps: f64) -> (Vec<DemoRow>, u64, u64) {
     // Two episodes at ~30 Hz. Episode 0 always has 10 frames. Episode 1 has 10 too, except in the
     // truncated variant where it was cut short to 6 — fewer than the 20 frames info.json declares.
     let ep1_frames = if mode == Mode::Truncated { 6 } else { 10 };
+    // `wrong-fps` captures at 24 Hz while the manifest still declares 30: a re-record whose
+    // `info.json` was never updated. The spacing stays perfectly regular, so nothing reads as
+    // jitter, and 41.7 ms against an expected 33.3 ms is nowhere near the gap threshold — the
+    // declared rate is simply not the rate the data was captured at.
+    let capture_fps = if mode == Mode::WrongFps { 24.0 } else { fps };
     let mut ts: Vec<(i64, f64)> = Vec::new();
     for f in 0..10i64 {
-        ts.push((0, f as f64 / fps));
+        ts.push((0, f as f64 / capture_fps));
     }
     if mode == Mode::Jitter {
         // Episode 1: irregular spacing (alternating ~13 ms / ~53 ms). The mean rate stays ~30 Hz
@@ -668,7 +686,7 @@ fn build_rows(mode: Mode, fps: f64) -> (Vec<DemoRow>, u64, u64) {
         }
     } else {
         for f in 0..ep1_frames {
-            ts.push((1, f as f64 / fps));
+            ts.push((1, f as f64 / capture_fps));
         }
     }
     if mode == Mode::NonMonotonic {

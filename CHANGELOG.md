@@ -23,6 +23,13 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
   It is a census, not a coverage target: a check being absent is a statement about the fixtures.
 
+- **A manifest whose declared rate is not the rate the data was captured at, reproducible.** The
+  fifth of the eight: `make_demo_lerobot -- <dir> wrong-fps` writes two well-formed episodes spaced
+  at 24 Hz while `meta/info.json` still declares `fps: 30` — a re-record whose manifest was never
+  updated. The spacing is perfectly regular, so nothing reads as jitter, and 41.7 ms against an
+  expected 33.3 ms is nowhere near the gap threshold. The declared rate is simply wrong, and
+  everything that normalizes or resamples by `fps` is off by a quarter → `TEMPORAL.RATE`.
+
 - **A summary that describes no data at all, reproducible.** The fourth of the eight:
   `make_demo_lerobot -- <dir> corrupt-stats` writes a well-formed two-episode dataset whose
   `meta/stats.json` declares a minimum *above* its maximum — the shape of a bad merge or a
