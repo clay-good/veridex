@@ -251,7 +251,10 @@ fn connection(conn: u32, topic: &str, ros_type: &str, latching: bool) -> Vec<u8>
         ("topic", topic.as_bytes().to_vec()),
         ("type", ros_type.as_bytes().to_vec()),
         ("md5sum", b"0123456789abcdef0123456789abcdef".to_vec()),
-        ("message_definition", b"# see the ROS message definition\n".to_vec()),
+        (
+            "message_definition",
+            b"# see the ROS message definition\n".to_vec(),
+        ),
     ];
     if latching {
         inner.push(("latching", b"1".to_vec()));
@@ -308,7 +311,11 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
 
     // The transform tree, published once and retained — which is what a latched topic is for, and
     // why the single-frame rule exempts one.
-    records.extend_from_slice(&message(6, RECORDING_EPOCH_NS, &tf_static(RECORDING_EPOCH_NS)));
+    records.extend_from_slice(&message(
+        6,
+        RECORDING_EPOCH_NS,
+        &tf_static(RECORDING_EPOCH_NS),
+    ));
 
     // Every sensor spans the same ~2.0 s window, at its own rate.
     for i in 0..20u32 {
@@ -327,9 +334,27 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
         // publisher still numbered it — `seq` is `i` either way — so the hole is in the recording
         // and the numbering is the only place it shows.
         if !(lossy_camera && i % 5 == 4) {
-            records.extend_from_slice(&message(1, log, &image(i, sample, 640, 480)));
+            records.extend_from_slice(&message(
+                1,
+                log,
+                &image(
+                    i,
+                    sample,
+                    crate::mcap::DEMO_IMAGE_WIDTH,
+                    crate::mcap::DEMO_IMAGE_HEIGHT,
+                ),
+            ));
         }
-        records.extend_from_slice(&message(2, log, &camera_info(i, sample, 640, 480)));
+        records.extend_from_slice(&message(
+            2,
+            log,
+            &camera_info(
+                i,
+                sample,
+                crate::mcap::DEMO_IMAGE_WIDTH,
+                crate::mcap::DEMO_IMAGE_HEIGHT,
+            ),
+        ));
         records.extend_from_slice(&message(4, log, &odometry(i, sample, t * 2.0)));
         records.extend_from_slice(&message(5, log, &joint_state(i, sample, t)));
     }
