@@ -25,8 +25,9 @@ A ninth adapter, `rosbag1`, reading ROS 1 bag format v2.0:
 - **Chunk storage.** Uncompressed and LZ4 chunks are read. `bz2` needs a decompressor this
   workspace does not carry, and is **disclosed as unread** rather than guessed at — the same
   treatment an MF4 `##DZ` in an unknown zip type gets.
-- **Bodies, in a second step.** ROS 1 serialization is the same field layout as CDR without the
-  4-byte encapsulation header, so the existing typed decoders can be reached from it. That is
+- **Bodies, in a second step.** ROS 1 puts the same fields in the same order as CDR, but with no
+  encapsulation header, no alignment padding and a `seq` at the front of every `std_msgs/Header`, so
+  the existing typed decoders can be reached from it through a reader that knows those. That is
   deliberately *not* in this change: a bag whose topics, types, clock and fingerprints are read
   already reaches the structural, temporal, semantic and provenance families, and shipping that
   first keeps the change reviewable.

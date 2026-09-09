@@ -16,10 +16,12 @@
 //! verdict): a chunk in a compression this workspace carries no decompressor for — `bz2`, and
 //! anything a future rosbag writes — because the messages are in the file and nobody read them.
 //! **Unmapped** (a note about shape): the message *bodies*, which are fingerprinted rather than
-//! decoded. ROS 1 serialization is the same field layout as CDR without the four-byte encapsulation
-//! header, so the typed decoders are reachable from here — deliberately a later change, because a
-//! bag whose topics, types, clock and fingerprints are read already reaches the structural,
-//! temporal, semantic and provenance families.
+//! decoded. ROS 1 puts the same fields in the same order as CDR, but it is not the same encoding:
+//! no encapsulation header, no alignment padding between primitives, and a `seq` counter at the
+//! front of every `std_msgs/Header`. The typed decoders are reachable from here through a reader
+//! that knows those three differences — deliberately a later change, because a bag whose topics,
+//! types, clock and fingerprints are read already reaches the structural, temporal, semantic and
+//! provenance families.
 //!
 //! Every length in a bag is a number the file chose, so each one is bounded against what the buffer
 //! actually holds before it is trusted: a corrupt or hostile bag is refused by name, never allocated
@@ -276,9 +278,7 @@ impl Adapter for Rosbag1Adapter {
                 unmapped_fields: vec![UnmappedField {
                     source_path: "message data".into(),
                     note:
-                        "message bodies are fingerprinted, never decoded: ROS 1 serialization is \
-                           the CDR field layout without its encapsulation header, so the typed \
-                           decoders are reachable from here but are not wired to it yet"
+                        "message bodies are fingerprinted, never decoded: ROS 1 puts the same fields in the same order as CDR but with no encapsulation header, no alignment padding and a `seq` at the front of every Header, so the typed decoders are reachable from here but are not wired to it yet"
                             .into(),
                 }],
                 omitted_fields: vec![

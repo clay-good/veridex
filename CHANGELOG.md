@@ -32,8 +32,9 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
   Message **bodies** are fingerprinted, not decoded, so a bag reaches the structural, temporal,
   semantic and provenance families in full and the value-reading families abstain on it out loud. ROS
-  1 serialization is the CDR field layout without its encapsulation header, so the typed decoders are
-  reachable from here — a follow-up, tracked in
+  1 puts the same fields in the same order as CDR but with no encapsulation header, no alignment
+  padding and a `seq` at the front of every `std_msgs/Header`, so the typed decoders are reachable
+  from here through a reader that knows those three differences — a follow-up, tracked in
   [`add-rosbag1-support`](openspec/changes/add-rosbag1-support/).
 
   No CDM change, no `CANONICAL_VERSION` bump, no new check: everything a bag produces is a shape the

@@ -416,9 +416,12 @@ belong to are unknown and attributing them to a stream anyway would invent one.
 What a bag does **not** yet give is decoded message bodies. They are fingerprinted into per-frame
 content hashes, never interpreted — so a `.bag` reaches the structural, temporal, semantic and
 provenance families in full, and the statistical and autonomy families abstain on it out loud the way
-they do for any container whose payloads are not decoded. ROS 1 serialization is the same field
-layout as CDR without its four-byte encapsulation header, so the typed decoders are reachable from
-here; wiring them is the next step rather than part of this one.
+they do for any container whose payloads are not decoded. ROS 1 serialization puts the same fields
+in the same order as CDR, but it is not the same encoding: there is no four-byte encapsulation
+header, there is no alignment padding between primitives, and every `std_msgs/Header` carries a
+`seq` counter that ROS 2's does not. So the typed decoders are reachable from here — but through a
+reader that knows those three differences, not by handing bag bytes to the CDR one. Wiring that is
+the next step rather than part of this one.
 
 And on a **CAN + DBC** log — raw vehicle-bus traffic, which on its own is opaque bytes. The `.dbc` is
 the signal database that gives those bytes meaning, so Veridex ingests the two together: point it at a
