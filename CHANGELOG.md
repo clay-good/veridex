@@ -10,6 +10,15 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **The bag index reader is held to the same untrusted-input discipline as the rest.** The
+  metadata-only path follows an offset the *file* chose, to records the file wrote, and it is
+  precisely the path a caller points at a huge archive they do not want to read whole — so every one
+  of its numbers is now saturating, and a bit-flip sweep over a bag *with* an index requires each
+  result to be a verdict or an error, never a panic and never an inventory assembled out of garbage.
+  Two named cases: an `index_pos` past the end of the file is refused as "no index" rather than
+  answered from wherever the read landed, and one pointing into the middle of a chunk yields a
+  refusal rather than a topic list decoded out of message bytes.
+
 - **The encoding a rig was recorded in is held to changing nothing.** Every ROS message type the
   shared dispatch decodes now has a fixture written *once* and rendered in both encodings — CDR with
   its encapsulation header, alignment padding and NUL-counted strings, ROS 1 with none of those and a

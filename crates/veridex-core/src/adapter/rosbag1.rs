@@ -873,7 +873,8 @@ fn read_index(path: &Path, options: &IngestOptions) -> Result<Option<Index>, Ing
                         continue;
                     };
                     let Some(n) = u32_at(pair, 4) else { continue };
-                    *counts.entry(conn).or_default() += u64::from(n);
+                    let slot = counts.entry(conn).or_insert(0u64);
+                    *slot = slot.saturating_add(u64::from(n));
                 }
             }
             _ => {}
@@ -886,7 +887,7 @@ fn read_index(path: &Path, options: &IngestOptions) -> Result<Option<Index>, Ing
                     .topics
                     .entry(topic.name.clone())
                     .or_insert_with(|| (topic.ros_type.clone(), 0));
-                entry.1 += n;
+                entry.1 = entry.1.saturating_add(n);
             }
             // A count against a connection the index never declared belongs to a topic nothing
             // names, exactly as in the full read.
@@ -939,10 +940,10 @@ fn ingest_metadata_only(
         if recorder.is_none() {
             recorder = index.recorder;
         }
-        orphans += index.orphan_messages;
+        orphans = orphans.saturating_add(index.orphan_messages);
         for (name, (ros_type, count)) in index.topics {
             let entry = topics.entry(name).or_insert((ros_type, 0));
-            entry.1 += count;
+            entry.1 = entry.1.saturating_add(count);
         }
     }
     if topics.is_empty() {
@@ -954,7 +955,11 @@ fn ingest_metadata_only(
         });
     }
 
-    let declared: u64 = topics.values().map(|(_, n)| n).sum();
+    // Saturating throughout: every number counted here is one the file chose, and a total that
+    // wrapped would report a recording as holding fewer messages than one of its topics does.
+    let declared: u64 = topics
+        .values()
+        .fold(0u64, |acc, (_, n)| acc.saturating_add(*n));
     let streams: Vec<Stream> = topics
         .iter()
         .map(|(name, (ros_type, _))| Stream {

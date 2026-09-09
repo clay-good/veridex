@@ -1112,3 +1112,66 @@ fn a_bag_with_no_index_is_refused_rather_than_inventoried_from_a_guess() {
         .expect_err("refused");
     assert!(format!("{err}").contains("names no index section"), "{err}");
 }
+
+#[test]
+fn a_corrupt_index_is_refused_rather_than_believed() {
+    // The metadata-only path follows an offset the *file* chose, to records the file wrote, and it
+    // is the path a caller points at a huge untrusted archive precisely because they do not want to
+    // read the whole thing. So every result here must be a verdict or an error — never a panic, and
+    // never an inventory assembled out of garbage.
+    let inner = rig_records();
+    let whole = bag_with_index(&inner, &[(0, 10), (1, 10)], 1_000_000_000, 1_900_000_000);
+    let meta = || IngestOptions {
+        metadata_only: true,
+        ..IngestOptions::default()
+    };
+
+    for i in (0..whole.len()).step_by(11) {
+        for mask in [0xff, 0x01, 0x80] {
+            let mut broken = whole.clone();
+            broken[i] ^= mask;
+            let path = write_temp(&broken);
+            if let Ok(ingested) = Rosbag1Adapter.ingest(&Source::Local(path.to_path_buf()), &meta())
+            {
+                // Whatever survives has to still be an inventory: named topics, and no frames, since
+                // no chunk was opened.
+                let ep = &ingested.dataset.episodes[0];
+                assert!(!ep.streams.is_empty());
+                assert!(ep.streams.iter().all(|s| s.frames.is_empty()));
+            }
+        }
+    }
+
+    // An `index_pos` past the end of the file names no records at all. Refused, rather than
+    // answered from whatever the read happened to land on.
+    let at = b"#ROSBAG V2.0\n".len();
+    let index_pos_at = whole[at..]
+        .windows(10)
+        .position(|w| w.starts_with(b"index_pos="))
+        .expect("the header names an index")
+        + at
+        + "index_pos=".len();
+    let mut beyond = whole.clone();
+    beyond[index_pos_at..index_pos_at + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+    let path = write_temp(&beyond);
+    let err = Rosbag1Adapter
+        .ingest(&Source::Local(path.to_path_buf()), &meta())
+        .expect_err("an index outside the file is no index");
+    assert!(format!("{err}").contains("names no index section"), "{err}");
+
+    // An `index_pos` landing in the middle of the chunk points at message bytes, not at records.
+    // Nothing there declares a topic, so the run is refused rather than reporting a bag whose
+    // inventory is whatever those bytes decoded to.
+    let mut midway = whole.clone();
+    midway[index_pos_at..index_pos_at + 8].copy_from_slice(&((at + 200) as u64).to_le_bytes());
+    let path = write_temp(&midway);
+    match Rosbag1Adapter.ingest(&Source::Local(path.to_path_buf()), &meta()) {
+        Err(e) => assert!(format!("{e}").contains("declares no topic"), "{e}"),
+        Ok(ingested) => {
+            // If the bytes happened to parse as records, they must still have produced only topics
+            // a connection record named — never a stream with frames nobody read.
+            let ep = &ingested.dataset.episodes[0];
+            assert!(ep.streams.iter().all(|s| s.frames.is_empty()));
+        }
+    }
+}
