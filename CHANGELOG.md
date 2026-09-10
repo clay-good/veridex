@@ -10,6 +10,25 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **PEAK PCAN-Trace (`.trc`) and gzipped logs are read.** With BLF and candump already in, these
+  were the last two ways a team is likely to hold CAN and Veridex was not: a `.trc` is what
+  PCAN-View and the PEAK driver stack write, and a `.log.gz` is what log rotation leaves behind.
+  Both ingested to nothing but a coverage warning naming the file that went unread.
+
+  Five `.trc` layouts are handled — 1.0, 1.1 and 1.3 by fixed columns, 2.0 and 2.1 by the
+  `;$COLUMNS=` line they declare, read from that rather than from an assumed position — along with
+  the `;$STARTTIME=` OLE automation date, so a trace lands on the same wall clock a candump log
+  does. A trace also records bus load, error frames and adapter status; those lines are declined
+  and disclosed rather than pushed through the DBC, as are remote frames, which request data and
+  carry none. Which reader a file gets is still decided by its content: gzip by its magic bytes,
+  PCAN-Trace by the `;` header block a candump line never has.
+
+  Proof: six tests, red-proven — the same traffic as candump and as PCAN-Trace decoding to
+  identical value fingerprints, a v2 trace whose columns are read from its own declaration, the
+  non-traffic and remote lines disclosed, the start time placing the frames, and a gzipped log
+  reaching the same content hash as the log it was made from. The OLE epoch constant is pinned to
+  a value computed outside the crate.
+
 - **Rig sensors whose drops could not be counted are named (`AUTONOMY.SEQUENCE_UNMEASURED`).** The
   third and last of the `world-model-ready` criteria that read silence as a pass.
   `autonomy.sequence-complete` reads publisher numbering where a recording preserved it and falls

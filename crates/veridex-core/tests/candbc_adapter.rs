@@ -836,7 +836,6 @@ fn a_signal_carried_by_every_frame_is_not_reported_as_short() {
 #[test]
 fn a_can_log_in_a_format_this_reader_does_not_decode_is_disclosed_not_dropped() {
     let dir = write_dataset();
-    fs::write(dir.path().join("body.trc"), b";$FILEVERSION=2.0").unwrap();
     fs::write(dir.path().join("chassis.mf4"), b"MDF     ").unwrap();
     // A note beside the data is not data: disclosing it would make every honest directory report a
     // coverage hole.
@@ -855,7 +854,6 @@ fn a_can_log_in_a_format_this_reader_does_not_decode_is_disclosed_not_dropped() 
         .map(|u| format!("{} {}", u.source_path, u.note))
         .collect();
     let joined = unread.join("\n");
-    assert!(joined.contains("body.trc"), "{joined}");
     assert!(joined.contains("chassis.mf4"), "{joined}");
     assert!(!joined.contains("README"), "{joined}");
 }
@@ -865,7 +863,7 @@ fn a_can_log_in_a_format_this_reader_does_not_decode_is_disclosed_not_dropped() 
 #[test]
 fn an_undecoded_can_log_raises_the_coverage_warning() {
     let dir = write_dataset();
-    fs::write(dir.path().join("body.trc"), b";$FILEVERSION=2.0").unwrap();
+    fs::write(dir.path().join("chassis.mf4"), b"MDF     ").unwrap();
     let outcome = veridex_core::pipeline::run_check(
         &veridex_core::default_registry(),
         &Source::Local(dir.path().to_path_buf()),
@@ -880,7 +878,11 @@ fn an_undecoded_can_log_raises_the_coverage_warning() {
         .find(|f| f.code == "COVERAGE.SOURCE_UNREAD")
         .expect("an undecoded log surfaces as a coverage finding");
     assert_eq!(finding.severity, veridex_core::check::Severity::Warning);
-    assert!(finding.message.contains("body.trc"), "{}", finding.message);
+    assert!(
+        finding.message.contains("chassis.mf4"),
+        "{}",
+        finding.message
+    );
 }
 
 // ---- Vector BLF ---------------------------------------------------------------------------------
@@ -1535,4 +1537,159 @@ fn an_fd_object_shorter_than_it_declares_is_disclosed_rather_than_padded() {
     assert!(notes.contains("classic CAN frame cannot hold"), "{notes}");
     // The far signal is in bytes that are not there, so it has no stream at all — not a zero sample.
     assert_eq!(sample_count(&out, "WideData.FarSignal"), None, "{notes}");
+}
+
+// ---- PCAN-Trace and gzipped logs ------------------------------------------------------------------
+
+/// The three frames `LOG` carries, written as a PCAN-Trace v1.1 log.
+///
+/// v1.1 is the layout PCAN-View wrote for years: a message number, a millisecond offset, a
+/// direction, the id, the length, then the bytes. The header states the measurement start as an OLE
+/// automation date — 45,000 days after 1899-12-30 — so the frames land on a wall clock rather than
+/// at zero.
+const TRC_V11: &str = ";$FILEVERSION=1.1\n\
+;$STARTTIME=45000.0\n\
+;\n\
+;   Message Number\n\
+;   |         Time Offset (ms)\n\
+;   |         |        Type\n\
+;   |         |        |        ID (hex)\n\
+;   |         |        |        |     Data Length Code\n\
+;   |         |        |        |     |   Data Bytes (hex)\n\
+;---+--   ----+----  --+--  ----+---  +  -+ -- -- -- -- -- -- --\n\
+     1)      1000.0  Rx        0100  8  40 01 00 00 12 34 34 12\n\
+     2)      1100.0  Rx        0100  8  80 02 00 00 AB CD CD AB\n\
+     3)      1200.0  Rx        0200  4  DE AD BE EF\n";
+
+/// A PCAN-Trace beside a `.dbc` is a dataset. PCAN-View and the PEAK driver stack write this format,
+/// and it used to ingest to nothing but a coverage warning naming the file it would not read.
+#[test]
+fn a_pcan_trace_log_is_read_into_the_same_signals_a_candump_is() {
+    let out = ingest_with_dbc(DBC, "drive.trc", TRC_V11.as_bytes());
+    let speed = out.dataset.episodes[0]
+        .streams
+        .iter()
+        .find(|s| s.name == "EngineData.EngineSpeed")
+        .expect("the decoded signal");
+    assert_eq!(speed.frames.len(), 2);
+    assert_eq!(speed.modality, Modality::CanSignal);
+}
+
+/// The same traffic as candump and as PCAN-Trace must decode to the same values — the cross-format
+/// claim, applied to the two text formats one bus is logged in.
+#[test]
+fn the_same_traffic_as_candump_and_as_pcan_trace_decodes_to_the_same_values() {
+    let from_text = {
+        let dir = write_dataset();
+        CanDbcAdapter
+            .ingest(
+                &Source::Local(dir.path().to_path_buf()),
+                &IngestOptions::default(),
+            )
+            .expect("ingest")
+    };
+    let from_trc = ingest_with_dbc(DBC, "drive.trc", TRC_V11.as_bytes());
+    let values = |out: &veridex_core::adapter::Ingested| -> Vec<(String, Vec<_>)> {
+        out.dataset.episodes[0]
+            .streams
+            .iter()
+            .map(|s| {
+                (
+                    s.name.clone(),
+                    s.frames.iter().map(|f| f.value_ref.content_hash).collect(),
+                )
+            })
+            .collect()
+    };
+    assert_eq!(values(&from_text), values(&from_trc));
+}
+
+/// Version 2.x declares its own column order, so the fields are read from that line rather than from
+/// an assumed position. A reader that assumed v1.1 positions here decodes the wrong columns.
+#[test]
+fn a_version_2_trace_is_read_from_the_column_order_it_declares() {
+    let v2 = ";$FILEVERSION=2.1\n\
+;$STARTTIME=45000.0\n\
+;$COLUMNS=N,O,T,I,d,L,D\n\
+;\n\
+     1      1000.0  DT     0100  Rx  8  40 01 00 00 12 34 34 12\n\
+     2      1100.0  DT     0100  Rx  8  80 02 00 00 AB CD CD AB\n";
+    let out = ingest_with_dbc(DBC, "drive.trc", v2.as_bytes());
+    let speed = out.dataset.episodes[0]
+        .streams
+        .iter()
+        .find(|s| s.name == "EngineData.EngineSpeed")
+        .expect("the decoded signal");
+    assert_eq!(speed.frames.len(), 2);
+}
+
+/// A `.trc` records more than bus traffic: bus load, error frames and adapter status all appear as
+/// lines with their own type. Decoding one as a message would put its bytes through the DBC, and a
+/// remote frame carries no payload at all — so both are declined and disclosed.
+#[test]
+fn a_trace_line_that_is_not_bus_traffic_is_declined_and_disclosed() {
+    let v2 = ";$FILEVERSION=2.1\n\
+;$STARTTIME=45000.0\n\
+;$COLUMNS=N,O,T,I,d,L,D\n\
+     1      1000.0  DT     0100  Rx  8  40 01 00 00 12 34 34 12\n\
+     2      1050.0  ST     0000  Rx  4  00 00 00 04\n\
+     3      1100.0  RR     0100  Rx  8  00 00 00 00 00 00 00 00\n";
+    let out = ingest_with_dbc(DBC, "drive.trc", v2.as_bytes());
+    let notes = out
+        .report
+        .unread_sources
+        .iter()
+        .map(|u| u.note.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(notes.contains("adapter's status"), "{notes}");
+    assert!(notes.contains("remote-transmission"), "{notes}");
+    // And the one real frame is still read.
+    assert_eq!(
+        out.dataset.episodes[0]
+            .streams
+            .iter()
+            .find(|s| s.name == "EngineData.EngineSpeed")
+            .map(|s| s.frames.len()),
+        Some(1)
+    );
+}
+
+/// The measurement start puts the frames on the wall clock, as it does for a BLF. Without it every
+/// PCAN-Trace would sit a second past the epoch and read as a recording from 1970.
+#[test]
+fn the_trace_start_time_puts_the_frames_on_the_wall_clock() {
+    let out = ingest_with_dbc(DBC, "drive.trc", TRC_V11.as_bytes());
+    let start = out.dataset.episodes[0].start_ts.expect("a start timestamp");
+    // 45,000 days after 1899-12-30 is 2023-03-15T00:00:00Z; the first frame is 1.0 s past it.
+    const OLE_45000_SECS: i64 = (45_000 - 25_569) * 86_400;
+    assert_eq!(start, (OLE_45000_SECS + 1) * 1_000_000_000);
+}
+
+/// A `.log.gz` is what a fleet's log rotation leaves behind, and it is the same candump text once
+/// unpacked — so it must reach the same verdict as the log it was made from.
+#[test]
+fn a_gzipped_candump_log_reads_as_the_log_it_was_made_from() {
+    use std::io::Write;
+    let plain = {
+        let dir = write_dataset();
+        CanDbcAdapter
+            .ingest(
+                &Source::Local(dir.path().to_path_buf()),
+                &IngestOptions::default(),
+            )
+            .expect("ingest")
+    };
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(LOG.as_bytes()).unwrap();
+    let gzipped = encoder.finish().unwrap();
+    let compressed = ingest_with_dbc(DBC, "drive.log.gz", &gzipped);
+
+    let hash = |out: &veridex_core::adapter::Ingested| {
+        let mut d = out.dataset.clone();
+        d.id = "d".into();
+        d.canonicalize_order();
+        veridex_core::content_hash(&d)
+    };
+    assert_eq!(hash(&plain), hash(&compressed));
 }

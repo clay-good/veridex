@@ -29,6 +29,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 mod blf;
+mod trc;
 
 use sha2::{Digest, Sha256};
 
@@ -499,8 +500,31 @@ impl Adapter for CanDbcAdapter {
         let mut frames: Vec<CanFrame> = Vec::new();
         let mut unreadable_lines = 0u64;
         let mut content_lines = 0u64;
+        let mut trc_unread: Vec<UnmappedField> = Vec::new();
         for log in &log_paths {
-            let text = std::fs::read_to_string(log).map_err(|e| IngestError::Io(e.to_string()))?;
+            let text = read_text(log)?;
+            // Two text formats, told apart by their content rather than their name: a PCAN-Trace
+            // opens with a `;` header block and a candump line never starts with one. Handing a
+            // `.trc` to the candump reader reports "none of these lines parsed" about a log that is
+            // perfectly well formed — it is simply a different format.
+            if trc::looks_like(&text) {
+                let read = trc::read(&text, log);
+                content_lines += read.content_lines;
+                unreadable_lines += read.unparsed;
+                frames.extend(read.frames);
+                let name = log
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("trc log")
+                    .to_string();
+                for (reason, count) in read.skipped {
+                    trc_unread.push(UnmappedField {
+                        source_path: name.clone(),
+                        note: format!("{count} {reason}; they contributed no frames"),
+                    });
+                }
+                continue;
+            }
             for line in text.lines() {
                 // A blank line or a `#` comment is not content and is not a failure.
                 let trimmed = line.trim();
@@ -896,6 +920,7 @@ impl Adapter for CanDbcAdapter {
             });
         }
         unread_sources.extend(blf_unread);
+        unread_sources.extend(trc_unread);
         // A recording beside the ones that were read, in a format this adapter does not decode. Its
         // frames were on the bus and are in no stream, which is the same hole as an undefined id —
         // and the one a caller is least able to notice, because nothing in the verdict would
@@ -974,7 +999,6 @@ fn dir_has_extension(dir: &Path, ext: &str) -> bool {
 /// disclosed as unread coverage. The list is *recordings*, not every unread file: a README beside
 /// the data is not data, and filing it here would make every honest directory report a hole.
 const UNDECODED_LOGS: &[(&str, &str)] = &[
-    ("trc", "a PEAK PCAN-Trace log"),
     (
         "mf4",
         "an ASAM MDF file (Veridex reads these, through its MDF4 adapter, not this one)",
@@ -983,8 +1007,6 @@ const UNDECODED_LOGS: &[(&str, &str)] = &[
         "mdf",
         "an ASAM MDF file (Veridex reads these, through its MDF4 adapter, not this one)",
     ),
-    ("log.gz", "a gzip-compressed candump log"),
-    ("asc.gz", "a gzip-compressed candump log"),
 ];
 
 /// What kind of CAN recording `name` is, when it is one this adapter cannot decode.
@@ -1001,6 +1023,21 @@ fn undecoded_log_kind(name: &str) -> Option<&'static str> {
                 .is_some_and(|stem| stem.ends_with('.') && stem.len() > 1)
         })
         .map(|(_, kind)| *kind)
+}
+
+/// Read a text log, decompressing it when an archive step gzipped it.
+///
+/// A `.log.gz` is what a fleet's log rotation leaves behind, and it is the same candump text once
+/// unpacked. Decided on the gzip magic rather than the name, like every other dispatch here.
+fn read_text(path: &Path) -> Result<String, IngestError> {
+    let bytes = std::fs::read(path).map_err(|e| IngestError::Io(e.to_string()))?;
+    if bytes.starts_with(&[0x1f, 0x8b]) {
+        let mut out = String::new();
+        std::io::Read::read_to_string(&mut flate2::read::GzDecoder::new(&bytes[..]), &mut out)
+            .map_err(|e| IngestError::Io(e.to_string()))?;
+        return Ok(out);
+    }
+    String::from_utf8(bytes).map_err(|e| IngestError::Io(e.to_string()))
 }
 
 /// Locate the single `.dbc` and the CAN log files (`.log` / `.asc`) in `dir`, along with the CAN
@@ -1031,7 +1068,11 @@ fn find_inputs(dir: &Path) -> Result<Inputs, IngestError> {
             Some(e)
                 if e.eq_ignore_ascii_case("log")
                     || e.eq_ignore_ascii_case("asc")
-                    || e.eq_ignore_ascii_case("blf") =>
+                    || e.eq_ignore_ascii_case("blf")
+                    || e.eq_ignore_ascii_case("trc")
+                    // A `.log.gz` is a candump log an archive step compressed; the extension the
+                    // path ends in is `gz`, and what it holds is decided after decompression.
+                    || e.eq_ignore_ascii_case("gz") =>
             {
                 logs.push(path)
             }
@@ -1051,7 +1092,9 @@ fn find_inputs(dir: &Path) -> Result<Inputs, IngestError> {
     if logs.is_empty() {
         return Err(IngestError::Parse {
             format_id: "candbc",
-            message: "no CAN log (.log/.asc/.blf) found alongside the .dbc".into(),
+            message:
+                "no CAN log (.log/.asc/.blf/.trc, optionally gzipped) found alongside the .dbc"
+                    .into(),
         });
     }
     logs.sort();

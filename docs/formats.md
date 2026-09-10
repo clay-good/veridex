@@ -606,6 +606,19 @@ classic frame and no answer at all beyond one. Every signal an FD database place
 the entire reason the bus carries 64 bytes — decoded to nothing, and a signal that decodes from no
 frame has no stream, so nothing in the verdict said it was missing.
 
+**PCAN-Trace and gzipped logs are read too.** A PEAK `.trc` is what PCAN-View and the PEAK driver
+stack write, and a `.log.gz` is what a fleet's log rotation leaves behind. Both are read now, so
+the four ways a team is likely to hold CAN — candump text, Vector BLF, PCAN-Trace, and any of them
+gzipped — reach the same signals.
+
+Five `.trc` layouts are in the wild and all are handled: versions 1.0, 1.1 and 1.3 put their
+fields in fixed columns, while 2.0 and 2.1 declare their own order in a `;$COLUMNS=` line and are
+read from that rather than from an assumed position. The `;$STARTTIME=` OLE automation date is
+read too, so a trace lands on the same wall clock a candump log does. A trace records more than
+bus traffic — bus load, error frames, adapter status — and those lines are **declined and
+disclosed** rather than pushed through the DBC, as are remote frames, which request data and carry
+none.
+
 **A recording this reader cannot decode is not an absent one.** Most automotive CAN is logged in
 binary, and a session recorded with more than one tool leaves a PEAK `.trc`, an ASAM `.mf4`, or a
 gzipped candump beside the logs Veridex reads. It **names each of those as unread coverage**, so a
