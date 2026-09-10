@@ -10,6 +10,28 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A Vector BLF is read, so the format most vehicle CAN is recorded in is checkable.** Veridex read
+  CAN only as candump ASCII — what `can-utils` writes on Linux — and almost no vehicle data is
+  logged that way: CANoe, CANalyzer, CANape and every Vector interface write **BLF**. A `.blf`
+  beside its `.dbc` ingested to nothing at all: "no CAN log found alongside the .dbc", no report and
+  no score, for the most common CAN recording in the world.
+
+  Both kinds of log are read now, and a directory holding both is one recording — the frames merge
+  and every existing signal decode, statistic, declared-range check and ECU provenance extraction
+  applies to a BLF unchanged. Which reader a log gets is decided by its first bytes rather than its
+  extension, so a BLF saved as `.log` is still read as one.
+
+  Held to the same untrusted-input discipline as the other readers: every declared length is
+  validated against the bytes that remain, the walk is iterative, an object split across two
+  containers is reassembled rather than dropped, and a container is charged to the run's
+  decompression budget **on its declaration** — a reader that inflates first and checks afterwards
+  has already spent the memory it was protecting.
+
+  What a BLF holds and this reader does not decode is named rather than skipped: CAN-FD frames,
+  unknown object types, an unknown container compression, and remote-transmission frames. An RTR
+  frame requests data and carries none, so decoding signals out of its eight bytes would put a run
+  of fabricated zeros into the streams the checks then grade.
+
 - **A CAN recording this reader cannot decode is disclosed, not dropped.** The CAN+DBC adapter reads
   candump ASCII logs, and most automotive CAN is logged in binary: a session recorded with two tools
   leaves a Vector `.blf`, a PEAK `.trc`, an ASAM `.mf4`, or a gzipped candump beside the `.log`.

@@ -1,9 +1,13 @@
 //! CAN + DBC adapter: decode raw CAN-bus frames into named signal streams using a DBC database.
 //!
 //! A CAN log on its own is opaque bytes; the DBC is the signal database that gives those bytes
-//! meaning. This adapter ingests a **directory** holding exactly one `.dbc` and one or more candump
-//! ASCII logs (`.log` / `.asc`), decodes each frame's signals per the DBC, and emits one CDM
-//! [`Stream`] per signal (`Modality::CanSignal`). The fidelity signal the ingestion spec asks for is
+//! meaning. This adapter ingests a **directory** holding exactly one `.dbc` and one or more CAN
+//! logs — candump ASCII (`.log` / `.asc`) or Vector BLF (`.blf`, the binary format CANoe and every
+//! Vector interface write) — decodes each frame's signals per the DBC, and emits
+//! one CDM [`Stream`] per signal (`Modality::CanSignal`). Which reader a log gets is decided by its
+//! first bytes rather than its name, so a BLF saved as `.log` is still read as a BLF.
+//!
+//! The fidelity signal the ingestion spec asks for is
 //! surfaced: **DBC-coverage gaps** — CAN ids seen in the log with no DBC definition, and log lines
 //! that are not candump frames — reported in [`IngestReport::unread_sources`], because both are
 //! traffic that was on the bus and went into no stream. That is a hole in the run's *coverage*, not
@@ -23,6 +27,8 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+
+mod blf;
 
 use sha2::{Digest, Sha256};
 
@@ -411,6 +417,7 @@ impl Adapter for CanDbcAdapter {
         let Inputs {
             dbc: dbc_path,
             logs: log_paths,
+            blf: blf_paths,
             undecoded: undecoded_logs,
         } = find_inputs(dir)?;
         let dbc_text =
@@ -440,6 +447,45 @@ impl Adapter for CanDbcAdapter {
                     None => unreadable_lines += 1,
                 }
             }
+        }
+        // The BLF logs, read into the same frame list: a directory holding both kinds is one
+        // recording, and every signal decode, statistic and range check downstream is the same.
+        let mut blf_unread: Vec<UnmappedField> = Vec::new();
+        let mut blf_frames = 0usize;
+        for log in &blf_paths {
+            let read = blf::read(log, options).map_err(|message| IngestError::Parse {
+                format_id: "candbc",
+                message: format!(
+                    "{}: {message}",
+                    log.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("blf log")
+                ),
+            })?;
+            blf_frames += read.frames.len();
+            frames.extend(read.frames);
+            blf_unread.extend(read.unread);
+        }
+        // A BLF that yielded no CAN traffic at all is disclosed rather than passed over. Read in
+        // silence it is indistinguishable from a bus that was quiet, and a run over nothing is the
+        // one result this project refuses to let look like a clean one.
+        if blf_frames == 0 && !blf_paths.is_empty() {
+            blf_unread.push(UnmappedField {
+                source_path: format!("{} BLF log(s)", blf_paths.len()),
+                note: "held no CAN message this reader could decode, so none of their traffic is \
+                       in any stream"
+                    .into(),
+            });
+        }
+        if frames.is_empty() && !blf_paths.is_empty() && content_lines == 0 {
+            return Err(IngestError::Parse {
+                format_id: "candbc",
+                message: format!(
+                    "none of the {} BLF log(s) beside the .dbc hold a CAN message this reader can \
+                     decode; there is no bus traffic here to check",
+                    blf_paths.len()
+                ),
+            });
         }
         if content_lines > 0 && unreadable_lines == content_lines {
             return Err(IngestError::Parse {
@@ -782,6 +828,7 @@ impl Adapter for CanDbcAdapter {
                     .into(),
             });
         }
+        unread_sources.extend(blf_unread);
         // A recording beside the ones that were read, in a format this adapter does not decode. Its
         // frames were on the bus and are in no stream, which is the same hole as an undefined id —
         // and the one a caller is least able to notice, because nothing in the verdict would
@@ -860,7 +907,6 @@ fn dir_has_extension(dir: &Path, ext: &str) -> bool {
 /// disclosed as unread coverage. The list is *recordings*, not every unread file: a README beside
 /// the data is not data, and filing it here would make every honest directory report a hole.
 const UNDECODED_LOGS: &[(&str, &str)] = &[
-    ("blf", "a Vector BLF binary log"),
     ("trc", "a PEAK PCAN-Trace log"),
     (
         "mf4",
@@ -915,7 +961,11 @@ fn find_inputs(dir: &Path) -> Result<Inputs, IngestError> {
                 }
                 dbc = Some(path);
             }
-            Some(e) if e.eq_ignore_ascii_case("log") || e.eq_ignore_ascii_case("asc") => {
+            Some(e)
+                if e.eq_ignore_ascii_case("log")
+                    || e.eq_ignore_ascii_case("asc")
+                    || e.eq_ignore_ascii_case("blf") =>
+            {
                 logs.push(path)
             }
             _ => {
@@ -934,14 +984,20 @@ fn find_inputs(dir: &Path) -> Result<Inputs, IngestError> {
     if logs.is_empty() {
         return Err(IngestError::Parse {
             format_id: "candbc",
-            message: "no CAN log (.log/.asc) found alongside the .dbc".into(),
+            message: "no CAN log (.log/.asc/.blf) found alongside the .dbc".into(),
         });
     }
     logs.sort();
+    // Which reader each log gets is decided by its first bytes, not its name: a BLF saved with a
+    // `.log` extension is still a BLF, and a text candump named `.blf` is still text. Deciding on
+    // the extension would hand one to the wrong reader, which for the text reader means "none of
+    // these lines parsed" about a file that is not text at all.
+    let (blf, logs): (Vec<_>, Vec<_>) = logs.into_iter().partition(|p| blf::is_blf(p));
     undecoded.sort();
     Ok(Inputs {
         dbc,
         logs,
+        blf,
         undecoded,
     })
 }
@@ -952,6 +1008,8 @@ struct Inputs {
     dbc: std::path::PathBuf,
     /// The candump logs to read, in a deterministic order.
     logs: Vec<std::path::PathBuf>,
+    /// The Vector BLF logs to read, in the same order.
+    blf: Vec<std::path::PathBuf>,
     /// CAN recordings beside them this adapter cannot decode, as `(file name, what it is)`.
     undecoded: Vec<(String, &'static str)>,
 }

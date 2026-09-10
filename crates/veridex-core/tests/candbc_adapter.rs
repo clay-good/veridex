@@ -835,8 +835,8 @@ fn a_signal_carried_by_every_frame_is_not_reported_as_short() {
 #[test]
 fn a_can_log_in_a_format_this_reader_does_not_decode_is_disclosed_not_dropped() {
     let dir = write_dataset();
-    fs::write(dir.path().join("chassis.blf"), b"LOGG not really a blf").unwrap();
     fs::write(dir.path().join("body.trc"), b";$FILEVERSION=2.0").unwrap();
+    fs::write(dir.path().join("chassis.mf4"), b"MDF     ").unwrap();
     // A note beside the data is not data: disclosing it would make every honest directory report a
     // coverage hole.
     fs::write(dir.path().join("README.md"), "recorded 2026-09-09").unwrap();
@@ -854,8 +854,8 @@ fn a_can_log_in_a_format_this_reader_does_not_decode_is_disclosed_not_dropped() 
         .map(|u| format!("{} {}", u.source_path, u.note))
         .collect();
     let joined = unread.join("\n");
-    assert!(joined.contains("chassis.blf"), "{joined}");
     assert!(joined.contains("body.trc"), "{joined}");
+    assert!(joined.contains("chassis.mf4"), "{joined}");
     assert!(!joined.contains("README"), "{joined}");
 }
 
@@ -864,7 +864,7 @@ fn a_can_log_in_a_format_this_reader_does_not_decode_is_disclosed_not_dropped() 
 #[test]
 fn an_undecoded_can_log_raises_the_coverage_warning() {
     let dir = write_dataset();
-    fs::write(dir.path().join("chassis.blf"), b"LOGG").unwrap();
+    fs::write(dir.path().join("body.trc"), b";$FILEVERSION=2.0").unwrap();
     let outcome = veridex_core::pipeline::run_check(
         &veridex_core::default_registry(),
         &Source::Local(dir.path().to_path_buf()),
@@ -879,9 +879,438 @@ fn an_undecoded_can_log_raises_the_coverage_warning() {
         .find(|f| f.code == "COVERAGE.SOURCE_UNREAD")
         .expect("an undecoded log surfaces as a coverage finding");
     assert_eq!(finding.severity, veridex_core::check::Severity::Warning);
+    assert!(finding.message.contains("body.trc"), "{}", finding.message);
+}
+
+// ---- Vector BLF ---------------------------------------------------------------------------------
+//
+// The BLFs here are built byte by byte to the layout the format actually specifies — object headers,
+// the four-byte object alignment, the container's own header, and the flag that picks the timestamp
+// unit — rather than to whatever this crate's reader happens to expect. A fixture written to the
+// reader's own conventions agrees with itself whatever those conventions are, and proves nothing.
+
+/// The measurement start every fixture declares: 2026-01-02 03:04:05.006 UTC.
+const BLF_START: (u16, u16, u16, u16, u16, u16, u16, u16) = (2026, 1, 5, 2, 3, 4, 5, 6);
+/// The same instant in seconds from the Unix epoch, computed independently of the reader.
+const BLF_START_SECS: i64 = 1_767_323_045;
+
+fn le16(v: u16) -> [u8; 2] {
+    v.to_le_bytes()
+}
+fn le32(v: u32) -> [u8; 4] {
+    v.to_le_bytes()
+}
+
+/// The BLF file header: `LOGG`, its own size, then the fields up to the measurement start time.
+fn blf_file_header() -> Vec<u8> {
+    let mut h = Vec::new();
+    h.extend_from_slice(b"LOGG");
+    h.extend_from_slice(&le32(144)); // header size, as a real writer states it
+    h.extend_from_slice(&[0u8; 8]); // application and version bytes
+    h.extend_from_slice(&0u64.to_le_bytes()); // file size
+    h.extend_from_slice(&0u64.to_le_bytes()); // uncompressed size
+    h.extend_from_slice(&le32(0)); // object count
+    h.extend_from_slice(&le32(0)); // objects read
+    let (y, mo, dow, d, hh, mm, ss, ms) = BLF_START;
+    for part in [y, mo, dow, d, hh, mm, ss, ms] {
+        h.extend_from_slice(&le16(part));
+    }
+    h.extend_from_slice(&[0u8; 16]); // measurement stop time
+    h.resize(144, 0);
+    h
+}
+
+/// One object: the sixteen-byte base header, the version-1 object header, then `payload`, padded to
+/// the four-byte boundary the next object starts on.
+fn blf_object(kind: u32, ts_ns: u64, payload: &[u8]) -> Vec<u8> {
+    let header_size = 32u16;
+    let size = header_size as u32 + payload.len() as u32;
+    let mut o = Vec::new();
+    o.extend_from_slice(b"LOBJ");
+    o.extend_from_slice(&le16(header_size));
+    o.extend_from_slice(&le16(1)); // header version
+    o.extend_from_slice(&le32(size));
+    o.extend_from_slice(&le32(kind));
+    o.extend_from_slice(&le32(2)); // flags: TIME_ONE_NANS
+    o.extend_from_slice(&le16(0)); // client index
+    o.extend_from_slice(&le16(0)); // object version
+    o.extend_from_slice(&ts_ns.to_le_bytes());
+    o.extend_from_slice(payload);
+    while o.len() % 4 != 0 {
+        o.push(0);
+    }
+    o
+}
+
+/// A `CAN_MESSAGE` payload: channel, flags, DLC, arbitration id, eight data bytes.
+fn blf_can_payload(channel: u16, flags: u8, id: u32, data: &[u8]) -> Vec<u8> {
+    let mut p = Vec::new();
+    p.extend_from_slice(&le16(channel));
+    p.push(flags);
+    p.push(data.len() as u8);
+    p.extend_from_slice(&le32(id));
+    let mut eight = [0u8; 8];
+    eight[..data.len()].copy_from_slice(data);
+    p.extend_from_slice(&eight);
+    p
+}
+
+/// Wrap a run of object bytes in one `LOG_CONTAINER`, compressed or not.
+fn blf_container(objects: &[u8], compressed: bool) -> Vec<u8> {
+    let (method, payload) = if compressed {
+        use std::io::Write;
+        let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(objects).unwrap();
+        (2u16, enc.finish().unwrap())
+    } else {
+        (0u16, objects.to_vec())
+    };
+    let mut body = Vec::new();
+    body.extend_from_slice(&le16(method));
+    body.extend_from_slice(&[0u8; 6]); // reserved
+    body.extend_from_slice(&le32(objects.len() as u32)); // uncompressed size
+    body.extend_from_slice(&[0u8; 4]); // reserved
+    body.extend_from_slice(&payload);
+
+    let mut o = Vec::new();
+    o.extend_from_slice(b"LOBJ");
+    o.extend_from_slice(&le16(16)); // header size: a container carries the base header only
+    o.extend_from_slice(&le16(1));
+    o.extend_from_slice(&le32(16 + body.len() as u32));
+    o.extend_from_slice(&le32(10)); // LOG_CONTAINER
+    o.extend_from_slice(&body);
+    while o.len() % 4 != 0 {
+        o.push(0);
+    }
+    o
+}
+
+/// The three frames `LOG` carries, as BLF objects on channel 1.
+fn blf_frame_objects() -> Vec<Vec<u8>> {
+    vec![
+        blf_object(
+            1,
+            0,
+            &blf_can_payload(
+                1,
+                0,
+                0x100,
+                &[0x40, 0x01, 0x00, 0x00, 0x12, 0x34, 0x34, 0x12],
+            ),
+        ),
+        blf_object(
+            1,
+            100_000_000,
+            &blf_can_payload(
+                1,
+                0,
+                0x100,
+                &[0x80, 0x02, 0x00, 0x00, 0xAB, 0xCD, 0xCD, 0xAB],
+            ),
+        ),
+        blf_object(
+            1,
+            200_000_000,
+            &blf_can_payload(1, 0, 0x200, &[0xDE, 0xAD, 0xBE, 0xEF]),
+        ),
+    ]
+}
+
+/// A whole BLF holding those frames, laid out per `plan`.
+fn build_blf(objects: Vec<Vec<u8>>, containers: BlfLayout) -> Vec<u8> {
+    let mut out = blf_file_header();
+    match containers {
+        BlfLayout::Bare => {
+            for o in objects {
+                out.extend_from_slice(&o);
+            }
+        }
+        BlfLayout::OneContainer { compressed } => {
+            let flat: Vec<u8> = objects.concat();
+            out.extend_from_slice(&blf_container(&flat, compressed));
+        }
+        BlfLayout::SplitObject => {
+            // Cut the byte stream mid-object, so one frame's bytes end in one container and continue
+            // in the next — what a real writer does whenever an object lands on a container edge.
+            let flat: Vec<u8> = objects.concat();
+            let cut = flat.len() / 2;
+            out.extend_from_slice(&blf_container(&flat[..cut], true));
+            out.extend_from_slice(&blf_container(&flat[cut..], true));
+        }
+    }
+    out
+}
+
+#[derive(Clone, Copy)]
+enum BlfLayout {
+    /// Objects written straight into the file, no container.
+    Bare,
+    OneContainer {
+        compressed: bool,
+    },
+    SplitObject,
+}
+
+fn ingest_blf(bytes: &[u8]) -> veridex_core::adapter::Ingested {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("vehicle.dbc"), DBC).unwrap();
+    fs::write(dir.path().join("drive.blf"), bytes).unwrap();
+    CanDbcAdapter
+        .ingest(
+            &Source::Local(dir.path().to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest")
+}
+
+/// A `.blf` beside a `.dbc` is a dataset, not a refusal.
+///
+/// Almost no vehicle CAN is logged as candump text — CANoe, CANalyzer and every Vector interface
+/// write BLF — so before this reader existed, the most common CAN recording in the world ingested to
+/// nothing at all: "no CAN log found alongside the .dbc", no report, no score.
+#[test]
+fn a_blf_log_is_read_into_the_same_signals_a_candump_is() {
+    let out = ingest_blf(&build_blf(
+        blf_frame_objects(),
+        BlfLayout::OneContainer { compressed: true },
+    ));
+    let names: Vec<&str> = out.dataset.episodes[0]
+        .streams
+        .iter()
+        .map(|s| s.name.as_str())
+        .collect();
+    assert!(names.contains(&"EngineData.EngineSpeed"), "{names:?}");
+    let speed = out.dataset.episodes[0]
+        .streams
+        .iter()
+        .find(|s| s.name == "EngineData.EngineSpeed")
+        .unwrap();
+    assert_eq!(speed.frames.len(), 2);
+    assert_eq!(speed.modality, Modality::CanSignal);
+}
+
+/// The same traffic, written both ways, must reach the same verdict — which is the whole claim a
+/// cross-format verifier makes, applied to the two formats one bus is logged in.
+#[test]
+fn the_same_traffic_as_candump_and_as_blf_decodes_to_the_same_values() {
+    let text_dir = write_dataset();
+    let from_text = CanDbcAdapter
+        .ingest(
+            &Source::Local(text_dir.path().to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest");
+    let from_blf = ingest_blf(&build_blf(
+        blf_frame_objects(),
+        BlfLayout::OneContainer { compressed: true },
+    ));
+
+    let values = |out: &veridex_core::adapter::Ingested| -> Vec<(String, Vec<_>)> {
+        out.dataset.episodes[0]
+            .streams
+            .iter()
+            .map(|s| {
+                (
+                    s.name.clone(),
+                    s.frames.iter().map(|f| f.value_ref.content_hash).collect(),
+                )
+            })
+            .collect()
+    };
+    // The decoded values are fingerprinted into the CDM, so equal fingerprints are equal values —
+    // asserted rather than eyeballed, and across every signal at once.
+    assert_eq!(values(&from_text), values(&from_blf));
+}
+
+/// A BLF is a stream of objects, and a container boundary falls wherever the writer's buffer filled
+/// — routinely in the middle of one. Parsing each container on its own drops that object.
+#[test]
+fn an_object_split_across_two_containers_is_reassembled() {
+    let whole = ingest_blf(&build_blf(
+        blf_frame_objects(),
+        BlfLayout::OneContainer { compressed: true },
+    ));
+    let split = ingest_blf(&build_blf(blf_frame_objects(), BlfLayout::SplitObject));
+    let count = |o: &veridex_core::adapter::Ingested| {
+        o.dataset.episodes[0]
+            .streams
+            .iter()
+            .map(|s| s.frames.len())
+            .sum::<usize>()
+    };
+    assert_eq!(count(&whole), count(&split));
+    assert!(count(&split) > 0);
+}
+
+/// An uncompressed container and bare objects are both what a writer emits with compression off.
+#[test]
+fn an_uncompressed_blf_reads_the_same_as_a_compressed_one() {
+    let compressed = ingest_blf(&build_blf(
+        blf_frame_objects(),
+        BlfLayout::OneContainer { compressed: true },
+    ));
+    let plain = ingest_blf(&build_blf(
+        blf_frame_objects(),
+        BlfLayout::OneContainer { compressed: false },
+    ));
+    let bare = ingest_blf(&build_blf(blf_frame_objects(), BlfLayout::Bare));
+    let hash = |o: &veridex_core::adapter::Ingested| {
+        let mut d = o.dataset.clone();
+        d.id = "d".into();
+        d.canonicalize_order();
+        veridex_core::content_hash(&d)
+    };
+    assert_eq!(hash(&compressed), hash(&plain));
+    assert_eq!(hash(&compressed), hash(&bare));
+}
+
+/// The measurement start is part of the recording's time base: without it every BLF would sit at
+/// nanosecond zero, and a BLF read beside a candump log would claim the two happened decades apart.
+#[test]
+fn the_measurement_start_time_puts_the_frames_on_the_wall_clock() {
+    let out = ingest_blf(&build_blf(blf_frame_objects(), BlfLayout::Bare));
+    let start = out.dataset.episodes[0].start_ts.expect("a start timestamp");
+    assert_eq!(start, BLF_START_SECS * 1_000_000_000 + 6_000_000);
+}
+
+/// A remote frame requests data and carries none. Its eight payload bytes are not a payload, and
+/// decoding signals out of them puts a run of fabricated zeros into the streams the checks grade.
+#[test]
+fn a_remote_frame_yields_no_samples_and_is_disclosed() {
+    let mut objects = blf_frame_objects();
+    objects.push(blf_object(
+        1,
+        300_000_000,
+        &blf_can_payload(1, 0x80, 0x100, &[0, 0, 0, 0, 0, 0, 0, 0]),
+    ));
+    let out = ingest_blf(&build_blf(objects, BlfLayout::Bare));
+    let speed = out.dataset.episodes[0]
+        .streams
+        .iter()
+        .find(|s| s.name == "EngineData.EngineSpeed")
+        .unwrap();
+    // Still the two real frames: the remote frame contributed no sample.
+    assert_eq!(speed.frames.len(), 2);
+    let notes = out
+        .report
+        .unread_sources
+        .iter()
+        .map(|u| u.note.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(notes.contains("remote-transmission"), "{notes}");
+}
+
+/// A CAN-FD object is traffic this reader does not decode. Skipped in silence it would leave a
+/// verdict describing the classic frames as though they were the whole bus.
+#[test]
+fn a_can_fd_object_is_disclosed_rather_than_skipped() {
+    let mut objects = blf_frame_objects();
+    objects.push(blf_object(100, 400_000_000, &[0u8; 64]));
+    let out = ingest_blf(&build_blf(objects, BlfLayout::Bare));
+    let notes = out
+        .report
+        .unread_sources
+        .iter()
+        .map(|u| u.note.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(notes.contains("CAN-FD"), "{notes}");
+}
+
+/// Every prefix of a BLF is a file an interrupted transfer leaves behind, and every one must yield a
+/// result or a reason — never a panic, and never frames invented out of a truncation.
+#[test]
+fn a_truncated_blf_never_panics() {
+    let whole = build_blf(
+        blf_frame_objects(),
+        BlfLayout::OneContainer { compressed: true },
+    );
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("vehicle.dbc"), DBC).unwrap();
+    for cut in 1..whole.len() {
+        fs::write(dir.path().join("drive.blf"), &whole[..cut]).unwrap();
+        let _ = CanDbcAdapter.ingest(
+            &Source::Local(dir.path().to_path_buf()),
+            &IngestOptions::default(),
+        );
+    }
+}
+
+/// A byte flipped anywhere is the shape a corrupted download takes, and this reader is pointed at
+/// untrusted files: the only acceptable answers are a dataset and a reason.
+#[test]
+fn a_bit_flipped_blf_never_panics() {
+    let whole = build_blf(blf_frame_objects(), BlfLayout::Bare);
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("vehicle.dbc"), DBC).unwrap();
+    for byte in 0..whole.len() {
+        for bit in [0x01u8, 0x40, 0x80] {
+            let mut bytes = whole.clone();
+            bytes[byte] ^= bit;
+            fs::write(dir.path().join("drive.blf"), &bytes).unwrap();
+            let _ = CanDbcAdapter.ingest(
+                &Source::Local(dir.path().to_path_buf()),
+                &IngestOptions::default(),
+            );
+        }
+    }
+}
+
+/// A container that declares an expansion past this run's budget must be refused **on the
+/// declaration**, before a byte of it is unpacked: a reader that decompresses first and checks
+/// afterwards has already spent the memory it was protecting.
+#[test]
+fn a_container_declaring_more_than_the_budget_is_refused_before_it_is_unpacked() {
+    use std::io::Write;
+    // A tiny, perfectly valid zlib stream behind a declaration of 65 MiB. If the budget is consulted
+    // first, nothing here is ever inflated; if it is not, the declaration is what would have been
+    // allocated.
+    let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    enc.write_all(b"not really 65 MiB").unwrap();
+    let payload = enc.finish().unwrap();
+    let mut body = Vec::new();
+    body.extend_from_slice(&le16(2));
+    body.extend_from_slice(&[0u8; 6]);
+    body.extend_from_slice(&le32(65 * 1024 * 1024));
+    body.extend_from_slice(&[0u8; 4]);
+    body.extend_from_slice(&payload);
+    let mut container = Vec::new();
+    container.extend_from_slice(b"LOBJ");
+    container.extend_from_slice(&le16(16));
+    container.extend_from_slice(&le16(1));
+    container.extend_from_slice(&le32(16 + body.len() as u32));
+    container.extend_from_slice(&le32(10));
+    container.extend_from_slice(&body);
+    while container.len() % 4 != 0 {
+        container.push(0);
+    }
+
+    let mut bytes = blf_file_header();
+    bytes.extend_from_slice(&container);
+    // Real frames after it, so the run has something to report either way and the refusal is shown
+    // to stop at the one container rather than at the file.
+    for o in blf_frame_objects() {
+        bytes.extend_from_slice(&o);
+    }
+    let out = ingest_blf(&bytes);
+    let notes = out
+        .report
+        .unread_sources
+        .iter()
+        .map(|u| u.note.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(notes.contains("decompression budget"), "{notes}");
+    // The frames beside the refused container are still read: a budget refuses a container, not the
+    // recording.
+    let decoded: usize = out.dataset.episodes[0]
+        .streams
+        .iter()
+        .map(|s| s.frames.len())
+        .sum();
     assert!(
-        finding.message.contains("chassis.blf"),
-        "{}",
-        finding.message
+        decoded > 0,
+        "the frames after the refused container were lost"
     );
 }

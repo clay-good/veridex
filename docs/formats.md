@@ -560,11 +560,31 @@ unread and raise a warning:
 #       for the part that was
 ```
 
+**Vector BLF is read, not only candump.** Almost no vehicle CAN is logged as candump text: CANoe,
+CANalyzer, CANape and every Vector interface write **BLF**, and a `.blf` beside a `.dbc` used to
+ingest to nothing at all — "no CAN log found alongside the .dbc", no report, no score. Both kinds of
+log are read now, and a directory holding both is **one recording**: the frames merge, sort by
+timestamp, and every signal decode, statistic, declared-range check and ECU provenance extraction
+below applies to a BLF unchanged.
+
+Which reader a log gets is decided by its **first bytes**, not its extension, so a BLF saved as
+`.log` is still read as a BLF. Compressed and uncompressed containers both read, an object split
+across two containers is reassembled rather than dropped, and a container declaring an expansion
+past the run's decompression budget is refused **on the declaration**, before a byte of it is
+unpacked. A BLF names its bus by channel number, so its streams are keyed `channel1:` where a
+candump log's are keyed `can0:` — the file does not say which Linux interface a Vector channel is,
+and inventing the correspondence would merge two buses that nothing says are the same one.
+
+What a BLF holds and this reader does not decode is named rather than skipped: CAN-FD frames,
+object types it does not know, a container in an unknown compression, and **remote-transmission
+frames** — an RTR frame requests data and carries none, so decoding signals out of its eight bytes
+would put a run of fabricated zeros into the streams the checks then grade.
+
 **A recording this reader cannot decode is not an absent one.** Most automotive CAN is logged in
-binary, not candump ASCII, and a session recorded with two tools leaves a Vector `.blf`, a PEAK
-`.trc`, an ASAM `.mf4`, or a gzipped candump beside the `.log`. Veridex decodes the candump logs and
-**names each of the others as unread coverage**, so a verdict built from a fraction of the bus says
-so rather than describing the directory as though it held only what was read. What is deliberately
+binary, and a session recorded with more than one tool leaves a PEAK `.trc`, an ASAM `.mf4`, or a
+gzipped candump beside the logs Veridex reads. It **names each of those as unread coverage**, so a
+verdict built from a fraction of the bus says so rather than describing the directory as though it
+held only what was read. What is deliberately
 *not* named is anything that is not a recording — a README beside the data is not data, and filing
 it here would make every honest directory report a hole.
 
