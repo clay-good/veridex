@@ -203,6 +203,18 @@ fn write_generated(dir: &Path) -> Vec<(String, std::path::PathBuf)> {
         }
     }
 
+    // The same bus recorded as a Vector BLF, which is how vehicle CAN is actually logged: an object
+    // stream inside zlib containers, carrying CAN-FD frames whose payload runs past the eight bytes
+    // a classic frame holds. Everything below — the narrower-read and tightened-threshold
+    // invariants, the renderers, the certificate, the redaction — has only ever been held over the
+    // text reader for CAN, so a defect in the binary one could not be seen here at all.
+    for variant in veridex_demo::candbc::VARIANTS {
+        let path = dir.join(format!("candbc-blf-{variant}"));
+        if veridex_demo::candbc::write(&path, variant).is_ok() {
+            out.push((format!("candbc/blf-{variant}"), path));
+        }
+    }
+
     // A ROS 1 bag, the ninth adapter. Two variants of the demo rig: a healthy seven-topic
     // recording, and the same one with a camera whose transport dropped a fifth of its messages —
     // a loss nothing in the timeline records, and that only a `.bag` carries the evidence of.
@@ -351,6 +363,12 @@ fn fixtures() -> Vec<Generator> {
             veridex_demo::rlds::write,
             None,
         ),
+        (
+            "candbc",
+            veridex_demo::candbc::VARIANTS,
+            veridex_demo::candbc::write,
+            None,
+        ),
     ]
 }
 
@@ -465,6 +483,20 @@ fn every_mf4_variant_emits_what_its_documentation_claims() {
         veridex_demo::mf4::VARIANTS,
         veridex_demo::mf4::write,
         Some("mf4"),
+    );
+}
+
+/// The CAN drive recorded as a BLF, whose `railed-wheel` bullet claims a finding on a signal that
+/// lives past byte eight — so this is also what proves the CAN-FD payload is read to its end rather
+/// than truncated to a classic frame's width.
+#[test]
+fn every_candbc_variant_emits_what_its_documentation_claims() {
+    check_generator(
+        "candbc",
+        "src/candbc.rs",
+        veridex_demo::candbc::VARIANTS,
+        veridex_demo::candbc::write,
+        None,
     );
 }
 

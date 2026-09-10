@@ -608,6 +608,17 @@ held only what was read. What is deliberately
 *not* named is anything that is not a recording — a README beside the data is not data, and filing
 it here would make every honest directory report a hole.
 
+A demo drive is a command away, recorded the way a vehicle actually logs one:
+
+```sh
+# a demo CAN drive as a Vector BLF: 10 s at 100 Hz on channel 1, CAN-FD frames 24 bytes wide in
+# zlib containers, with a `.dbc` beside it. Append `railed-wheel` for a front-left wheel-speed
+# sensor pinned at its rail for seven frames in ten — a signal that lives past byte eight, so it
+# is a finding only a reader that read the whole FD payload can produce.
+cargo run -p veridex-demo --example make_demo_candbc -- /tmp/can-drive
+veridex check /tmp/can-drive
+```
+
 **A database written for the wrong variant is the same gap seen from the other side.** The DBC can
 also define a signal the bus's frames are too short to carry — bits 48–63 of a message whose frames
 arrive four bytes long, which is what happens when the database comes from a different trim of the

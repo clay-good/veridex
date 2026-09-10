@@ -15,6 +15,7 @@
 
 use std::path::Path;
 
+pub mod candbc;
 pub mod lerobot;
 pub mod mcap;
 pub mod mf4;

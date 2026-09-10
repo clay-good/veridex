@@ -10,6 +10,24 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A demo CAN drive, recorded as a Vector BLF — and the sweep's invariants now hold the binary
+  reader too.** Every cross-run property in `variant_findings.rs` — a narrower read invents no
+  finding, a tightened threshold never raises the score, every renderer agrees, the certificate
+  names the run's findings, a redacted report leaks no identifier, every finding points at something
+  the dataset has — was held over the CAN *text* reader only. A defect in the BLF path could not be
+  seen there at all.
+
+  `veridex-demo` gains a `candbc` generator writing a `.dbc` and a `.blf`: ten seconds at 100 Hz
+  on channel 1, CAN-FD frames 24 bytes wide, in zlib containers with one object deliberately
+  straddling a container boundary. Its `railed-wheel` variant pins the front-left wheel-speed
+  sensor at its rail for seven frames in ten — and that signal starts at **bit 96**, so
+  `STATISTICAL.SATURATED` appears only if the reader read past the eight bytes a classic frame
+  holds. The claim is written as a `→` in the module's own documentation, which is what the
+  doc-claim guard reads, so the fixture cannot quietly stop demonstrating it.
+
+  Try it: `cargo run -p veridex-demo --example make_demo_candbc -- /tmp/can-drive railed-wheel`,
+  then `veridex check /tmp/can-drive`.
+
 - **CAN-FD is read, on both kinds of CAN log — and the signal decoder can now see past byte
   eight.** A modern vehicle bus runs FD, and the frames carrying up to 64 bytes are where the
   signals a classic frame had no room for live. `can-utils` writes such a frame as

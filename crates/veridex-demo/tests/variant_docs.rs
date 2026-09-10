@@ -12,7 +12,7 @@
 //! than substituting one, so a name that has drifted is a copied command that fails — which, for a
 //! reader whose first contact with the tool is the quickstart, is the tool not working.
 
-use veridex_demo::{lerobot, mcap, mf4, rlds};
+use veridex_demo::{candbc, lerobot, mcap, mf4, rlds};
 
 const ROOT: &str = env!("CARGO_MANIFEST_DIR");
 
@@ -82,6 +82,12 @@ fn generators() -> Vec<Generator> {
             variants: rlds::VARIANTS,
             module: "src/rlds.rs",
             example: "examples/make_demo_rlds.rs",
+        },
+        Generator {
+            name: "candbc",
+            variants: candbc::VARIANTS,
+            module: "src/candbc.rs",
+            example: "examples/make_demo_candbc.rs",
         },
     ]
 }
@@ -158,6 +164,7 @@ fn the_prose_that_offers_variants_offers_exactly_the_real_ones() {
         ("docs/formats.md", "lerobot", lerobot::VARIANTS),
         ("docs/formats.md", "rlds", rlds::VARIANTS),
         ("docs/formats.md", "mf4", mf4::VARIANTS),
+        ("docs/formats.md", "candbc", candbc::VARIANTS),
     ] {
         let text = std::fs::read_to_string(format!("{ROOT}/../../{page}"))
             .unwrap_or_else(|e| panic!("{page} is readable: {e}"));
