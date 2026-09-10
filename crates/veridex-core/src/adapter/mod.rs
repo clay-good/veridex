@@ -689,6 +689,22 @@ pub trait Adapter: Send + Sync {
     /// responsible for rejecting a recognized-but-unsupported version with
     /// [`IngestError::UnsupportedVersion`].
     fn ingest(&self, source: &Source, options: &IngestOptions) -> Result<Ingested, IngestError>;
+
+    /// What this source **is**, when the adapter recognizes it but cannot ingest it on its own.
+    ///
+    /// Some formats are not a dataset by themselves. A CAN log is opaque bytes without the `.dbc`
+    /// that gives its frames meaning, and a `.dbc` describes a bus while recording none of it — so
+    /// either one alone is a file Veridex knows exactly what to do with and still cannot check.
+    /// `detect` must answer [`Detection::No`] for those, because the adapter genuinely cannot ingest
+    /// them; the cost is that the caller is told "no adapter recognized the source", which is not
+    /// true and does not help.
+    ///
+    /// The hint says what the file is and what it needs beside it. Defaults to `None`: an adapter
+    /// that has nothing to add stays silent, and silence is what every adapter said before this
+    /// existed.
+    fn incomplete_hint(&self, _source: &Source) -> Option<String> {
+        None
+    }
 }
 
 /// A set of adapters, tried in registration order.
@@ -772,6 +788,19 @@ impl AdapterRegistry {
                 candidates: many.iter().map(|a| a.format_id()).collect(),
             }),
         }
+    }
+
+    /// What every adapter can say about a source none of them will ingest.
+    ///
+    /// The counterpart of [`AdapterRegistry::readable_entries`] for a *file*: that one answers "you
+    /// pointed at the folder holding the dataset", this one answers "you pointed at half of one".
+    /// Empty when no adapter recognizes the source at all, which is the case
+    /// `UnsupportedFormat` already describes correctly.
+    pub fn incomplete_hints(&self, source: &Source) -> Vec<String> {
+        self.adapters
+            .iter()
+            .filter_map(|a| a.incomplete_hint(source))
+            .collect()
     }
 
     /// Entries directly inside `dir` that an adapter does recognize, as `(name, format_id)`.

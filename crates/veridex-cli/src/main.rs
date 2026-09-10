@@ -689,6 +689,12 @@ fn report_ingest_error(
     if let (veridex_core::adapter::IngestError::UnsupportedFormat { .. }, Source::Local(path)) =
         (error, source)
     {
+        // A file an adapter recognizes but cannot ingest alone — half of a dataset that takes two
+        // files. The error above says nothing was recognized, which is not true of this file, and a
+        // reader one `mv` away from working should be told which one.
+        for hint in registry.incomplete_hints(source) {
+            eprintln!("       {hint}");
+        }
         if path.is_dir() {
             let readable = registry.readable_entries(path);
             if readable.is_empty() {

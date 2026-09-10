@@ -190,3 +190,75 @@ fn an_ingest_refuses_to_materialize_more_frames_than_its_budget() {
     };
     assert!(McapAdapter.ingest(&source, &opts).is_ok());
 }
+
+// ---- half a dataset ------------------------------------------------------------------------------
+
+/// A CAN dataset is a **pair**, and either half alone is a file Veridex can name but not check.
+///
+/// Pointing at the log is the ordinary first-use mistake — a recorder hands you a `.blf`, and the
+/// database lives somewhere else entirely — and the answer was "no adapter recognized the source",
+/// which is not true of a file whose magic the CAN adapter reads on sight. A reader one `mv` away
+/// from a working command was told to go read a list of nine format names.
+#[test]
+fn a_can_log_without_its_database_is_named_rather_than_called_unrecognized() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("drive.blf");
+    // The file signature alone is what the hint keys on: this is not a readable recording, and the
+    // point is that Veridex still knows what kind of file it is looking at.
+    std::fs::write(&log, b"LOGG").unwrap();
+
+    let hints = veridex_core::default_registry().incomplete_hints(&Source::Local(log));
+    assert_eq!(hints.len(), 1, "{hints:?}");
+    assert!(hints[0].contains("drive.blf"), "{}", hints[0]);
+    assert!(hints[0].contains("Vector BLF"), "{}", hints[0]);
+    // What to do about it, not only what it is.
+    assert!(hints[0].contains(".dbc"), "{}", hints[0]);
+    assert!(hints[0].contains("directory"), "{}", hints[0]);
+}
+
+/// The other half. A `.dbc` describes a bus and records none of it, so it is a database rather than
+/// a dataset — and saying so is more use than a list of formats.
+#[test]
+fn a_database_without_its_log_is_named_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let dbc = dir.path().join("vehicle.dbc");
+    std::fs::write(&dbc, "BO_ 256 EngineData: 8 ECU\n").unwrap();
+
+    let hints = veridex_core::default_registry().incomplete_hints(&Source::Local(dbc));
+    assert_eq!(hints.len(), 1, "{hints:?}");
+    assert!(hints[0].contains("vehicle.dbc"), "{}", hints[0]);
+    assert!(hints[0].contains("signal database"), "{}", hints[0]);
+}
+
+/// And the direction that matters more: a file nothing recognizes gets **no** hint. A hint that
+/// fires on anything is noise on every genuine unsupported-format error, which is the case the
+/// message above is already correct about.
+#[test]
+fn a_file_no_adapter_recognizes_gets_no_hint() {
+    let dir = tempfile::tempdir().unwrap();
+    let odd = dir.path().join("notes.txt");
+    std::fs::write(&odd, "this is not a recording of anything").unwrap();
+    assert!(veridex_core::default_registry()
+        .incomplete_hints(&Source::Local(odd))
+        .is_empty());
+}
+
+/// A complete CAN dataset is a directory, and a directory is never half of one — so the hint stays
+/// silent on the very thing it is telling the caller to build.
+#[test]
+fn a_complete_dataset_directory_gets_no_hint() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("vehicle.dbc"),
+        "BO_ 256 EngineData: 8 ECU\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("drive.log"),
+        "(1.0) can0 100#0000000000000000\n",
+    )
+    .unwrap();
+    assert!(veridex_core::default_registry()
+        .incomplete_hints(&Source::Local(dir.path().to_path_buf()))
+        .is_empty());
+}

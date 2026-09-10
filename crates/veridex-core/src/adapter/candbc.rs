@@ -433,6 +433,44 @@ impl Adapter for CanDbcAdapter {
         false
     }
 
+    /// A CAN dataset is a **pair**, and either half alone is a file this adapter can name but not
+    /// check. Pointing at one is an ordinary first-use mistake — a log is what a recorder hands you,
+    /// and the database lives somewhere else entirely — so it is answered with what the file is and
+    /// what it needs beside it, rather than with "no adapter recognized the source".
+    fn incomplete_hint(&self, source: &Source) -> Option<String> {
+        let Source::Local(path) = source else {
+            return None;
+        };
+        if !path.is_file() {
+            return None;
+        }
+        let extension = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase());
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("it");
+        if blf::is_blf(path) {
+            return Some(format!(
+                "`{name}` is a Vector BLF CAN log. A CAN log is opaque bytes without the \
+                 `.dbc` that gives its frames meaning, so put the two in one directory and \
+                 point Veridex at the directory."
+            ));
+        }
+        match extension.as_deref() {
+            Some("dbc") => Some(format!(
+                "`{name}` is a DBC signal database. It describes a bus and records none of it, so \
+                 put it in a directory beside the log(s) it describes and point Veridex at \
+                 the directory."
+            )),
+            Some("log") | Some("asc") => Some(format!(
+                "`{name}` may be a candump CAN log. A CAN log is opaque bytes without the `.dbc` \
+                 that gives its frames meaning, so put the two in one directory and point \
+                 Veridex at the directory."
+            )),
+            _ => None,
+        }
+    }
+
     fn ingest(&self, source: &Source, options: &IngestOptions) -> Result<Ingested, IngestError> {
         // A CAN log becomes one episode, so there is nothing to sample along.
         let Source::Local(dir) = source else {

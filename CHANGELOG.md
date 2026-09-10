@@ -10,6 +10,19 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **Half a CAN dataset is named, not called unrecognized.** A CAN dataset is a pair: the log and
+  the `.dbc` that gives its frames meaning. Point Veridex at either one alone — the ordinary
+  first-use mistake, since a recorder hands you the log and the database lives somewhere else — and
+  the answer was "no adapter recognized the source", followed by a list of nine format names. That
+  is not true of a `.blf`, whose signature the CAN adapter reads on sight, and it does not help.
+
+  Such a file is now named for what it is and what it needs beside it: a Vector BLF log, a candump
+  log, or a DBC signal database that "describes a bus and records none of it". Adapters answer
+  through a new `Adapter::incomplete_hint`, which defaults to silence — so this is the
+  counterpart, for a *file*, of the hint a directory already gets when it holds a dataset rather
+  than being one. A file nothing recognizes still gets no hint, which is the case the original
+  message was already right about.
+
 - **A demo CAN drive, recorded as a Vector BLF — and the sweep's invariants now hold the binary
   reader too.** Every cross-run property in `variant_findings.rs` — a narrower read invents no
   finding, a tightened threshold never raises the score, every renderer agrees, the certificate
