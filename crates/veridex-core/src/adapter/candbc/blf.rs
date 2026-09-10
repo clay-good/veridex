@@ -2,8 +2,9 @@
 //! write, and the one most vehicle traffic is actually recorded in.
 //!
 //! A BLF is a file header followed by a stream of length-prefixed objects. The objects that matter
-//! here are `CAN_MESSAGE` / `CAN_MESSAGE2` — one bus frame each — and `LOG_CONTAINER`, which holds a
-//! zlib-compressed run of other objects. An object may straddle two containers, so the container
+//! here are `CAN_MESSAGE` / `CAN_MESSAGE2` and their CAN-FD counterparts `CAN_FD_MESSAGE` /
+//! `CAN_FD_MESSAGE_64` — one bus frame each — and `LOG_CONTAINER`, which holds a zlib-compressed run
+//! of other objects. An object may straddle two containers, so the container
 //! payloads are reassembled into one stream and parsed from there rather than each on its own.
 //!
 //! What comes out is the same [`CanFrame`] the candump reader produces, so both kinds of log merge
@@ -56,6 +57,16 @@ const CONTAINER_HEADER: usize = 16;
 /// Object-header flag selecting the timestamp unit: set means ten-microsecond ticks, clear means
 /// nanoseconds.
 const TIME_TEN_MICS: u32 = 1;
+
+/// Bytes of the `CanFdMessage` payload before its inline data: channel, flags, DLC, id, frame
+/// length, bit count, FD flags, valid data bytes, five reserved.
+const CAN_FD_PREFIX: usize = 20;
+
+/// Bytes of the `CanFdMessage64` payload before its data, which follows rather than sitting inline.
+const CAN_FD_64_PREFIX: usize = 40;
+
+/// The largest payload a CAN-FD frame carries.
+const MAX_FD_BYTES: usize = 64;
 
 /// The remote-transmission bit of a CAN message's own flags byte. A remote frame *requests* data and
 /// carries none, so its eight payload bytes are not a payload.
@@ -361,7 +372,7 @@ impl Walk {
     /// Read one object's body — everything after the sixteen-byte base header.
     fn object(&mut self, kind: u32, header_size: usize, version: u16, body: &[u8]) {
         match kind {
-            CAN_MESSAGE | CAN_MESSAGE2 => {}
+            CAN_MESSAGE | CAN_MESSAGE2 | CAN_FD_MESSAGE | CAN_FD_MESSAGE_64 => {}
             other => {
                 self.count_undecoded(other);
                 return;
@@ -379,27 +390,13 @@ impl Walk {
             self.short_payloads += 1;
             return;
         };
-        if msg.len() < 16 {
-            self.short_payloads += 1;
+        let Some((channel, id, data)) = (match kind {
+            CAN_FD_MESSAGE_64 => self.fd64_frame(msg),
+            CAN_FD_MESSAGE => self.fd_frame(msg),
+            _ => self.classic_frame(msg),
+        }) else {
             return;
-        }
-        let channel = u16::from_le_bytes([msg[0], msg[1]]);
-        let flags = msg[2];
-        let dlc = msg[3] as usize;
-        let id = u32::from_le_bytes([msg[4], msg[5], msg[6], msg[7]]);
-        if flags & REMOTE_FLAG != 0 {
-            // A remote frame requests data and carries none. Its eight payload bytes are not a
-            // payload, and decoding signals out of them would put fabricated samples — usually a
-            // run of zeros — into the streams the checks then grade.
-            self.remote_frames += 1;
-            return;
-        }
-        if dlc > 8 {
-            // A classic CAN frame holds at most eight bytes. A larger declaration is a frame this
-            // object type cannot represent, so nothing here is trustworthy as a payload.
-            self.short_payloads += 1;
-            return;
-        }
+        };
         self.frames.push(CanFrame {
             ts_ns,
             // The channel is the bus, one-based as the file writes it. Named verbatim rather than
@@ -408,8 +405,85 @@ impl Walk {
             // buses that a mixed directory keeps apart.
             iface: format!("channel{channel}"),
             id: id & !CAN_ID_EXTENDED & 0x1FFF_FFFF,
-            data: msg[8..8 + dlc].to_vec(),
+            data,
         });
+    }
+
+    /// A classic `CanMessage` / `CanMessage2` payload: channel, flags, DLC, id, eight data bytes.
+    fn classic_frame(&mut self, msg: &[u8]) -> Option<(u16, u32, Vec<u8>)> {
+        if msg.len() < 16 {
+            self.short_payloads += 1;
+            return None;
+        }
+        let flags = msg[2];
+        let dlc = msg[3] as usize;
+        if flags & REMOTE_FLAG != 0 {
+            // A remote frame requests data and carries none. Its eight payload bytes are not a
+            // payload, and decoding signals out of them would put fabricated samples — usually a
+            // run of zeros — into the streams the checks then grade.
+            self.remote_frames += 1;
+            return None;
+        }
+        if dlc > 8 {
+            // A classic CAN frame holds at most eight bytes. A larger declaration is a frame this
+            // object type cannot represent, so nothing here is trustworthy as a payload.
+            self.short_payloads += 1;
+            return None;
+        }
+        Some((
+            u16::from_le_bytes([msg[0], msg[1]]),
+            u32::from_le_bytes([msg[4], msg[5], msg[6], msg[7]]),
+            msg[8..8 + dlc].to_vec(),
+        ))
+    }
+
+    /// A `CanFdMessage` payload: the classic prefix, then a frame length, the FD flags, the count of
+    /// payload bytes that are real, and sixty-four bytes of data inline.
+    ///
+    /// The count is what says how much of those sixty-four is payload — the DLC of an FD frame is a
+    /// *code* (9 through 15 mean 12, 16, 20, 24, 32, 48 and 64 bytes), so reading the DLC as a
+    /// length would take twelve bytes for a sixty-four-byte frame.
+    fn fd_frame(&mut self, msg: &[u8]) -> Option<(u16, u32, Vec<u8>)> {
+        if msg.len() < CAN_FD_PREFIX {
+            self.short_payloads += 1;
+            return None;
+        }
+        // The count sits after the frame length, the bit count and the FD flags — five reserved
+        // bytes ahead of the data, not adjacent to it.
+        let valid = msg[14] as usize;
+        let available = msg.len() - CAN_FD_PREFIX;
+        let take = valid.min(MAX_FD_BYTES).min(available);
+        if take < valid.min(MAX_FD_BYTES) {
+            // Fewer bytes than the object says it carries. What is there is used — a signal that
+            // fits still decodes, and one that does not is skipped by the decoder — but the shortfall
+            // is disclosed rather than padded with zeros a check would read as measurements.
+            self.short_payloads += 1;
+        }
+        Some((
+            u16::from_le_bytes([msg[0], msg[1]]),
+            u32::from_le_bytes([msg[4], msg[5], msg[6], msg[7]]),
+            msg[CAN_FD_PREFIX..CAN_FD_PREFIX + take].to_vec(),
+        ))
+    }
+
+    /// A `CanFdMessage64` payload: a wider prefix whose data *follows* it rather than sitting inline,
+    /// and whose channel is a single byte.
+    fn fd64_frame(&mut self, msg: &[u8]) -> Option<(u16, u32, Vec<u8>)> {
+        if msg.len() < CAN_FD_64_PREFIX {
+            self.short_payloads += 1;
+            return None;
+        }
+        let valid = msg[2] as usize;
+        let available = msg.len() - CAN_FD_64_PREFIX;
+        let take = valid.min(MAX_FD_BYTES).min(available);
+        if take < valid.min(MAX_FD_BYTES) {
+            self.short_payloads += 1;
+        }
+        Some((
+            msg[0] as u16,
+            u32::from_le_bytes([msg[4], msg[5], msg[6], msg[7]]),
+            msg[CAN_FD_64_PREFIX..CAN_FD_64_PREFIX + take].to_vec(),
+        ))
     }
 
     /// The object's timestamp, in nanoseconds on the same clock the candump reader produces.
@@ -437,10 +511,7 @@ impl Walk {
     fn finish(mut self, path: &Path) -> BlfLog {
         let log = name(path);
         for (kind, count) in std::mem::take(&mut self.undecoded) {
-            let what = match kind {
-                CAN_FD_MESSAGE | CAN_FD_MESSAGE_64 => "CAN-FD frame(s)".to_string(),
-                other => format!("object(s) of type {other}"),
-            };
+            let what = format!("object(s) of type {kind}");
             self.unread.push(UnmappedField {
                 source_path: log.clone(),
                 note: format!(

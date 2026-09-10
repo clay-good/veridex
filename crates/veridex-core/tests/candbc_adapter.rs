@@ -290,9 +290,10 @@ fn a_log_that_parsed_to_nothing_is_refused_rather_than_ingested_clean() {
     fs::write(dir.path().join("vehicle.dbc"), DBC).unwrap();
     fs::write(
         dir.path().join("drive.log"),
-        // CAN-FD (`##`), an RTR frame, and binary garbage — none of them candump frames.
-        "(1000.000000) can0 100##140010000\n\
-         (1000.100000) can0 100#R\n\
+        // An RTR frame, a line with no frame at all, and binary garbage — none of them candump
+        // frames. (A CAN-FD `##` line is *not* here: that is a frame this reader now decodes.)
+        "(1000.000000) can0 100#R\n\
+         (1000.100000) can0\n\
          \x01\x02 not a log line at all\n",
     )
     .unwrap();
@@ -321,7 +322,7 @@ fn partially_unreadable_log_lines_are_reported_as_a_coverage_gap() {
         "# a comment, which is not content\n\
          \n\
          (1000.000000) can0 100#4001000012343412\n\
-         (1000.100000) can0 100##140010000\n",
+         (1000.100000) can0 100#R\n",
     )
     .unwrap();
 
@@ -1201,12 +1202,13 @@ fn a_remote_frame_yields_no_samples_and_is_disclosed() {
     assert!(notes.contains("remote-transmission"), "{notes}");
 }
 
-/// A CAN-FD object is traffic this reader does not decode. Skipped in silence it would leave a
-/// verdict describing the classic frames as though they were the whole bus.
+/// An object type this reader does not decode is traffic it did not read. Skipped in silence it
+/// would leave a verdict describing the objects it does read as though they were the whole file.
 #[test]
-fn a_can_fd_object_is_disclosed_rather_than_skipped() {
+fn an_object_type_this_reader_does_not_decode_is_disclosed_rather_than_skipped() {
     let mut objects = blf_frame_objects();
-    objects.push(blf_object(100, 400_000_000, &[0u8; 64]));
+    // 96 is `GLOBAL_MARKER`, one of the many object types a BLF can carry that are not bus frames.
+    objects.push(blf_object(96, 400_000_000, &[0u8; 32]));
     let out = ingest_blf(&build_blf(objects, BlfLayout::Bare));
     let notes = out
         .report
@@ -1215,7 +1217,7 @@ fn a_can_fd_object_is_disclosed_rather_than_skipped() {
         .map(|u| u.note.clone())
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(notes.contains("CAN-FD"), "{notes}");
+    assert!(notes.contains("type 96"), "{notes}");
 }
 
 /// Every prefix of a BLF is a file an interrupted transfer leaves behind, and every one must yield a
@@ -1313,4 +1315,224 @@ fn a_container_declaring_more_than_the_budget_is_refused_before_it_is_unpacked()
         decoded > 0,
         "the frames after the refused container were lost"
     );
+}
+
+// ---- CAN-FD -------------------------------------------------------------------------------------
+
+/// A message wider than a classic CAN frame, with a signal in the bytes only CAN-FD can carry.
+///
+/// The wheel-speed signal starts at bit 320 — byte 40 — which no eight-byte frame reaches. A reader
+/// that truncates an FD payload to eight bytes, or that reads the FD **DLC code** as a length,
+/// produces no sample for it at all.
+const FD_DBC: &str = "\
+BO_ 768 WideData: 48 ECU
+ SG_ FirstByte : 0|8@1+ (1,0) [0|255] \"\" Vector__XXX
+ SG_ FarSignal : 320|16@1+ (1,0) [0|65535] \"kph\" Vector__XXX
+";
+
+/// Forty-eight payload bytes whose byte 40 and 41 hold 0x1234 little-endian.
+fn fd_payload() -> Vec<u8> {
+    let mut data = vec![0u8; 48];
+    data[0] = 0x2A;
+    data[40] = 0x34;
+    data[41] = 0x12;
+    data
+}
+
+/// The sample `FarSignal` must decode to when the whole payload is read.
+const FD_FAR_VALUE: f64 = 0x1234 as f64;
+
+/// A `CanFdMessage` payload: the classic prefix, a frame length, the FD flags, the count of real
+/// payload bytes, five reserved bytes, then sixty-four bytes of data inline.
+fn blf_fd_payload(channel: u16, id: u32, data: &[u8], dlc_code: u8) -> Vec<u8> {
+    let mut p = Vec::new();
+    p.extend_from_slice(&le16(channel));
+    p.push(0); // flags
+    p.push(dlc_code); // DLC *code*, not a length
+    p.extend_from_slice(&le32(id));
+    p.extend_from_slice(&le32(data.len() as u32)); // frame length
+    p.push(0); // bit count
+    p.push(0); // FD flags
+    p.push(data.len() as u8); // valid data bytes
+    p.extend_from_slice(&[0u8; 5]); // reserved
+    let mut sixty_four = [0u8; 64];
+    sixty_four[..data.len()].copy_from_slice(data);
+    p.extend_from_slice(&sixty_four);
+    p
+}
+
+/// A `CanFdMessage64` payload: a wider prefix whose data follows it rather than sitting inline.
+fn blf_fd64_payload(channel: u8, id: u32, data: &[u8], dlc_code: u8) -> Vec<u8> {
+    // channel, DLC code, valid payload length, tx count
+    let mut p = vec![channel, dlc_code, data.len() as u8, 0];
+    p.extend_from_slice(&le32(id));
+    p.extend_from_slice(&le32(data.len() as u32)); // frame length
+    p.extend_from_slice(&le32(0)); // flags
+    for _ in 0..4 {
+        p.extend_from_slice(&le32(0)); // bit-rate and timing fields
+    }
+    p.extend_from_slice(&le16(0)); // bit count
+    p.push(0); // direction
+    p.push(0); // ext data offset
+    p.extend_from_slice(&le32(0)); // crc
+    p.extend_from_slice(data);
+    p
+}
+
+fn ingest_with_dbc(dbc: &str, log_name: &str, log: &[u8]) -> veridex_core::adapter::Ingested {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("vehicle.dbc"), dbc).unwrap();
+    fs::write(dir.path().join(log_name), log).unwrap();
+    CanDbcAdapter
+        .ingest(
+            &Source::Local(dir.path().to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest")
+}
+
+/// How many samples one signal's stream carries, and `None` when the signal produced no stream at
+/// all — which is what a payload too short to hold it looks like.
+fn sample_count(out: &veridex_core::adapter::Ingested, stream: &str) -> Option<usize> {
+    out.dataset.episodes[0]
+        .streams
+        .iter()
+        .find(|s| s.name == stream)
+        .map(|s| s.frames.len())
+}
+
+/// The largest value one signal decoded to, from the statistics the adapter recomputes over the
+/// decoded samples themselves.
+fn observed_max(out: &veridex_core::adapter::Ingested, stream: &str) -> f64 {
+    out.dataset.episodes[0]
+        .streams
+        .iter()
+        .find(|s| s.name == stream)
+        .and_then(|s| s.observed_stats)
+        .expect("recomputed statistics for the signal")
+        .max
+}
+
+/// `can-utils` writes a CAN-FD frame as `<id>##<flags><data>`, one character different from a
+/// classic one. Every such line used to be counted as a line that did not parse, so an FD recording
+/// — which is what a modern vehicle bus produces — ingested as a log whose every line was garbage.
+#[test]
+fn a_candump_can_fd_line_is_read_rather_than_counted_as_unparseable() {
+    let data: String = fd_payload().iter().map(|b| format!("{b:02X}")).collect();
+    let log = format!("(1000.000000) can0 300##1{data}\n");
+    let out = ingest_with_dbc(FD_DBC, "drive.log", log.as_bytes());
+    let far = out.dataset.episodes[0]
+        .streams
+        .iter()
+        .find(|s| s.name == "WideData.FarSignal")
+        .expect("the signal in the bytes only CAN-FD carries");
+    assert_eq!(far.frames.len(), 1);
+    assert!(
+        out.report
+            .unread_sources
+            .iter()
+            .all(|u| !u.note.contains("did not parse")),
+        "{:#?}",
+        out.report.unread_sources
+    );
+}
+
+/// A `CanFdMessage` in a BLF, and the payload past byte eight that only FD can carry.
+#[test]
+fn a_blf_can_fd_frame_is_decoded_including_the_bytes_past_a_classic_frame() {
+    let object = blf_object(100, 0, &blf_fd_payload(1, 0x300, &fd_payload(), 13));
+    let mut bytes = blf_file_header();
+    bytes.extend_from_slice(&object);
+    let out = ingest_with_dbc(FD_DBC, "drive.blf", &bytes);
+    assert_eq!(sample_count(&out, "WideData.FarSignal"), Some(1));
+    // And the value itself, so "a frame arrived" is not mistaken for "the right bytes arrived".
+    assert_eq!(observed_max(&out, "WideData.FarSignal"), FD_FAR_VALUE);
+}
+
+/// A `CanFdMessage64` keeps its data *after* its header rather than inline, and names its channel in
+/// one byte. Read with the inline layout, its payload would be forty bytes of header fields.
+#[test]
+fn a_blf_can_fd_64_frame_keeps_its_data_after_the_header() {
+    let object = blf_object(101, 0, &blf_fd64_payload(1, 0x300, &fd_payload(), 13));
+    let mut bytes = blf_file_header();
+    bytes.extend_from_slice(&object);
+    let out = ingest_with_dbc(FD_DBC, "drive.blf", &bytes);
+    assert_eq!(observed_max(&out, "WideData.FarSignal"), FD_FAR_VALUE);
+}
+
+/// An FD frame's DLC is a **code**, not a length: 9 through 15 mean 12, 16, 20, 24, 32, 48 and 64
+/// bytes. Reading it as a length would take 13 bytes of a 48-byte frame and drop every signal past
+/// them — silently, since a short frame simply produces no sample.
+#[test]
+fn the_fd_dlc_is_a_code_and_the_payload_length_comes_from_the_valid_byte_count() {
+    // DLC code 13 alongside 48 real bytes: a reader that trusted the code would keep 13.
+    let object = blf_object(100, 0, &blf_fd_payload(1, 0x300, &fd_payload(), 13));
+    let mut bytes = blf_file_header();
+    bytes.extend_from_slice(&object);
+    let out = ingest_with_dbc(FD_DBC, "drive.blf", &bytes);
+    assert_eq!(sample_count(&out, "WideData.FarSignal"), Some(1));
+    assert_eq!(observed_max(&out, "WideData.FarSignal"), FD_FAR_VALUE);
+}
+
+/// The two CAN-FD object types and the classic one all reach the same signals, so which object a
+/// tool chose to write does not change the verdict.
+#[test]
+fn both_can_fd_object_types_decode_to_the_same_values() {
+    let inline = {
+        let mut b = blf_file_header();
+        b.extend_from_slice(&blf_object(
+            100,
+            0,
+            &blf_fd_payload(1, 0x300, &fd_payload(), 13),
+        ));
+        ingest_with_dbc(FD_DBC, "drive.blf", &b)
+    };
+    let trailing = {
+        let mut b = blf_file_header();
+        b.extend_from_slice(&blf_object(
+            101,
+            0,
+            &blf_fd64_payload(1, 0x300, &fd_payload(), 13),
+        ));
+        ingest_with_dbc(FD_DBC, "drive.blf", &b)
+    };
+    let fingerprints = |out: &veridex_core::adapter::Ingested| {
+        out.dataset.episodes[0]
+            .streams
+            .iter()
+            .map(|s| {
+                (
+                    s.name.clone(),
+                    s.frames
+                        .iter()
+                        .map(|f| f.value_ref.content_hash)
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(fingerprints(&inline), fingerprints(&trailing));
+}
+
+/// An FD object that says it carries more bytes than it holds is short, not zero-padded: padding
+/// would put bytes nothing recorded into the streams the checks grade, and the shortfall would go
+/// unmentioned.
+#[test]
+fn an_fd_object_shorter_than_it_declares_is_disclosed_rather_than_padded() {
+    // Declare 48 valid bytes, then truncate the object so only a few are there.
+    let mut payload = blf_fd_payload(1, 0x300, &fd_payload(), 13);
+    payload.truncate(24);
+    let mut bytes = blf_file_header();
+    bytes.extend_from_slice(&blf_object(100, 0, &payload));
+    let out = ingest_with_dbc(FD_DBC, "drive.blf", &bytes);
+    let notes = out
+        .report
+        .unread_sources
+        .iter()
+        .map(|u| u.note.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(notes.contains("classic CAN frame cannot hold"), "{notes}");
+    // The far signal is in bytes that are not there, so it has no stream at all — not a zero sample.
+    assert_eq!(sample_count(&out, "WideData.FarSignal"), None, "{notes}");
 }

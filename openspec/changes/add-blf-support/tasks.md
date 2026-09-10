@@ -10,8 +10,19 @@
       reassembling an object that straddles two containers.
 - [x] Read `CAN_MESSAGE` and `CAN_MESSAGE2` into the adapter's existing `CanFrame` (channel, id,
       DLC, payload, timestamp), honouring the header flag that selects 10 µs ticks or nanoseconds.
-- [x] Disclose what is not read: CAN-FD objects, undecoded object types, an unknown container
-      compression, and a payload shorter than its declared DLC.
+- [x] Disclose what is not read: undecoded object types, an unknown container compression, and a
+      payload shorter than its declared length.
+
+## B4 — CAN-FD
+
+- [x] Read `CAN_FD_MESSAGE` and `CAN_FD_MESSAGE_64`, taking the payload's extent from the object's
+      valid-byte count rather than from the DLC, which on an FD bus is a *code* and not a length.
+- [x] Read the candump CAN-FD line form (`<id>##<flags><data>`), which every reader before this
+      counted as a line that did not parse.
+- [x] Decode a little-endian signal from the byte it starts in, so a signal an FD database places
+      past bit 63 is not silently absent.
+- [x] Prove all three on payloads whose signals live past byte eight, and prove the two FD object
+      types reach identical values.
 
 ## B2 — the adapter
 

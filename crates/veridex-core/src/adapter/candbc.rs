@@ -236,8 +236,14 @@ struct CanFrame {
     data: Vec<u8>,
 }
 
-/// Parse a candump ASCII line: `(<seconds>) <iface> <hexid>#<hexdata>`. Returns `None` for a line
-/// that isn't a frame (blank, comment) so a malformed log is skipped, never a panic.
+/// Parse a candump ASCII line: `(<seconds>) <iface> <hexid>#<hexdata>`, or its CAN-FD form
+/// `<hexid>##<flags><hexdata>`. Returns `None` for a line that isn't a frame (blank, comment) so a
+/// malformed log is skipped, never a panic.
+///
+/// The FD form differs by one character: `can-utils` writes a second `#` and then a single hex digit
+/// of FD flags (bitrate switch, error-state indicator) before the payload. Those flags say how the
+/// frame was *transmitted*, not what it carries, so they change nothing about the signals a DBC
+/// decodes out of it — the payload is simply allowed to be longer than eight bytes.
 fn parse_candump_line(line: &str) -> Option<CanFrame> {
     let line = line.trim();
     let (ts_part, rest) = line.strip_prefix('(')?.split_once(')')?;
@@ -251,8 +257,17 @@ fn parse_candump_line(line: &str) -> Option<CanFrame> {
     let mut it = rest.split_whitespace();
     let iface = it.next()?;
     let frame = it.next()?;
-    let (id_hex, data_hex) = frame.split_once('#')?;
+    let (id_hex, after_hash) = frame.split_once('#')?;
     let id = u32::from_str_radix(id_hex.trim(), 16).ok()? & 0x1FFF_FFFF;
+    // A second `#` marks CAN-FD, and the hex digit behind it is the FD flag field. Dropping the
+    // digit rather than the whole line is the difference between reading an FD recording and
+    // counting every one of its frames as a line that did not parse.
+    let data_hex = match after_hash.strip_prefix('#') {
+        Some(fd) => fd
+            .get(1..)
+            .filter(|_| fd.as_bytes().first().is_some_and(|b| b.is_ascii_hexdigit()))?,
+        None => after_hash,
+    };
     let data = parse_hex_bytes(data_hex.trim())?;
     Some(CanFrame {
         ts_ns,
@@ -291,9 +306,13 @@ fn candump_ts_ns(text: &str) -> Option<i64> {
     Some(if negative { -ns } else { ns })
 }
 
-/// Parse an even-length hex string into bytes (up to 8 for a classic CAN frame).
+/// Parse an even-length hex string into bytes.
+///
+/// Bounded at the largest payload a CAN frame carries — eight bytes on a classic bus, sixty-four on
+/// CAN-FD — so a line of arbitrary length is refused rather than read as a frame. The bound is on
+/// the *format*, not on this reader's convenience: a longer field is not a CAN payload at all.
 fn parse_hex_bytes(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 || s.len() > 16 {
+    if s.len() % 2 != 0 || s.len() > 128 {
         return None;
     }
     let mut out = Vec::with_capacity(s.len() / 2);
@@ -336,23 +355,32 @@ fn decode_signal(sig: &DbcSignal, data: &[u8]) -> Option<f64> {
 
 /// Raw bits of a little-endian (Intel) signal: `start_bit` is the signal's least-significant bit in
 /// the sawtooth numbering (bit `n` = byte `n / 8`, bit `n % 8` counted from that byte's LSB), and the
-/// signal runs upward from there.
+/// signal runs upward from there. Any start bit the frame actually reaches, not only the first
+/// sixty-four.
 fn raw_bits_le(start_bit: u32, length: u32, data: &[u8]) -> Option<u64> {
     let end_bit = start_bit.checked_add(length)?;
-    if start_bit >= 64 || end_bit as usize > data.len() * 8 {
+    if end_bit as usize > data.len() * 8 {
         return None;
     }
-    // Assemble up to 8 data bytes as a little-endian u64, then shift/mask.
-    let mut raw: u64 = 0;
-    for (i, &b) in data.iter().take(8).enumerate() {
-        raw |= (b as u64) << (i * 8);
+    // Assembled from the byte the signal *starts* in, not from the front of the frame. Reading the
+    // first eight bytes and shifting by the whole start bit is the same answer for a classic CAN
+    // frame and no answer at all beyond one: every signal a CAN-FD database places past bit 63 —
+    // which is the entire reason the bus carries 64 bytes — decoded to nothing, and a signal that
+    // decodes from no frame has no stream, so nothing in the verdict said it was missing.
+    let first_byte = (start_bit / 8) as usize;
+    let shift = start_bit % 8;
+    // Nine bytes hold any 64-bit signal at any bit offset (7 + 64 = 71 bits), which is why the
+    // accumulator is 128-bit: a 64-bit one would drop the top of a signal that straddles a byte.
+    let mut raw: u128 = 0;
+    for (i, &b) in data.get(first_byte..)?.iter().take(9).enumerate() {
+        raw |= (b as u128) << (i * 8);
     }
-    let mask = if length == 64 {
-        u64::MAX
+    let mask: u128 = if length == 64 {
+        u64::MAX as u128
     } else {
-        (1u64 << length) - 1
+        (1u128 << length) - 1
     };
-    Some((raw >> start_bit) & mask)
+    Some(((raw >> shift) & mask) as u64)
 }
 
 /// Raw bits of a big-endian (Motorola) signal. `start_bit` names the signal's *most*-significant bit
@@ -425,8 +453,8 @@ impl Adapter for CanDbcAdapter {
         let messages = parse_dbc(&dbc_text);
 
         // Read and merge all CAN frames, sorted by timestamp. A line that will not parse is counted
-        // rather than merely skipped: a log every line of which fails -- a CAN-FD capture (`##`), an
-        // RTR frame, a text file that is not a candump at all -- used to ingest as a successful,
+        // rather than merely skipped: a log every line of which fails -- an RTR frame, a text file
+        // that is not a candump at all -- used to ingest as a successful,
         // zero-finding, `Coverage::Full` dataset with an empty `unmapped`. Reading that silence as a
         // pass is the invariant this project states most often, and here the adapter, not a check,
         // is the one doing it.
@@ -492,8 +520,9 @@ impl Adapter for CanDbcAdapter {
                 format_id: "candbc",
                 message: format!(
                     "none of the {content_lines} content line(s) across {} log file(s) parsed as a \
-                     candump frame (`(<seconds>) <iface> <hexid>#<hexdata>`); this is not a CAN log \
-                     Veridex can read -- CAN-FD (`##`) and RTR frames are not supported",
+                     candump frame (`(<seconds>) <iface> <hexid>#<hexdata>`, or its CAN-FD form \
+                     `<hexid>##<flags><hexdata>`); this is not a CAN log Veridex can read -- RTR \
+                     frames, which carry no payload, are not among the frames it decodes",
                     log_paths.len()
                 ),
             });
@@ -850,8 +879,8 @@ impl Adapter for CanDbcAdapter {
                 source_path: "candump log lines".into(),
                 note: format!(
                     "{unreadable_lines} of {content_lines} content line(s) did not parse as a \
-                     candump frame and contributed nothing (CAN-FD `##` and RTR frames are not \
-                     supported)"
+                     candump frame and contributed nothing (an RTR frame carries no payload and is \
+                     not among the frames this reader decodes)"
                 ),
             });
         }

@@ -10,6 +10,21 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **CAN-FD is read, on both kinds of CAN log — and the signal decoder can now see past byte eight.**
+  A modern vehicle bus runs FD, and the frames carrying up to 64 bytes are where the signals a
+  classic frame had no room for live. `can-utils` writes such a frame as `<id>##<flags><data>`, one
+  character different from a classic line, and every one of those lines was counted as a line that
+  did not parse — so an FD recording ingested as a log whose every line was garbage, or was refused
+  outright. A BLF's `CanFdMessage` and `CanFdMessage64` objects were disclosed as undecoded. All
+  three are decoded now.
+
+  Two details a reader gets wrong quietly, and both are pinned by a test. An FD frame's **DLC is a
+  code, not a length** (9 through 15 mean 12, 16, 20, 24, 32, 48 and 64 bytes), so the payload's
+  extent comes from the object's own valid-byte count — trusting the code keeps 13 bytes of a
+  48-byte frame and every signal past them silently produces no sample. And a `CanFdMessage64`
+  keeps its data **after** its header rather than inline, so the inline offset decodes forty bytes
+  of header fields as bus traffic.
+
 - **A Vector BLF is read, so the format most vehicle CAN is recorded in is checkable.** Veridex read
   CAN only as candump ASCII — what `can-utils` writes on Linux — and almost no vehicle data is
   logged that way: CANoe, CANalyzer, CANape and every Vector interface write **BLF**. A `.blf`
@@ -52,7 +67,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   of an honest dataset is worse than an abstention, because it sends a team to re-fetch what is not
   missing.
 
-  Matroska and WebM are read now, through an EBML walk held to the same untrusted-input discipline as
+  Matroska and WebM are read now, through an EBML walk held to the same untrusted-input discipline
+  as
   the MP4 one: every declared size validated against the bytes that remain, an iterative walk, and
   ceilings on the two elements read into memory. Which container a file *is* comes from its magic
   bytes rather than its name, so a converter that muxed Matroska into a `.mp4` is read rather than
@@ -61,8 +77,10 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   A Matroska has no sample table — nothing in it states how many frames it holds — so the count is
   taken the only way the format allows: by walking the cluster tree and reading each block's header,
   seeking over every payload, so this stays a metadata read with no decoder and no compressed frame
-  in memory. A laced block counts the frames it laces rather than one. Where the walk cannot finish —
-  a live-muxed file whose clusters declare no size — the count is **absent**, never zero: a zero is a
+  in memory. A laced block counts the frames it laces rather than one. Where the walk cannot finish
+  —
+  a live-muxed file whose clusters declare no size — the count is **absent**, never zero: a zero is
+  a
   frame-count mismatch against every episode of a good recording, which is a claim about the data
   made out of a limit of the reader.
 
@@ -77,14 +95,16 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 - **The encoding a rig was recorded in is held to changing nothing.** Every ROS message type the
   shared dispatch decodes now has a fixture written *once* and rendered in both encodings — CDR with
-  its encapsulation header, alignment padding and NUL-counted strings, ROS 1 with none of those and a
+  its encapsulation header, alignment padding and NUL-counted strings, ROS 1 with none of those and
+  a
   `seq` in front of every header — and the test asserts the two produce the same CDM: the same point
   layout and counts, image dimensions, intrinsics, transforms, trajectory and measured values, down
   to the same answer about whether the body decoded at all.
 
   Seventeen message types, one description each, because two hand-written fixtures per type would
   let them drift into describing two different messages — the one way a parity test passes while the
-  claim it guards is false. A second test asserts the converse: read a body in the wrong encoding and
+  claim it guards is false. A second test asserts the converse: read a body in the wrong encoding
+  and
   it must *not* report the right answer, which is what stops a fixture whose frame name happens to
   make the two encodings coincide from proving nothing.
 
@@ -102,7 +122,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   first chunk happens to declare: presenting part of a recording as the whole of it is the failure a
   caller has no way to notice.
 
-  Both reads go through one `connection_of`, so the inventory a metadata-only run reports and the one
+  Both reads go through one `connection_of`, so the inventory a metadata-only run reports and the
+  one
   a full read builds cannot disagree — which the mode's own cross-format invariant test now holds a
   bag to as well. The demo generator writes a real index for the same reason.
 
@@ -187,13 +208,15 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   had, filled from the same containers' worth of message types.
 
 - **ROS 1 rosbag (`.bag`) is read.** A ninth adapter, and the largest remaining hole in the claim
-  this tool is built on. ROS 1 is still where a great deal of the world's robot data sits — every lab
+  this tool is built on. ROS 1 is still where a great deal of the world's robot data sits — every
+  lab
   that recorded before ROS 2, every fleet that has not migrated, every public dataset shipped as
   `.bag` — and until now every one of them was *refused at ingest*: no report, no score, no
   certificate. "Which format a team chose does not change whether their data can be checked" cannot
   survive a whole generation of recordings sitting outside it.
 
-  A bag is recognized by its `#ROSBAG V2.0` line rather than its extension. Connection records become
+  A bag is recognized by its `#ROSBAG V2.0` line rather than its extension. Connection records
+  become
   streams, typed through the **same modality classifier the two ROS 2 readers use**, so a rig
   recorded to a `.bag` types the way the same rig recorded to an MCAP does. Message records become
   frames on the recorder's clock, with each body fingerprinted.
@@ -202,8 +225,10 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   default — was disclosed as **unread**, not skipped, because the messages are in the file and
   nobody read them. The entry above carries a decompressor for it. A message naming a connection the bag never declared
   is reported the same way, because the topic those frames belong to is unknown and attributing them
-  to a stream anyway would invent one. A chunk cut short keeps the records written before the cut and
-  says what it could not reach; a bag from which *nothing* could be read is refused outright, because
+  to a stream anyway would invent one. A chunk cut short keeps the records written before the cut
+  and
+  says what it could not reach; a bag from which *nothing* could be read is refused outright,
+  because
   a dataset with no streams is not a dataset that was checked.
 
   Message **bodies** were fingerprinted, not decoded, in this first change: a bag reached the
@@ -214,7 +239,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   CDM already had.
 
 - **Which checks the fixtures actually exercise is pinned, and a tenth of them did not.** "Do not
-  assume a new check fires end to end" was review habit and a note in prose. Nothing enforced it, and
+  assume a new check fires end to end" was review habit and a note in prose. Nothing enforced it,
+  and
   nothing noticed the other direction either: a fixture that loses the fault it was built around
   leaves a check firing on nothing, with the suite green and the catalog one check emptier.
 
@@ -236,7 +262,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   blosc-compressed binaries. But a Zarr store is JSON plus raw chunks when the compressor is `null`,
   so the sweep writes this one inline the way it writes its CAN pair.
 
-  `NOT_REACHED_BY_THE_SWEEP` now holds only the two checks that **cannot** arise from any reader this
+  `NOT_REACHED_BY_THE_SWEEP` now holds only the two checks that **cannot** arise from any reader
+  this
   repo has. An entry in it is no longer a statement about the fixtures but about the adapters — so a
   reader that starts declaring a nominal rate will hear about it from this test.
 
@@ -278,7 +305,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   spaced, so no structural or temporal rule sees anything → `STRUCTURAL.FROZEN_EPISODE`.
 
   The feature is a **vector** because the check is: one joint holding a position is a joint at rest,
-  and only a whole arm that never moved is a recording of nothing. A first attempt wrote a scalar and
+  and only a whole arm that never moved is a recording of nothing. A first attempt wrote a scalar
+  and
   produced no finding — the check was right and the fixture was wrong.
 
 - **A receiver that never acquired a fix, reproducible.** The second of the eight:
@@ -291,15 +319,19 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 - **A rig whose localization jumped, reproducible.** The first of the eight, closed:
   `make_demo_mcap -- <out> av-ego-jump` writes the same rig with one `Odometry` message placing the
   vehicle 50 m from where it was 20 ms earlier — an implied 2,500 m/s. A jump is not a gap, so no
-  timing check sees it and the trajectory on either side is smooth; `AUTONOMY.EGO_POSE_CONTINUITY` is
+  timing check sees it and the trajectory on either side is smooth; `AUTONOMY.EGO_POSE_CONTINUITY`
+  is
   the only thing that reports the ego path is not a path a vehicle drove.
 
 - **The magnetometer is measured too.** `sensor_msgs/msg/MagneticField` is the third instrument in
   the IMU package a robot carries, and the one heading is estimated from — and it was fingerprinted
-  rather than measured, so a magnetometer railed at its full-scale limit near a motor, or frozen at a
-  constant because its driver stopped polling, was a stream every statistical rule abstained on while
+  rather than measured, so a magnetometer railed at its full-scale limit near a motor, or frozen at
+  a
+  constant because its driver stopped polling, was a stream every statistical rule abstained on
+  while
   the accelerometer beside it, in the same package, was graded. A covariance beginning with `-1` is
-  ROS's "not provided" and those readings are held out rather than summarized as the zeros ROS leaves
+  ROS's "not provided" and those readings are held out rather than summarized as the zeros ROS
+  leaves
   behind, the same treatment an `Imu`'s unprovided fields get.
 
   With it, every ROS message this reader knows of that is nothing but its own reading is read. What
@@ -326,18 +358,22 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
   Positions keep the joints' own names, so a position-only recording — the common case — is
   summarized exactly as before, dimension for dimension and hash for hash. Velocity and effort are
-  appended behind them as `<joint>.velocity` and `<joint>.effort`, and only where the message carries
-  them: an array that is neither empty nor one-per-joint names nothing a joint can be attached to and
+  appended behind them as `<joint>.velocity` and `<joint>.effort`, and only where the message
+  carries
+  them: an array that is neither empty nor one-per-joint names nothing a joint can be attached to
+  and
   is left out rather than aligned by guesswork, and a driver that starts reporting effort part-way
   through a topic is refused like any other mid-stream change of the joint set.
 
 - **A rig whose frames moved is no longer read as one that stood still.** A bag's `/tf` topic hands
   each edge over as an open-ended transform, once per message, with nothing to bound one sample from
-  the next — so both readers kept the first pose of each `(parent, child)` edge and dropped the rest.
+  the next — so both readers kept the first pose of each `(parent, child)` edge and dropped the
+  rest.
   That is right for the `/tf_static` an unmoving rig republishes unchanged. On a pan-tilt head, an
   articulated trailer or an arm it means every result that *places* a sensor — the frame resolution,
   the calibration completeness, anything projected between sensors — was judged against the rig's
-  geometry at the start of the log, and nothing said so. `Transform` is time-scoped by design and its
+  geometry at the start of the log, and nothing said so. `Transform` is time-scoped by design and
+  its
   own doc says frames move within a log; the adapters collapsed that away silently.
 
   An edge republished with a **different** pose is now disclosed as unread, naming the edges that
@@ -347,14 +383,16 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 - **A compressed camera topic is graded like a raw one.** Most real bags record their cameras
   compressed, and `sensor_msgs/msg/CompressedImage` went unread — so once `Image` was measured, the
   same dead camera was caught on `/camera/image_raw` and missed on
-  `/camera/image_raw/compressed`. The size now comes out of the **JPEG or PNG frame header inside the
+  `/camera/image_raw/compressed`. The size now comes out of the **JPEG or PNG frame header inside
+  the
   payload** (`SOFn`, `IHDR`), which is a marker walk and a fixed offset — no pixel is decoded, and the
   JPEG chain is bounded because its segment lengths come out of the file.
 
   The three answers are kept apart, because two of them look alike and mean opposite things. A
   payload of **zero bytes** needs no codec to recognize: nothing compressed is nothing recorded, and
   that is `AUTONOMY.IMAGE_EMPTY`. A codec with **no header parser here** is *untried* — nothing was
-  measured and nothing failed — so the stream abstains out loud rather than being accused of carrying
+  measured and nothing failed — so the stream abstains out loud rather than being accused of
+  carrying
   bodies that broke. A frame naming a codec this reader *does* read whose header cannot be read all
   the same is a truncated write or a dropped chunk, and is reported as a body that broke.
 
@@ -398,23 +436,28 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   `PointCloud2` does, and the same `AUTONOMY.POINT_CLOUD_EMPTY` / `_DROPPED` findings: no new check,
   no new CDM field, the fault was already named.
 
-  A return counts when it falls inside the scanner's **own** declared `[range_min, range_max]`, which
-  is how REP 117 says a driver reports that nothing came back — an infinity, a NaN or a value outside
+  A return counts when it falls inside the scanner's **own** declared `[range_min, range_max]`,
+  which
+  is how REP 117 says a driver reports that nothing came back — an infinity, a NaN or a value
+  outside
   the window is a direction the beam swept with no measurement in it. The body is declined rather
   than guessed at where it does not prove it is a scan: a sweep with no returns, a zero
-  `angle_increment`, a window that is not a window, an `intensities` array that is neither absent nor
+  `angle_increment`, a window that is not a window, an `intensities` array that is neither absent
+  nor
   one per return.
 
 - **A camera that recorded nothing now says so.** `autonomy.point-cloud-density` exists because a
   LiDAR driver that loses its sensor keeps publishing perfectly-formed empty sweeps at the right
   rate, and every other check passes. The same driver failure on a **camera** was still invisible:
-  `sensor_msgs/msg/Image` bodies were never decoded at all, so a stream of zero-sized frames kept the
+  `sensor_msgs/msg/Image` bodies were never decoded at all, so a stream of zero-sized frames kept
+  the
   schema, the cadence, the frame count and the coordinate frame of a working camera, and a rig that
   recorded no imagery certified as world-model-ready — on the modality a policy is usually trained
   on.
 
   `autonomy.image-integrity` reads each frame's own `height`/`width` from the message header, ahead
-  of the pixel blob, which is never opened. `AUTONOMY.IMAGE_EMPTY` reports a stream where every frame
+  of the pixel blob, which is never opened. `AUTONOMY.IMAGE_EMPTY` reports a stream where every
+  frame
   declared no pixels, `AUTONOMY.IMAGE_DROPPED` one where some did — the camera cutting out rather
   than never starting — and `AUTONOMY.IMAGE_UNMEASURED` says out loud where the rules had nothing to
   measure, excluding streams whose *container* was read, because the `video.*` family reports on
@@ -426,7 +469,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   resamples to, while the intrinsics calibrated at one resolution are wrong for the other, so the
   same pixel projects to two different rays.
 
-  A size is believed only once the body proves it is an `Image`: a non-empty `encoding` (the field an
+  A size is believed only once the body proves it is an `Image`: a non-empty `encoding` (the field
+  an
   all-zero buffer cannot satisfy), a `step` covering between one and 32 bytes per pixel of the
   declared width, `data` of exactly `step × height` bytes, and those bytes present. A fabricated
   resolution would be a finding about honest data. `CANONICAL_VERSION` 18 → 19 binds
@@ -437,7 +481,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   *invalidation bytes* to each record and gives a channel a bit in them — how a signal that is only
   present while a subsystem is awake is recorded: the samples taken while it slept are in the record
   and declared invalid. Veridex did not evaluate those bits, and rather than present invalid samples
-  as measurements it declined **the entire channel**, reported as unread. The honest half of that was
+  as measurements it declined **the entire channel**, reported as unread. The honest half of that
+  was
   the reporting; the costly half is that a fleet measurement's conditional signals — often most of
   its interesting ones — produced no streams at all, so no check ever reached them.
 
@@ -456,7 +501,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 - **The last unapplied numeric MF4 conversion is applied.** An ASAM MF4 channel carries a `##CC`
   block saying how the raw bits in a record become the physical quantity they stand for, and every
-  numeric form of it was applied — linear, rational, both value-to-value tables, value-range-to-value
+  numeric form of it was applied — linear, rational, both value-to-value tables,
+  value-range-to-value
   — except type 3, the *algebraic formula*, which stores the rule as text (`(X - 32) * 5 / 9`) in a
   `##TX` rather than as parameters. It was disclosed as unread, honestly, and that disclosure is the
   whole problem: the physical value was defined in the file, nobody computed it, and every
@@ -467,7 +513,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   Read now by a parser over arithmetic, parentheses, `X`, and a **closed table** of functions
   (`sin`…`tanh`, `exp`, `log`, `log10`, `sqrt`, `abs`, `pow`, `min`, `max`). Closed on purpose: a
   formula naming a function the table does not know, or referring to a *second* input signal as `X2`
-  — whose value a channel conversion has no access to — is declined **whole** and reported exactly as
+  — whose value a channel conversion has no access to — is declined **whole** and reported exactly
+  as
   before, never evaluated in part. A plausible wrong physical value is worse than an unevaluated
   conversion, because nothing downstream can tell it was wrong.
 
@@ -487,10 +534,12 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   It is the common case rather than the rare one: RLDS declares no total, and neither does a bag, an
   MCAP file, a CAN log or an MF4 measurement.
 
-  Withheld under `--metadata-only`, and under a **sampled** run, which drops the dataset-level totals
+  Withheld under `--metadata-only`, and under a **sampled** run, which drops the dataset-level
+  totals
   on purpose because they are only comparable against a whole read — without that second guard it
   said "this dataset declares no total frame count" about a dataset that declares one, and the same
-  file read whole reported nothing. `CheckContext` gains `sampled` for it, beside `frames_read`. That
+  file read whole reported nothing. `CheckContext` gains `sampled` for it, beside `frames_read`.
+  That
   mistake was caught by the narrower-read invariant added earlier in this release, on the very code
   that motivated it.
 
@@ -509,7 +558,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 - **The promise that makes `--profile strict` safe to gate on now has a test behind it.**
   [docs/profiles.md](docs/profiles.md) sells tightening in these words: measuring the data harder
   than the catalog asks "can only lower a score, so it is not a narrowing: it emits no
-  `SCOPE.NARROWED`, and `check --profile strict --min-score 80` is a valid CI gate". Nothing held it.
+  `SCOPE.NARROWED`, and `check --profile strict --min-score 80` is a valid CI gate". Nothing held
+  it.
   A profile that could make a finding *disappear* would turn that gate into a way to launder a
   failing dataset — the exact thing `SCOPE.NARROWED` exists to stop a loosened threshold from doing,
   arriving through the one door deliberately left open. Held now over every demo variant of every
@@ -530,7 +580,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   full read does not**, held over every demo variant of every generator and over both narrowings a
   caller can ask for (`--metadata-only` and `--sample-episodes`). The only codes exempt are the ones
   that name the *run* as their own cause — `COVERAGE.METADATA_ONLY`, `COVERAGE.SAMPLE`, and
-  `STRUCTURAL.UNCOMPARED_EPISODES`, which says "this run covers 1 episode(s)". So the next abstention
+  `STRUCTURAL.UNCOMPARED_EPISODES`, which says "this run covers 1 episode(s)". So the next
+  abstention
   written without this in mind fails the suite instead of shipping.
 
 - **The semantic family was the last one whose silence could mean either thing.** Every other family
@@ -573,14 +624,16 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 - **A LeRobot feature the manifest declares and the data lacks is a coverage hole, not an
   omission.** The adapter already noticed the disagreement — it just filed it under `omitted`, which
   is where Veridex records what it *chooses* not to read (video pixels, feature array payloads). So
-  it reached no finding. Meanwhile a stream is still built for every declared feature, so the missing
+  it reached no finding. Meanwhile a stream is still built for every declared feature, so the
+  missing
   one carries a frame at every row timestamp and no values at all: every structural and temporal
   check passes on it, and the statistical family's abstention reads as a gap in Veridex rather than
   in the data. A manifest promising a force-torque sensor the Parquet never held passed with a
   perfect `data 100`. It is now an unread source, like the undeclared column in the opposite
   direction — the two halves of the same reconciliation had disagreed about what they meant — so it
   reaches `COVERAGE.SOURCE_UNREAD` and the verdict, and its stream is **empty** rather than carrying
-  a frame per row, which is what it is and the same answer the RLDS reader has always given a feature
+  a frame per row, which is what it is and the same answer the RLDS reader has always given a
+  feature
   absent from a record (`STRUCTURAL.EMPTY_STREAM`, an error). Video features are excluded: LeRobot
   keeps a camera's pixels in `videos/`, so having no Parquet column is their normal state, and a
   genuinely missing video file stays the video family's finding. Documented in
@@ -602,7 +655,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   invariants prove it is the message it claims to be, so a mislabelled topic, a truncated write or a
   stubbed payload cannot produce a fabricated number. Nothing reported the other half of that guard.
   A body that failed it was dropped where it was read — five call sites across three readers each
-  wrote `if let Some(v) = decode(..)` — and it leaves behind a frame with a timestamp, a schema and a
+  wrote `if let Some(v) = decode(..)` — and it leaves behind a frame with a timestamp, a schema and
+  a
   coordinate frame like any other. So the structural family saw frames, the temporal family saw a
   clean cadence, the frame checks placed the sensor in the tree, and *everything read out of the
   bodies* (a stream's statistics, its point counts, its capture stamps, its fix availability) was
@@ -613,18 +667,21 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   sensors drawn from the surviving fifth.
 
   `Stream.observed_body_decodes` now records how many bodies the reader tried and how many failed,
-  and `autonomy.message-decode` reports the ratio per stream (`AUTONOMY.MESSAGE_BODY_UNDECODED`). One
+  and `autonomy.message-decode` reports the ratio per stream (`AUTONOMY.MESSAGE_BODY_UNDECODED`).
+  One
   counter for every decoder rather than one per decoder, because the fact is a property of the
   recording and not of any message type — and a decoder added later is covered without further work.
   The two rosbag2 readers carried a byte-identical copy of the decode dispatch each, which is how a
   decoder could reach one storage plugin and not the other; they now share one. A fault, not an
   abstention: the bytes were reached and they are not the message, the same fact as
-  `VIDEO.MEDIA_UNREADABLE` one format down. The neighbouring silence — a stream whose schema no typed
+  `VIDEO.MEDIA_UNREADABLE` one format down. The neighbouring silence — a stream whose schema no
+  typed
   decoder covers — carries no summary at all and stays with the families that wanted to read it,
   because "nothing failed" and "nothing was tried" are opposite facts.
 
   Bound into the content hash (`CANONICAL_VERSION` is 18), and added to `world-model-ready`: every
-  criterion in that profile that reads a body is computed from the bodies that decoded, so without it
+  criterion in that profile that reads a body is computed from the bodies that decoded, so without
+  it
   a rig whose sensors mostly did not survive the recording certified as ready on the share that did.
   Reproduced end to end by two demo variants — `av-corrupt-bodies` (IMU and GNSS, 76 (C) → 55 (F))
   and `av-truncated-lidar` (point clouds, 76 (C) → 66 (D)). Documented in
@@ -634,7 +691,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   document.** The certificate carried findings rolled up by severity and by *family*, which cannot
   express the one thing it most has to: **which checks measured nothing**. A single-episode dataset
   whose streams hold no summarizable values signed as 46 checks run, no family skipped,
-  `statistical: 1` and `structural: 1` — while all five statistical checks had nothing to measure and
+  `statistical: 1` and `structural: 1` — while all five statistical checks had nothing to measure
+  and
   seven cross-episode checks had nothing to compare. Twelve of the forty-six presented as clean
   executed checks.
 
@@ -646,10 +704,12 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
   `findings_summary.by_code` is now signed alongside the coarser rollups; `verify` prints a
   `findings:` line naming each code and count, and `--json` carries `findings_by_code`. Python
-  reaches it through the same shared renderer, so parity holds by construction. Codes are declared by
+  reaches it through the same shared renderer, so parity holds by construction. Codes are declared
+  by
   checks, so the map is bounded by the catalog and never by the dataset — finding *messages* are
   deliberately not carried, being sized by the input. A certificate issued before the field existed
-  carries no map, still verifies byte-identically, and the readers print no line rather than an empty
+  carries no map, still verifies byte-identically, and the readers print no line rather than an
+  empty
   one: absent means unknown, not none. Documented in
   [docs/trust-chain.md](docs/trust-chain.md).
 
@@ -657,15 +717,18 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   neighbouring cases — a check that *crashed* (`Checks that failed to run`) and a family that ran
   nothing (`Families not run`). The third is the one a clean result hides best: a check that ran,
   measured nothing, and therefore found nothing, which is byte-for-byte what a flawless dataset
-  produces. A grade earned over checks that could not measure is a different grade, and a reader of a
+  produces. A grade earned over checks that could not measure is a different grade, and a reader of
+  a
   dataset card cannot re-run Veridex to discover the difference.
 
-  Telling an abstention from a fault needs the catalog's judgement, not a name pattern, so each check
+  Telling an abstention from a fault needs the catalog's judgement, not a name pattern, so each
+  check
   now declares its own (`Check::abstention_codes`, empty by default, also surfaced on `CheckInfo`).
   A test holds the declaration to the catalog in **both** directions: a finding code that reads like
   an abstention and is not declared fails it, and so does a declared code outside the naming
   vocabulary — because that would mean the guard could no longer find its siblings. Proven by
-  deleting one declaration and watching it name the omission. `VIDEO.MEDIA_UNREADABLE` is recorded as
+  deleting one declaration and watching it name the omission. `VIDEO.MEDIA_UNREADABLE` is recorded
+  as
   a deliberate exception with its reason: the media was reached and did not parse, which is a defect
   in the file, not a gap in what Veridex looked at.
 
@@ -683,18 +746,22 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 - **Two exit codes a script gets wrong in opposite directions, now documented and pinned.** `check`
   and `certify` carry the verdict (`0`/`10`/`20`); `inspect`, `provenance`, `label`, `verify`,
-  `checks`, `diff` and `attest` exit `0` when they did their own job, whatever the dataset's verdict.
+  `checks`, `diff` and `attest` exit `0` when they did their own job, whatever the dataset's
+  verdict.
   Neither consequence was stated anywhere:
 
   - **`certify` writes the certificate and then exits `20` for a failing dataset**, so
-    `veridex certify … && upload` uploads nothing for exactly the datasets whose certificate says the
+    `veridex certify … && upload` uploads nothing for exactly the datasets whose certificate says
+    the
     most — while [docs/autonomy-quickstart.md](docs/autonomy-quickstart.md) says a certificate is
     issued for a failing dataset too. The behaviour and the framing pulled opposite ways.
   - **`verify` exits `0` for a valid certificate that says `fail`**, because it answers "is this
-    document genuine and about this data", not "is the data good". A gate keying on it alone passes a
+    document genuine and about this data", not "is the data good". A gate keying on it alone passes
+    a
     failing dataset; `status` in `--json` is where to read the verdict.
 
-  Both are in the README's Commands section with the scripting consequence spelled out, and pinned by
+  Both are in the README's Commands section with the scripting consequence spelled out, and pinned
+  by
   a test whose first version used a *passing* fixture — caught on the spot by its own "the fixture
   must not pass, or this pins nothing" assertion.
 
@@ -709,12 +776,15 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   release where an autonomy criterion stayed green because the check that would have spoken was a
   different check id. A hand-off nobody catches is silence with a comment on it.
 
-  The test builds the deferred case for four hand-offs, runs the whole engine, and requires the named
+  The test builds the deferred case for four hand-offs, runs the whole engine, and requires the
+  named
   code to appear. All four are honored. It also runs a **control** — healthy data must produce none of
-  those codes — because an assertion that a code appears passes trivially if the code appears for any
+  those codes — because an assertion that a code appears passes trivially if the code appears for
+  any
   dataset, and that control is inside the test rather than something checked once by hand.
 
-- **The `.mp4` probe gained a sweep — the last untrusted binary parser without one.** It walks a tree
+- **The `.mp4` probe gained a sweep — the last untrusted binary parser without one.** It walks a
+tree
   of boxes whose every size comes out of the file: a 32-bit size, the 64-bit extension a size of `1`
   introduces, and the size of `0` that means "I run to the end". No defect was found: each length is
   already validated against the bytes actually remaining, so the walk advances by at least a header
@@ -735,15 +805,19 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   corruptions is not the same as trying every byte.
 
   A naive sweep would have proved nothing. TFRecord frames each record as
-  `length | crc32c(length) | data | crc32c(data)`, so a flipped byte anywhere is caught by a checksum
-  and refused before the protobuf reader is reached: the sweep would measure the CRC, not the parser.
-  The mutation therefore goes *inside* the `tf.train.Example` payload and the record is **reframed**,
+  `length | crc32c(length) | data | crc32c(data)`, so a flipped byte anywhere is caught by a
+  checksum
+  and refused before the protobuf reader is reached: the sweep would measure the CRC, not the
+  parser.
+  The mutation therefore goes *inside* the `tf.train.Example` payload and the record is
+  **reframed**,
   recomputing both checksums, which puts the reader behind them under test — varints, wire types,
   nested message lengths and repeated-field counts, every one of them a number the file supplies.
 
   Around 200 cases (zero/max/flip at strided offsets, plus empty, one-byte, truncated and doubled
   payloads); the reader survives all of them. The sweep also bounds what comes back — a mutated
-  three-step record may not yield thousands of frames — because a corrupted length prefix inflating a
+  three-step record may not yield thousands of frames — because a corrupted length prefix inflating
+  a
   frame count is exactly what a "does not panic" test alone would miss. Confirmed to reach
   `parse_example` rather than bouncing off the manifest, by the same assertion trick as the MF4 shape.
 
@@ -754,7 +828,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   text pulled from an `##MD` block, then scanned for `<common_properties>` entries whose every length,
   name and value comes out of the file — and the shape was not added with it.
 
-  The targeted tests already covered *malformed XML*; corrupted *bytes* are a different attack, since
+  The targeted tests already covered *malformed XML*; corrupted *bytes* are a different attack,
+  since
   the text arrives through `String::from_utf8_lossy` and every offset into it is computed from a
   mangled document. The shape survives the sweep unmodified. Because a corpus entry that is never
   exercised proves nothing, the sweep was confirmed to reach the parser by asserting inside it that
@@ -805,36 +880,50 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   of its codes mean "I could not measure", and points at `veridex checks` and
   [docs/checks.md](docs/checks.md) for the full set rather than listing thirteen codes in a README.
 
-  Worth recording: the paragraph already claimed those findings travel "into the JSON, the SARIF, the
+  Worth recording: the paragraph already claimed those findings travel "into the JSON, the SARIF,
+  the
   HTML, and the certificate". That was not true when written — the same overstatement corrected in
-  CONTRIBUTING — and is true now, because the certificate gained `findings_summary.by_code`. The code
+  CONTRIBUTING — and is true now, because the certificate gained `findings_summary.by_code`. The
+  code
   caught up to its own documentation.
 
   The "nine checks" count is held to the catalog by a test, the third such guard beside the two in
   `docs/checks.md`, because a count in prose is exactly what drifted here.
 
 - **No finding may report a number that is not a number.** Several checks divide by something the
-  data supplies — a median inter-frame interval, a mean, an episode duration — and each is guarded so
+  data supplies — a median inter-frame interval, a mean, an episode duration — and each is guarded
+  so
   the degenerate case abstains. Those guards are load-bearing for the *report*, not just for
   arithmetic: past them a division yields `inf` or `NaN`, and the finding says streams "drift by NaN
   ms". Nothing held that invariant, so it is now a test, over five degenerate shapes a legal file
-  produces (every frame at one instant, single-frame streams sharing a clock, a rig whose sensors all
+  produces (every frame at one instant, single-frame streams sharing a clock, a rig whose sensors
+  all
   stopped the clock, and so on).
 
   Its detection rule took three attempts and is worth stating, because both obvious ones are wrong:
-  a whole-word test misses `{ratio:.1}x` with an infinite ratio, which renders as `infx` and reads as
+  a whole-word test misses `{ratio:.1}x` with an infinite ratio, which renders as `infx` and reads
+  as
   one word; a plain substring test flags `provenance`, which contains `nan`. The rule that separates
   them is that a formatted number never begins in the middle of a word, so an occurrence counts only
   when what precedes it is not a letter.
 
   Found by a threshold mutation sweep (44 comparisons flipped one at a time, 19 surviving). The
   survivors were then read, and **none of them is a defect**: four were the sweep's own regex matching
-  inside comments, and the rest are unreachable or benign — `duration_ns()` never returns zero, so an
+  inside comments, and the rest are unreachable or benign — `duration_ns()` never returns zero, so
+  an
   episode-duration median cannot be; the jitter mean is guarded by the line above it, which rejects
   any non-positive interval; `present_in.len() >= total` is redundant with an `is_empty()` check a few
   lines down. Recorded here so the same sweep is not re-run and the same survivors re-investigated.
 
 ### Fixed
+
+- **A little-endian CAN signal is decoded from the byte it starts in, not from the front of the
+  frame.** The decoder assembled the frame's first eight bytes and shifted by the whole start bit:
+  the same answer for a classic CAN frame, and no answer at all beyond one. Every signal a CAN-FD
+  database places past bit 63 — the entire reason that bus carries 64 bytes — decoded to nothing,
+  and a signal that decodes from no frame has no stream at all, so nothing in the verdict said it
+  was missing. It reads any start bit the frame actually reaches now, through a 128-bit accumulator
+  so a 64-bit signal straddling a byte keeps its top bits.
 
 - **The Python catalog pins `abstention_codes`.** Python reaches the catalog through the same
   `render_catalog_json` the CLI uses, so the field flowed through the moment it existed and the
@@ -845,9 +934,11 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   run and an unmeasured one produce the same silence.
 
 - **An abstention nothing recognized, and a guard that could not have found it.** The catalog guard
-  finds abstention codes by a naming vocabulary (`UNMEASURED`, `UNCOMPARED`, `UNREAD`, …), which is a
+  finds abstention codes by a naming vocabulary (`UNMEASURED`, `UNCOMPARED`, `UNREAD`, …), which is
+  a
   heuristic for *finding* them rather than a definition. `STATISTICAL.NO_STORED_STATS` means two
-  rules "had nothing to compare against" and carries none of those words, so the guard passed over it
+  rules "had nothing to compare against" and carries none of those words, so the guard passed over
+  it
   for as long as it existed: an abstention that no summarizer could tell from a fault, and that the
   trust label's `Could not measure` row therefore did not name.
 
@@ -866,25 +957,32 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 - **A rig with no transform tree reported its sensors resolved.** Completing the audit the entry
   below started: `autonomy.sensor-frame-resolution` returned early when the dataset carries no
   calibration, deferring to `autonomy.calibration-completeness` — "No tree at all is one defect,
-  reported once." That is right about the *report* and wrong about the criteria, which are per check.
+  reported once." That is right about the *report* and wrong about the criteria, which are per
+  check.
   The certificate carried `✗ autonomy.calibration-completeness` beside
   `✓ autonomy.sensor-frame-resolution — every sensor's own frame resolves through the tree to a
   camera`, over a rig with no tree to resolve through. `ready` was already false from the first, so
   nothing was certified that should not have been, but the sentence was untrue about the run it
   described and a reader deciding what to fix was told the spatial wiring was sound.
 
-  The check now abstains out loud (`AUTONOMY.SENSOR_FRAME_UNCHECKED`), which is a statement about the
+  The check now abstains out loud (`AUTONOMY.SENSOR_FRAME_UNCHECKED`), which is a statement about
+  the
   check rather than a second accusation about the data — and **only for a rig**. This check's faults
-  are per stream and self-limiting, but the abstention fires on the *absence* of a tree, which almost
+  are per stream and self-limiting, but the abstention fires on the *absence* of a tree, which
+  almost
   nothing outside an autonomy rig carries; ungated it told every LeRobot arm recording and every
-  ordinary MCAP file that it declares no transform tree, which is true and not a gap in anything they
+  ordinary MCAP file that it declares no transform tree, which is true and not a gap in anything
+  they
   were being measured for. With this, all nine `world-model-ready`
-  criteria either measure or abstain: `autonomy.sequence-complete` was the last one audited and needs
-  no change, because it falls back to the sensor's own median inter-frame interval when a publisher's
+  criteria either measure or abstain: `autonomy.sequence-complete` was the last one audited and
+  needs
+  no change, because it falls back to the sensor's own median inter-frame interval when a
+  publisher's
   message numbering is absent, so it measures wherever there are frames to measure.
 
 - **Two readiness criteria were met over a satellite receiver whose data was never decoded.**
-  `autonomy.point-cloud-density` already gets this right: a LiDAR whose per-message point counts were
+  `autonomy.point-cloud-density` already gets this right: a LiDAR whose per-message point counts
+  were
   never read makes it abstain out loud, which refuses its criterion, because "every point-cloud
   sensor actually recorded points" cannot be attested over counts nobody read. The receiver is that
   situation one sensor over, and got the opposite treatment — a `Gnss` stream carrying no decoded
@@ -893,12 +991,14 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
   The cause is a deferral. The source comment recorded the reasoning: *"Silent on a rig whose GNSS
   was never decoded — `STATISTICAL.UNMEASURED_VALUES` says that."* That disclosure is real, but it
-  belongs to `statistical.value-measurability` — a **different check id** — and a readiness criterion
+  belongs to `statistical.value-measurability` — a **different check id** — and a readiness
+  criterion
   is judged by its own check's findings. So the silence was disclosed in the report while
   `world-model-ready` counted the check as passed. "X is Y's concern" is not coverage.
 
   Both checks now raise their own abstention (`AUTONOMY.GNSS_UNMEASURED`,
-  `AUTONOMY.GNSS_STATUS_UNREAD`), mirroring the point-cloud pattern, which makes the criteria refuse.
+  `AUTONOMY.GNSS_STATUS_UNREAD`), mirroring the point-cloud pattern, which makes the criteria
+  refuse.
   Neither is an accusation: the absence of a status is not an absence of fixes, and
   `AUTONOMY.GNSS_NO_FIX` is never raised from it. The `world-model-ready` fixture gained a decoded
   receiver for the same reason it already carried point counts — a stand-in for a healthy rig has to
@@ -907,13 +1007,15 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 - **A zero-byte recording was described as a truncated record.** A crashed or killed recorder leaves
   an empty file behind, and it is one of the most common real files a first-time user points Veridex
-  at. Every format's parser described it in that format's own terms — MCAP as `ended in the middle of
+  at. Every format's parser described it in that format's own terms — MCAP as `ended in the middle
+  of
   a record`, which is true (it ended before the first one) and sends a reader hunting for a
   truncation in a file with no bytes in it. The failure now carries `the file is empty (0 bytes)`,
   which is the treatment an empty *directory* already got; the file was the case that was missed.
 
 - **`VIDEO.MEDIA_UNREADABLE` was declared an abstention and documented as not one, at the same
-  time.** The previous release note recorded it as a deliberate exception — the media was reached and
+  time.** The previous release note recorded it as a deliberate exception — the media was reached
+  and
   would not parse, which is a defect in the file rather than a gap in what Veridex looked at — while
   the check declared it in `abstention_codes` regardless. The trust label would then have offered
   "could not measure" for a video container that was read, at error severity. The declaration is
@@ -936,7 +1038,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   the `findings:` line to the renderer left the page showing the output from before it existed. A
   sample that has drifted is worse than none — it reads as a transcript. It is now real output over
   the `av-lossy-camera` demo rig, and a test holds the *set of lines* on the page to the set
-  `render_verified` produces, so a line added to the renderer or removed from it fails until the page
+  `render_verified` produces, so a line added to the renderer or removed from it fails until the
+  page
   is updated. Held on the labels rather than the values: the hash, timestamp and key belong to one
   run, while the lines belong to the renderer. Proven by deleting the `findings:` line from the page
   and watching it fail.
@@ -950,7 +1053,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   for a drive that never had a receiver. Two vacuously true sentences in the document's strongest
   claim.
 
-  Reachable from an ordinary recording, not a contrived one: a LiDAR + IMU + CAN + camera rig with an
+  Reachable from an ordinary recording, not a contrived one: a LiDAR + IMU + CAN + camera rig with
+  an
   ego trajectory — indoors or on a closed course — is a rig, perceives, and is a world-model
   candidate, and it passed both.
 
@@ -968,13 +1072,16 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   semantic family joined the whole list in:
 
   `SEMANTIC.AMBIGUOUS_STREAM_KEY` reports one finding per member of a colliding group, each naming
-  every *other* member, which is quadratic in the bytes. 2,000 streams that normalize to the same key
+  every *other* member, which is quadratic in the bytes. 2,000 streams that normalize to the same
+  key
   produced a 263 KB message apiece and roughly half a gigabyte of report — from a legal file.
   `SEMANTIC.ANNOTATION_CONFLICT` joined every conflicting value at a timestamp, each of them free
   text of any length.
 
-  Both now name four and count the rest, the shape the statistical, structural, temporal and autonomy
-  families already use; the full count is still stated, so nothing a reader needs to size the problem
+  Both now name four and count the rest, the shape the statistical, structural, temporal and
+  autonomy
+  families already use; the full count is still stated, so nothing a reader needs to size the
+  problem
   is lost. Tests hold each message under 400 bytes and the whole report linear in the stream count,
   and both fail when the cap is reverted. Documented per-check in
   [docs/checks.md](docs/checks.md).
@@ -982,7 +1089,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 - **The nutrition label promoted a filename guess into a signature.** The label's provenance line
   read `3 known · 1 attested · 2 unknown`, printing the `asserted` count under the word *attested*.
   Those are different claims. `Asserted` is usually an adapter being honest about a guess — the MCAP
-  reader classes an attachment named `calibration.yaml` as `asserted` because the *filename* contains
+  reader classes an attachment named `calibration.yaml` as `asserted` because the *filename*
+  contains
   "calib", having read no calibration content and seen no signature. *Attestation* is a producer
   signing for a value with their own key, and the label already prints that in its own `Attested`
   row, naming the elements and the key.
@@ -1004,7 +1112,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   which it is not).
 
   Two are genuinely silent, and neither had anything watching it. A field missing from
-  `effective.rs`'s table is never printed by `--print-config`, so the one command for "what will this
+  `effective.rs`'s table is never printed by `--print-config`, so the one command for "what will
+  this
   run actually use" answers incompletely. A field missing from `report.rs::tolerance_departures` is
   not disclosed as a narrowing — and that is the one that matters: loosening it would not raise
   `SCOPE.NARROWED`, so `--min-score` would gate a run that measured the data less hard than the
@@ -1070,7 +1179,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   makes possible — and `statistical.stored-vs-observed`, the check behind the "stale stats silently
   mis-normalize your inputs" claim, had nothing to run on outside the unit tests.
 
-  The demo now writes a real `stats.json` computed from the rows it actually wrote, so it agrees with
+  The demo now writes a real `stats.json` computed from the rows it actually wrote, so it agrees
+  with
   the data by construction. New variant `stale-stats` ships the summary a team exported *before*
   re-recording — a stored `[min, max]` that no longer contains the values beside it, which every
   other check passes over → `STATISTICAL.STATS_STALE`.
@@ -1080,7 +1190,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   recompute finds the bad frame. Previously it shipped no summary at all, which demonstrated less.
 
 - **A demo for the message loss no timeline shows.** `AUTONOMY.SEQUENCE_DROPPED` had no runnable
-  example. New variant `av-lossy-camera` is the rig with a camera whose transport dropped one message
+  example. New variant `av-lossy-camera` is the rig with a camera whose transport dropped one
+  message
   in five: the publisher numbered every one of them, and the survivors keep the times they were
   published at, which is what a dropping transport actually leaves behind. Its report differs from
   the healthy rig's by exactly one finding — a fifth of a camera goes missing while rate, gap,
@@ -1092,7 +1203,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 - **The README's headline report was a sketch the tool has never printed.** The first code block on
   the front page showed a "Veridex Trust Report" with a layout, a score line and a set of one-line
   family summaries that do not exist in any output path. It was labelled illustrative, so it was not
-  a lie — but it was the one block on the page nothing could check, on a tool whose whole argument is
+  a lie — but it was the one block on the page nothing could check, on a tool whose whole argument
+  is
   that a report should say exactly what was measured, and a reader's first impression of the product
   was of a thing that does not run.
 
@@ -1210,8 +1322,10 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   quickstart's `certify` transcript showed a content hash that no longer matched, because the test
   diffing that page against live CLI output skipped that one field. Pinning it instead turned out to
   be wrong twice over: the value goes stale whenever the CDM gains a field *or* a dependency changes
-  what the container records about itself, and it is not a claim a reader can check — it is an opaque
-  digest. The page now elides it, and the guard compares the verdict and grade exactly while checking
+  what the container records about itself, and it is not a claim a reader can check — it is an
+  opaque
+  digest. The page now elides it, and the guard compares the verdict and grade exactly while
+  checking
   the hash for shape only (sixteen hex characters).
 
 - **`docs/profiles.md` states the readiness criteria twice and nothing checked either.** The page
@@ -1265,12 +1379,14 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   every presence check and divides by a focal length of zero → `AUTONOMY.CALIBRATION_IMPLAUSIBLE`.
 
   Found by running the CLI on the demo and reading what it said. The quickstart's pinned output is
-  regenerated: the rig now fails on one criterion, `rig-sync`, which is the fault that demo is *for*.
+  regenerated: the rig now fails on one criterion, `rig-sync`, which is the fault that demo is
+  *for*.
 
 - **A dropped message the timeline could not show.** `AUTONOMY.SEQUENCE_COMPLETE` estimated a rig
   sensor's lost frames from its median cadence — which needs a cadence to exist (it abstains on
   anything event-driven), needs eight frames to establish one, and cannot see the one shape that
-  matters most: losses scattered one message at a time leave intervals near twice the cadence, and so
+  matters most: losses scattered one message at a time leave intervals near twice the cadence, and
+  so
   does ordinary jitter. Meanwhile every MCAP message carries a `sequence` its publisher set, and the
   adapter recorded that field as *unmapped*. A hole in it is direct evidence that a message was
   published and never reached the file.
@@ -1321,7 +1437,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   Veridex does not decode (Image, **Imu**, …)" — true when it was written, and false since the `Imu`
   decoder landed. So the bag path's Imu decode was reachable, unexercised, and would have gone on
   being both: a fixture named `clean_rig` reported its IMU under `STATISTICAL.UNMEASURED_VALUES`,
-  and the statistical family abstained on the one sensor in that recording whose values it can grade.
+  and the statistical family abstained on the one sensor in that recording whose values it can
+  grade.
 
   The generator now writes a real `sensor_msgs/msg/Imu` body — orientation, angular velocity and
   linear acceleration, each with its covariance — and the fixtures are regenerated. The IMU carries
@@ -1330,7 +1447,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   running the CLI on the bag fixture the docs tell a reader to try.
 
 - **A point record layout that does not fit the stride it declares.** The last unread field in the
-  CDR decoder: `PointField`'s `offset` and `count` were parsed and discarded, so a cloud whose fields
+  CDR decoder: `PointField`'s `offset` and `count` were parsed and discarded, so a cloud whose
+  fields
   run past `point_step` or overlap each other — what a hand-rolled publisher writes when it adds a
   field and forgets to widen the stride — was read as a well-formed record. Every consumer then gets
   garbage for one field and correct values for the rest.
@@ -1396,7 +1514,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 - **Both saturation knobs were unpinned too, completing the threshold sweep.** Aimed at the four
   remaining comparisons that read a knob from `veridex.toml`, the sweep killed two —
-  `statistical.outlier_z` and `structural.near_duplicate_fraction` were already pinned — and left the
+  `statistical.outlier_z` and `structural.near_duplicate_fraction` were already pinned — and left
+  the
   two saturation gates alive. A stream sitting exactly on the `saturation_fraction` a user
   configured, or carrying exactly the `saturation_min_samples` they set, could have been silently
   dropped from the check they turned it on for. Both land exactly: one is a count of whole samples,
@@ -1409,7 +1528,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 - **Every user-configurable temporal threshold was unpinned at its boundary — including the headline
   one.** The same sweep, aimed at the five comparisons that read a knob from `veridex.toml`, found
   all five mutations alive: `clock_skew_ns`, `gap_factor`, `jitter_cv`, `rate_deviation` and
-  `episode_duration_factor` could each have been silently tightened to fail data that sits exactly on
+  `episode_duration_factor` could each have been silently tightened to fail data that sits exactly
+  on
   the limit a user configured.
 
   Three are reachable exactly and are now pinned on both sides: a clock drift of exactly the
@@ -1427,7 +1547,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   fail a rig that meets the criterion it attests:
 
   - **"within a 20 ms cross-sensor span drift"** — a spread of exactly the allowance is *within* it.
-  - **"no rig sensor dropping more than 5% of its frames"** — exactly 5% is not more than 5%, and the
+  - **"no rig sensor dropping more than 5% of its frames"** — exactly 5% is not more than 5%, and
+  the
     fraction is a ratio of whole frames, so it lands there exactly.
   - **"no step above 100 m/s implied speed"** — 10 m in 100 ms is exactly 100 m/s, exact in binary
     floating point too.
@@ -1465,7 +1586,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   can1` writes them all to one file — and a CAN id is per-bus: `0x100` is one message on the
   powertrain bus and something else entirely on the chassis bus. Decoded by id alone, both buses'
   frames landed in the same signal stream, whose values and statistics blend two unrelated physical
-  quantities into a summary of nothing, indistinguishable in the report from a clean single-bus read.
+  quantities into a summary of nothing, indistinguishable in the report from a clean single-bus
+  read.
 
   Streams are now named `<interface>:<Message>.<Signal>` when a log carries more than one interface,
   so the buses stay apart; a single-bus log — nearly every log — keeps the names it has always had,
@@ -1521,8 +1643,10 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
   The abstention reaches the **readiness criterion**, and that is the point of it. `world-model-ready`
   attests that "every point-cloud sensor actually recorded points", which over counts nobody read is
-  not a claim anyone can make — and without the finding the criterion counted zero findings, reported
-  green, and signed a rig whose LiDAR was never measured as ready to build a world model from. It now
+  not a claim anyone can make — and without the finding the criterion counted zero findings,
+  reported
+  green, and signed a rig whose LiDAR was never measured as ready to build a world model from. It
+  now
   refuses. The `healthy_rig` profile fixture carries the counts a healthy rig read in full carries,
   rather than passing the criterion by never having been measured.
 
@@ -1575,16 +1699,22 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   everything *else* passes on it — a unit test on a hand-built CDM cannot show that.
 
   A count is believed only when the body proves it is a `PointCloud2`. The count is the first two
-  `uint32`s after the header, so a decode that read only those would believe whatever bytes happen to
+  `uint32`s after the header, so a decode that read only those would believe whatever bytes happen
+  to
   sit there — and a channel's declared schema is not proof of its bodies. A recorder that stubs the
   payload, a mislabelled topic, a truncated write: each presents as a `PointCloud2` channel, and a
-  fabricated count reaches the report as a finding about honest data, which is worse than the silence
-  it replaces. So the decode walks the field list to the `point_step`/`row_step`/`data` values behind
-  it and returns a count only when the message's own invariants hold — at least one declared field, a
-  non-zero point stride, a `row_step` covering a row of `width` points, `data` of exactly `row_step ×
+  fabricated count reaches the report as a finding about honest data, which is worse than the
+  silence
+  it replaces. So the decode walks the field list to the `point_step`/`row_step`/`data` values
+  behind
+  it and returns a count only when the message's own invariants hold — at least one declared field,
+  a
+  non-zero point stride, a `row_step` covering a row of `width` points, `data` of exactly `row_step
+  ×
   height` bytes, and those bytes actually present. An empty cloud satisfies every one of them, which
   is the case the check exists for; a buffer of zeroes does not, which is what the field and stride
-  rules are for. The field count is capped at 64 before the walk, because it is a `uint32` out of the
+  rules are for. The field count is capped at 64 before the walk, because it is a `uint32` out of
+  the
   file and the walk is a per-message cost.
 
   The count comes from each message's own `height × width`, which a `PointCloud2` states in its
@@ -1704,16 +1834,19 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 - **`autonomy.calibration-completeness` re-read its transform tree once per episode.** The same
   shape, one check over: the tree is dataset-level and so is everything derived from it, but
   `break_is_localizable` rebuilt the set of every frame the tree names and `tf_component_count`
-  rebuilt its whole adjacency and walked it, inside the per-episode loop — for an answer identical on
+  rebuilt its whole adjacency and walked it, inside the per-episode loop — for an answer identical
+  on
   every episode. Both counts come from the input file, so a 2,000-episode drive log with a
   20,000-frame tree paid their product: **203 seconds, now 0.66**. The component count is computed
   at most once, and only on the branch that needs it.
 
 - **`autonomy.sensor-frame-resolution` was quadratic three ways over counts a bag chooses.** Nothing
   caps how many channels a recording may declare, so the number of cameras and the number of spatial
-  sensors on one episode are both file-controlled, and a log of 5,000 image topics beside 5,000 LiDAR
+  sensors on one episode are both file-controlled, and a log of 5,000 image topics beside 5,000
+  LiDAR
   topics is legal. The check tested each sensor's frame against a `Vec` of camera frames (their
-  product), built the camera-reachable set by walking the whole transform tree once per camera, and —
+  product), built the camera-reachable set by walking the whole transform tree once per camera, and
+  —
   the dominant cost — called `tf_reachable_from` once per spatial sensor, rebuilding the tree's
   entire adjacency map and traversing its component each time, only to ask whether the result was
   empty. That last question is membership in the set of frames the tree names, and needs no walk at
@@ -1787,7 +1920,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
   The denominator is the episodes **in this run**, so a sampled run never reports a partiality its
   own request created — that narrowing is disclosed by the run's coverage note. A dataset-scoped
-  record covers every episode and is silent here, and a placeholder value (`unknown`, `n/a`) does not
+  record covers every episode and is silent here, and a placeholder value (`unknown`, `n/a`) does
+  not
   count as an episode that carries the element, so an absent element stays `MISSING_…` rather than
   becoming partial. This reports the fact; it does not change the coverage arithmetic, which is
   rubric-defined.
@@ -1835,7 +1969,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
   A new code on the existing `autonomy.calibration-completeness` check, so the `world-model-ready`
   calibration criterion judges it already. Error severity: which of two chains places the sensor is
-  not a judgment call, it is a question the log does not answer. Deliberately narrow — a re-parenting
+  not a judgment call, it is a question the log does not answer. Deliberately narrow — a
+  re-parenting
   across **disjoint** validity windows is a recalibration and is not reported, and a disagreement in
   the *numbers* between two chains is a calibration-quality judgment this does not make. Proven
   end-to-end through the MCAP adapter, which keys transforms by `(parent, child)` so both
@@ -1843,9 +1978,11 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   this one finding.
 
 - **`AUTONOMY.GNSS_IMPLAUSIBLE` / `AUTONOMY.GNSS_UNSET`** — the second half of the "GNSS geospatial
-  sanity" follow-up, now that the coordinates are decoded. A satellite fix is the one rig measurement
+  sanity" follow-up, now that the coordinates are decoded. A satellite fix is the one rig
+  measurement
   whose validity has an absolute physical answer: a latitude outside ±90° or a longitude outside
-  ±180° is **not a place**, and when one appears the receiver, the unit conversion or the field order
+  ±180° is **not a place**, and when one appears the receiver, the unit conversion or the field
+  order
   is wrong — silently, because the numbers still look like coordinates. Error severity.
 
   The second code is a fix at exactly `(0, 0)` for every frame: a receiver that never acquired one.
@@ -1868,7 +2005,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   half of it that needed the values decoded first.
 
   Latitude, longitude and altitude are now decoded and measured per dimension, in MCAP and in both
-  rosbag2 storage plugins. A message declaring `STATUS_NO_FIX` contributes nothing: those fields hold
+  rosbag2 storage plugins. A message declaring `STATUS_NO_FIX` contributes nothing: those fields
+  hold
   whatever the driver left behind — zeros, or the last position it had signal for — and recording
   them would report a vehicle parked at Null Island as a fact about the drive.
 
@@ -1927,7 +2065,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   `docs/checks.md` with no fragment — so the reader landed on the whole catalog and had to find
   their own finding in it. Each rule now lands on its family's section.
 
-  An anchor is fragile against a reworded heading in a way a bare page link is not, so a test asserts
+  An anchor is fragile against a reworded heading in a way a bare page link is not, so a test
+  asserts
   every anchor the reporter produces is a heading the page actually has, for every code in the
   catalog. (Rewording one heading makes the test name the code, the anchor, and the headings that do
   exist.)
@@ -1970,12 +2109,14 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   token.)
 
 - **The autonomy quickstart printed output the tool no longer produces.** Its `certify` block showed
-  `grade C (70)` and a criterion line from an older build; the real run says `fail, grade C (73)` and
+  `grade C (70)` and a criterion line from an older build; the real run says `fail, grade C (73)`
+  and
   names the arithmetic check the criterion gained. A page whose whole value is "run this and see the
   same thing" is worth exactly as much as its pasted output is current.
 
   Fixed, and pinned: a test runs the very commands the page prints against the demo rig and asserts
-  the page still contains the status line, the measured `RIG_SYNC` numbers, every readiness criterion
+  the page still contains the status line, the measured `RIG_SYNC` numbers, every readiness
+  criterion
   verdict, and the certified line. Pasted output rots in silence; this makes it fail loudly instead.
   (Reverting the fix makes the test name the exact line that drifted.)
 
@@ -2055,7 +2196,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 - **The Croissant would have asserted a person named "crowdsourced".** A Hugging Face card's
   `annotations_creators` says how a dataset's annotations were *produced* — `crowdsourced`,
-  `machine-generated`, `expert-generated` — which is the honest answer to what `provenance.annotator`
+  `machine-generated`, `expert-generated` — which is the honest answer to what
+  `provenance.annotator`
   asks. But the emitters mapped any `annotator` value straight onto schema.org's `creator` as a
   `Person`, and onto a `prov:Person` node in the PROV graph. Reading LeRobot cards would have put
   `{"@type": "Person", "name": "crowdsourced"}` into a standards document: something no source said,
@@ -2086,7 +2228,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   `rosbag2:<key>` metadata whether or not it is one. A key the table does not know is preserved, not
   promoted.
 
-  The manifest is untrusted input and the map has no declared bound, so both the entry count and each
+  The manifest is untrusted input and the map has no declared bound, so both the entry count and
+  each
   value's length are capped; without them one file decides how much of the CDM, the content hash and
   every report it occupies. And the block ends at the next line that is not one of its entries — a
   reader that kept consuming would eat `message_count`, the manifest's own assertion about the
@@ -2237,7 +2380,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   offset, and repeating the corruption pass under `--metadata-only`, which walks the block graph on
   its own path. Nothing panicked, hung, or allocated without bound.
 
-- **The autonomy quickstart described a constant sensor latency as the wrong finding.** It said a rig
+- **The autonomy quickstart described a constant sensor latency as the wrong finding.** It said a
+rig
   with known trigger offsets "will report that drift as sync spread". It will not: a whole-stream
   shift leaves every span the same length, so `AUTONOMY.RIG_SYNC` — which compares durations — is
   silent, correctly. What such a rig reports is `TEMPORAL.START_OFFSET` and its mirror
@@ -2300,7 +2444,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   same defect in miniature. An `##SI` with a missing or empty name is not a source: it would put an
   empty string into `provenance.sensor`, which reads as extracted knowledge and is not any.
 
-- **An unsorted MF4 data group ingested to zero frames.** A bus logger does not write one raster at a
+- **An unsorted MF4 data group ingested to zero frames.** A bus logger does not write one raster at
+a
   time — it writes records as the samples arrive, several channel groups interleaved in one data
   block, each record prefixed with the `cg_record_id` of the group it belongs to. Veridex declined
   the whole group, so such a file produced no frames at all and every check passed on nothing.
@@ -2311,9 +2456,11 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
   Two consequences fell out of it. **Each channel group now gets its own clock id**
   (`mf4-master#<data-group>.<channel-group>`, previously named after the data group alone). Every
-  `##CG` carries its own time master, so two channel groups are two independent timelines; sharing an
+  `##CG` carries its own time master, so two channel groups are two independent timelines; sharing
+  an
   id would have made the cross-stream temporal checks compare one raster's span and rate against
-  another's and report the difference as a defect. And a **variable-length signal-data group** is now
+  another's and report the difference as a defect. And a **variable-length signal-data group** is
+  now
   declined by name: its records are length-prefixed rather than fixed-stride, so slicing them at
   `cg_data_bytes` read every one at the wrong offset — a full set of confidently wrong values.
 
@@ -2346,27 +2493,32 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   All four shapes now resolve into the one record stream they describe, and decode to a measurement
   byte-identical to the uncompressed original — the same streams, timestamps, value fingerprints and
   recomputed statistics, asserted against the `##DT` fixture rather than against a hand-written
-  expectation. That includes `dz_zip_type` 1, where the writer lays the bytes out column-major before
+  expectation. That includes `dz_zip_type` 1, where the writer lays the bytes out column-major
+  before
   deflating: read without reversing that, a transposed block does not fail, it yields a full set of
   confidently wrong values.
 
   Every length in a compressed block is a claim by the file, so none is trusted. The declared
   expansion is charged to the shared decompression budget *before* a decompressor is pointed at the
-  stream (a 60-byte block claiming 8 GiB is refused, not allocated), each read is hard-capped at that
+  stream (a 60-byte block claiming 8 GiB is refused, not allocated), each read is hard-capped at
+  that
   declared length, and a stream that produces fewer bytes than it promised is reported rather than
   decoded — a short buffer would silently drop the tail of the measurement. A data list whose
   elements do not all resolve refuses the whole group for the same reason: half a list is not a
   shorter measurement, it is a misaligned one, since every record after the missing chunk would be
   read at the wrong offset.
 
-  What is still declined, and still disclosed as unread: a `##DZ` holding something other than a `DT`
+  What is still declined, and still disclosed as unread: a `##DZ` holding something other than a
+  `DT`
   record stream (`SD`/`RD` signal and reduction data, the column-oriented `DV`/`DI`/`RV`/`RI` blocks
-  of MDF 4.2), an undefined zip type, and — unchanged — unsorted data groups. `--metadata-only` still
+  of MDF 4.2), an undefined zip type, and — unchanged — unsorted data groups. `--metadata-only`
+  still
   describes a measurement from its header tree without opening a data block, which is now the
   cheapest way to inventory a large one rather than the only way to see a compressed one at all.
 
 - **Upgrading Veridex made every `--fail-on-regression` gate blame the data.** A release that adds a
-  check, adds a finding code, or rewords a message puts findings under `introduced` on a dataset that
+  check, adds a finding code, or rewords a message puts findings under `introduced` on a dataset
+  that
   did not change by a byte — which is exactly what the three checks above do. The first gate run
   after an upgrade reported "3 finding(s) introduced" and sent someone to audit data that was fine.
 
@@ -2386,8 +2538,10 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   nothing said so: the demo MCAP scored `data 100`, grade B, and the certificate listed every one of
   them as executed with no categories skipped.
 
-  `STRUCTURAL.UNCOMPARED_EPISODES` (info) names them and the number of episodes each needs. It is the
-  third axis of the reasoning behind `TEMPORAL.UNMEASURED_CLOCK` and `STATISTICAL.UNMEASURED_VALUES`:
+  `STRUCTURAL.UNCOMPARED_EPISODES` (info) names them and the number of episodes each needs. It is
+  the
+  third axis of the reasoning behind `TEMPORAL.UNMEASURED_CLOCK` and
+  `STATISTICAL.UNMEASURED_VALUES`:
   not "no clock", not "no values", but "nothing to compare against". It speaks of the **run**, not
   the dataset — `--sample-episodes 1` over a five-hundred-episode dataset leaves one episode in the
   CDM, and "this dataset holds 1 episode" would be false about the dataset while true about the run.
@@ -2396,7 +2550,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 - **Five findings reached users with runs of spaces inside their sentences.** `rustfmt` joins a
   string literal wrapped with a `\` line continuation without removing the indentation that followed
-  it, so a message written across four source lines rendered with thirty spaces in the middle. One of
+  it, so a message written across four source lines rendered with thirty spaces in the middle. One
+  of
   them was the ego-pose non-finite finding, which travels into the terminal report, the JSON, the
   SARIF and the signed certificate. It compiles, and every test asserting `contains(...)` still
   passes. A test now walks the crate's own source and fails on a run of three or more spaces between
@@ -2412,7 +2567,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   used: a focal length that is not positive and finite, a principal point that is not a finite
   non-negative pixel coordinate, a non-finite distortion coefficient, a transform holding a
   non-finite value or an all-zero rotation quaternion — the uninitialized value, not a pose. Only
-  **impossibilities** are judged, never implausibility: a long lens, an off-centre principal point, a
+  **impossibilities** are judged, never implausibility: a long lens, an off-centre principal point,
+  a
   strong distortion coefficient and an unnormalized-but-real quaternion are all legitimate, and
   telling sensible from silly would need image dimensions the CDM does not carry. Because the code
   belongs to a check the readiness profile already judges, the defect reaches `ready` with no new
@@ -2433,14 +2589,17 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   whose numbers Veridex reads. Three guards keep it off honest data: only streams carrying more than
   one scalar per frame (a single column is as likely to be a `reward` or `done` that is legitimately
   constant through a demonstration that failed), only when the frozen episodes are a strict minority
-  of the dataset, and only on evidence — eight frames, three episodes, and every frame fingerprinted.
+  of the dataset, and only on evidence — eight frames, three episodes, and every frame
+  fingerprinted.
 
 - **`structural.step-alignment` — an episode whose arrays disagree about its own length.** A step
   index *is* a row index: when a source stamps frames with one (HDF5 and Zarr), `action[i]` and
   `observation.state[i]` are the same moment by construction, and the only thing that can break the
   pairing is the arrays holding different numbers of rows. Nothing in the catalog looked. The whole
-  temporal family abstains on a step index — deliberately and correctly, since an index is flawlessly
-  monotonic and perfectly regular — and `structural.declared-frame-count` needs a count these formats
+  temporal family abstains on a step index — deliberately and correctly, since an index is
+  flawlessly
+  monotonic and perfectly regular — and `structural.declared-frame-count` needs a count these
+  formats
   rarely declare. An episode holding 100 actions beside 50 observations therefore came back clean,
   with every pair past row 50 trained from the wrong observation. On measured time the same defect
   has always surfaced as `TEMPORAL.CLOCK_SKEW`; on a step index it surfaced as nothing.
@@ -2465,7 +2624,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   stream names the dimension it is about, and it named it by index: `observation.state
   (dimension 5)` is a number to go count columns against. The sources were already saying which
   joint that is — a LeRobot feature's `names`, the `name[]` array a `JointState` publishes, an IMU's
-  fixed axes — and Veridex was dropping it on the floor. Findings now read `dimension 5 \`gripper\``,
+  fixed axes — and Veridex was dropping it on the floor. Findings now read `dimension 5
+  \`gripper\``,
   and fall back to the index where the source names nothing.
 
   `--redact` scrubs the names with everything else it scrubs: a joint called
@@ -2494,7 +2654,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   payloads are opaque bytes to Veridex — it fingerprints them and never decodes them — which is the
   honest position for imagery and point clouds. But it also meant a `sensor_msgs/msg/JointState`
   went unread, and that message carries nothing *but* the measurement: a handful of joint angles.
-  The consequence was the exact failure this tool exists to prevent. An arm recording whose elbow sat
+  The consequence was the exact failure this tool exists to prevent. An arm recording whose elbow
+  sat
   hard against its stop for three quarters of the run — a saturated actuator, which teaches a policy
   to command a limit it can never leave — came back `data 100` with no statistical finding at all,
   over a certificate listing all five statistical checks as run with nothing skipped.
@@ -2510,14 +2671,16 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 - **rosbag2's MCAP storage plugin — the ROS 2 default since Jazzy — is read as a bag.** `ros2 bag
   record` wrote `sqlite3` shards through Iron and writes `.mcap` ones now, and Veridex claimed only
-  the first: pointing it at a Jazzy bag directory answered "unsupported format: no adapter recognized
+  the first: pointing it at a Jazzy bag directory answered "unsupported format: no adapter
+  recognized
   the source". The way through was to point it at one `bag_0.mcap`, which reads that shard as a bare
   recording — losing the manifest (the recorder's distribution, the message total to reconcile
   against, the order the shards were written in) and every other shard of a split recording.
 
   A bag directory of `.mcap` shards is now read as the bag it is, through the same path the `.db3`
   one takes: shards in manifest order, one episode, the same reconciliation against the bag's own
-  `message_count`, the same disclosure of a shard the manifest lists but the directory does not hold.
+  `message_count`, the same disclosure of a shard the manifest lists but the directory does not
+  hold.
   An MCAP channel carries what the `topics` table carries — topic, schema, encoding, the publisher's
   QoS — so the modality, the latched flag and every decoded AV header come out identical; a test
   pins that the same recording through either plugin yields the same CDM. The report names the
@@ -2534,7 +2697,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   ASAM MF4 and a rosbag2 `.db3` are random-access containers — the summary sits at the end of the
   file, the block graph is a web of offsets, SQLite's b-tree walk seeks — so each is read whole, by
   design. That makes the allocation the file's size, and a recording far past what the machine holds
-  did not fail with a verdict: it failed with the process, because a failed allocation aborts and the
+  did not fail with a verdict: it failed with the process, because a failed allocation aborts and
+  the
   OOM killer does not wait for that. No report, no exit code to act on, no clue that size was the
   problem.
 
@@ -2555,18 +2719,21 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   adapter already discovered data by walking `data/` and resolved per-episode videos by name.
 
   One real difference needed closing: v2.1 keeps its statistics **per episode** in
-  `meta/episodes_stats.jsonl` instead of one dataset-wide `meta/stats.json`. Read as "no stats file",
+  `meta/episodes_stats.jsonl` instead of one dataset-wide `meta/stats.json`. Read as "no stats
+  file",
   a dataset that ships statistics is reported as shipping none — and every stored-vs-observed
   comparison silently skipped, on the majority of published LeRobot data. Those are read now and
   attached to each episode's own streams, and the ingest report names where they came from — in a
   full read, in a `--metadata-only` one, and over the Hub, where `meta/episodes_stats.jsonl` joins
   the fixed manifest list a remote run is allowed to fetch.
 
-- **The statistical checks now grade an RLDS/TFDS dataset too.** The values in a TFRecord are already
+- **The statistical checks now grade an RLDS/TFDS dataset too.** The values in a TFRecord are
+already
   decoded — parsing the `tf.train.Example` into typed lists is what produces the per-step
   fingerprints — and the adapter threw the numbers away after hashing them, leaving the whole
   statistical family abstaining on the largest public robot corpus there is. A `float_list` or
-  `int64_list` leaf is measured now, per dimension, so a spike in joint 6 of a 7-DoF action is caught
+  `int64_list` leaf is measured now, per dimension, so a spike in joint 6 of a 7-DoF action is
+  caught
   rather than hidden behind joint 0; a `bytes_list` leaf (an image, an instruction string) is still
   fingerprinted rather than interpreted, and says so.
 
@@ -2581,11 +2748,14 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   `PointCloud2`). No panic was found; the guard is that the next edit cannot introduce one quietly.
 
 - **A `--metadata-only` run accused every stream of carrying no values.**
-  `STATISTICAL.UNMEASURED_VALUES` reads the *format*: a stream with no statistics is one whose values
+  `STATISTICAL.UNMEASURED_VALUES` reads the *format*: a stream with no statistics is one whose
+  values
   the adapter does not interpret. Under `--metadata-only` that is true of every stream in every
-  format, by request — so the finding stopped describing the dataset and started describing the flag.
+  format, by request — so the finding stopped describing the dataset and started describing the
+  flag.
   It named a bag's `/imu/data` as a stream carrying no statistics, over a recording a full read
-  measures per axis, beside a remedy telling the reader to go re-check the data in some other format.
+  measures per axis, beside a remedy telling the reader to go re-check the data in some other
+  format.
   The actual fix was to drop the flag, which `COVERAGE.METADATA_ONLY` already says. It is now
   withheld under a narrow run, the same way `TEMPORAL.UNCOMPARED_STREAMS` is, and a full read still
   names every payload it fingerprinted without interpreting.
@@ -2594,14 +2764,16 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   element is decoded from ROS message bodies, which such a run does not open, so it read the absence
   it had created itself — the defect `autonomy.calibration-completeness` was fixed for a fortnight
   ago, arriving through provenance instead. Recording in-band calibration as provenance is what made
-  it visible: the full run started reporting it and the narrow one did not. `MISSING_CALIBRATION` and
+  it visible: the full run started reporting it and the narrow one did not. `MISSING_CALIBRATION`
+  and
   `MISSING_UPSTREAM` (RLDS records lineage inside the TFRecord) are now silent where no payload was
   read; every other expected element comes from a manifest, a header or a dataset card, which such a
   run does read, so its absence still means the same thing in either mode.
 
 - **A boolean channel was reported as a saturated actuator.** `STATISTICAL.SATURATED` asks what
   fraction of a stream's values sit exactly at one extreme, which for a two-state channel is all of
-  them: RLDS carries `is_first` and `is_last` on every step of every episode — 1 once, 0 for the rest
+  them: RLDS carries `is_first` and `is_last` on every step of every episode — 1 once, 0 for the
+  rest
   — and LeRobot writes `next.done` the same way. Measuring RLDS values surfaced it immediately, as
   two warnings on every well-formed dataset in the corpus. Boolean-dtype streams are skipped; what
   would be a defect on such a channel is being constant, and `STATISTICAL.DEGENERATE` reports that.
@@ -2621,7 +2793,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   two answers what neither a checksum nor a statistic can: whether this log was decoded against the
   database that describes it.
 
-  That is the failure it exists for. A CAN log read with the wrong DBC does not error — the bytes are
+  That is the failure it exists for. A CAN log read with the wrong DBC does not error — the bytes
+  are
   the right length, every signal produces a number, the timeline is intact — and the only tell is
   that the numbers stop fitting the declared spans: a wheel speed of 40,000 kph, a temperature of
   −3,000 °C, wrong in every stream at once. A warning rather than an error, because the narrower
@@ -2637,7 +2810,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 - **The statistical checks now grade a CAN log.** A CAN signal is the one payload in this crate that
   is *decoded* rather than fingerprinted — a wheel speed is a number, not an opaque blob — but the
   adapter threw those numbers away after hashing them, so the whole statistical family abstained.
-  That gap was the example the abstention finding was written around: a log with a wheel speed pinned
+  That gap was the example the abstention finding was written around: a log with a wheel speed
+  pinned
   at its rail for 70% of the recording scored `data 100` with no statistical findings, over a
   certificate listing all five statistical checks as run with nothing skipped.
 
@@ -2648,7 +2822,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   declares a signal's range but stores no summary statistics to compare against.
 
   **MF4 is the same gap and gets the same fix.** An MF4 channel is decoded too — the `##CC`
-  conversion is applied and the result is a number — so a fleet measurement whose steering angle sits
+  conversion is applied and the result is a number — so a fleet measurement whose steering angle
+  sits
   at its end-stop for the whole drive is `STATISTICAL.SATURATED` now instead of scoring `data 100`.
 
 ### Fixed
@@ -2657,7 +2832,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   complete static transform tree and `CameraInfo` intrinsics — decoded into the CDM, bound into its
   content hash, and graded by `AUTONOMY.CALIBRATION_INCOMPLETE` and the frame-resolution checks —
   still reported `PROVENANCE.MISSING_CALIBRATION`, whose stated risk is that missing calibration
-  "blocks spatial and multi-camera reasoning". That tree is precisely what removes the risk. The MCAP
+  "blocks spatial and multi-camera reasoning". That tree is precisely what removes the risk. The
+  MCAP
   and rosbag2 adapters now record the element (`Known`, "recorded in-band: N transform(s), M camera
   intrinsic(s)") when the recording carries one, so a rig bag's provenance coverage reflects what it
   actually holds. An explicit metadata key still outranks it, a calibration-*named* attachment stays
@@ -2668,24 +2844,28 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   no possible set of values — values that are not all identical have some spread — and it is what a
   source writes when its statistics were carried over from another stream or never computed at all.
   `statistical.extreme-outlier` divides by that std, making every z-score infinite, and steps aside
-  for "corrupt stats, `range-sanity`'s finding". `range-sanity` checked the *upper* bound of the same
+  for "corrupt stats, `range-sanity`'s finding". `range-sanity` checked the *upper* bound of the
+  same
   inequality and not the lower one, so neither reported it and a dataset carrying statistics that
   contradict themselves passed clean.
 
-  `STATISTICAL.STD_IMPLAUSIBLE` now covers both directions of the contradiction. Only exactly zero is
+  `STATISTICAL.STD_IMPLAUSIBLE` now covers both directions of the contradiction. Only exactly zero
+  is
   impossible — a distribution sitting almost entirely at its mean has a small std over a wide range,
   which is ordinary data — and a genuinely constant stream keeps `STATISTICAL.DEGENERATE`, since a
   stuck sensor is a different defect from an impossible statistic.
 
 - **A diff never checked that its two reports were about the same dataset.** `veridex diff` compares
-  two saved reports and, with `--fail-on-regression`, gates CI on the result. It assumed the two were
+  two saved reports and, with `--fail-on-regression`, gates CI on the result. It assumed the two
+  were
   about the same dataset and enforced nothing: a job whose baseline artifact path is wrong, or one
   pointed at another project's report, got a confident "2 resolved, score +37" and exited 0 — a pass
   that means nothing, and the one failure mode a regression gate has no other way to notice.
 
   The dataset's **id** is now compared, reported first in the terminal render and in
   `diff --json`, and treated as a regression. The guard that existed compared the CDM **content
-  hash**, which is exactly backwards: that hash differs between every pair of reports worth diffing —
+  hash**, which is exactly backwards: that hash differs between every pair of reports worth diffing
+  —
   a dataset that gained an episode since yesterday is the ordinary case — so it printed "these
   reports describe different dataset content" on the intended workflow and said nothing about the
   actual mistake. The hash is still read, for the one thing it does say: when both reports were
@@ -2842,7 +3022,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   issued, which is the one thing a portable trust document must never do.
 
 - **`file-10.parquet` was read before `file-1.parquet`, in three adapters.** Found by asking whether
-  the rosbag2 shard-ordering bug fixed a commit earlier was a one-off. It was not: every adapter that
+  the rosbag2 shard-ordering bug fixed a commit earlier was a one-off. It was not: every adapter
+  that
   reads a dataset spread over several files read them in **lexicographic** name order, and frames
   land in their stream in the order the files are read. `bag_10` before `bag_2`, `file-10.parquet`
   before `file-1.parquet`, `-10-of-12` before `-2-of-12`.
@@ -2898,7 +3079,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   dataset *while it is being recorded* — where catching a clock skew is worth the most, because the
   robot is still driving. rosbag2 writes `metadata.yaml` when the recorder closes, so a bag in
   progress is a directory holding a growing `.db3` and nothing else, and requiring the manifest to
-  recognize a bag directory refused exactly that case as an unrecognized format. The flagship pairing
+  recognize a bag directory refused exactly that case as an unrecognized format. The flagship
+  pairing
   did not work.
 
   A directory holding a `.db3` is now a bag, manifest or not — no other adapter here claims one, so
@@ -2937,7 +3119,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 - **A synchronized rig failed because `/rosout` was called a sensor.** `AUTONOMY.RIG_SYNC` compares
   how long each stream spans and reports the spread as cross-sensor drift. It was comparing *every*
   stream in a rig episode — and a real ROS recording carries far more than its rig. `ros2 bag record
-  -a` captures `/rosout`, `/parameter_events` and `/diagnostics` beside the sensors; a transform tree
+  -a` captures `/rosout`, `/parameter_events` and `/diagnostics` beside the sensors; a transform
+  tree
   is published once at startup; a `CameraInfo` channel is latched or runs at 1 Hz. None of them
   samples the world, none keeps a sensor's cadence, and all of them are routinely short of the
   recording's window.
@@ -2952,7 +3135,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
   Error severity, `FAIL`, on sound data, with a remedy — *re-synchronize the rig against a common
   time base* — that sends the reader after something that is not wrong. This is the worse direction
-  for a false positive to run: a tool that fails good data teaches people to stop reading its output.
+  for a false positive to run: a tool that fails good data teaches people to stop reading its
+  output.
 
   The check now compares what its own message and risk statement are about: streams that sample the
   physical world (LiDAR/radar, camera, IMU, GNSS, CAN, ego-pose, audio, tactile). A new
@@ -2967,7 +3151,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   belong. Typing it as imagery made a latched calibration topic a sensor whose span was compared
   against a LiDAR's.
 
-  Nothing is silenced. A genuinely short sensor still fails, and now names the sensor rather than the
+  Nothing is silenced. A genuinely short sensor still fails, and now names the sensor rather than
+  the
   log topic that happened to be shortest. The non-sensor streams' timing is still reported by
   `TEMPORAL.START_OFFSET` and `TEMPORAL.END_OFFSET`, which say what is true about them without
   claiming they are sensors. What remains, and is documented rather than hidden: a transform tree
@@ -2975,11 +3160,13 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   Veridex cannot tell a latched topic from a sensor that fired once and died — and treating the
   second as the first is the error worth avoiding.
 
-- **A redacted report published what a producer attested.** Attested values are deliberately *not* in
+- **A redacted report published what a producer attested.** Attested values are deliberately *not*
+in
   the CDM, so a redactor built from the dataset — which is how it is built — cannot know them, and
   the conflict finding quotes them verbatim: `license: recorded \`value#3\` → attested
   \`acme-internal-secret-terms\``. The recorded side was redacted and the attested side was not. A
-  producer who attests an operator's address or an internal licence term and shares a redacted report
+  producer who attests an operator's address or an internal licence term and shares a redacted
+  report
   published exactly the string redaction exists to remove.
 
   The redactor now takes the attested values too (`Redactor::and_attested`), in both front ends. The
@@ -3012,7 +3199,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   `attestation` argument the CLI had, so the two front-ends still issue the identical document.
 
 - **The Croissant emit declared conformance that no Croissant reader could see.** A JSON-LD document
-  means whatever its `@context` says it means, and two terms in ours expanded to the wrong IRI. Under
+  means whatever its `@context` says it means, and two terms in ours expanded to the wrong IRI.
+  Under
   `@vocab: https://schema.org/`, a bare `conformsTo` expands to `https://schema.org/conformsTo` —
   while Croissant's reference implementation reads `http://purl.org/dc/terms/conformsTo`, so the
   document's claim to be Croissant 1.0 was invisible to every tool that would act on it, and the
@@ -3043,11 +3231,13 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   `cargo publish --dry-run` on `veridex-core` — the manifest defect fixed in the previous commit was
   invisible to every other gate.
 
-- **`diff` read a redacted report as a dataset that changed everywhere.** Redaction substitutes every
+- **`diff` read a redacted report as a dataset that changed everywhere.** Redaction substitutes
+every
   identifier a finding quotes, so a redacted report and its unredacted twin describe the same run in
   different words — and `diff` compared them as findings. On this repo's demo dataset that is four
   findings "introduced" and three "resolved" between two runs of the same bytes, and
-  `--fail-on-regression` exits 20 on a dataset nobody touched. The other direction is worse: with the
+  `--fail-on-regression` exits 20 on a dataset nobody touched. The other direction is worse: with
+  the
   redacted report as the *old* one, a genuine regression hides inside the substitution noise.
 
   `diff` now detects the mismatch (the `REPORT.REDACTED` disclosure is in exactly one of the two),
@@ -3065,7 +3255,8 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   200,000-pair ceiling, which abstains **loudly**.
 
   Worse than the miss was the silence. Past the ceiling an episode is not compared at all, and
-  nothing said so — a skipped episode and a clean one produced identical output. Episodes whose every
+  nothing said so — a skipped episode and a clean one produced identical output. Episodes whose
+  every
   frame was ruled boilerplate are now counted and reported through
   `STRUCTURAL.NEAR_DUPLICATE_UNCHECKED`, which already existed for the pair ceiling and now names
   which of the two limits it hit.
@@ -3097,7 +3288,8 @@ reproduced before it was fixed.*
 - **CI had been red on `main` since 2026-08-16 — every run since, across 72 commits — and the README
   badge said so.** Two independent causes, neither visible to a local run:
 
-  - *Lint drift.* CI lints on the current stable toolchain, which gained `clippy::manual_checked_ops`
+  - *Lint drift.* CI lints on the current stable toolchain, which gained
+  `clippy::manual_checked_ops`
     (2026-08-16, and the lint job has failed from that run onward) and later
     `clippy::question_mark` coverage for two shapes written before those lints existed: a
     hand-written zero guard around a division (`adapter/mdf4.rs`) and a `match` on an `Option` that
@@ -3139,7 +3331,8 @@ reproduced before it was fixed.*
   producer attestation, the report rollups, and `--redact`, so what it lists is what ships.
 
 - **The security and rubric documents describe attestation.** `SECURITY.md` had a line anticipating
-  it — "asserted provenance reflects what a producer signed" — written before the feature existed. It
+  it — "asserted provenance reflects what a producer signed" — written before the feature existed.
+  It
   now states the mechanism: a separate producer key, a distinct signing domain so an attestation can
   never verify as a certificate, binding to the CDM content hash, and the fact that applying one
   raises provenance coverage *only*, with the key disclosed in the verdict and recorded in the
@@ -3150,7 +3343,8 @@ reproduced before it was fixed.*
   the key, so a reader who does not trust it can subtract exactly those elements.
 
 - **The README stopped being a manual.** It had grown to 35 KB, 22 KB of which sat under a heading
-  called "Quickstart" — the per-format tour, the trust chain, sampling, budgets, redaction, watching,
+  called "Quickstart" — the per-format tour, the trust chain, sampling, budgets, redaction,
+  watching,
   attestation, labels. A quickstart that takes twenty minutes to read is not one, and the first
   thing a visitor meets is the thing most worth getting right.
 
@@ -3166,7 +3360,8 @@ reproduced before it was fixed.*
 
 - **The default terminal report is readable again.** A sound dataset's report is almost entirely
   `info` findings — what could not be measured, which provenance elements are absent, what a partial
-  run did not cover — and each carried a risk and a remedy paragraph. On a clean LeRobot dataset that
+  run did not cover — and each carried a risk and a remedy paragraph. On a clean LeRobot dataset
+  that
   is seven findings and forty lines of guidance, with the two lines that actually say whether the
   data is usable at the top, above the fold and easy to miss.
 
@@ -3220,8 +3415,10 @@ reproduced before it was fixed.*
 - **A summary-only MCAP read now finds the provenance a full read finds.** It reported
   `provenance 0%` on a file that states its provenance perfectly well, which is a claim about the
   read rather than about the file — and provenance is 30% of the trust score. The summary carries a
-  Metadata index and an Attachment index, so both are reachable without opening a chunk: the licence,
-  sensor, clock and annotator a producer wrote into Metadata records, the scenario/map references and
+  Metadata index and an Attachment index, so both are reachable without opening a chunk: the
+  licence,
+  sensor, clock and annotator a producer wrote into Metadata records, the scenario/map references
+  and
   the scenario dimensions, and the calibration attachment's name (still `Asserted`, since it is a
   name heuristic). On the demo rig the provenance block is now byte-identical to the full read's.
 
@@ -3462,7 +3659,8 @@ reproduced before it was fixed.*
   the same episodes, streams, modalities and timestamps. The two paths reach that shape by different
   routes: one reads a SQLite `topics` table, the other MCAP channel and schema records.
 
-  A rosbag2 end-to-end test now runs through the real binary as well: check, certify, verify offline,
+  A rosbag2 end-to-end test now runs through the real binary as well: check, certify, verify
+  offline,
   and a certificate that correctly refuses to verify against a different bag. The parts that make a
   certificate portable — autodetection, the dataset id taken from the path, the content hash — live
   between the adapter and the CLI, so they are worth exercising there. It also pins the split
@@ -3475,19 +3673,23 @@ reproduced before it was fixed.*
   other shard.
 
   The shard is unpacked under the same decompression budget that bounds every other container in the
-  crate, and bounded *during* the read rather than charged after it: the cap handed to the decoder is
-  what the budget has left. The difference is not theoretical — a fixture that unpacks to 96 MiB from
+  crate, and bounded *during* the read rather than charged after it: the cap handed to the decoder
+  is
+  what the budget has left. The difference is not theoretical — a fixture that unpacks to 96 MiB
+  from
   3 KB reports `requested: 67108865` (one byte past the budget) rather than `100663296`, which is
   what an implementation that decompressed first and charged afterwards would report, having already
   spent the memory it is being refused for.
 
   A compressed bag and the same bag uncompressed produce identical streams, frames, timestamps and
   content hashes; only the dataset's name differs. That includes the name: `shard_0.db3.zstd`'s file
-  stem is `shard_0.db3`, and taking it would have identified the same recording differently depending
+  stem is `shard_0.db3`, and taking it would have identified the same recording differently
+  depending
   on how it was stored — and the id is bound into the content hash, so a certificate issued over the
   uncompressed bag would not have verified against the compressed one.
 
-  Per-*message* compression (`--compression-mode message`) is refused by name. Those bags' tables are
+  Per-*message* compression (`--compression-mode message`) is refused by name. Those bags' tables
+  are
   plain, so Veridex would read them — and every frame's fingerprint would be of a zstd frame rather
   than the message, and no AV message header would decode, so a full sensor rig would come back with
   no point fields, no calibration and no ego trajectory. A wrong answer is worse than a refusal, and
@@ -3495,7 +3697,8 @@ reproduced before it was fixed.*
 
 - **ROS 2 rosbag2 (`.db3`) is the eighth format.** rosbag2 is what a ROS 2 robot records by default
   and where most existing robot logs are sitting, and until now Veridex could only read the *other*
-  storage plugin the same recorder writes. `veridex check` now takes a bag directory (`metadata.yaml`
+  storage plugin the same recorder writes. `veridex check` now takes a bag directory
+  (`metadata.yaml`
   beside one or more `.db3`) or a bare `.db3`, maps `topics` to streams and `messages` to frames on
   the bag's single log clock, and runs the identical catalog over it. The AV message headers go
   through the same CDR decoders MCAP uses, so a `PointCloud2` still supplies the per-point field
@@ -3514,8 +3717,10 @@ reproduced before it was fixed.*
     reported as unread rather than read as a whole bag. That total is deliberately *not* mapped to
     the CDM's declared frame count — it counts every topic's messages, while that field is what each
     of an episode's streams should hold, and comparing the two would fail a sound bag.
-  - **`relative_file_paths` is content, so it is never followed out of the bag.** The shards read are
-    the `.db3` files in the bag directory; a manifest entry with a directory component, or one naming
+  - **`relative_file_paths` is content, so it is never followed out of the bag.** The shards read
+  are
+    the `.db3` files in the bag directory; a manifest entry with a directory component, or one
+    naming
     a shard that is not there, is recorded as unread.
 
   Columns are bound by name from each table's own `CREATE TABLE`, because rosbag2 has added columns
@@ -3526,7 +3731,8 @@ reproduced before it was fixed.*
   (`adapter/sqlite.rs`, no new dependency), for the same reason the HDF5 and Zarr readers are
   hand-written: a `.db3` is an untrusted file, and a general-purpose engine will follow a page chain a
   corrupt header points into with allocations no ingest budget can charge. It refuses a page outside
-  the file, refuses a b-tree or overflow chain that revisits a page, and caps the payload one row may
+  the file, refuses a b-tree or overflow chain that revisits a page, and caps the payload one row
+  may
   assemble before the bytes are copied.
 
   The fixtures are real Python-`sqlite3` output, regenerated by
@@ -3565,17 +3771,21 @@ reproduced before it was fixed.*
 
   Three properties hold it honest. Attested elements are carried **beside** the CDM, never folded
   into it — the content hash describes the data, and a claim about the data must not change what the
-  data *is*. The run **discloses** it (`PROVENANCE.ATTESTED`, info, naming the producer key and every
+  data *is*. The run **discloses** it (`PROVENANCE.ATTESTED`, info, naming the producer key and
+  every
   element it supplied), because provenance coverage is 30% of the trust score and a reader who does
-  not trust that key has to be able to subtract exactly those. And an attested value that contradicts
+  not trust that key has to be able to subtract exactly those. And an attested value that
+  contradicts
   what the dataset records is **reported, not preferred**
   (`PROVENANCE.ATTESTATION_CONFLICT`, warning): either the recording is wrong or the claim is, and a
   signature does not get to rewrite the data's own account of itself.
 
   A certificate records the producer key, the keys it supplied, and the attestation's timestamp,
-  signed like every other field — a rewritten attestation record fails verification. Attestations use
+  signed like every other field — a rewritten attestation record fails verification. Attestations
+  use
   their own signing domain, so one can never be presented as a certificate or the reverse, and their
-  own error type, because "the certificate was altered" is the wrong sentence to print while refusing
+  own error type, because "the certificate was altered" is the wrong sentence to print while
+  refusing
   an attestation.
 
   Python gets `veridex.attest(...)` and `veridex.check(..., attestation=...)`, with parity tests
@@ -3593,23 +3803,28 @@ reproduced before it was fixed.*
   [docs/ci-recipes.md](docs/ci-recipes.md) collects what was scattered across the README: the exit
   codes and what `2` does *not* mean, a GitHub Actions gate, uploading SARIF to the Security tab,
   gating on a **regression** instead of on pre-existing findings (the practical way to adopt Veridex
-  on a dataset that already has some), the GitLab equivalent, pinning policy in `veridex.toml` or the
+  on a dataset that already has some), the GitLab equivalent, pinning policy in `veridex.toml` or
+  the
   environment, and the three things not to do. Every command in it was run against the demo dataset
   first.
 
-- **Guards for two output properties that were true only by luck.** The machine-readable outputs were
+- **Guards for two output properties that were true only by luck.** The machine-readable outputs
+were
   audited against what actually consumes them — the SARIF 2.1.0 schema (validated externally, and it
   passes) and a browser.
 
-  `every_sarif_result_resolves_to_a_declared_rule` asserts what GitHub code scanning depends on: each
-  result's `ruleId` is declared by the driver, each `level` is one of SARIF's four, each result has a
+  `every_sarif_result_resolves_to_a_declared_rule` asserts what GitHub code scanning depends on:
+  each
+  result's `ruleId` is declared by the driver, each `level` is one of SARIF's four, each result has
+  a
   message and a location. This tree emits rule ids that belong to no registered check —
   `REPORT.REDACTED`, `SCOPE.NARROWED`, `VERIDEX.CHECK_ERRORED` — which is exactly where a dangling
   rule would appear, and the test includes one of them deliberately.
 
   `a_hostile_name_cannot_script_the_shared_html_report` covers the output built to be *shared*: a
   stream named `<script>…` in an HTML report opened in a browser is stored XSS delivered by the tool
-  that was supposed to be checking the data. Every string in that report comes from a dataset Veridex
+  that was supposed to be checking the data. Every string in that report comes from a dataset
+  Veridex
   did not write. The escaping was already correct in every path, including the rollups added this
   release, and nothing was holding it there.
 
@@ -3619,7 +3834,8 @@ reproduced before it was fixed.*
 
   `veridex label --certificate c.json --key issuer.pub` prints Markdown to paste into a Hugging Face
   dataset card, a README, or a PR: grade and score with both sub-scores, findings by severity and by
-  family, provenance known/attested/unknown, the bound content hash, what version and rubric produced
+  family, provenance known/attested/unknown, the bound content hash, what version and rubric
+  produced
   it, who issued it and when — plus the readiness verdict, the checks that failed to run, and the
   families that did not run, when there are any. It renders from the signed certificate alone, so it
   cannot describe a verdict other than the one that was signed.
@@ -3628,7 +3844,8 @@ reproduced before it was fixed.*
   certificate that does not verify gets no label at all — a paste-ready grade with no provenance
   behind it is exactly the artifact a forger wants. A trust decision about the issuer is required
   rather than defaulted, as with `verify`. And when the answer is `--allow-any-issuer`, the label
-  *itself* says the issuer is unverified, because whoever reads it will never see the terminal it was
+  *itself* says the issuer is unverified, because whoever reads it will never see the terminal it
+  was
   produced in. Every label ends with the sentence the spec insists on: a certificate is a statement
   of fact about a dataset, not an endorsement of it.
 
@@ -3648,11 +3865,13 @@ reproduced before it was fixed.*
   defaults under a name, so a pipeline records which policy it ran under and a later change to
   `strict` is visible rather than undocumented.
 
-  Profiles now declare which kind they are, because the two were being conflated: a threshold profile
+  Profiles now declare which kind they are, because the two were being conflated: a threshold
+  profile
   has no criteria, and rendering the readiness block for one printed — and would have *signed* —
   `NOT READY` about criteria it never had.
 
-  There is no `lenient`, and asking for one says why instead of "unknown profile": a profile may only
+  There is no `lenient`, and asking for one says why instead of "unknown profile": a profile may
+  only
   tighten, because a loosened threshold does not deselect a check — the check runs, measures the
   defect, and passes it, which is exactly what `SCOPE.NARROWED` exists to surface per threshold and
   by how much. A run carrying that disclosure cannot be gated with `--min-score` or certified as a
@@ -3679,7 +3898,8 @@ reproduced before it was fixed.*
   and it is where all four historical crashes lived: a panic planted in the HDF5 superblock scan is
   invisible to the detected path and caught immediately by the forced one.
 
-  It found nothing today. That is the expected outcome for a regression guard, and the reason to have
+  It found nothing today. That is the expected outcome for a regression guard, and the reason to
+  have
   it is that the next one is caught by CI rather than by whoever is holding the file.
 
 - **The crates can actually be published.** None of the three artifacts has shipped yet, and two of
@@ -3703,7 +3923,8 @@ reproduced before it was fixed.*
 - **Rollups: by category, by episode, by stream — and in the machine-readable report at all.** The
   reporting spec asks for findings summarized at dataset, episode and stream scope, by severity *and
   category*. What existed was a worst-episodes ranking in the terminal and HTML reports. Two slices
-  were missing everywhere, and every slice was missing from `--json`, whose only consumer is a CI job
+  were missing everywhere, and every slice was missing from `--json`, whose only consumer is a CI
+  job
   — the one least able to re-derive them.
 
   `By category` now leads the report, the worst-episodes ranking is joined by a worst-**streams**
@@ -3715,18 +3936,22 @@ reproduced before it was fixed.*
   `--redact`ed verdict rolls up to placeholder stream names without redaction knowing rollups exist.
 
 - **`veridex check --redact` — a report that can leave the building.** The reporting spec asks for a
-  shareable mode, and there was none. A report is diagnostics, so it quotes the dataset: stream keys,
-  task strings, annotator addresses, licenses. That is exactly what a team cannot hand to a customer,
+  shareable mode, and there was none. A report is diagnostics, so it quotes the dataset: stream
+  keys,
+  task strings, annotator addresses, licenses. That is exactly what a team cannot hand to a
+  customer,
   a vendor, or a public issue tracker — while the part they want to hand over, the findings and the
   score, carries no such problem.
 
   Redaction is a rendering-time substitution, not a different run. The dataset identifier, stream
   names, task and label text, and provenance values are replaced with stable placeholders
   (`stream#1`, `text#2`), consistent within one report so a reader can still tell two findings
-  concern the same stream, and meaningless outside it. Substitution is longest-identifier-first, so a
+  concern the same stream, and meaningless outside it. Substitution is longest-identifier-first, so
+  a
   stream named `arm` cannot leave `arm/gripper` disclosed in pieces.
 
-  What it keeps is the harder half to get right. Episode indices, timestamps, frame counts, and every
+  What it keeps is the harder half to get right. Episode indices, timestamps, frame counts, and
+  every
   measured quantity stay — a report that dropped the 210 ms drift would not be redacted, it would be
   empty. The verdict, the score, the exit code, and the CDM content hash are the run's own, so a
   shared report and the private one describe the same run and the hash still matches the report to
@@ -3741,8 +3966,10 @@ reproduced before it was fixed.*
   hash, and a redacted one would say less than it attests.
 
   Python takes `redact=True` on `check`, `check_sarif`, and `check_html`, with a parity test
-  asserting the two front-ends emit the same shared document. Six unit tests, three CLI tests and one
-  parity test, proven red against redacting silently, redacting the location but not the message, and
+  asserting the two front-ends emit the same shared document. Six unit tests, three CLI tests and
+  one
+  parity test, proven red against redacting silently, redacting the location but not the message,
+  and
   substituting shortest-first.
 
 - **`STRUCTURAL.NEAR_DUPLICATE_EPISODE` — the partial copy the exact check cannot see.** The catalog
@@ -3751,7 +3978,8 @@ reproduced before it was fixed.*
   of the overlap is byte-identical and the episodes are not, so `STRUCTURAL.DUPLICATE_EPISODE` was
   silent while the redundancy trained twice.
 
-  The evidence is set overlap over per-frame `content_hash`es — no payload is decoded — reported when
+  The evidence is set overlap over per-frame `content_hash`es — no payload is decoded — reported
+  when
   the *weakest* shared stream still clears `near_duplicate_fraction` (default 0.80, over
   `min(|a|, |b|)`, so containment counts as full overlap). A similarity check's whole difficulty is
   not firing on honest data, so three guards decide what counts as evidence: a stream qualifies only
@@ -3871,13 +4099,15 @@ reproduced before it was fixed.*
   this way: "declares 120 frames but 0 were ingested", "stream has no frames", "manifest declares 2400
   frames but 0 were ingested". Emitted, they would fail every dataset checked this mode. So the engine
   now hands each check a `CheckContext` saying whether frames were read, and those arms abstain — while
-  the arms that read the manifest (duplicate episode indices, inverted bounds, empty dataset/episode)
+  the arms that read the manifest (duplicate episode indices, inverted bounds, empty
+  dataset/episode)
   keep running.
 
   What stays live is more than it sounds: the whole stored-statistics family (an inverted range, a
   non-finite value, a mean outside its own bounds — caught without reading the data it summarizes), the
   whole provenance family, and cross-episode shape and stream-presence consistency. One check is
-  deliberately *withheld*: when the episode set is derived from `info.json`'s `total_episodes` alone,
+  deliberately *withheld*: when the episode set is derived from `info.json`'s `total_episodes`
+  alone,
   comparing that number against a set built from it could not fail, so it is reported as omitted rather
   than passed. With `meta/episodes.jsonl` present the total is an independent second assertion, and the
   check runs — a manifest whose two episode counts disagree is caught here.
@@ -3886,7 +4116,8 @@ reproduced before it was fixed.*
   and HTML reports, and `certify` refuses to issue from it. An adapter has to claim
   `Adapter::supports_metadata_only()` to be handed the option at all, so the six formats that keep their
   structure inside the container are refused by name rather than silently reading everything; and
-  `--metadata-only` combined with a sample is refused, because one verdict cannot carry two different
+  `--metadata-only` combined with a sample is refused, because one verdict cannot carry two
+  different
   partial coverages without losing one.
 
 - **Zarr hardening, from a two-agent audit.** Fifteen confirmed defects, including two that returned
@@ -3898,7 +4129,8 @@ reproduced before it was fixed.*
     using either was unreadable, and `zstd` is what the Diffusion Policy tooling reaches for.
   - **The byte shuffle was undone once per chunk instead of once per block.** Equivalent only when
     there is a single block; with more, every value came back scrambled — no error, just wrong
-    numbers, fingerprinted and summarized as if they were the data. The reason the tests missed both:
+    numbers, fingerprinted and summarized as if they were the data. The reason the tests missed
+    both:
     every blosc chunk in the fixtures was small enough that blosc stored it verbatim, so the entire
     codec body was unexercised. The fixtures now include arrays that genuinely compress, several
     forced to many blocks.
@@ -3908,17 +4140,20 @@ reproduced before it was fixed.*
     layout also handed every episode the *first* timeline found anywhere in the store; an episode that
     recorded no time was stamped with another episode's nanoseconds. Timelines are now read per
     episode.
-  - **A panic, two hangs, and an OOM, all reachable from a store's own bytes.** `"<f4294967295"` in a
+  - **A panic, two hangs, and an OOM, all reachable from a store's own bytes.** `"<f4294967295"` in
+  a
     `.zarray` overflowed the arithmetic derived from it and aborted the process; a chunk path naming a
     FIFO blocked in `open` forever, and one symlinked to `/dev/zero` grew past 6 GB; a `.zarray`
     declaring gigabyte chunks with no chunk files on disk allocated them anyway, because the fill path
-    was the one allocation never charged against the budget. Element widths are bounded, only regular
+    was the one allocation never charged against the budget. Element widths are bounded, only
+    regular
     files are read as chunks, and the fill is charged like everything else.
   - **Symlinks are no longer followed.** A store linking to a directory outside itself had that
     directory's bytes read, hashed, and signed into a certificate as part of the dataset; a link to its
     own parent made the directory walk exponential. The LeRobot and CAN adapters already refused this;
     now Zarr does too, and says so.
-  - Smaller, same spirit: a `<U5` element is 20 bytes, not 5; a zero-length dimension after the first
+  - Smaller, same spirit: a `<U5` element is 20 bytes, not 5; a zero-length dimension after the
+  first
     is refused rather than yielding rows that hash to nothing; an unparseable `.zattrs` is reported
     rather than read as "no attributes"; a `float16` array reports its values as *not examined* instead
     of "read and clean" (the same fix landed in the HDF5 adapter); one unreadable array no longer
@@ -3928,7 +4163,8 @@ reproduced before it was fixed.*
 
   A 3,000-case byte-mutation sweep over the fixtures produced no panics and no hangs, worst case 13 ms.
 
-- **Zarr adapter** — the replay-buffer layout Diffusion Policy, UMI, and the tooling around them ship
+- **Zarr adapter** — the replay-buffer layout Diffusion Policy, UMI, and the tooling around them
+ship
   in, read into the CDM as the fifth first-class format behind `veridex check`, and the last format on
   the roadmap.
 
@@ -3936,7 +4172,8 @@ reproduced before it was fixed.*
   boundaries kept beside it in `meta/episode_ends`. Those boundaries *are* the episode structure, so
   Veridex slices every `data/` array at them — and treats them as data to be checked rather than
   trusted: a boundary that runs backwards, or past the end of the arrays it indexes, is refused, and
-  rows past the last boundary belong to no episode and are disclosed instead of being attached to the
+  rows past the last boundary belong to no episode and are disclosed instead of being attached to
+  the
   last one. An off-by-one in a replay buffer is exactly the corruption this tool exists to catch. A
   store that is not a replay buffer still reads, under the same group rules as HDF5.
 
@@ -3958,12 +4195,15 @@ reproduced before it was fixed.*
   the same bytes, and a half-written array whose gaps must hash to what Python reads back. The chunk-to-row assembly is now shared with the HDF5 adapter rather than written
   twice: the same logical array must not hash differently depending on the container it arrived in.
 
-- **The refusal messages are now asserted, and one of them was lying.** An HDF5 attribute this reader
-  *failed to read* (a variable-length string whose global-heap object is corrupt) was reported as "an
+- **The refusal messages are now asserted, and one of them was lying.** An HDF5 attribute this
+reader
+  *failed to read* (a variable-length string whose global-heap object is corrupt) was reported as
+  "an
   array or a compound value, which the CDM cannot hold" — telling the user to change their data when
   the tool was what fell short. Each case now carries its own reason. Alongside it: the messages for a
   bad superblock version and for corrupt `TREE`, `HEAP`, and `SNOD` blocks are pinned by tests that
-  reach them by patching a real file, because a message no test ever sees is a message that is wrong.
+  reach them by patching a real file, because a message no test ever sees is a message that is
+  wrong.
   A sampled HDF5 run is also now covered for what the rest of the formats already were: its coverage
   moves the verdict hash, and it cannot be certified.
 
@@ -3976,14 +4216,17 @@ reproduced before it was fixed.*
   dimension** and named — a gripper pinned at element 6 of a 7-DoF action, or a NaN buried in joint 2,
   is invisible to an element-0-only read.
 
-  The accumulators now live in one place (`adapter/stats.rs`) rather than inside the LeRobot adapter,
+  The accumulators now live in one place (`adapter/stats.rs`) rather than inside the LeRobot
+  adapter,
   because two adapters recomputing statistics differently would mean the same logical dataset scores
   differently in two formats — which is the cross-format neutrality claim itself.
 
   Two deliberate limits, both disclosed in the ingest report. Per-dimension statistics stop at 256
-  values per frame: that reasoning is about robot signals, and "the statistics of pixel (211, 47, 2)"
+  values per frame: that reasoning is about robot signals, and "the statistics of pixel (211, 47,
+  2)"
   answers nothing — wider arrays are still scanned for non-finite values, and the report names them.
-  And an integer array is reported as read-and-clean rather than unexamined, because it cannot hold a
+  And an integer array is reported as read-and-clean rather than unexamined, because it cannot hold
+  a
   NaN in the first place.
 
 - **HDF5 adapter hardening, from a multi-agent audit.** Four agents went at the new adapter with
@@ -4022,7 +4265,8 @@ reproduced before it was fixed.*
   than the dataset on *every* axis with a ragged edge on each — the case that catches a wrong stride
   or odometer carry in the chunk-to-row copy, and the single largest untested path the audit found;
   every unit spelling and the rejection of one that means nothing; the fractal-heap refusal; a
-  decompression bomb refused on what it declares; a single-byte corruption sweep asserting the answer
+  decompression bomb refused on what it declares; a single-byte corruption sweep asserting the
+  answer
   is always a dataset or a named error; and an end-to-end assertion that `TEMPORAL.UNMEASURED_CLOCK`
   reaches the verdict rather than only the ingest report.
 
@@ -4122,16 +4366,20 @@ reproduced before it was fixed.*
   the SPDX license from the dataset card's (`README.md`) YAML frontmatter — where LeRobot datasets
   actually record it — so a licensed dataset no longer trips `PROVENANCE.MISSING_LICENSE`. It also
   fingerprints each feature cell's raw value bytes into `frame.value_ref.content_hash` (a SHA-256,
-  never a decode of the values), so — like MCAP below — the CDM hash is content-sensitive (a tampered
-  export no longer verifies against the original's certificate) and exact-duplicate episode detection
-  works end-to-end; cells whose type isn't a hashable numeric feature (e.g. images stored outside the
+  never a decode of the values), so — like MCAP below — the CDM hash is content-sensitive (a
+  tampered
+  export no longer verifies against the original's certificate) and exact-duplicate episode
+  detection
+  works end-to-end; cells whose type isn't a hashable numeric feature (e.g. images stored outside
+  the
   Parquet) are left unhashed, honestly. The MCAP
   adapter extracts the file header's writing `library` (as a `recorder` provenance element) and
   `profile`, every producer-written **Metadata** record (preserved in dataset metadata, with
   well-known keys — license/sensor/calibration/operator/upstream — mapped to typed provenance), and
   **Attachment** summaries (a calibration-looking attachment supplies the `calibration` element), so
   provenance reflects who produced the recording and how. Each message's raw bytes are fingerprinted
-  into `frame.value_ref.content_hash` (a SHA-256 of the bytes, not a decode), so the CDM content hash
+  into `frame.value_ref.content_hash` (a SHA-256 of the bytes, not a decode), so the CDM content
+  hash
   — and thus certificate binding — is sensitive to actual frame content: a tampered recording with
   identical topics and timestamps no longer hashes the same, and content-level checks (duplicate
   episodes) have something exact to compare.
@@ -4144,7 +4392,8 @@ reproduced before it was fixed.*
   - **Structural** — episode-boundary integrity (the lerobot#4143 class: a per-episode declared
     `length` from `meta/episodes.jsonl` that disagrees with the frames ingested, duplicate episode
     indices, or inverted `start_ts`/`end_ts`), degenerate
-    episodes/streams (including a zero-episode dataset), episode-index continuity, declared-vs-actual
+    episodes/streams (including a zero-episode dataset), episode-index continuity,
+    declared-vs-actual
     episode/frame counts (truncated exports), cross-episode dtype/shape and stream-presence
     consistency, exact-duplicate episodes (`STRUCTURAL.DUPLICATE_EPISODE`, content-hash-gated so it
     never mis-flags same-length episodes), and a frozen-camera check (`STRUCTURAL.STUCK_STREAM`).
@@ -4152,8 +4401,10 @@ reproduced before it was fixed.*
     gaps, jitter, the headline cross-stream `TEMPORAL.CLOCK_SKEW`, shared-clock start/end offsets,
     cross-episode rate consistency (`TEMPORAL.RATE_INCONSISTENT`), and episode-duration outliers.
   - **Statistical** — stored-stats range and sanity (inverted range, non-finite, negative or
-    Popoviciu-implausible std, mean-out-of-range, integer-dtype range, degeneracy). Where the adapter
-    reads feature values (LeRobot), Veridex recomputes statistics from the actual cells and adds four
+    Popoviciu-implausible std, mean-out-of-range, integer-dtype range, degeneracy). Where the
+    adapter
+    reads feature values (LeRobot), Veridex recomputes statistics from the actual cells and adds
+    four
     data-facing checks: `STATISTICAL.STATS_STALE` flags a stored `meta/stats.json` whose range doesn't
     bound the data (stale stats poison normalization); `STATISTICAL.SATURATED` flags a clamped actuator
     whose values sit **exactly** pinned at one rail (exact-equality is the signal, so a noisy sensor is
@@ -4161,17 +4412,20 @@ reproduced before it was fixed.*
     spike by Chebyshev's inequality (≤1% of samples at 10σ); and `STATISTICAL.NON_FINITE_OBSERVED`
     flags a NaN or ±infinity in the cells that a clean or absent `stats.json` hides — a single one
     propagates to a NaN loss and silently kills a training run. All four scan **every dimension** of a
-    multi-DoF feature and name the offending joint, so a stale stat, saturated gripper, spike, or NaN
+    multi-DoF feature and name the offending joint, so a stale stat, saturated gripper, spike, or
+    NaN
     buried in element 6 of a 7-DoF `action` is caught, not just element 0.
   - **Semantic** — task-string quality and stream-key clarity (an exact-duplicate key is an error, a
     case/whitespace collision a warning); and language-annotation integrity
-    (`SEMANTIC.ANNOTATION_UNALIGNED` / `SEMANTIC.ANNOTATION_CONFLICT` / `SEMANTIC.EMPTY_ANNOTATION`):
+    (`SEMANTIC.ANNOTATION_UNALIGNED` / `SEMANTIC.ANNOTATION_CONFLICT` /
+    `SEMANTIC.EMPTY_ANNOTATION`):
     timestamped language
     annotations are verified — in span, unique per instant, non-empty — never written or modified. The
     LeRobot adapter surfaces mid-episode `task_index` changes as timestamped `language` labels
     (single-task episodes carry none), so the check runs on real multi-task datasets.
   - **Provenance-completeness** — presence, internal consistency, and placeholder detection (a
-    `license` of `"unknown"` is present in form but empty in substance, so it isn't counted as real).
+    `license` of `"unknown"` is present in form but empty in substance, so it isn't counted as
+    real).
 
   The full catalog — every check, its finding codes, default severity, and exactly when it fires —
   lives in [docs/checks.md](docs/checks.md), guarded against drift in both directions by tests.
@@ -4253,14 +4507,16 @@ reproduced before it was fixed.*
   CAN frames → can-signal), instead of lumping them into `scalar-state`. So an AV rig log's streams
   are typed correctly at ingest. The message **bodies** are now CDR-decoded too: a hand-rolled,
   bounds-checked ROS 2 CDR reader (`adapter/cdr.rs` — no new dependency, `#![forbid(unsafe_code)]`,
-  declines malformed/big-endian bodies without panicking) reads each AV message's structural *header*
+  declines malformed/big-endian bodies without panicking) reads each AV message's structural
+  *header*
   (never the bulk point/pixel payload) to populate the rig CDM: `PointCloud2` → `Stream.point_fields`,
   `CameraInfo` → camera intrinsics, `TFMessage` → the transform tree, `Odometry` → the ego trajectory.
   Proven end-to-end through the adapter and by per-decoder unit tests. A new `make_demo_mcap -- <out> av` variant
   writes a five-sensor rig (camera, LiDAR, IMU, GNSS, ego-odometry) with a single-sensor sync drift
   injected on the IMU; `veridex inspect` shows the typed rig and `veridex check` flags the drift.
 - **`AUTONOMY.RIG_SYNC` — rig-wide time sync (A2)** — the first autonomy check and a new `autonomy`
-  check family. It generalizes the pairwise `TEMPORAL.CLOCK_SKEW` to N sensors: on an episode that is
+  check family. It generalizes the pairwise `TEMPORAL.CLOCK_SKEW` to N sensors: on an episode that
+  is
   a sensor rig (≥3 AV-native rig sensors), it reports the rig-wide sync spread — the widest sensor
   span minus the tightest — as a **single** error naming the tightest- and widest-spanning sensors,
   instead of O(n²) pairwise findings. On a rig it *supersedes* `CLOCK_SKEW` (which now skips rig
@@ -4268,7 +4524,8 @@ reproduced before it was fixed.*
   sensors, so it never enters rig mode and `CLOCK_SKEW` behaves exactly as before. It shares the
   `clock_skew_ms` tolerance (same semantics, one knob). On the `av` demo this turns four pairwise
   `CLOCK_SKEW` errors into one clear `AUTONOMY.RIG_SYNC` finding.
-- **`AUTONOMY.SEQUENCE_COMPLETE` — rig sequence completeness (A2)** — flags a rig sensor that quietly
+- **`AUTONOMY.SEQUENCE_COMPLETE` — rig sequence completeness (A2)** — flags a rig sensor that
+quietly
   drops an aggregate fraction of its frames (default > 5%): its observed frame count against the count
   its own median inter-frame cadence implies over its active span. It catches many small drops that
   `TEMPORAL.GAP` (a single oversized interval) and `TEMPORAL.RATE` (which needs a declared rate MCAP
@@ -4277,15 +4534,20 @@ reproduced before it was fixed.*
   through the MCAP adapter (`a_frame_dropping_sensor_is_flagged_incomplete_end_to_end`).
 - **`AUTONOMY.EGO_POSE_CONTINUITY` — ego trajectory continuity (A2)** — flags an episode whose ego
   trajectory (`Episode.ego_poses`, decoded from Odometry) contains a step whose implied speed
-  (distance / elapsed time) exceeds the plausible maximum (default 100 m/s ≈ 360 km/h): a GPS glitch,
-  localization reset, or stitched log that teleports the ego frame, so every later sensor observation
-  registers against a wrong world pose. Reports the worst jump and how many occurred. Runs end-to-end
+  (distance / elapsed time) exceeds the plausible maximum (default 100 m/s ≈ 360 km/h): a GPS
+  glitch,
+  localization reset, or stitched log that teleports the ego frame, so every later sensor
+  observation
+  registers against a wrong world pose. Reports the worst jump and how many occurred. Runs
+  end-to-end
   on the CDR-decoded ego trajectory (`a_teleporting_ego_trajectory_is_flagged_end_to_end`).
 - **`AUTONOMY.CALIBRATION_INCOMPLETE` — rig calibration completeness (A2)** — the principle-respecting
-  form of the LiDAR-camera reprojection check. Veridex never decodes the bulk point/pixel payload, so
+  form of the LiDAR-camera reprojection check. Veridex never decodes the bulk point/pixel payload,
+  so
   it cannot reproject actual points; instead it verifies the calibration needed to *is present and
   coherent*. On a rig with spatial sensors it flags: no transform (TF) tree at all; a TF tree split
-  into disconnected components (sensors that can't be related, found by connected-components over the
+  into disconnected components (sensors that can't be related, found by connected-components over
+  the
   frame graph); or cameras with no intrinsics. Runs on the CDR-decoded TF tree + intrinsics, proven
   end-to-end (`a_rig_without_a_transform_tree_is_flagged_incomplete_end_to_end`).
 - **`world-model-ready` profile + readiness certificate (A4)** — a named policy profile
@@ -4299,19 +4561,24 @@ reproduced before it was fixed.*
 - **Readiness certificates are readable offline, from both surfaces (A5)** — `veridex verify` now
   reports what a certificate *attests*, not merely that its signature checks out: the CDM hash it is
   bound to, the trust score and provenance coverage, and — for a certificate issued with
-  `--profile` — the profile verdict and every readiness criterion. `--json` emits the same facts as a
+  `--profile` — the profile verdict and every readiness criterion. `--json` emits the same facts as
+  a
   machine-readable summary, with the signed `readiness` block verbatim. Everything printed comes out
-  of the signed document, so a doctored readiness block fails verification instead of being read back
+  of the signed document, so a doctored readiness block fails verification instead of being read
+  back
   (covered by a test that flips `ready` to true and asserts the certificate no longer verifies).
   Python reaches parity: `veridex.certify(..., profile="world-model-ready")` issues the identical
   profiled certificate (byte-for-byte with the CLI, checked in the parity suite) and
-  `veridex.verify(...)` returns the identical summary. Certify and verify share one core renderer, so
+  `veridex.verify(...)` returns the identical summary. Certify and verify share one core renderer,
+  so
   the two surfaces can't drift.
 - **Autonomy provenance lineage (A3)** — the MCAP adapter now extracts the sensor-rig lineage a
   producer records in Metadata: firmware, calibration session, platform/vehicle and drive/run IDs,
-  capture region, HD-map version, and — acute for public-road capture — redaction and consent status.
+  capture region, HD-map version, and — acute for public-road capture — redaction and consent
+  status.
   Each is classified `known` (read from the source bytes) and surfaced in both provenance emits: the
-  Croissant `veridex:provenance` list and the PROV entity as `veridex:` properties. Extracted without
+  Croissant `veridex:provenance` list and the PROV entity as `veridex:` properties. Extracted
+  without
   changing the coverage denominator, so a manipulation dataset's coverage score is unchanged. The `av`
   demo carries the lineage end-to-end.
 - **Scenario-dimension coverage (A3/A6)** — a **descriptive** report of the conditions a dataset was
@@ -4322,17 +4589,20 @@ reproduced before it was fixed.*
   distribution is the training team's call. The MCAP adapter extracts recognized scenario metadata
   keys into episode labels, and `veridex inspect` shows a "scenario coverage" section.
 - **Scenario / map / simulation references (A1)** — Veridex now records *what a log was recorded or
-  replayed against*: the OpenSCENARIO scenario, the OpenDRIVE road network / HD map, the OSI version,
+  replayed against*: the OpenSCENARIO scenario, the OpenDRIVE road network / HD map, the OSI
+  version,
   and the simulator or replay tool. `crate::simref` recognizes the well-known metadata spellings and
   the MCAP adapter maps them to `scenario_ref` / `map_ref` / `osi_version` / `simulator` provenance,
-  each `known`. Versions are extracted, never guessed: when the reference names a sidecar that really
+  each `known`. Versions are extracted, never guessed: when the reference names a sidecar that
+  really
   sits next to the log, the ASAM revision declared in that file's own header (`revMajor`/`revMinor`,
   the same shape in `.xosc` and `.xodr`) is read from its bytes; otherwise the version is whatever
   dotted version the recorded value itself carries, and a bare file name (`town10.xodr`) yields no
   version rather than a wrong one. A reference pointing outside the dataset (absolute, or with `..`)
   is recorded but never followed. An explicitly recorded `map_version` always wins over an OpenDRIVE
   header revision. References travel with both provenance emits and show in `veridex inspect` as a
-  "scenario & map references" section; the `av` demo carries them. Reading the reference is the scope
+  "scenario & map references" section; the `av` demo carries them. Reading the reference is the
+  scope
   — Veridex does not parse scenario semantics, road geometry, or ground truth.
 
 - **ASAM MDF 4.x (MF4) adapter** — the dominant automotive measurement format, read into the CDM
@@ -4340,20 +4610,27 @@ reproduced before it was fixed.*
   takes each channel group's **time master** as the timeline, and emits one stream per measured
   channel with a frame per record, applying identity and linear (`##CC` type 1) conversions to get
   physical values. Integer and float channels decode in both byte orders; values are fingerprinted
-  into the CDM content hash, so an altered measurement no longer hashes the same. The writing program
+  into the CDM content hash, so an altered measurement no longer hashes the same. The writing
+  program
   from the identification block becomes `recorder` provenance, and a non-4.x file is rejected as an
   unsupported version rather than mis-parsed. Everything outside that core — compressed (`##DZ`) or
   listed (`##DL`) data, unsorted data groups, bit-packed or non-numeric channels, other conversion
-  types, an over-declared cycle count — is reported as an `unmapped` field and contributes no frames,
+  types, an over-declared cycle count — is reported as an `unmapped` field and contributes no
+  frames,
   so a reader always knows what the verdict covered. Every block read is bounds-checked and every
   chain walk is loop-guarded: a truncated or byte-corrupted file yields an error or an empty result,
-  never a panic (tested against file prefixes and corrupted bytes). Autodetected by the registry from
-  the file's own identification block, not its extension. Fixtures are assembled byte by byte, so the
+  never a panic (tested against file prefixes and corrupted bytes). Autodetected by the registry
+  from
+  the file's own identification block, not its extension. Fixtures are assembled byte by byte, so
+  the
   adapter is tested against the on-disk layout rather than a writer sharing its assumptions.
 - **CAN + DBC adapter** — a new AV-native ingestion path (`adapter/candbc.rs`). It ingests a directory
-  holding a `.dbc` signal database and one or more candump ASCII logs (`.log`/`.asc`), parses the DBC
-  (`BO_` messages, `SG_` signals), and decodes each CAN frame's signals in **both DBC byte orders** —
-  little-endian (Intel, `@1`) and big-endian (Motorola, `@0`, walking the sawtooth bit numbering from
+  holding a `.dbc` signal database and one or more candump ASCII logs (`.log`/`.asc`), parses the
+  DBC
+  (`BO_` messages, `SG_` signals), and decodes each CAN frame's signals in **both DBC byte orders**
+  —
+  little-endian (Intel, `@1`) and big-endian (Motorola, `@0`, walking the sawtooth bit numbering
+  from
   the signal's most-significant bit) — applying the factor/offset and sign-extension, into one
   `CanSignal` stream per `Message.Signal`. A signal whose bits fall outside the frame is declined
   rather than truncated. DBC-coverage gaps (CAN ids seen in the log with no DBC definition) are
@@ -4392,10 +4669,12 @@ reproduced before it was fixed.*
   pipeline works: for *this* sensor, does a chain of transforms exist from the frame it stamps its
   data with to the camera it is fused against? Two ways that fails, neither visible from the tree's
   own shape — the sensor's frame is not in the tree at all (a perfectly connected tree recorded for
-  `lidar_top` while the driver publishes `lidar_top_v2`, so every geometric operation silently has no
+  `lidar_top` while the driver publishes `lidar_top_v2`, so every geometric operation silently has
+  no
   transform), or the frame is in the tree but in a subtree nothing joins to the camera's. Veridex
   never decodes point coordinates or pixels, so it does not compute a reprojection *error*; it
-  verifies the reprojection is defined at all. Abstains when the sensor declares no frame, and leaves
+  verifies the reprojection is defined at all. Abstains when the sensor declares no frame, and
+  leaves
   "no tree at all" to `CALIBRATION_INCOMPLETE` — which in turn now leaves the disconnected-tree report
   to this check whenever the sensors name their frames, so one defect is charged once, at the finest
   granularity available.
@@ -4423,7 +4702,8 @@ reproduced before it was fixed.*
   Charged at the granularity of the defect: a frame-count mismatch is per episode, while a
   resolution, codec, or rate that disagrees with the manifest is one export defect and is reported
   once per stream, naming the first episode and how many share it. Codecs compare across the names
-  for one encoder (`h264`/`avc1`, `hevc`/`hvc1`, `av1`/`av01`, `vp9`/`vp09`), so the manifest and the
+  for one encoder (`h264`/`avc1`, `hevc`/`hvc1`, `av1`/`av01`, `vp9`/`vp09`), so the manifest and
+  the
   fourcc spelling the same thing differently is not a finding.
 
   `Stream.media` binds into the content hash (**`CANONICAL_VERSION` 5 → 6**): a re-encode changes
@@ -4451,7 +4731,8 @@ determinism: 200 pseudo-random permutations of every order-insensitive collectio
 byte-identical CDM hash, result hash, and trust score, and every encoder sort key was confirmed
 total. The v1 rubric in `docs/rubric-v1.md` matches `certificate/score.rs` numerically, term for
 term. The HDF5 chunk decode path was likewise cleared against `h5py` output — multi-level chunk
-B-trees, per-chunk filter masks, big-endian shuffle+fletcher32 at non-8-byte strides, rank-4 chunking
+B-trees, per-chunk filter masks, big-endian shuffle+fletcher32 at non-8-byte strides, rank-4
+chunking
 and extendible datasets all round-trip exactly. Those results are worth recording as plainly as the
 defects.*
 
@@ -4469,7 +4750,8 @@ defects.*
   prevent, one axis over: coverage answers "how much of the dataset did we read", and nothing
   answered "how much of the catalog did we run". So it takes the same remedy — a finding, because
   findings are the only channel that reaches every renderer, the diff, and the certificate's own
-  summary. The engine now emits `SCOPE.NARROWED` under `veridex.scope`, which like `veridex.coverage`
+  summary. The engine now emits `SCOPE.NARROWED` under `veridex.scope`, which like
+  `veridex.coverage`
   is deliberately not a catalog check, so configuration cannot switch off the disclosure that
   configuration narrowed the run. It is measured from what happened (checks executed vs. registered)
   rather than the config's wording, so a full run emits nothing and ordinary hashes are unchanged.
@@ -4498,12 +4780,14 @@ defects.*
   zero-initialized the row. The written chunks decoded correctly, so only the invented part was
   wrong — silently, with `coverage: Full` and an empty `unmapped_fields`. The fabricated values were
   hashed into `frame.value_ref.content_hash`, so a certificate bound a dataset to bytes `h5py` never
-  read there, and were fed to the statistics as if measured. Worst instance: with `fillvalue=nan` and
+  read there, and were fed to the statistics as if measured. Worst instance: with `fillvalue=nan`
+  and
   a partial write, `h5py` sees NaNs and Veridex reported `observed_non_finite = Some(0)` — which
   means "every value was read and every one was finite", so `STATISTICAL.NON_FINITE_OBSERVED`
   returned a confident clean answer over data it never looked at. The same root cause had the
   opposite symptom one branch over: a row covered by *no* chunk was refused outright as "the
-  dataset's chunk index is incomplete", blaming a file that was complete and correct — and that shape
+  dataset's chunk index is incomplete", blaming a file that was complete and correct — and that
+  shape
   is the most common thing a robot logger produces, pre-allocating N steps and writing fewer.
 
 - **RLDS read a shard differently than TensorFlow reads it, five ways.** A map entry carrying its
@@ -4512,13 +4796,16 @@ defects.*
   the same bytes yielding a different episode length depending on who reads them, with Veridex
   signing its own answer. `--sample-episodes 10` over a 3-episode dataset whose manifest declares no
   shard lengths recorded a *declared* total of 10 and then raised
-  `STRUCTURAL.EPISODE_COUNT_MISMATCH` (Error) against a sound dataset, for the size of the user's own
+  `STRUCTURAL.EPISODE_COUNT_MISMATCH` (Error) against a sound dataset, for the size of the user's
+  own
   flag. The ingest report claimed "masked CRC-32C → verified on every record" under a sample, where
-  only the length prefix of a skipped record is checked. A `shape` present but not an object was read
+  only the length prefix of a skipped record is checked. A `shape` present but not an object was
+  read
   as a scalar, inflating a 2-step episode to 14 frames. An unparseable `shardLengths` entry was
   reported as "declares none".
 
-- **Terminal output executed dataset-supplied ANSI escapes.** Every string a finding carries can come
+- **Terminal output executed dataset-supplied ANSI escapes.** Every string a finding carries can
+come
   from the dataset — a stream name copied verbatim out of `info.json`, a directory name — and
   `render_terminal` wrote them straight to the TTY. A stream named
   `"\x1b[2J\x1b[1;1HVeridex report\n  Status:   PASS\x07"` clears the screen and repaints a forged
@@ -4528,8 +4815,10 @@ defects.*
 
 - **PROV graphs dissolved in silence.** Every `@id` in `to_prov` interpolated free text — a dataset
   id from a directory name, an annotator lifted from source metadata — with no encoding. A space is
-  enough: `veridex:dataset/my robot data` is not a well-formed IRI, and a JSON-LD processor drops the
-  node and every triple about it rather than erroring. Measured with rdflib: a control dataset parsed
+  enough: `veridex:dataset/my robot data` is not a well-formed IRI, and a JSON-LD processor drops
+  the
+  node and every triple about it rather than erroring. Measured with rdflib: a control dataset
+  parsed
   to 7 triples, an annotator of `Jane Doe & Co` to 3 (the agent node and its attribution edge gone),
   a dataset id of `my robot data <2026>` to 0. The document still looked like valid JSON and
   `veridex provenance --emit prov` still reported success.
@@ -4541,7 +4830,8 @@ defects.*
 
 - **`--profile` silently reverted thresholds the operator had tightened.** A profile is built as
   `Tolerances { clock_skew_ns: 20ms, ..default() }`, so every field it does not name holds a
-  *default*, not an absence of opinion. Assigning the whole struct made `--profile` *loosen* the run:
+  *default*, not an absence of opinion. Assigning the whole struct made `--profile` *loosen* the
+  run:
   a config setting `ego_max_speed_mps = 1.0`, `outlier_z = 2.0` and `gap_factor = 1.5` had all three
   reset to 100.0 / 10.0 / 3.0 — and the "Tolerances (non-default)" line then said nothing, because
   the reverted values were once again exactly the defaults.
@@ -4550,7 +4840,8 @@ defects.*
   and are read by the CLI directly; `to_run_config()` does not carry them, so
   `veridex.check(path, config=open("veridex.toml").read())` — the migration path the README
   prescribes — parsed the gate, validated it (a `min_score = 200` was even rejected), and discarded
-  it. A config whose entire purpose was to fail CI returned a clean result. Now refused with an error
+  it. A config whose entire purpose was to fail CI returned a clean result. Now refused with an
+  error
   naming the fields in the returned report that carry what it would have decided.
 
 - **A profile's verdict never reached a machine consumer.** `--json`, `--sarif` and `--html` applied
@@ -4561,7 +4852,8 @@ defects.*
 
 - **Two disclosure lines misstated their own numbers.** The tolerance line integer-divided
   nanoseconds, printing a deliberately tightened `clock_skew_ms = 0.5` as `clock-skew 0ms` and
-  `rate_deviation = 0.004` as `rate 0%`; and 50.9 ms printed as `50ms`, which is exactly the default,
+  `rate_deviation = 0.004` as `rate 0%`; and 50.9 ms printed as `50ms`, which is exactly the
+  default,
   so a *loosened* threshold read as untouched and the warning argued against itself.
 
 *The entries below through "Two refusals named the nearest thing to the mistake" close an earlier
@@ -4581,7 +4873,8 @@ excluded for cross-platform hash stability). Everything else is below.*
 
 - **A LeRobot manifest could make Veridex read outside the dataset.** A feature key in
   `meta/info.json` is a JSON object key an attacker chooses, and it was joined onto the dataset
-  directory to locate that feature's video. `Path::join` neither rejects `..` nor resists an absolute
+  directory to locate that feature's video. `Path::join` neither rejects `..` nor resists an
+  absolute
   argument — an absolute one discards the base entirely — so a published dataset declaring a feature
   named `../../../../etc/shadow` had Veridex open that file and copy its real container headers into
   the CDM. `Media` is bound into the content hash and the signed certificate, and `MediaStatus`
@@ -4602,7 +4895,8 @@ excluded for cross-platform hash stability). Everything else is below.*
   falls back to `frame_index / fps`. Applied to a whole int64 column (nanoseconds, which several
   exporters write), that fallback discarded the recorded clock and substituted a mathematically
   perfect 1/fps ladder, still labelled `ClockKind::Measured`. Every temporal check then ran against
-  a synthetic timeline and passed unconditionally: a five-second mid-episode gap certified clean. The
+  a synthetic timeline and passed unconditionally: a five-second mid-episode gap certified clean.
+  The
   column's type is checked once, up front, so the fallback stays what it was for. Alongside it, a
   negative `episode_index` (`-1` is a sentinel some exporters write) wrapped through `as u64` into
   18446744073709551615 and put those frames in a phantom episode no declared length is compared
@@ -4620,7 +4914,8 @@ excluded for cross-platform hash stability). Everything else is below.*
   payload bytes for different signals, and one signal — the multiplexor, marked `M` — says which set
   the current frame carries. The indicator was never parsed: it stayed glued onto the signal's name
   (`"ValueB m1"`) and every multiplexed signal was decoded from every frame of its id. A frame whose
-  selector said `m0` still produced a `ValueB` sample, reading `m0`'s bytes through `m1`'s layout and
+  selector said `m0` still produced a `ValueB` sample, reading `m0`'s bytes through `m1`'s layout
+  and
   scaling — a plausible number that was never on the bus, given a CDM stream of its own,
   fingerprinted into the content hash, and graded by every check. Multiplexing is common in
   production DBCs. With no decodable multiplexor, nothing is known about which set is present, so
@@ -4629,7 +4924,8 @@ excluded for cross-platform hash stability). Everything else is below.*
 
 - **candump timestamps carried about a microsecond of invented jitter.** Epoch-scale seconds times
   1e9 needs 61 bits of mantissa against `f64`'s 53, so two lines exactly 1 µs apart came out 1024 ns
-  apart — and `clock_kind: Measured` hands that to the temporal checks as though the bus had produced
+  apart — and `clock_kind: Measured` hands that to the temporal checks as though the bus had
+  produced
   it. Composed from the integer seconds and fractional digits separately. Immaterial at a 10 ms
   raster, material at 1 kHz.
 
@@ -4646,7 +4942,8 @@ excluded for cross-platform hash stability). Everything else is below.*
   check so one crash cannot take the run down; what it must not do is make the crash disappear.
   `status_from` read only the severity counts, so a run in which *every* check panicked came back
   `Pass`, `veridex check` exited 0, and CI went green over a dataset on which nothing was measured.
-  The certificate was worse, its reader being offline and unable to re-run anything: `checks_run` was
+  The certificate was worse, its reader being offline and unable to re-run anything: `checks_run`
+  was
   `executed_checks` verbatim, and that field records *invocation*, not success, so the crashed check
   appeared among the checks that ran, beside an all-zero severity summary, and `categories_skipped`
   did not mention the category whose only check had died. The document now carries `checks_errored`
@@ -4655,12 +4952,14 @@ excluded for cross-platform hash stability). Everything else is below.*
   incomplete.
 
 - **`verify` never read the certificate's schema.** Every other version mismatch in that function
-  fails closed; this one accepted a document declaring a future schema whose fields happened to parse
+  fails closed; this one accepted a document declaring a future schema whose fields happened to
+  parse
   under today's struct. A signature makes a certificate unforgeable, not intelligible.
 
 - **Stored per-dimension statistics were never sanity-checked.** A LeRobot `meta/stats.json` for a
   7-DoF `action` stores min/max/mean/std as arrays, and the adapter carries the whole thing.
-  `statistical.range-sanity` read element 0 and nothing else, so an inverted range, a NaN, a negative
+  `statistical.range-sanity` read element 0 and nothing else, so an inverted range, a NaN, a
+  negative
   standard deviation or a dead joint on any axis above the first passed clean — and
   `value-measurability` counts `dim_stats` as "stats present", so nothing abstained either and the
   certificate listed the check as executed with no categories skipped. On a 7-DoF arm that is six
@@ -4670,7 +4969,8 @@ excluded for cross-platform hash stability). Everything else is below.*
   `structural.shape-consistency` captured one baseline from the first episode declaring either a
   dtype or a shape, and never enriched it — and the comparison requires both sides declared. So a
   stream whose first episode stated a dtype but no shape had `shape: None` fixed as its baseline
-  permanently, and shape drift for it could never be reported however many later episodes conflicted.
+  permanently, and shape drift for it could never be reported however many later episodes
+  conflicted.
   HDF5 and Zarr both write no shape for a 1-D dataset, making this the ordinary case: an `/action`
   that is `(N,)` in one episode file and `(N,7)` in another is precisely the un-collatable drift the
   check exists for.
@@ -4678,7 +4978,8 @@ excluded for cross-platform hash stability). Everything else is below.*
 - **A slow sensor with exactly two samples was graded as skewed.** The span comparison widens its
   tolerance by each stream's sampling quantum, because a stream observing a window at period `T`
   understates it by up to one full period with a perfect clock. That quantum was 0 below two
-  intervals — exactly where a slow sensor lands in a short episode. A 1 Hz LiDAR beside a 100 Hz IMU,
+  intervals — exactly where a slow sensor lands in a short episode. A 1 Hz LiDAR beside a 100 Hz
+  IMU,
   perfectly synchronized, drew a headline `TEMPORAL.CLOCK_SKEW` **error** for a 990 ms "drift" that is
   one LiDAR period, and flipped to clean the moment it caught a third sample. The quantum now falls
   back to the *declared* rate, which is a statement rather than a guess, bounded by the single
@@ -4686,30 +4987,36 @@ excluded for cross-platform hash stability). Everything else is below.*
   defect.
 
 - **`--json --sarif` silently emitted SARIF.** The renderer dispatch is an if/else chain, so the
-  losing flag was dropped without a word: a CI job doing `check --json --sarif > report.json` got the
-  wrong document, which `veridex diff` then refused as not a Veridex report. Silently ignoring a flag
+  losing flag was dropped without a word: a CI job doing `check --json --sarif > report.json` got
+  the
+  wrong document, which `veridex diff` then refused as not a Veridex report. Silently ignoring a
+  flag
   is what `reject_flags_except` exists to prevent. Relatedly, `given_flags()`'s doc claimed "a test
   asserts this covers the parser's whole flag set" and no such test existed — the array is a fixed
   `[(&str, bool); N]`, which forces nothing, so a flag added to the parser without an entry would be
   accepted by every command. The two lists live in one file and are now compared as the textual fact
   they are.
 
-- **A closed stdout panicked.** Rust's runtime ignores `SIGPIPE`, so a write to a closed pipe becomes
+- **A closed stdout panicked.** Rust's runtime ignores `SIGPIPE`, so a write to a closed pipe
+becomes
   `EPIPE`, which `println!` turns into a panic: `veridex checks | head -5`, or quitting `less` partway
   through a report, aborted with a backtrace and exit 101 — neither in the documented 0/10/20/2
   contract, and both ordinary usage.
 
-- **`certify` wrote into the dataset.** The default certificate name is relative, so it landed in the
+- **`certify` wrote into the dataset.** The default certificate name is relative, so it landed in
+the
   working directory — which *is* the dataset after `cd my-dataset && veridex certify .`, the most
   natural way to do it. "It never mutates your dataset" is a README promise the adoption guide
-  repeats. Nothing was corrupted and the CDM hash is unaffected, but a promise that holds except when
+  repeats. Nothing was corrupted and the CDM hash is unaffected, but a promise that holds except
+  when
   inconvenient is not one a policy can rest on. Refused, with the one-flag fix in the message.
 
 - **Python `diff` accepted what the CLI refuses, and the JSON diff dropped coverage.** The
   `is_report_shaped` guard was CLI-only, so a truncated artifact diffed as "every finding resolved,
   no regression" — silence from a file that was never a report, read as a clean bill of health. And
   `render_diff_json` carried no coverage at all, though `render_diff` leads with `Coverage: CHANGED`
-  and `--fail-on-regression` gates on it: substituting a metadata-only report for a full one silences
+  and `--fail-on-regression` gates on it: substituting a metadata-only report for a full one
+  silences
   most of the catalog, so the machine consumer — the only consumer that document has — saw findings
   resolved and the score go up because the new run stopped looking.
 
@@ -4731,7 +5038,8 @@ excluded for cross-platform hash stability). Everything else is below.*
 
 - **`diff` was coverage-blind.** Substituting a metadata-only report for a full one silences most of
   the catalog, so the full run's findings read as *resolved*, the trust score went up, and
-  `--fail-on-regression` passed — precisely because the new run stopped looking. A coverage change is
+  `--fail-on-regression` passed — precisely because the new run stopped looking. A coverage change
+  is
   now a regression on its own, stated before anything else in the rendered diff.
 
 - **Readiness was evaluated over partial runs.** Every `world-model-ready` criterion reported
@@ -4750,7 +5058,8 @@ excluded for cross-platform hash stability). Everything else is below.*
   keeps working.
 
 - **`check --profile` judged nothing.** `--help` calls a profile what the run is "judged against",
-  and `check` only borrowed its tolerances: it printed no criterion verdicts at all, so the one thing
+  and `check` only borrowed its tolerances: it printed no criterion verdicts at all, so the one
+  thing
   the flag names was the one thing it did not report. It now renders the same per-criterion block
   `certify` does, from the same helper — unsigned, being the only difference.
 
@@ -4766,7 +5075,8 @@ excluded for cross-platform hash stability). Everything else is below.*
   before it existed still hashes identically.
 
 - **A single measured episode was reported as a systematic export defect.** The frame-count roll-up
-  charges a video-length defect once when every episode is off by the same signed amount — an encoder
+  charges a video-length defect once when every episode is off by the same signed amount — an
+  encoder
   dropping a leading frame — instead of naming each episode. It decided a stream had more than one
   episode by counting episodes that carried a `media` field at all, including those whose file was
   missing, whose container would not parse, or whose container declared no sample count. None of
@@ -4777,9 +5087,11 @@ excluded for cross-platform hash stability). Everything else is below.*
 
 - **Jitter was charged as dropped frames.** `AUTONOMY.SEQUENCE_COMPLETE` counts a frame as dropped
   when an inter-frame gap sits near a multiple of the stream's median cadence, but the ±0.25-period
-  window and the CV-0.5 abstention gate were not consistent with the 5% drop threshold they guard: on
+  window and the CV-0.5 abstention gate were not consistent with the 5% drop threshold they guard:
+  on
   a 401-frame stream with gaussian jitter and nothing dropped, a CV of 0.44 measured "~6% of its
-  frames". At that noise level a single interval reaches twice the median by chance often enough that
+  frames". At that noise level a single interval reaches twice the median by chance often enough
+  that
   the estimate is not merely noisy, it is unfounded. The window narrows to ±0.15 and the gate to CV
   0.40 — no false positive over 40 honest jittery streams (CV 0.1–0.45), while a real 10% drop rate is
   still caught and a 20% one is now covered by its own test.
@@ -4866,7 +5178,8 @@ excluded for cross-platform hash stability). Everything else is below.*
   `Path::display`, which emits the platform separator, and the uri binds into the content hash. It
   is now joined with `/` explicitly.
 
-- **A duplicate stream key inflated an export defect's episode count.** The per-stream rollup counted
+- **A duplicate stream key inflated an export defect's episode count.** The per-stream rollup
+counted
   occurrences rather than distinct episodes, so a stream name appearing twice in one episode — a
   condition Veridex reports rather than assumes away — reported the defect as spanning more episodes
   than it did.
@@ -4882,12 +5195,15 @@ excluded for cross-platform hash stability). Everything else is below.*
   actually being able to name the stranded sensors, so the worst case is a defect reported twice rather
   than not at all.
 - **One mis-stamped sensor produced one finding per episode.** The calibration is dataset-level and
-  stream names repeat in every episode, so a 50-episode drive log yielded 50 identical error-severity
+  stream names repeat in every episode, so a 50-episode drive log yielded 50 identical
+  error-severity
   copies of a single defect, and 60 decoded CAN signals off one stranded bus yielded 60. Each
   `(stream, code)` is now claimed once, the same way the dataset-level statistical checks dedupe.
-- **A bus signal was asked to reach the camera.** `SensorFrameResolution` scanned every rig modality,
+- **A bus signal was asked to reach the camera.** `SensorFrameResolution` scanned every rig
+modality,
   so a `CanSignal` (a scalar, never projected into an image) or an `EgoPose` stream (whose frame is
-  joined to the body dynamically, not by the static TF tree) could be flagged for having no transform
+  joined to the body dynamically, not by the static TF tree) could be flagged for having no
+  transform
   chain to a camera. It now scans the sensors a reprojection is actually defined for: point-cloud,
   camera, IMU, GNSS.
 - **A lying `total_episodes` could exhaust memory before a byte of data was read.** Under a sampling
@@ -4895,7 +5211,8 @@ excluded for cross-platform hash stability). Everything else is below.*
   an attacker-controlled `u64` in a few-hundred-byte manifest, materialized before either ingest budget
   exists, so neither `--max-frames` nor `--max-decompression-ratio` bounded it. `u64::MAX` panicked on
   capacity overflow; `100000000` measured 16.6 s and 1.3 GB and then returned *Ok*. `--sample-episodes`
-  now materializes only the indices it can select, and the random draw refuses a declared total above
+  now materializes only the indices it can select, and the random draw refuses a declared total
+  above
   1,000,000 rather than trusting it.
 - **A frame name could expand past the decompression budget.** The CDR reader's slice is bounded by
   the message body, but invalid UTF-8 expands 3x on the way out (each bad byte becomes a 3-byte
@@ -4912,7 +5229,8 @@ excluded for cross-platform hash stability). Everything else is below.*
   only the no-sample branch enforced it.
 - **A non-finite LeRobot timestamp was cast rather than rejected.** `(ts * 1e9).round() as i64` turned
   a `NaN` cell into `0` — a fabricated start-of-recording that reads as an ordinary timestamp — and an
-  infinity into `i64::MAX`. Non-finite cells now contribute no frame, matching `mdf4::seconds_to_ns`,
+  infinity into `i64::MAX`. Non-finite cells now contribute no frame, matching
+  `mdf4::seconds_to_ns`,
   which had this guard first.
 - **Every command silently tolerated the flags it does not act on.** The shared parser accepts one flag
   set for all eight commands, and the per-command rejection list was a hand-maintained deny-list, so
@@ -4926,16 +5244,20 @@ excluded for cross-platform hash stability). Everything else is below.*
 - **A rig that could not be spatially fused certified as `world-model-ready`.** Adding
   `autonomy.sensor-frame-resolution` moved the disconnected-transform-tree report off
   `autonomy.calibration-completeness` — which the profile judges — and onto the new check, which was
-  not in `WORLD_MODEL_READY_CRITERIA`. The defect landed in a check the profile did not watch, so all
+  not in `WORLD_MODEL_READY_CRITERIA`. The defect landed in a check the profile did not watch, so
+  all
   four criteria reported `passed: true` while the verdict said `fail`: a signed certificate carrying
   `status: "fail"` beside `readiness.ready: true`, and `ready` is the field a consumer gates on. For a
-  disconnected tree this was a straight regression — before, the tree tripped a criterion and `ready`
-  was correctly false. The check is now the profile's fifth criterion, and three regression tests pin
+  disconnected tree this was a straight regression — before, the tree tripped a criterion and
+  `ready`
+  was correctly false. The check is now the profile's fifth criterion, and three regression tests
+  pin
   the invariant behind it: **a failing verdict never carries `ready: true`**. Every autonomy check that
   can fail a rig belongs in the criteria list, which is now stated where the list is defined.
 - **The findings sort key was not total.** It ordered on five of `Finding`'s eight fields, omitting
   `category`, `risk`, and `remedy`, so two findings differing only in those fell through to `Vec`
-  order — which is execution order. `result_content_hash` is computed over that sequence, so the same
+  order — which is execution order. `result_content_hash` is computed over that sequence, so the
+  same
   two findings emitted in either order would have had to hash alike. Not reachable from today's checks
   (each emits deterministically), but it was the one ordering in the codebase that could tie on
   non-identical content. All eight fields are now in the key.
@@ -4948,14 +5270,17 @@ excluded for cross-platform hash stability). Everything else is below.*
   many streams share it.
 - **`AUTONOMY.SEQUENCE_COMPLETE` called a complete event-driven log 88% dropped.** Its baseline is the
   frame count a stream's own median cadence implies over its span — meaningless for a change-triggered
-  signal that arrives in bursts with long idles, which never aimed at a cadence. It now abstains when
+  signal that arrives in bursts with long idles, which never aimed at a cadence. It now abstains
+  when
   the intervals are far from uniform (that shape is `TEMPORAL.JITTER`'s to report); a genuinely
   dropping steady stream stays well inside the bound.
 - **A few hundred KB of crafted input could exhaust memory.** Every adapter materializes
-  *streams × samples* frames and both factors come from the file — a CAN log's signals-per-id against
+  *streams × samples* frames and both factors come from the file — a CAN log's signals-per-id
+  against
   its frame count, an MF4 group's channels against its records, a LeRobot `info.json`'s declared
   features (which need no matching Parquet column) against its rows. Measured: 344 KB of crafted CAN
-  produced 6.4M frames and 900 MB, doubling with each doubling of input, so a ~10 MB file projects to
+  produced 6.4M frames and 900 MB, doubling with each doubling of input, so a ~10 MB file projects
+  to
   tens of GB and an OOM-killed CI gate. Ingestion now charges a **frame budget** (default 20M, well
   above real datasets — a one-hour ten-sensor 100 Hz rig is 3.6M) *before* allocating, and refuses
   with a clear error naming the limit rather than being killed. `--max-frames <n>` raises it;
@@ -4967,8 +5292,10 @@ excluded for cross-platform hash stability). Everything else is below.*
   and was none, and `--fail-on` was equally inert on `inspect`, `provenance`, and `verify`. Each now
   refuses the flag by name rather than ignoring it.
 - **The `av` demo's ego trajectory never decoded, so the flagship readiness demo said N/A.** Its
-  Odometry topic carried an 8-byte dummy payload like every other sensor, so `Episode.ego_poses` came
-  back empty — and the `world-model-ready` profile, which applies only to a rig carrying a perception
+  Odometry topic carried an 8-byte dummy payload like every other sensor, so `Episode.ego_poses`
+  came
+  back empty — and the `world-model-ready` profile, which applies only to a rig carrying a
+  perception
   sensor *and* an ego trajectory, correctly abstained. The generator now writes a real CDR Odometry
   body (a ~10 m/s drive down +x), so the demo exercises ego-pose decoding and prints the NOT READY
   report the quickstart documents. A test pins profile applicability in both directions.
@@ -4995,13 +5322,15 @@ excluded for cross-platform hash stability). Everything else is below.*
   `VERIDEX.CHECK_ERRORED` result per errored check. The HTML report now also discloses non-default
   tolerances, as the terminal one already did.
 - **`verify --json` printed plain text on failure**, leaving a machine consumer nothing to parse.
-- **`veridex --help` omitted four real flags**, including `--allow-any-issuer`, the documented way to
+- **`veridex --help` omitted four real flags**, including `--allow-any-issuer`, the documented way
+to
   skip issuer trust.
 - **Python could not see a config, so it disagreed with the CLI.** `veridex.check` now takes
   `config=` (the contents of a `veridex.toml`), validated the same way; Python still never
   auto-discovers a config file, since an import should not pick up behavior from the working
   directory.
-- **The LeRobot/Parquet path had no expansion bound at all.** Every row of a Parquet file was decoded
+- **The LeRobot/Parquet path had no expansion bound at all.** Every row of a Parquet file was
+decoded
   into memory before the frame budget was charged, and the decompression budget was never consulted:
   a 50 KB zstd file measured **1.26 GB** resident and a 149 KB file **3.76 GB**, in both cases raising
   the budget error only after the memory was spent. Both budgets are now charged per record batch as
@@ -5010,20 +5339,24 @@ excluded for cross-platform hash stability). Everything else is below.*
 - **A crafted MF4 block length could panic or be silently accepted.** The `at + length` containment
   check in the block-header reader used unchecked arithmetic on a file-declared `u64`: a header
   claiming `u64::MAX - 8` bytes panicked in debug (the mode the test suite runs in) and, in release,
-  wrapped into a header that passed validation — so a corrupt file was accepted as a clean, signable,
+  wrapped into a header that passed validation — so a corrupt file was accepted as a clean,
+  signable,
   zero-episode dataset instead of being refused.
 - **Duplicate MF4 channel names were disambiguated quadratically.** Each collision restarted its
   suffix counter at zero and re-probed from scratch, so *N* identically-named channels cost O(N²):
-  16,000 of them in a 1.3 MB file measured 18 seconds, and a 100 MB file extrapolated to hours of CPU
+  16,000 of them in a 1.3 MB file measured 18 seconds, and a 100 MB file extrapolated to hours of
+  CPU
   inside a CI gate. Each collision is now one probe.
 - **A certificate could verify against a dataset it was not issued for.** `declared_frame_count` was
-  deliberately left out of the content hash as an assertion *about* content rather than content — but
+  deliberately left out of the content hash as an assertion *about* content rather than content —
+  but
   `structural.episode-boundary` reads it and fails on it, so two datasets differing only there (one
   passing, one failing) hashed identically and the clean one's certificate verified against the
   corrupt one. It is now encoded; `CANONICAL_VERSION` is **4**.
 - **The hash depended on input order for exactly the datasets Veridex exists to catch.** Episodes were
   ordered by `index` alone and streams by `name` alone — neither a total order, and duplicates of both
-  are faults the catalog reports. A stable sort left ties in `Vec` order, so two datasets holding the
+  are faults the catalog reports. A stable sort left ties in `Vec` order, so two datasets holding
+  the
   same duplicate-index episodes in different orders produced different content hashes and different
   `result_content_hash`es. Both now break ties on the item's own canonical encoding (computed only for
   items that actually tie, so an ordinary dataset pays nothing). `canonicalize_order` also now sorts
@@ -5035,23 +5368,30 @@ excluded for cross-platform hash stability). Everything else is below.*
   de-duplicates certificates by file digest cannot be handed two files that both verify.
 - **Every honest multi-rate rig was reported as clock-skewed.** `TEMPORAL.CLOCK_SKEW` and
   `AUTONOMY.RIG_SYNC` compare stream *spans*, but a stream observing a window at period `T` spans a
-  whole number of `T`s — so two perfectly synchronized sensors at different rates differ by up to one
+  whole number of `T`s — so two perfectly synchronized sensors at different rates differ by up to
+  one
   period with no drift at all. The 50 ms tolerance was therefore smaller than the intrinsic bias of
-  any sensor slower than 20 Hz: a zero-drift rig of 10 Hz LiDAR + 100 Hz IMU + 5 Hz GNSS was measured
+  any sensor slower than 20 Hz: a zero-drift rig of 10 Hz LiDAR + 100 Hz IMU + 5 Hz GNSS was
+  measured
   reporting a 70 ms "drift" (500 ms with a 1 Hz GNSS), and a 30 fps camera beside a 10 Hz state stream
   scored F. Both checks now widen the tolerance by the larger of the two streams' own sampling
   periods. A real 500 ms drift on a 10 Hz sensor is still flagged.
-- **`AUTONOMY.SEQUENCE_COMPLETE` still called complete event-driven data dropped.** Dividing the span
+- **`AUTONOMY.SEQUENCE_COMPLETE` still called complete event-driven data dropped.** Dividing the
+span
   by the median cadence charges idle stretches as missing frames, and the interval-uniformity guard
   did not bound that (a stream of 40 x 80 ms and 10 x 200 ms intervals — every event present — sat
   under the guard and was reported ~23% dropped). It now counts the frames that gaps at *multiples* of
-  the cadence actually swallowed, so an idle burst costs nothing and a steady sensor's real drops are
+  the cadence actually swallowed, so an idle burst costs nothing and a steady sensor's real drops
+  are
   still found.
 - **One root cause could be deducted many times.** `TEMPORAL.NON_MONOTONIC` had no shared-timeline
-  guard, so a single stuck timestamp on an 8-channel CAN group cost eight Errors and floored the data
-  score; it now reports once per timeline and names the rest, as `TEMPORAL.GAP` and `TEMPORAL.JITTER`
+  guard, so a single stuck timestamp on an 8-channel CAN group cost eight Errors and floored the
+  data
+  score; it now reports once per timeline and names the rest, as `TEMPORAL.GAP` and
+  `TEMPORAL.JITTER`
   already did. `SEMANTIC.AMBIGUOUS_STREAM_KEY` and `SEMANTIC.DUPLICATE_STREAM_KEY` were emitted per
-  episode, so one naming mistake across 50 episodes cost 100 warnings; a naming mistake is a property
+  episode, so one naming mistake across 50 episodes cost 100 warnings; a naming mistake is a
+  property
   of the schema, so each collision is now reported once, naming the first episode it appears in.
 - **A constant stream's float-noise `std` was either missed or called impossible.** `DEGENERATE`
   required `std == 0.0` exactly, and the Popoviciu tolerance scaled with the *range* rather than the
@@ -5082,26 +5422,33 @@ excluded for cross-platform hash stability). Everything else is below.*
   much it unpacks into, and nothing checked that figure: a few hundred bytes claiming 8 GiB of chunk
   contents sent the reader into an unbounded read loop, and a chunk full of oversized messages costs
   one frame each — cheap by the frame budget, ruinous in memory. Ingestion now also charges a
-  **decompression budget**, sized at 100x the file's own size (with a 64 MiB floor) so it scales with
-  genuinely large logs while refusing bomb-scale ratios. It is charged off the chunk headers *before*
+  **decompression budget**, sized at 100x the file's own size (with a 64 MiB floor) so it scales
+  with
+  genuinely large logs while refusing bomb-scale ratios. It is charged off the chunk headers
+  *before*
   the file reaches the reader, and again against the message bytes that actually arrive, so a header
-  that understates its expansion buys nothing. `--max-decompression-ratio <n>` raises it; `0` removes
+  that understates its expansion buys nothing. `--max-decompression-ratio <n>` raises it; `0`
+  removes
   it.
 - **A scenario/map version could be read from the wrong place and recorded as extracted.** The ASAM
-  `revMajor`/`revMinor` scan searched the whole file for each attribute independently, so a templated
+  `revMajor`/`revMinor` scan searched the whole file for each attribute independently, so a
+  templated
   `.xodr` whose comment or `description` mentioned `revMajor="0"` had that read as its declared
-  version — class `known`, i.e. presented as read from the file's bytes. Both attributes are now read
+  version — class `known`, i.e. presented as read from the file's bytes. Both attributes are now
+  read
   from the same header element, comments are skipped, and the element is walked as `name="value"`
   pairs, so a mention inside another attribute's value or a longer name ending in `revMajor` no
   longer matches. Empty values no longer yield the version `"."`, and a bare `name=` at a truncated
   buffer's end no longer abandons the scan.
 - **Two datasets could share a content hash and disagree on the verdict.** The canonical encoder
-  treats several collections as *sets* — the ego trajectory, dataset metadata, provenance records and
+  treats several collections as *sets* — the ego trajectory, dataset metadata, provenance records
+  and
   their elements — but `canonicalize_order` sorted only episodes and streams, and some checks read
   those collections as sequences or by first match. Verified: the same six ego poses in two Vec orders
   hashed identically while one reported five 200 m/s teleports and the other passed; duplicate
   metadata keys and provenance records behaved the same way. Since a certificate binds the content
-  hash, it could attest a hash that also matches a dataset that fails. `canonicalize_order` now sorts
+  hash, it could attest a hash that also matches a dataset that fails. `canonicalize_order` now
+  sorts
   every collection the encoder canonicalizes, with the encoder's own sort keys so the two cannot
   drift, and a property test permutes all of them at once and asserts both the content hash and the
   verdict are unchanged.
@@ -5111,8 +5458,10 @@ excluded for cross-platform hash stability). Everything else is below.*
   full content key, and `inspect`/`provenance` canonicalize before rendering on both surfaces.
 - **A decoded value's fingerprint could differ between x86 and ARM.** The CAN+DBC and MF4 adapters
   hashed `f64::to_bits` of an *arithmetic result*, and a DBC or `##CC` coefficient of `inf` makes
-  `0.0 * inf` a NaN whose default sign is platform-specific (`-0.0` was likewise distinguishable from
-  `+0.0`). Both now route through the encoder's canonical float bits, so the same bytes hash the same
+  `0.0 * inf` a NaN whose default sign is platform-specific (`-0.0` was likewise distinguishable
+  from
+  `+0.0`). Both now route through the encoder's canonical float bits, so the same bytes hash the
+  same
   everywhere — which is what the determinism contract promises.
 - **A 33 KB MF4 file could allocate 1.35 GB.** The block-graph walk kept a visited set per parent
   chain, but MF4 links may legally point at shared blocks — so *n* data groups each re-walking the
@@ -5128,15 +5477,19 @@ excluded for cross-platform hash stability). Everything else is below.*
   so a 1 Hz group and a 100 Hz group over the same measurement tripped start/end-offset checks. Each
   channel group is now its own timeline.
 - **A bus-only measurement was treated as a sensor rig.** Rig detection counted AV-native streams, and
-  a CAN or MF4 log is dozens of `CanSignal` streams off one bus — so ordinary raster differences read
+  a CAN or MF4 log is dozens of `CanSignal` streams off one bus — so ordinary raster differences
+  read
   as rig-wide clock drift (an *error*), and the pairwise `TEMPORAL.CLOCK_SKEW` was suppressed on those
   datasets. A rig now also requires two distinct AV-native modalities, which every real rig has.
-- **`veridex verify` implied trust it had not checked.** With no `--key`, verification confirmed only
+- **`veridex verify` implied trust it had not checked.** With no `--key`, verification confirmed
+only
   that a certificate was internally consistent and bound to the presented dataset — so a certificate
   forged about *real* data and signed with an attacker's own key verified cleanly, exit 0, reporting
-  whatever score it claimed. `verify` now requires a trust decision: name the issuer with `--key`, or
+  whatever score it claimed. `verify` now requires a trust decision: name the issuer with `--key`,
+  or
   pass `--allow-any-issuer` for the self-consistency check alone, which prints a warning and reports
-  `issuer_verified: false` in `--json`. Python's `veridex.verify` mirrors this (`allow_any_issuer=`).
+  `issuer_verified: false` in `--json`. Python's `veridex.verify` mirrors this
+  (`allow_any_issuer=`).
 - **Certificates tolerated fields the signature never covered.** The signature is computed over the
   parsed structure, so an injected `trust_score_override` (or anything else) survived verification
   and would be read as authentic by any consumer parsing the JSON directly. Every certificate type
@@ -5145,7 +5498,8 @@ excluded for cross-platform hash stability). Everything else is below.*
   and absolute paths but still followed symlinks, and the CAN+DBC adapter's input discovery did not
   check at all. Both now refuse: the sidecar path is canonicalized and re-checked for containment
   under the dataset root, and a symlinked CAN log is skipped.
-- **A corrupt element count could reserve gigabytes.** The ROS CDR decoder bounded a declared element
+- **A corrupt element count could reserve gigabytes.** The ROS CDR decoder bounded a declared
+element
   count against the message's *byte* length, but each element is far larger than a byte — a 100 MB
   TFMessage claiming 100M transforms reserved ~13 GB before the first read failed. Counts are now
   bounded by the smallest each element can encode.
@@ -5160,11 +5514,13 @@ excluded for cross-platform hash stability). Everything else is below.*
   silence from a check that never ran blocks `ready` and prints as `? … [check did not run]`. The
   field is omitted when the check ran, so certificates issued before it existed still verify
   byte-identically.
-- **`world-model-ready` applied to datasets its criteria couldn't judge.** Applicability was "is this
+- **`world-model-ready` applied to datasets its criteria couldn't judge.** Applicability was "is
+this
   a sensor rig", and a rig is ≥3 AV-native sensors — which a bus-only CAN or MF4 log satisfies. With
   no perception sensor and no ego trajectory, calibration completeness and ego-pose continuity abstain,
   so such a log was certified ready on two criteria that examined nothing. A profile now carries an
-  explicit `applies_to` predicate, and `world-model-ready` demands a rig **with** a perception sensor
+  explicit `applies_to` predicate, and `world-model-ready` demands a rig **with** a perception
+  sensor
   and an ego trajectory; anything else is `N/A`.
 
 - The `veridex-data` wheel could not build: `pyproject.toml` was missing a `version` (now taken
@@ -5174,12 +5530,15 @@ excluded for cross-platform hash stability). Everything else is below.*
   the source`. Ingestion now checks a local path exists first and returns a clear
   `no such file or directory` (`IngestError::SourceNotFound`), distinct from an unrecognized format.
 - `veridex verify --key <path>` with a missing/invalid key file was silently reinterpreting the path
-  string as the key, then reporting `untrusted issuer` (a verification *failure*, exit 20) instead of
-  a tool error. The `--key` value is now resolved unambiguously — a 64-char hex key inline, otherwise
+  string as the key, then reporting `untrusted issuer` (a verification *failure*, exit 20) instead
+  of
+  a tool error. The `--key` value is now resolved unambiguously — a 64-char hex key inline,
+  otherwise
   a file path — and an unreadable or non-hex key file is a clear exit-2 error, not a false mismatch.
 - `veridex keygen` silently overwrote an existing key file — an unrecoverable loss of a signing key.
   It now refuses to clobber an existing secret or public key unless `--force` is passed.
-- `veridex check --fail-on <typo>` silently fell back to the default threshold, quietly disabling the
+- `veridex check --fail-on <typo>` silently fell back to the default threshold, quietly disabling
+the
   strictness a CI user asked for. An unrecognized `--fail-on` value is now an exit-2 error.
 - The temporal checks (rate, gaps, clock-skew) computed timestamp intervals with plain `i64`
   subtraction, which overflowed on corrupt timestamps spanning the full `i64` range — a panic in
@@ -5201,20 +5560,24 @@ excluded for cross-platform hash stability). Everything else is below.*
   so a source's independently-rounded mean landing one ULP past a bound on a near-constant stream
   raised a hard error on honest data. It now allows the same small tolerance as the Popoviciu std
   check.
-- The LeRobot per-dimension statistics silently misaligned when a multi-DoF cell had a **null leaf**:
+- The LeRobot per-dimension statistics silently misaligned when a multi-DoF cell had a **null
+leaf**:
   a dropped joint contributed nothing, sliding every later dimension down one and polluting their
-  min/max/mean/std (false `STATS_STALE`/`SATURATED`, misattributed dimensions). A null leaf now holds
+  min/max/mean/std (false `STATS_STALE`/`SATURATED`, misattributed dimensions). A null leaf now
+  holds
   its dimension slot (absent, not shifted), matching the content-hash path; a regression test covers it.
 - The verdict and human/JSON/SARIF reports were **input-order-dependent** while the content hash was
   order-independent, so two datasets that hashed identically but were built with their episodes/streams
   in a different order could produce different `result_content_hash` and report bytes. The pipeline now
-  canonicalizes episode order (by index) and stream order (by name) before validating, so the verdict
+  canonicalizes episode order (by index) and stream order (by name) before validating, so the
+  verdict
   matches the hash's order-independence.
 - A non-finite tolerance (`NaN`/`inf`) constructed via the library/Python API serialized to JSON
   `null` — a signed certificate embedding it could never be re-verified — and silently disabled the
   checks that guard on it. Tolerances are now sanitized to their finite defaults before the run and in
   the recorded config.
-- `veridex check --min-scor 90` (any mistyped or unknown flag) was silently ignored, quietly dropping
+- `veridex check --min-scor 90` (any mistyped or unknown flag) was silently ignored, quietly
+dropping
   the CI gate the user asked for; a value-flag could also swallow the next flag as its value
   (`--key --format`). Unknown options and missing flag values are now exit-2 errors.
 - The LeRobot adapter never reconciled the Parquet data columns against the `meta/info.json` feature
@@ -5222,7 +5585,8 @@ excluded for cross-platform hash stability). Everything else is below.*
   became a phantom stream with no content — neither disclosed. The fidelity report now lists an
   undeclared column as `unmapped` and a declared-but-absent feature as `omitted`.
 - The LeRobot adapter never validated `codebase_version`, so a v2.x export (which still has
-  `meta/info.json`) was misparsed as v3. A recognized-but-unsupported version is now rejected cleanly
+  `meta/info.json`) was misparsed as v3. A recognized-but-unsupported version is now rejected
+  cleanly
   with `IngestError::UnsupportedVersion`.
 - Recomputed per-dimension variance used the one-pass `E[x²]−E[x]²` formula, which loses precision
   (and can clamp a real variance to 0 → spurious `DEGENERATE`) for signals riding a large DC offset.
@@ -5230,10 +5594,12 @@ excluded for cross-platform hash stability). Everything else is below.*
   unsigned or narrower Arrow type are now accepted instead of falsely rejecting the dataset, and the
   Parquet directory walk no longer follows symlinks (a self-referential link could recurse unbounded).
 - Robustness: MCAP `log_time` above `i64::MAX` now saturates instead of wrapping negative and
-  corrupting frame ordering; `STREAM_ABSENT` no longer lists a duplicate episode index twice; and the
+  corrupting frame ordering; `STREAM_ABSENT` no longer lists a duplicate episode index twice; and
+  the
   saturation check skips a zero-sample summary rather than emitting a `NaN%` finding, while the score's
   penalty arithmetic saturates so a pathological finding count cannot overflow.
-- `SEMANTIC.ANNOTATION_UNALIGNED` treated a declared episode window as authoritative even when it was
+- `SEMANTIC.ANNOTATION_UNALIGNED` treated a declared episode window as authoritative even when it
+was
   *narrower* than the recorded frames, so a `language` annotation on a genuinely recorded frame outside
   that window raised a false Error (flipping the episode to FAIL). The alignment span is now the union
   of the declared bounds and the actual frame extent; a genuinely out-of-range annotation still fires.
@@ -5241,7 +5607,8 @@ excluded for cross-platform hash stability). Everything else is below.*
 ### Security
 
 - **A dataset manifest could name any file on the host.** A LeRobot feature key — an untrusted JSON
-  object key — was joined onto the dataset directory to locate that feature's video, and neither `..`
+  object key — was joined onto the dataset directory to locate that feature's video, and neither
+  `..`
   nor an absolute path was rejected. Veridex opened the named file and copied its container headers
   into the CDM, which is bound into the content hash and the signed certificate; `MediaStatus`
   separates missing from unreadable from read, so a published dataset turned every verdict issued
@@ -5295,6 +5662,7 @@ excluded for cross-platform hash stability). Everything else is below.*
 ### Not yet included
 
 Streaming / larger-than-memory reads and remote Hub ingestion (`Source::Remote` is *refused* with a
-clear error rather than silently ignored, returning `IngestError::NotImplemented`); and publishing to
+clear error rather than silently ignored, returning `IngestError::NotImplemented`); and publishing
+to
 PyPI / crates.io. Metadata-only ingestion is no longer in this list — it shipped, and has its own
 entry above.
