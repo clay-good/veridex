@@ -10,6 +10,18 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A CAN recording this reader cannot decode is disclosed, not dropped.** The CAN+DBC adapter reads
+  candump ASCII logs, and most automotive CAN is logged in binary: a session recorded with two tools
+  leaves a Vector `.blf`, a PEAK `.trc`, an ASAM `.mf4`, or a gzipped candump beside the `.log`.
+  Those files were passed over in silence, so the verdict described whichever fraction of the bus
+  happened to be in candump form while naming the whole directory — and nothing in the report
+  mentioned the other file at all, which is the failure a caller has no way to notice.
+
+  Each is now named as unread coverage and raises `COVERAGE.SOURCE_UNREAD`, the same warning an
+  undefined CAN id raises, for the same reason: that traffic was on the bus and is in no stream.
+  What is deliberately not named is anything that is not a recording — a README beside the data is
+  not data, and disclosing it would make every honest directory report a hole.
+
 - **A dataset whose videos are Matroska is read, not reported as having no video at all.** LeRobot
   names a codec and a rate in its manifest, never a container, and an `ffmpeg` pipeline that was not
   asked for MP4 writes `.mkv` or `.webm`. Veridex only collected ISO base media extensions, so those

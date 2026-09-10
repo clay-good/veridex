@@ -824,3 +824,64 @@ fn a_signal_carried_by_every_frame_is_not_reported_as_short() {
         out.report.unread_sources
     );
 }
+
+/// A recording this reader cannot decode is not an absent one.
+///
+/// A session recorded with two tools leaves a candump `.log` beside a Vector `.blf` or a PEAK
+/// `.trc` — the binary formats most automotive CAN is actually logged in, and neither of which this
+/// adapter decodes. Read as if the directory held only the `.log`, the verdict describes a fraction
+/// of the traffic while naming the whole directory, and nothing in the report says which fraction.
+/// That is the failure a caller has no way to notice, so the file is disclosed as unread coverage.
+#[test]
+fn a_can_log_in_a_format_this_reader_does_not_decode_is_disclosed_not_dropped() {
+    let dir = write_dataset();
+    fs::write(dir.path().join("chassis.blf"), b"LOGG not really a blf").unwrap();
+    fs::write(dir.path().join("body.trc"), b";$FILEVERSION=2.0").unwrap();
+    // A note beside the data is not data: disclosing it would make every honest directory report a
+    // coverage hole.
+    fs::write(dir.path().join("README.md"), "recorded 2026-09-09").unwrap();
+
+    let out = CanDbcAdapter
+        .ingest(
+            &Source::Local(dir.path().to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest");
+    let unread: Vec<String> = out
+        .report
+        .unread_sources
+        .iter()
+        .map(|u| format!("{} {}", u.source_path, u.note))
+        .collect();
+    let joined = unread.join("\n");
+    assert!(joined.contains("chassis.blf"), "{joined}");
+    assert!(joined.contains("body.trc"), "{joined}");
+    assert!(!joined.contains("README"), "{joined}");
+}
+
+/// The disclosure must reach the verdict, not only `inspect`: a partial read that scores like a
+/// whole one is exactly what `COVERAGE.SOURCE_UNREAD` exists to prevent.
+#[test]
+fn an_undecoded_can_log_raises_the_coverage_warning() {
+    let dir = write_dataset();
+    fs::write(dir.path().join("chassis.blf"), b"LOGG").unwrap();
+    let outcome = veridex_core::pipeline::run_check(
+        &veridex_core::default_registry(),
+        &Source::Local(dir.path().to_path_buf()),
+        None,
+        &IngestOptions::default(),
+    )
+    .expect("the run completes");
+    let finding = outcome
+        .verdict
+        .findings
+        .iter()
+        .find(|f| f.code == "COVERAGE.SOURCE_UNREAD")
+        .expect("an undecoded log surfaces as a coverage finding");
+    assert_eq!(finding.severity, veridex_core::check::Severity::Warning);
+    assert!(
+        finding.message.contains("chassis.blf"),
+        "{}",
+        finding.message
+    );
+}

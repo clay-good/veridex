@@ -560,6 +560,14 @@ unread and raise a warning:
 #       for the part that was
 ```
 
+**A recording this reader cannot decode is not an absent one.** Most automotive CAN is logged in
+binary, not candump ASCII, and a session recorded with two tools leaves a Vector `.blf`, a PEAK
+`.trc`, an ASAM `.mf4`, or a gzipped candump beside the `.log`. Veridex decodes the candump logs and
+**names each of the others as unread coverage**, so a verdict built from a fraction of the bus says
+so rather than describing the directory as though it held only what was read. What is deliberately
+*not* named is anything that is not a recording — a README beside the data is not data, and filing
+it here would make every honest directory report a hole.
+
 **A database written for the wrong variant is the same gap seen from the other side.** The DBC can
 also define a signal the bus's frames are too short to carry — bits 48–63 of a message whose frames
 arrive four bytes long, which is what happens when the database comes from a different trim of the

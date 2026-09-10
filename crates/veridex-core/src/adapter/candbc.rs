@@ -408,7 +408,11 @@ impl Adapter for CanDbcAdapter {
             });
         };
 
-        let (dbc_path, log_paths) = find_inputs(dir)?;
+        let Inputs {
+            dbc: dbc_path,
+            logs: log_paths,
+            undecoded: undecoded_logs,
+        } = find_inputs(dir)?;
         let dbc_text =
             std::fs::read_to_string(&dbc_path).map_err(|e| IngestError::Io(e.to_string()))?;
         let messages = parse_dbc(&dbc_text);
@@ -778,6 +782,19 @@ impl Adapter for CanDbcAdapter {
                     .into(),
             });
         }
+        // A recording beside the ones that were read, in a format this adapter does not decode. Its
+        // frames were on the bus and are in no stream, which is the same hole as an undefined id —
+        // and the one a caller is least able to notice, because nothing in the verdict would
+        // otherwise mention the file at all.
+        for (name, kind) in &undecoded_logs {
+            unread_sources.push(UnmappedField {
+                source_path: name.clone(),
+                note: format!(
+                    "{kind}, which this adapter does not decode — none of its traffic is in any \
+                     stream, and every result speaks only for the candump log(s) beside it"
+                ),
+            });
+        }
         // Some lines parsed and some did not. That is not enough to refuse the log, but it is a
         // coverage gap of exactly the kind this report exists to name: those frames were on the bus
         // and are not in the verdict.
@@ -835,10 +852,50 @@ fn dir_has_extension(dir: &Path, ext: &str) -> bool {
     })
 }
 
-/// Locate the single `.dbc` and the CAN log files (`.log` / `.asc`) in `dir`.
-fn find_inputs(dir: &Path) -> Result<(std::path::PathBuf, Vec<std::path::PathBuf>), IngestError> {
+/// CAN recordings this adapter does not decode, and the name to call each one in the disclosure.
+///
+/// Automotive CAN is logged in binary far more often than in candump ASCII, and a session recorded
+/// with two tools leaves one of these beside the `.log`. Reading only what it understands and saying
+/// nothing would describe a fraction of the bus while naming the whole directory — so each is
+/// disclosed as unread coverage. The list is *recordings*, not every unread file: a README beside
+/// the data is not data, and filing it here would make every honest directory report a hole.
+const UNDECODED_LOGS: &[(&str, &str)] = &[
+    ("blf", "a Vector BLF binary log"),
+    ("trc", "a PEAK PCAN-Trace log"),
+    (
+        "mf4",
+        "an ASAM MDF file (Veridex reads these, through its MDF4 adapter, not this one)",
+    ),
+    (
+        "mdf",
+        "an ASAM MDF file (Veridex reads these, through its MDF4 adapter, not this one)",
+    ),
+    ("log.gz", "a gzip-compressed candump log"),
+    ("asc.gz", "a gzip-compressed candump log"),
+];
+
+/// What kind of CAN recording `name` is, when it is one this adapter cannot decode.
+///
+/// Matched on the lower-cased file name's suffix rather than on `Path::extension`, so the
+/// two-part `.log.gz` is recognized as the compressed candump log it is instead of as "gz".
+fn undecoded_log_kind(name: &str) -> Option<&'static str> {
+    let lower = name.to_ascii_lowercase();
+    UNDECODED_LOGS
+        .iter()
+        .find(|(ext, _)| {
+            lower
+                .strip_suffix(ext)
+                .is_some_and(|stem| stem.ends_with('.') && stem.len() > 1)
+        })
+        .map(|(_, kind)| *kind)
+}
+
+/// Locate the single `.dbc` and the CAN log files (`.log` / `.asc`) in `dir`, along with the CAN
+/// recordings found beside them that this adapter cannot decode.
+fn find_inputs(dir: &Path) -> Result<Inputs, IngestError> {
     let mut dbc: Option<std::path::PathBuf> = None;
     let mut logs: Vec<std::path::PathBuf> = Vec::new();
+    let mut undecoded: Vec<(String, &'static str)> = Vec::new();
     let entries = std::fs::read_dir(dir).map_err(|e| IngestError::Io(e.to_string()))?;
     for entry in entries.flatten() {
         let path = entry.path();
@@ -861,7 +918,13 @@ fn find_inputs(dir: &Path) -> Result<(std::path::PathBuf, Vec<std::path::PathBuf
             Some(e) if e.eq_ignore_ascii_case("log") || e.eq_ignore_ascii_case("asc") => {
                 logs.push(path)
             }
-            _ => {}
+            _ => {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if let Some(kind) = undecoded_log_kind(name) {
+                        undecoded.push((name.to_string(), kind));
+                    }
+                }
+            }
         }
     }
     let dbc = dbc.ok_or_else(|| IngestError::Parse {
@@ -875,7 +938,22 @@ fn find_inputs(dir: &Path) -> Result<(std::path::PathBuf, Vec<std::path::PathBuf
         });
     }
     logs.sort();
-    Ok((dbc, logs))
+    undecoded.sort();
+    Ok(Inputs {
+        dbc,
+        logs,
+        undecoded,
+    })
+}
+
+/// What a dataset directory holds for this adapter.
+struct Inputs {
+    /// The one signal database.
+    dbc: std::path::PathBuf,
+    /// The candump logs to read, in a deterministic order.
+    logs: Vec<std::path::PathBuf>,
+    /// CAN recordings beside them this adapter cannot decode, as `(file name, what it is)`.
+    undecoded: Vec<(String, &'static str)>,
 }
 
 #[cfg(test)]
