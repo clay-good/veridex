@@ -443,7 +443,7 @@ whose satellite receiver was never decoded, one with no transform tree to resolv
 and one that holds **too few episodes** for the seven checks that answer by comparing episodes
 against each other — which is every MCAP file and every bare rosbag2 recording, since those are one
 episode by construction — each produces an informational finding naming what had nothing to measure.
-Fourteen checks in the catalog raise one; each declares which of its codes mean *"I could not measure"*
+Fifteen checks in the catalog raise one; each declares which of its codes mean *"I could not measure"*
 rather than *"I measured this and it is wrong"*, `veridex checks` marks them, and the full set is in
 [docs/checks.md](docs/checks.md).
 

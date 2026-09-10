@@ -2885,6 +2885,84 @@ fn a_rig_with_a_drifting_sensor_is_flagged_once() {
     assert!(f[0].message.contains("imu"), "names the drifted sensor");
 }
 
+/// A rig whose sensors cannot be *compared* is not a rig that was found synchronized.
+///
+/// One sensor published a single scan — a driver that came up and stopped — so only one stream has a
+/// measurable span and there is no cross-sensor drift to measure. Before this said so, the check
+/// emitted nothing, and `world-model-ready` reads "the check ran and found nothing" as a pass: the
+/// rig certified against "rig sensors within a 20 ms cross-sensor span drift" on a comparison that
+/// never happened.
+#[test]
+fn a_rig_with_only_one_measurable_sensor_says_it_compared_nothing() {
+    // Three rig sensors, because fewer is not a rig at all (`RIG_SENSOR_THRESHOLD`) and this check
+    // would skip the episode for that reason instead of the one under test.
+    let mut dead_lidar = rig_stream("lidar", Modality::PointCloud, 1_000_000_000);
+    dead_lidar.frames.truncate(1); // one scan, then silence: no span at all
+    let mut dead_imu = rig_stream("imu", Modality::Imu, 1_000_000_000);
+    dead_imu.frames.truncate(1);
+    let ep = episode(
+        0,
+        vec![
+            dead_lidar,
+            dead_imu,
+            rig_stream("gnss", Modality::Gnss, 1_000_000_000),
+        ],
+    );
+    let f = autonomy::RigSync::default().run(&dataset(vec![ep]));
+    assert_eq!(f.len(), 1, "{f:#?}");
+    assert_eq!(f[0].code, "AUTONOMY.RIG_SYNC_UNCOMPARED");
+    assert_eq!(f[0].severity, Severity::Info);
+    // It is declared as an abstention, which is what carries it into the certificate and what makes
+    // the readiness criterion refuse to pass on it.
+    assert!(
+        veridex_core::check::Check::abstention_codes(&autonomy::RigSync::default())
+            .contains(&"AUTONOMY.RIG_SYNC_UNCOMPARED")
+    );
+}
+
+/// And the other direction: a rig that *was* compared says nothing about being uncompared.
+#[test]
+fn a_rig_that_could_be_compared_raises_no_abstention() {
+    let ep = episode(
+        0,
+        vec![
+            rig_stream("lidar", Modality::PointCloud, 1_000_000_000),
+            rig_stream("imu", Modality::Imu, 1_000_000_000),
+            rig_stream("gnss", Modality::Gnss, 1_000_000_000),
+        ],
+    );
+    let f = autonomy::RigSync::default().run(&dataset(vec![ep]));
+    assert!(
+        !f.iter().any(|x| x.code == "AUTONOMY.RIG_SYNC_UNCOMPARED"),
+        "{f:#?}"
+    );
+}
+
+/// A metadata-only run has no frames *by request*, so nothing could be compared for a reason that is
+/// about the run and not the rig. Saying "this rig could not be checked for drift" there would be a
+/// claim about a recording nobody asked to read; `COVERAGE.*` already states what such a run skipped.
+#[test]
+fn a_metadata_only_run_raises_no_rig_sync_abstention() {
+    let mut lidar = rig_stream("lidar", Modality::PointCloud, 1_000_000_000);
+    let mut imu = rig_stream("imu", Modality::Imu, 1_000_000_000);
+    let mut gnss = rig_stream("gnss", Modality::Gnss, 1_000_000_000);
+    lidar.frames.clear();
+    imu.frames.clear();
+    gnss.frames.clear();
+    let ep = episode(0, vec![lidar, imu, gnss]);
+    let context = veridex_core::check::CheckContext {
+        frames_read: false,
+        attested_keys: Vec::new(),
+        sampled: false,
+    };
+    let f = veridex_core::check::Check::run_in(
+        &autonomy::RigSync::default(),
+        &dataset(vec![ep]),
+        &context,
+    );
+    assert!(f.is_empty(), "{f:#?}");
+}
+
 #[test]
 fn the_rig_sync_allowance_is_a_boundary_the_profile_promises() {
     // `world-model-ready` attests "rig sensors within a 20 ms cross-sensor span drift", and the rule

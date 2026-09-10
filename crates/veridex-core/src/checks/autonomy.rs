@@ -71,7 +71,10 @@ impl Check for RigSync {
         "autonomy.rig-sync"
     }
     fn finding_codes(&self) -> &'static [&'static str] {
-        &["AUTONOMY.RIG_SYNC"]
+        &["AUTONOMY.RIG_SYNC", "AUTONOMY.RIG_SYNC_UNCOMPARED"]
+    }
+    fn abstention_codes(&self) -> &'static [&'static str] {
+        &["AUTONOMY.RIG_SYNC_UNCOMPARED"]
     }
     fn title(&self) -> &'static str {
         "Rig-wide time sync"
@@ -89,6 +92,19 @@ impl Check for RigSync {
         "1"
     }
     fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        self.run_with(dataset, true)
+    }
+    fn run_in(&self, dataset: &Dataset, context: &CheckContext) -> Vec<Finding> {
+        self.run_with(dataset, context.frames_read)
+    }
+}
+
+impl RigSync {
+    /// `frames_read` is false under a metadata-only ingest, where no stream has frames *by request*.
+    /// The comparison cannot run then either — but the reason is the request, not the recording, and
+    /// an abstention that cannot tell those apart says "this rig could not be checked for drift"
+    /// about a rig nobody asked to check. `COVERAGE.*` already states what such a run did not read.
+    fn run_with(&self, dataset: &Dataset, frames_read: bool) -> Vec<Finding> {
         let mut findings = Vec::new();
         for ep in &dataset.episodes {
             if !is_rig_episode(ep) {
@@ -121,6 +137,42 @@ impl Check for RigSync {
                 .filter(|(_, span, _)| *span > 0)
                 .collect();
             if spans.len() < 2 {
+                if !frames_read {
+                    continue;
+                }
+                // Fewer than two sensors whose span could be measured, so there was no cross-sensor
+                // comparison to make. A rig reaches this with a sensor that published once — a
+                // driver that emitted a single scan and stopped — and reporting nothing would put
+                // "rig sensors within a 20 ms cross-sensor span drift" in a signed certificate on
+                // the strength of a comparison that never happened. `world-model-ready` judges that
+                // criterion on this check, and a criterion passes only when its check ran and found
+                // nothing: saying so here is what stops the vacuous pass.
+                findings.push(
+                    Finding::new(
+                        self.id(),
+                        Category::Autonomy,
+                        Severity::Info,
+                        Location::Episode { episode: ep.index },
+                        "AUTONOMY.RIG_SYNC_UNCOMPARED",
+                        format!(
+                            "episode {}: {} sensor stream(s) have a measurable time span, so the \
+                             cross-sensor drift this check exists to measure was never compared",
+                            ep.index,
+                            spans.len()
+                        ),
+                    )
+                    .with_risk(
+                        "Nothing in this run says whether this rig's sensors are synchronized. A \
+                         clean result here is the absence of a measurement, not evidence that \
+                         observations from different sensors describe the same instant — and \
+                         `world-model-ready` judges that criterion on this check.",
+                    )
+                    .with_remedy(
+                        "Check whether a sensor stopped after its first message, or whether the \
+                         recording is too short for any sensor to span time; a rig log with one \
+                         measurable sensor cannot be checked for cross-sensor drift.",
+                    ),
+                );
                 continue;
             }
             spans.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(b.0)));

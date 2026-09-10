@@ -10,6 +10,25 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A rig whose sensors could not be compared no longer certifies as synchronized
+  (`AUTONOMY.RIG_SYNC_UNCOMPARED`).** `autonomy.rig-sync` measures the spread between the widest and
+  tightest sensor span, and needs two sensors with a measurable span to do it. A rig reaches fewer
+  than that with a sensor that published once — a driver that came up, emitted a single scan and
+  stopped — and the check simply emitted nothing.
+
+  Nothing is a pass. `world-model-ready` judges a criterion by "its check ran and found nothing",
+  so such a rig was certified against "rig sensors within a 20 ms cross-sensor span drift" on a
+  comparison that never happened — the failure mode this project names most often, in the one
+  place it is signed. The check now says it compared nothing, declared in `abstention_codes`,
+  which both carries the disclosure into the certificate and makes the readiness criterion refuse
+  to pass on it.
+
+  Suppressed under a metadata-only run, where no stream has frames *by request*: the reason there
+  is the request rather than the recording, and `COVERAGE.*` already states what such a run did
+  not read. Both halves are red-proven, and the first draft of all three tests built two-sensor
+  episodes — which are not rigs at all (`RIG_SENSOR_THRESHOLD` is three), so they passed without
+  reaching the code under test.
+
 - **A video the frame-count check could not measure says so (`VIDEO.FRAME_COUNT_UNMEASURED`).** A
   container can be perfectly readable and still not state how many frames it holds: a **fragmented**
   MP4 keeps its samples in `moof` fragments and leaves the sample table in `moov` empty, which is
