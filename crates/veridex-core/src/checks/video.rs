@@ -294,10 +294,14 @@ impl Check for MediaConformance {
     fn finding_codes(&self) -> &'static [&'static str] {
         &[
             "VIDEO.FRAME_COUNT_MISMATCH",
+            "VIDEO.FRAME_COUNT_UNMEASURED",
             "VIDEO.RESOLUTION_MISMATCH",
             "VIDEO.CODEC_MISMATCH",
             "VIDEO.FPS_MISMATCH",
         ]
+    }
+    fn abstention_codes(&self) -> &'static [&'static str] {
+        &["VIDEO.FRAME_COUNT_UNMEASURED"]
     }
     fn title(&self) -> &'static str {
         "Media matches its declared encoding and paired data"
@@ -325,6 +329,13 @@ impl Check for MediaConformance {
         let mut findings = Vec::new();
         let mut export_defects: BTreeMap<(&str, &'static str, String), Occurrence> =
             BTreeMap::new();
+        // Per stream: how many episodes had a readable container, and how many of those stated how
+        // many frames it holds. A container can be perfectly readable and still not say — a
+        // fragmented MP4 keeps its samples in `moof` fragments and leaves the sample table in `moov`
+        // empty, which is what `ffmpeg -movflags frag_keyframe+empty_moov`, DASH/CMAF and most
+        // hardware recorders write. The comparison then never runs, and until this counted it, that
+        // was indistinguishable in the report from a comparison that ran and agreed.
+        let mut counted: BTreeMap<&str, (u64, u64)> = BTreeMap::new();
 
         for ep in &dataset.episodes {
             for s in &ep.streams {
@@ -353,6 +364,12 @@ impl Check for MediaConformance {
                             episodes: 1,
                         });
                 };
+
+                let seen = counted.entry(s.name.as_str()).or_insert((0, 0));
+                seen.0 += 1;
+                if media.frame_count.is_some() {
+                    seen.1 += 1;
+                }
 
                 if let Some(container_frames) = media.frame_count {
                     let data_frames = s.frames.len() as u64;
@@ -515,6 +532,47 @@ impl Check for MediaConformance {
                 )
                 .with_risk(risk)
                 .with_remedy(remedy),
+            );
+        }
+        // A stream whose containers were all readable and none of which stated a frame count. The
+        // comparison this check exists for never ran on it, and a check that reports nothing about
+        // data it could not measure is indistinguishable from one that measured and agreed —
+        // which is how a whole family comes to certify a dataset it never looked at.
+        //
+        // Only when *no* episode could be measured: where some could, the rollup above already
+        // reports on those, and the ones it skipped are named in that finding's own wording.
+        for (stream, (readable, measured)) in counted {
+            if readable == 0 || measured > 0 {
+                continue;
+            }
+            findings.push(
+                Finding::new(
+                    self.id(),
+                    Category::Video,
+                    Severity::Info,
+                    Location::Stream {
+                        episode: 0,
+                        stream: stream.to_string(),
+                    },
+                    "VIDEO.FRAME_COUNT_UNMEASURED",
+                    format!(
+                        "stream `{stream}`: {readable} readable container(s), none of which states \
+                         how many frames it holds, so the video was never compared against the \
+                         frames it is paired with"
+                    ),
+                )
+                .with_risk(
+                    "The pairing between a container and the rows it accompanies is what this \
+                     family exists to check, and for this stream it was not checked. A video short \
+                     of its data — every pair past the shorter one wrong — would read here exactly \
+                     as one that matches.",
+                )
+                .with_remedy(
+                    "A fragmented MP4 keeps its samples in `moof` fragments and leaves the sample \
+                     table empty; re-mux it non-fragmented (`ffmpeg -i in.mp4 -c copy out.mp4`) if \
+                     you want the frame count checked. A live-muxed Matroska whose clusters declare \
+                     no size is the same case.",
+                ),
             );
         }
         findings

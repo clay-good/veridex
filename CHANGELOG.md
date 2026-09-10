@@ -10,6 +10,20 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A video the frame-count check could not measure says so (`VIDEO.FRAME_COUNT_UNMEASURED`).** A
+  container can be perfectly readable and still not state how many frames it holds: a **fragmented**
+  MP4 keeps its samples in `moof` fragments and leaves the sample table in `moov` empty, which is
+  what `ffmpeg -movflags frag_keyframe+empty_moov`, DASH/CMAF and most hardware recorders write. The
+  comparison between a container and the rows it accompanies — the thing the video family exists for
+  — then never ran, and nothing said so. A stream the family never compared read exactly like one it
+  compared and found sound.
+
+  It is charged once per stream, at info, and only when *no* episode of that stream could be
+  measured — where some could, the mismatch rollup already speaks for those.
+  `video.media-conformance` now declares an `abstention_codes` entry, so the disclosure reaches
+  the certificate and the machine-readable outputs rather than stopping at the terminal. A
+  live-muxed Matroska whose clusters declare no size is the same case through the other reader.
+
 - **A Matroska that declares no frame rate has one measured from its blocks.** `DefaultDuration`
   is optional in the format, and a variable-rate file carries none — so the probe reported no rate
   for those, `video.media-conformance` had nothing to compare, and a container running at half the

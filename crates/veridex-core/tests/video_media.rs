@@ -744,7 +744,14 @@ fn a_fragmented_container_is_not_read_as_holding_zero_frames() {
         fragmented: true,
         ..Shape::default()
     });
-    assert!(findings.is_empty(), "{findings:#?}");
+    // Nothing is *accused*: no error, no warning. What the family does say is that it could not
+    // measure this stream's frame count, which is a different statement from silence.
+    assert!(
+        findings
+            .iter()
+            .all(|f| f.severity == Severity::Info && f.code == "VIDEO.FRAME_COUNT_UNMEASURED"),
+        "{findings:#?}"
+    );
 }
 
 #[test]
@@ -1300,7 +1307,13 @@ fn a_cluster_of_unknown_size_yields_no_count_rather_than_a_wrong_one() {
         },
         10,
     );
-    assert!(findings.is_empty(), "{findings:#?}");
+    // The count is absent, so the family discloses that and accuses the file of nothing.
+    assert!(
+        findings
+            .iter()
+            .all(|f| f.severity == Severity::Info && f.code == "VIDEO.FRAME_COUNT_UNMEASURED"),
+        "{findings:#?}"
+    );
     let media = camera_media(&dataset);
     assert_eq!(media.status, MediaStatus::Read);
     assert_eq!(media.frame_count, None);
@@ -1443,4 +1456,79 @@ fn a_single_frame_matroska_measures_no_rate_rather_than_dividing_by_zero() {
     let probe = veridex_core::media::probe(&path).expect("a readable container");
     assert_eq!(probe.params.fps, None);
     assert_eq!(probe.frame_count, Some(1));
+}
+
+/// A container can be perfectly readable and still not say how many frames it holds.
+///
+/// A **fragmented** MP4 keeps its samples in `moof` fragments and leaves the sample table in `moov`
+/// empty — what `ffmpeg -movflags frag_keyframe+empty_moov`, DASH/CMAF and most hardware recorders
+/// write. The frame-count comparison, which is what the video family exists for, then never runs;
+/// and until it was disclosed, a stream the family never compared read exactly like one it compared
+/// and found sound.
+#[test]
+fn a_stream_whose_containers_state_no_frame_count_says_so() {
+    let fragmented = Shape {
+        fragmented: true,
+        ..Shape::default()
+    };
+    let findings = run_shaped(fragmented);
+    let abstention = findings
+        .iter()
+        .find(|f| f.code == "VIDEO.FRAME_COUNT_UNMEASURED")
+        .unwrap_or_else(|| {
+            panic!("the family must disclose what it could not measure: {findings:#?}")
+        });
+    assert_eq!(abstention.severity, Severity::Info);
+    assert!(
+        abstention.message.contains(FEATURE),
+        "{}",
+        abstention.message
+    );
+    // It says what it is about, not merely that something was skipped.
+    assert!(
+        abstention.message.contains("how many frames"),
+        "{}",
+        abstention.message
+    );
+}
+
+/// And the direction that keeps it honest: a stream that *was* measured says nothing. An abstention
+/// that fires beside a real measurement is noise on every sound dataset.
+#[test]
+fn a_measured_stream_raises_no_abstention() {
+    let (_, findings) = run(VideoPlan::default(), 10);
+    assert!(
+        !findings
+            .iter()
+            .any(|f| f.code == "VIDEO.FRAME_COUNT_UNMEASURED"),
+        "{findings:#?}"
+    );
+}
+
+/// A live-muxed Matroska is the same case reached through the other reader: its clusters declare no
+/// size, so the walk counts no blocks and states no frame count.
+#[test]
+fn a_matroska_with_no_countable_frames_raises_the_same_abstention() {
+    let dir = tempfile::tempdir().unwrap();
+    write_dataset(dir.path(), 10, VideoPlan::default());
+    let dest = dir.path().join("videos").join(FEATURE);
+    let live = Mkv {
+        unknown_cluster_size: true,
+        ..Mkv::default()
+    };
+    for episode in 0..2u64 {
+        fs::write(
+            dest.join(format!("episode_{episode:06}.mp4")),
+            build_mkv(10, 640, 480, "V_MPEG4/ISO/AVC", FPS as u32, live),
+        )
+        .unwrap();
+    }
+    let dataset = ingest(dir.path());
+    let findings = video_findings(&dataset);
+    assert!(
+        findings
+            .iter()
+            .any(|f| f.code == "VIDEO.FRAME_COUNT_UNMEASURED"),
+        "{findings:#?}"
+    );
 }
