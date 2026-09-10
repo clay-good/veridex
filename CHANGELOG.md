@@ -10,6 +10,20 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **An ego trajectory that was never judged no longer certifies as continuous
+  (`AUTONOMY.EGO_POSE_UNMEASURED`).** The companion to the rig-sync abstention, in the other
+  criterion that reads silence as a pass. `autonomy.ego-pose-continuity` needs two poses and an
+  advancing timestamp to compute a speed; it had neither for a trajectory whose localization
+  published once and stopped, nor for one whose poses all carry the same timestamp — and in both it
+  emitted nothing, so `world-model-ready` signed "ego trajectory continuous (no step above 100 m/s
+  implied speed)" over a comparison that never happened.
+
+  It now says what it judged: how many poses the trajectory carries and how many steps were
+  measurable. A trajectory whose *coordinates* broke stays the separate
+  `AUTONOMY.EGO_POSE_NON_FINITE` error — "I could not subtract these" and "these are not numbers"
+  are different statements — and the abstention is suppressed under a metadata-only run, where a
+  trajectory carries no poses by request.
+
 - **A rig whose sensors could not be compared no longer certifies as synchronized
   (`AUTONOMY.RIG_SYNC_UNCOMPARED`).** `autonomy.rig-sync` measures the spread between the widest and
   tightest sensor span, and needs two sensors with a measurable span to do it. A rig reaches fewer

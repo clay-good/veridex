@@ -923,7 +923,11 @@ impl Check for EgoPoseContinuity {
         &[
             "AUTONOMY.EGO_POSE_CONTINUITY",
             "AUTONOMY.EGO_POSE_NON_FINITE",
+            "AUTONOMY.EGO_POSE_UNMEASURED",
         ]
+    }
+    fn abstention_codes(&self) -> &'static [&'static str] {
+        &["AUTONOMY.EGO_POSE_UNMEASURED"]
     }
     fn title(&self) -> &'static str {
         "Ego-pose continuity"
@@ -941,6 +945,18 @@ impl Check for EgoPoseContinuity {
         "1"
     }
     fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        self.run_with(dataset, true)
+    }
+    fn run_in(&self, dataset: &Dataset, context: &CheckContext) -> Vec<Finding> {
+        self.run_with(dataset, context.frames_read)
+    }
+}
+
+impl EgoPoseContinuity {
+    /// `frames_read` is false under a metadata-only ingest, where a trajectory legitimately carries
+    /// no poses *by request*. The measurement cannot run then either, but the reason is the request
+    /// rather than the recording, and `COVERAGE.*` already states what such a run did not read.
+    fn run_with(&self, dataset: &Dataset, frames_read: bool) -> Vec<Finding> {
         const NS_PER_S: f64 = 1_000_000_000.0;
         let mut findings = Vec::new();
         for ep in &dataset.episodes {
@@ -948,12 +964,18 @@ impl Check for EgoPoseContinuity {
                 continue;
             };
             if poses.len() < 2 {
+                if frames_read {
+                    findings.push(self.unmeasured(ep.index, poses.len(), 0));
+                }
                 continue;
             }
             let mut breaks = 0u64;
             let mut worst_speed = 0.0f64;
             let mut worst_ts = 0i64;
             let mut non_finite = 0u64;
+            // Steps this check could actually subtract. A trajectory whose timestamps never advance
+            // yields none, and then every rule below is silent about a trajectory nobody measured.
+            let mut measured = 0u64;
             for pair in poses.windows(2) {
                 let (a, b) = (&pair[0], &pair[1]);
                 let dt = b.ts.saturating_sub(a.ts) as f64 / NS_PER_S;
@@ -976,6 +998,7 @@ impl Check for EgoPoseContinuity {
                     non_finite += 1;
                     continue;
                 }
+                measured += 1;
                 if speed > self.max_speed_mps {
                     breaks += 1;
                     if speed > worst_speed {
@@ -983,6 +1006,12 @@ impl Check for EgoPoseContinuity {
                         worst_ts = b.ts;
                     }
                 }
+            }
+            // Nothing subtractable. `non_finite` covers the trajectory whose coordinates broke —
+            // that is its own error — so this is the other way to measure nothing: timestamps that
+            // never advance, which leave the continuity rule with no step to judge.
+            if measured == 0 && non_finite == 0 && frames_read {
+                findings.push(self.unmeasured(ep.index, poses.len(), poses.len() as u64 - 1));
             }
             if non_finite > 0 {
                 findings.push(
@@ -1034,6 +1063,35 @@ impl Check for EgoPoseContinuity {
             }
         }
         findings
+    }
+    /// The one thing this check must not do is stay silent about a trajectory it never measured.
+    ///
+    /// `world-model-ready` judges "ego trajectory continuous (no step above 100 m/s implied speed)"
+    /// on this check, and a criterion passes when its check ran and found nothing — so a trajectory
+    /// of one pose, or one whose timestamps never advance, certified as continuous on a comparison
+    /// that never happened.
+    fn unmeasured(&self, episode: u64, poses: usize, steps: u64) -> Finding {
+        Finding::new(
+            self.id(),
+            Category::Autonomy,
+            Severity::Info,
+            Location::Episode { episode },
+            "AUTONOMY.EGO_POSE_UNMEASURED",
+            format!(
+                "episode {episode}: the ego trajectory carries {poses} pose(s) and {steps} \
+                 measurable step(s), so its continuity was never judged"
+            ),
+        )
+        .with_risk(
+            "Nothing in this run says whether the vehicle's trajectory is continuous. A clean \
+             result here is the absence of a measurement, not evidence that the localization held \
+             together — and `world-model-ready` judges that criterion on this check.",
+        )
+        .with_remedy(
+            "Check whether the localization output stopped after its first pose, or whether every \
+             pose carries the same timestamp; a trajectory with no advancing step cannot be checked \
+             for discontinuity.",
+        )
     }
 }
 

@@ -3315,6 +3315,62 @@ fn rig_episode_with_ego(poses: Vec<veridex_core::cdm::EgoPose>) -> Episode {
     ep
 }
 
+/// A trajectory of one pose is not a trajectory that was found continuous.
+///
+/// Localization that published once and stopped leaves nothing to subtract, and the check emitted
+/// nothing — which `world-model-ready` reads as satisfying "ego trajectory continuous (no step above
+/// 100 m/s implied speed)". The criterion was signed on a comparison that never happened.
+#[test]
+fn an_ego_trajectory_of_one_pose_says_it_judged_nothing() {
+    let f = autonomy::EgoPoseContinuity::default()
+        .run(&dataset(vec![rig_episode_with_ego(vec![ego(0, 0.0, 0.0)])]));
+    assert_eq!(f.len(), 1, "{f:#?}");
+    assert_eq!(f[0].code, "AUTONOMY.EGO_POSE_UNMEASURED");
+    assert_eq!(f[0].severity, Severity::Info);
+}
+
+/// The other way to measure nothing: poses that never advance in time. Distance over zero seconds is
+/// no speed at all, so every pair is skipped and the continuity rule judges nothing.
+#[test]
+fn an_ego_trajectory_whose_time_never_advances_says_it_judged_nothing() {
+    let poses = vec![ego(500, 0.0, 0.0), ego(500, 9.0, 0.0), ego(500, 90.0, 0.0)];
+    let f = autonomy::EgoPoseContinuity::default().run(&dataset(vec![rig_episode_with_ego(poses)]));
+    assert_eq!(f.len(), 1, "{f:#?}");
+    assert_eq!(f[0].code, "AUTONOMY.EGO_POSE_UNMEASURED");
+}
+
+/// And a trajectory that *was* judged says nothing about being unjudged.
+#[test]
+fn a_measured_ego_trajectory_raises_no_abstention() {
+    let poses = vec![
+        ego(0, 0.0, 0.0),
+        ego(100_000_000, 0.1, 0.0),
+        ego(200_000_000, 0.2, 0.0),
+    ];
+    let f = autonomy::EgoPoseContinuity::default().run(&dataset(vec![rig_episode_with_ego(poses)]));
+    assert!(
+        !f.iter().any(|x| x.code == "AUTONOMY.EGO_POSE_UNMEASURED"),
+        "{f:#?}"
+    );
+}
+
+/// A metadata-only run carries no poses *by request*, so the reason nothing was measured is the
+/// request rather than the recording — and `COVERAGE.*` already says what such a run skipped.
+#[test]
+fn a_metadata_only_run_raises_no_ego_pose_abstention() {
+    let context = veridex_core::check::CheckContext {
+        frames_read: false,
+        attested_keys: Vec::new(),
+        sampled: false,
+    };
+    let f = veridex_core::check::Check::run_in(
+        &autonomy::EgoPoseContinuity::default(),
+        &dataset(vec![rig_episode_with_ego(vec![ego(0, 0.0, 0.0)])]),
+        &context,
+    );
+    assert!(f.is_empty(), "{f:#?}");
+}
+
 #[test]
 fn a_teleporting_ego_trajectory_is_flagged() {
     // Smooth ~1 m/s for two steps, then a 500 m jump in 100 ms (5000 m/s) — a teleport.
