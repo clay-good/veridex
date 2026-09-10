@@ -22,8 +22,7 @@ as shipping none, and silently skip every stored-vs-observed comparison. Generat
 one (its second episode carries an out-of-order timestamp) and check it the same way:
 
 ```sh
-# generate a demo LeRobot v3 dataset; append `clean`, `truncated`, `boundary`, `jitter`,
-`wrong-fps`,
+# generate a demo LeRobot v3 dataset; append `clean`, `truncated`, `boundary`, `jitter`, `wrong-fps`,
 # `short-episode`, `frozen-episode`, `duplicate`, `near-duplicate`, `saturated`, `spike`, `nan`,
 # `stale-stats`, `corrupt-stats`, `confusable-keys`, `multi-joint`, `video`, `video-desync`, `video-missing`, or `video-reencoded`
 cargo run -p veridex-demo --example make_demo_lerobot -- /tmp/demo-lerobot
@@ -47,18 +46,15 @@ maximum for most of the episode — a clamped actuator against its stop — and 
 `STATISTICAL.SATURATED` from the values it recomputes as it fingerprints them. The `spike` variant
 jumps a single frame far off the baseline — a sensor glitch or unit error — and `check` flags it as
 `STATISTICAL.OUTLIER`, provably a rare value by Chebyshev's inequality. The `nan` variant writes one
-NaN feature value, and its `meta/stats.json` skips it the way a real exporter's `numpy.nanmin` does
-—
+NaN feature value, and its `meta/stats.json` skips it the way a real exporter's `numpy.nanmin` does —
 so the stored summary agrees with itself and is blind, and only the recompute over the real cells
 sees it, flagged as `STATISTICAL.NON_FINITE_OBSERVED`. The `stale-stats` variant ships the summary a
 team exported before re-recording: a stored `[min, max]` that no longer contains the values beside
 it, which every other check passes over, flagged as `STATISTICAL.STATS_STALE`. The
 `multi-joint` variant is a 3-DoF `action` whose gripper (dimension 2) saturates while the arm joints
 sweep freely; `check` flags `STATISTICAL.SATURATED` and **names the dimension** — the value-based
-checks scan every joint, not just element 0, which is where real robot data hides its problems.
-Every
-variant also ships a Hugging Face-style dataset card (`README.md`), so `veridex inspect` surfaces
-the
+checks scan every joint, not just element 0, which is where real robot data hides its problems. Every
+variant also ships a Hugging Face-style dataset card (`README.md`), so `veridex inspect` surfaces the
 extracted `license` as covered provenance rather than a `PROVENANCE.MISSING_LICENSE` gap.
 
 **The manifest and the data are reconciled in both directions.** `meta/info.json` lists the features
@@ -68,10 +64,8 @@ does not hold is the mirror image, and the more misleading of the two: a stream 
 it with a frame at every row timestamp and no values at all, which invents a populated sensor out of
 a missing one — every structural and temporal check passed on it, and the statistical family's
 abstention read as a gap in Veridex rather than in the data. A manifest promising a force-torque
-sensor the Parquet never held passed with a perfect `data 100`. Its stream is now **empty**, which
-is
-what it is (`STRUCTURAL.EMPTY_STREAM`, an error, and the same answer the RLDS reader has always
-given
+sensor the Parquet never held passed with a perfect `data 100`. Its stream is now **empty**, which is
+what it is (`STRUCTURAL.EMPTY_STREAM`, an error, and the same answer the RLDS reader has always given
 a feature absent from a record), and both directions of the disagreement are disclosed as **unread
 sources**, which is what reaches the verdict:
 
@@ -111,20 +105,17 @@ than once per episode). Veridex reads the container's **headers only** — it ne
 and it compares the codec across the names for one encoder, so a manifest saying `h264` against a
 container stamped `avc1` is not reported as a mismatch.
 
-**MP4 and Matroska, chosen by the bytes.** Both container families a robot dataset ships video in
-are
+**MP4 and Matroska, chosen by the bytes.** Both container families a robot dataset ships video in are
 read: the ISO base media formats (`.mp4`, `.m4v`, `.mov`) and Matroska with its WebM subset (`.mkv`,
 `.webm`) — what an `ffmpeg` pipeline writes when it is not asked for MP4. Which one a file is is
 decided by its **magic bytes**, not its extension, so a converter that muxed Matroska into a `.mp4`
 produces a dataset whose frames are still counted.
 
 A Matroska carries no sample table: nothing in it states how many frames it holds. So the count is
-taken the only way the format allows, by walking the cluster tree and reading each block's *header*
-—
+taken the only way the format allows, by walking the cluster tree and reading each block's *header* —
 payloads are seeked over, never read, and a laced block counts the frames it laces rather than one.
 Where that walk cannot be completed — a live-muxed file whose clusters declare no size — the frame
-count is **absent** rather than zero, and everything the `Tracks` element stated is still reported.
-A
+count is **absent** rather than zero, and everything the `Tracks` element stated is still reported. A
 zero would be a frame-count mismatch against every episode of an honest recording, which is a claim
 about the data made out of a limit of the reader.
 
@@ -200,26 +191,22 @@ it also declares its units (a `units` attribute on the timestamp array). Whether
 column is seconds or nanoseconds is not something Veridex will guess: guess wrong and every rate,
 duration, and skew verdict derived from it is fiction.
 
-And on a **Zarr** store — the replay-buffer layout Diffusion Policy, UMI, and the tooling around
-them
+And on a **Zarr** store — the replay-buffer layout Diffusion Policy, UMI, and the tooling around them
 ship in, and the fifth format behind the same command:
 
 ```sh
 cargo run -p veridex-cli -- check crates/veridex-core/tests/fixtures/zarr/dp_replay.zarr
 ```
 
-A replay buffer is one flat array per key with every episode concatenated end to end, and the
-episode
+A replay buffer is one flat array per key with every episode concatenated end to end, and the episode
 boundaries kept beside it in `meta/episode_ends`. Those boundaries *are* the episode structure:
 `[4, 10]` means episode 0 is rows 0..4 and episode 1 is rows 4..10, and Veridex slices every `data/`
 array accordingly. Rows past the last boundary belong to no episode, and the report says so rather
-than attaching them to the last one — an off-by-one in a replay buffer is exactly the corruption
-this
+than attaching them to the last one — an off-by-one in a replay buffer is exactly the corruption this
 tool exists to catch, and a boundary that runs backwards or past the end of the arrays it indexes is
 refused outright.
 
-Zarr's chunks are plain files, so there is no index to trust — but there is a codec to get right,
-and
+Zarr's chunks are plain files, so there is no index to trust — but there is a codec to get right, and
 a compressed array read through the wrong one does not fail, it yields plausible numbers. Veridex
 reads `zlib`, `gzip`, `zstd`, `lz4`, and `blosc` (with `lz4`, `zstd`, or `zlib` inside it, byte
 shuffle included), and refuses anything else by name with what to re-save it as. Every codec is tested
@@ -247,19 +234,16 @@ disagreeing count for nothing, and nothing is inferred from the frames — a lat
 sensor that fired once and died are identical in the data.
 
 rosbag2's `sqlite3` storage plugin keeps the recording in two tables: `topics` (one row per recorded
-topic) and `messages` (one row per message, with its receive timestamp and its serialized body).
-Each
+topic) and `messages` (one row per message, with its receive timestamp and its serialized body). Each
 topic becomes a stream, each message a frame on the bag's single log clock, and the ROS type names
 the modality. The AV message *headers* are CDR-decoded exactly as they are from MCAP — rosbag2's
 other storage plugin — so a `PointCloud2` supplies the per-point field layout **and its own point
 count**, a `LaserScan` the returns that measured something (the ones inside the scanner's own
 `[range_min, range_max]`, which is how REP 117 says a driver reports nothing there), an `Image` the
 size its frames declared — and a `CompressedImage` the same size, read out of the JPEG or PNG frame
-header inside the payload, because most real bags record their cameras compressed and the dead
-camera
+header inside the payload, because most real bags record their cameras compressed and the dead camera
 has to be caught on both spellings of the topic — `CameraInfo` the intrinsics **plus the image dimensions they were computed
-for and the distortion model they belong to**, `TFMessage` the transform tree, and `Odometry` the
-ego
+for and the distortion model they belong to**, `TFMessage` the transform tree, and `Odometry` the ego
 trajectory **and the ego velocity behind it** — a vehicle's speed and yaw rate, which sit past the
 pose's 36-element covariance. The bulk payload — the points, the pixels — is fingerprinted, never
 decoded.
@@ -277,8 +261,7 @@ each), a `sensor_msgs/msg/MagneticField` (the third instrument in the IMU packag
 estimated from), and the one-scalar `sensor_msgs` readings — `Temperature`, `FluidPressure`,
 `RelativeHumidity`, `Illuminance` and `Range`. Every one is read and summarized per dimension,
 exactly as LeRobot's or HDF5's values are, and named by what it is (`linear.x`, `force.z`,
-`temperature`) so a finding says which quantity is wrong. Without them, an arm whose elbow sat
-pinned
+`temperature`) so a finding says which quantity is wrong. Without them, an arm whose elbow sat pinned
 against its stop, an accelerometer railed at ±16 g, a mobile base commanded at its speed limit for a
 whole run and a force/torque sensor clipped through every contact episode all scored a clean
 `data 100` with every statistical check listed as run. `/cmd_vel` is to a base what `/joint_states`
@@ -301,8 +284,7 @@ summarized. That is how a sonar or IR sensor reports "nothing there" — the sam
 `LaserScan` uses — so recording it as a distance would report a beam that saw nothing as a
 measurement, and a probe that saw nothing all run as a perfectly steady one.
 
-A `Twist` and a `Wrench` have no invariants of their own to prove a body is one — six doubles are
-six
+A `Twist` and a `Wrench` have no invariants of their own to prove a body is one — six doubles are six
 doubles, and any value they hold is legal, a NaN in a velocity command included, which is a fault to
 report rather than a parse failure. Their *length* is the invariant instead: a body carrying more
 than its own padding past those six is not one of them, and reading it would summarize whatever else
@@ -311,10 +293,8 @@ it is as a velocity command. The one-scalar readings are held to the same rule.
 An IMU field whose `covariance[0]` is `-1` is one the driver declares it does **not** provide, and
 ROS leaves it zero-filled; those slots are held out rather than summarized, because reporting them
 would accuse a bare gyro of having an orientation frozen at the origin. A `JointState` topic that
-publishes more than one joint *set* is refused outright and disclosed as unread coverage: the
-message
-pairs `position[i]` with `name[i]` only within one message, so accumulating across a reordering
-would
+publishes more than one joint *set* is refused outright and disclosed as unread coverage: the message
+pairs `position[i]` with `name[i]` only within one message, so accumulating across a reordering would
 report a statistic for a joint that does not exist. Every other topic's payload
 stays opaque and says so, through `STATISTICAL.UNMEASURED_VALUES`. The same is true of a plain MCAP
 file.
@@ -331,14 +311,12 @@ not there, is recorded as unread.
 
 `ros2 bag record --custom-data k=v` writes a `custom_data` map into `metadata.yaml`, and that is
 where a ROS 2 team records what a bag is *of*. Veridex reads it: well-known keys (`sensor`,
-`license`, `time_source`, `calibration_id`, the rig-lineage ones) become typed provenance through
-the
+`license`, `time_source`, `calibration_id`, the rig-lineage ones) become typed provenance through the
 same table an MCAP `Metadata` record uses, and everything else is carried as metadata rather than
 promoted — guessing at what an unknown key means is how a verifier starts inventing lineage.
 
 The manifest's `message_count` is reconciled against what the recording actually yielded. A recorder
-killed mid-flush leaves a `.db3` short of the total `metadata.yaml` closed with, and the shortfall
-is
+killed mid-flush leaves a `.db3` short of the total `metadata.yaml` closed with, and the shortfall is
 reported as unread coverage rather than read as a complete bag:
 
 ```sh
@@ -358,10 +336,8 @@ against and no recording distribution to record — and `inspect` says exactly t
 leaving you to assume it was checked.
 
 A bag that is **still being recorded** is read too, which is what makes `veridex watch` useful on
-one: point it at the directory while the robot is driving and each tick re-validates what has
-landed.
-rosbag2 writes `metadata.yaml` when the recorder *closes*, so a bag in progress is a directory with
-a
+one: point it at the directory while the robot is driving and each tick re-validates what has landed.
+rosbag2 writes `metadata.yaml` when the recorder *closes*, so a bag in progress is a directory with a
 growing `.db3` and nothing else — and Veridex says what the missing manifest would have supplied
 rather than assuming it. If SQLite is running in WAL mode, the `.db3-wal` beside the shard holds
 committed messages the shard itself does not carry; Veridex reads the shard's own pages and does not
@@ -369,8 +345,7 @@ replay a write-ahead log, so those messages are disclosed as unread coverage rat
 missed:
 
 ```sh
-cargo run -p veridex-cli -- watch crates/veridex-core/tests/fixtures/rosbag2/recording --iterations
-1
+cargo run -p veridex-cli -- watch crates/veridex-core/tests/fixtures/rosbag2/recording --iterations 1
 #   COVERAGE.SOURCE_UNREAD — recording_0.db3-wal: a SQLite write-ahead log sits beside this
 #   shard, holding transactions the `.db3` itself does not carry
 ```
@@ -385,8 +360,7 @@ it wrote them. Taking an ordering from the manifest follows no path: only the fi
 the bag directory are ever opened.
 
 A bag recorded through the **MCAP storage plugin** — what `ros2 bag record` writes by default from
-Jazzy on — is read as the bag it is, not as a loose file: point Veridex at the bag *directory* and
-it
+Jazzy on — is read as the bag it is, not as a loose file: point Veridex at the bag *directory* and it
 reads every `.mcap` shard in the order the manifest lists them, then reconciles the result against
 the bag's own `message_count` exactly as it does for `sqlite3`. Which plugin a team picked does not
 change what Veridex sees: an MCAP channel carries what the `topics` table carries — topic name,
@@ -395,21 +369,17 @@ same streams, modalities, timestamps and rig calibration. What the storage does 
 report *names*: an MCAP-backed bag's mapped fields speak of channels and log times, never of SQLite
 tables the bag does not have.
 
-One thing the plugin genuinely does change: an MCAP message carries the `sequence` its publisher
-set,
-and a `messages` row does not. Where the numbering is present, `AUTONOMY.SEQUENCE_DROPPED`
-**counts**
+One thing the plugin genuinely does change: an MCAP message carries the `sequence` its publisher set,
+and a `messages` row does not. Where the numbering is present, `AUTONOMY.SEQUENCE_DROPPED` **counts**
 the messages that were published and never reached the file; where it is not — a `.db3` shard, or a
 publisher that left the field at 0 — the same check falls back to estimating the loss from the
-sensor's own cadence, which needs a cadence to exist and cannot see losses scattered one message at
-a
+sensor's own cadence, which needs a cadence to exist and cannot see losses scattered one message at a
 time. The same recording is therefore graded more precisely through the MCAP plugin, and the finding
 says which of the two answered.
 
 The manifest is required for a directory of `.mcap` files, and only for that case. A directory
 holding a `.db3` is unambiguously one bag; a directory of `.mcap` files could as easily be a folder
-someone dropped three unrelated recordings into, and reading those as one bag would concatenate
-three
+someone dropped three unrelated recordings into, and reading those as one bag would concatenate three
 timelines into one episode and report the seams as defects. `metadata.yaml` is what makes the
 directory a bag. A bag still being recorded has not written one yet — point Veridex at the `.mcap`
 file itself, which the MCAP adapter reads. A directory holding both `.db3` and `.mcap` shards is
@@ -470,12 +440,10 @@ belong to are unknown and attributing them to a stream anyway would invent one.
 Message **bodies** are decoded, so a `.bag` reaches every family a rosbag2 recording does: a
 `PointCloud2`'s point layout and per-sweep return count, an `Image`'s or `CompressedImage`'s
 dimensions, a `CameraInfo`'s intrinsics and a `TFMessage`'s transform tree into `dataset.calibration`,
-an `Odometry`'s pose into the episode's ego trajectory, and the messages whose whole payload is
-their
+an `Odometry`'s pose into the episode's ego trajectory, and the messages whose whole payload is their
 measurement — `JointState`, `Imu`, `NavSatFix`, `Twist`, `Wrench`, `Range` and the one-reading
 scalars — into the observed values the statistical family grades. The bulk payload (the pixels, the
-points) is still only fingerprinted, and a message type with no typed decoder is fingerprinted
-whole,
+points) is still only fingerprinted, and a message type with no typed decoder is fingerprinted whole,
 which the run says out loud.
 
 ROS 1 serialization puts the same fields in the same order as CDR, but it is not the same encoding:
@@ -493,8 +461,7 @@ recorded to a `.db3` cannot.
 A bag that has been *finished* also carries an index section — every connection again, plus one
 chunk-info record per chunk with its time span and per-connection message counts — and the header
 points at it. So `veridex check --metadata-only` inventories a bag without unpacking a single chunk:
-the topics, their ROS types and how many messages each carries, out of a 40 GB archive in the time
-it
+the topics, their ROS types and how many messages each carries, out of a 40 GB archive in the time it
 takes to seek. A bag whose writer never finished names no index, and is refused rather than
 inventoried from whatever its first chunk happens to declare.
 
@@ -504,8 +471,7 @@ There is a demo bag, so none of this has to be taken on trust:
 # a seven-topic rig recording: LiDAR, camera + CameraInfo, IMU, odometry, joint states, /tf_static
 cargo run -p veridex-demo --example make_demo_rosbag1 -- /tmp/rig.bag
 cargo run -p veridex-cli -- check /tmp/rig.bag
-cargo run -p veridex-cli -- provenance /tmp/rig.bag   # `calibration` — recorded in-band, not
-claimed
+cargo run -p veridex-cli -- provenance /tmp/rig.bag   # `calibration` — recorded in-band, not claimed
 cargo run -p veridex-cli -- check /tmp/rig.bag --metadata-only   # the inventory, from the index alone
 ```
 
@@ -524,11 +490,9 @@ at, so the timeline holds no trace of the loss — every rate, gap, jitter and s
 both bags, identically. The two reports differ by exactly one finding,
 `AUTONOMY.SEQUENCE_DROPPED`, counted from the publisher's own `header.seq`.
 
-And on a **CAN + DBC** log — raw vehicle-bus traffic, which on its own is opaque bytes. The `.dbc`
-is
+And on a **CAN + DBC** log — raw vehicle-bus traffic, which on its own is opaque bytes. The `.dbc` is
 the signal database that gives those bytes meaning, so Veridex ingests the two together: point it at a
-directory holding one `.dbc` and one or more candump logs, and it decodes each frame per the
-database
+directory holding one `.dbc` and one or more candump logs, and it decodes each frame per the database
 into one stream per named signal. Both DBC byte orders are read — little-endian (Intel, `@1`) and
 big-endian (Motorola, `@0`) — with factor and offset applied and signed signals sign-extended.
 
@@ -585,8 +549,7 @@ would tell a reader the verdict "speaks for the part that was" over a dataset no
 skipped.
 
 **A partial DBC is the failure mode worth naming.** Bus traffic on an id the database never defines
-decodes into nothing, and so does a log line that is not a candump frame — and a run that passed
-over
+decodes into nothing, and so does a log line that is not a candump frame — and a run that passed over
 that silently would read as a clean, certifiable verdict over whichever fraction of the bus the `.dbc`
 happened to cover. Both are traffic that was there and went into no stream, so both are disclosed as
 unread and raise a warning:
@@ -612,19 +575,17 @@ unpacked. A BLF names its bus by channel number, so its streams are keyed `chann
 candump log's are keyed `can0:` — the file does not say which Linux interface a Vector channel is,
 and inventing the correspondence would merge two buses that nothing says are the same one.
 
-What a BLF holds and this reader does not decode is named rather than skipped: object types it does
-not know, a container in an unknown compression, and **remote-transmission frames** — an RTR frame
-requests data and carries none, so decoding signals out of its eight bytes would put a run of
-fabricated zeros into the streams the checks then grade.
+What a BLF holds and this reader does not decode is named rather than skipped: object types it
+does not know, a container in an unknown compression, and **remote-transmission frames** — an RTR
+frame requests data and carries none, so decoding signals out of its eight bytes would put a run
+of fabricated zeros into the streams the checks then grade.
 
 **CAN-FD is read, on both kinds of log.** A modern vehicle bus runs FD, and a frame carrying up to
 64 bytes is where the signals a classic frame had no room for now live. `can-utils` writes such a
 frame as `<id>##<flags><data>` — one character different from a classic line — and a BLF writes it
-as
-a `CanFdMessage` or a `CanFdMessage64`. All three are decoded, and the FD flags are read as what
-they
-are: how the frame was *transmitted*, which changes nothing about the signals a DBC decodes out of
-it.
+as a `CanFdMessage` or a `CanFdMessage64`. All three are decoded, and the FD flags are read as
+what they are: how the frame was *transmitted*, which changes nothing about the signals a DBC
+decodes out of it.
 
 Two details a reader gets wrong quietly. An FD frame's **DLC is a code, not a length** — 9 through
 15 mean 12, 16, 20, 24, 32, 48 and 64 bytes — so the payload's real extent comes from the object's
@@ -634,10 +595,10 @@ than inline, so reading it at the inline offset yields forty bytes of header fie
 though they were bus traffic.
 
 Reading those payloads also required fixing the signal decoder itself: it assembled a
-little-endian signal from the frame's **first eight bytes**, which is the same answer for a classic
-frame and no answer at all beyond one. Every signal an FD database places past bit 63 — the entire
-reason the bus carries 64 bytes — decoded to nothing, and a signal that decodes from no frame has
-no stream, so nothing in the verdict said it was missing.
+little-endian signal from the frame's **first eight bytes**, which is the same answer for a
+classic frame and no answer at all beyond one. Every signal an FD database places past bit 63 —
+the entire reason the bus carries 64 bytes — decoded to nothing, and a signal that decodes from no
+frame has no stream, so nothing in the verdict said it was missing.
 
 **A recording this reader cannot decode is not an absent one.** Most automotive CAN is logged in
 binary, and a session recorded with more than one tool leaves a PEAK `.trc`, an ASAM `.mf4`, or a
@@ -667,19 +628,16 @@ what a multiplexed signal *is*, and reporting that would be a finding about hone
 
 Past eight undefined ids — or eight short signals — the remainder is counted rather than listed —
 still disclosed, in a sentence a person can read. A CAN log is one continuous timeline with no
-episode boundaries and nothing that describes it in front of the frames, so it segments into a
-single
+episode boundaries and nothing that describes it in front of the frames, so it segments into a single
 episode and `--metadata-only` is refused by name rather than answered with a guess.
 
-And on an **ASAM MDF/MF4** measurement — the format every automotive fleet logger and
-CAN/vehicle-bus
+And on an **ASAM MDF/MF4** measurement — the format every automotive fleet logger and CAN/vehicle-bus
 recorder writes, and the one an autonomy team's vehicle-dynamics data arrives in. An MF4 is not a
 directory of files but a linked graph of typed blocks: a header chains data groups, each holding a
 channel group — sometimes several — whose channels describe fixed-offset fields inside every record
 of one data block.
 Veridex walks that graph with its own bounds-checked reader, takes each channel group's **time
-master** as the timeline, applies each channel's `##CC` conversion, and emits one stream per
-measured
+master** as the timeline, applies each channel's `##CC` conversion, and emits one stream per measured
 channel.
 
 ```sh
@@ -720,17 +678,13 @@ unread, naming the edges that moved, rather than being dropped in silence.
 
 A `CompressedImage` in a codec this reader has no header parser for is **untried**, not broken: the
 stream carries no measured sizes and `AUTONOMY.IMAGE_UNMEASURED` says so, rather than the frames
-being reported as bodies that failed to decode. A frame that names a codec the reader *does* read
-and
-whose header cannot be read all the same is the opposite — a truncated write or a dropped chunk —
-and
-is reported as a body that broke. A payload of zero bytes needs no codec at all to recognize:
-nothing
+being reported as bodies that failed to decode. A frame that names a codec the reader *does* read and
+whose header cannot be read all the same is the opposite — a truncated write or a dropped chunk — and
+is reported as a body that broke. A payload of zero bytes needs no codec at all to recognize: nothing
 compressed is nothing recorded.
 
 **How the records are stored is not what they mean.** A logger deflates its records into `##DZ`
-blocks and chains them through a `##DL` data list behind an `##HL` header list, flushing a chunk at
-a
+blocks and chains them through a `##DL` data list behind an `##HL` header list, flushing a chunk at a
 time as the drive runs; `dz_zip_type` 1 additionally lays the bytes out column-major before deflating,
 because like-typed bytes compress far better adjacently. All of that is storage. Generate the same
 measurement both ways and the CDM hashes match exactly:
@@ -758,8 +712,7 @@ record after the missing chunk would be read at the wrong offset.
 records as the samples arrive, several channel groups interleaved in one block, each record prefixed
 with the `cg_record_id` of the group it belongs to. Veridex splits that stream back into one
 contiguous stream per group, each at that group's own record length — and gives each its own clock,
-because two channel groups are two independent timelines, and sharing one would make the
-cross-stream
+because two channel groups are two independent timelines, and sharing one would make the cross-stream
 temporal checks report the difference between two rasters as a defect.
 
 A record's length is known only from its id, so an id no channel group claims leaves every later
@@ -772,8 +725,7 @@ it, so it raises `COVERAGE.SOURCE_UNREAD` rather than sitting in a note only `in
 `##DZ` holding something other than a `DT` record stream, an undefined zip type, a record id no
 channel group claims, a variable-length signal-data group (its records are length-prefixed, not
 fixed-stride, so slicing them at a fixed width would read every one at the wrong offset), a group
-with no usable time master, a channel whose invalidation bit lies outside the invalidation bytes
-each
+with no usable time master, a channel whose invalidation bit lies outside the invalidation bytes each
 record carries (so its valid samples cannot be told from its invalid ones), a group declaring more
 cycles than its block holds, a bit-packed big-endian field, a channel that runs past the end of its
 record, a numeric `##CC` conversion left unevaluated. Non-numeric channels, the four text-valued
@@ -784,18 +736,15 @@ shape for, and the raw code is the honest thing to record.
 **A sample the file marks invalid is not a measurement.** MDF appends invalidation bytes to each
 record and gives a channel a bit in them, which is how a signal that is only present while a
 subsystem is awake gets recorded: the samples taken while it slept are there in the record and are
-declared invalid. Those bits are evaluated — an invalid sample yields no frame, so nothing
-summarizes
+declared invalid. Those bits are evaluated — an invalid sample yields no frame, so nothing summarizes
 it and no timing check counts it as a measurement — and the count reaches the report per channel,
 because a signal present for a tenth of a drive is summarized over that tenth and a mean and a range
 alone do not say so. An invalid *master* value costs the whole record: it cannot be placed in time,
 so it contributes no sample to any channel in the group.
 
 **Bit-packed signals are read.** An MF4 carrying bus traffic does not store one signal per byte: a
-12-bit pedal position starting three bits into a byte, a 4-bit gear packed above it in the same
-word,
-a 10-bit signed steering angle — that is the ordinary case, not the exotic one. Little-endian
-integer
+12-bit pedal position starting three bits into a byte, a 4-bit gear packed above it in the same word,
+a 10-bit signed steering angle — that is the ordinary case, not the exotic one. Little-endian integer
 channels are decoded at any bit offset and any width up to 64 bits, sign-extended from the *field's*
 own width so a negative sample is negative rather than a spike. Big-endian bit-packed fields are the
 one exception, and are declined out loud: MDF's bit numbering for a straddling Motorola field is not
@@ -842,8 +791,7 @@ The comment is file-controlled like everything else here, so it is bounded: at m
 rather than a guess.
 
 MF4 records one continuous measurement rather than episodes, and its channels declare no nominal
-sample rate — so `inspect` says both out loud rather than letting the checks that need them come
-back
+sample rate — so `inspect` says both out loud rather than letting the checks that need them come back
 clean:
 
 ```
@@ -864,8 +812,7 @@ kilobytes — and runs the manifest half of the catalog over it. It is the faste
 this the dataset I think it is, and does it declare what I need" for a repository too large to pull.
 
 Two layouts are read: a **LeRobot** dataset (`meta/info.json` and what sits beside it) and an
-**RLDS/TFDS** export (`dataset_info.json` + `features.json`). Which one a repository holds is
-settled
+**RLDS/TFDS** export (`dataset_info.json` + `features.json`). Which one a repository holds is settled
 by asking for each layout's first required file in turn — one request per layout, against a path
 fixed in the source. A TFDS export is usually published one version directory deep, so the directory
 can be named in the reference: `veridex check hf://org/name/my_dataset/1.0.0 --metadata-only`. It is
@@ -885,8 +832,7 @@ written outside that directory, and it is removed when the command returns. Two 
 - The dataset is identified as `org/name` — the repository, not the temporary directory. A local
   copy of the same dataset is identified by its directory instead, so the two are deliberately
   different datasets to the content hash: one is "this Hub repository", the other "this directory".
-- A remote run is a metadata-only run, with every refusal that comes with one. It cannot pass a
-score
+- A remote run is a metadata-only run, with every refusal that comes with one. It cannot pass a score
   gate and cannot be certified.
 
 ### Which commit was read
@@ -912,13 +858,11 @@ stand for today's data.
 
 A manifest is several requests, so a branch can move part-way through one. Veridex refuses a read
 whose responses name two different commits rather than stitching half of each into a dataset that
-never existed, and the refusal names the commit to pin to. If the Hub names no commit at all,
-nothing
+never existed, and the refusal names the commit to pin to. If the Hub names no commit at all, nothing
 is recorded and the run says so — an invented commit would be worse than none.
 
 Anything past the manifest is refused rather than downloaded — `veridex check hf://org/name` without
-`--metadata-only` says so and names the option that works. Veridex validates; it is not a
-downloader.
+`--metadata-only` says so and names the option that works. Veridex validates; it is not a downloader.
 This is also the only network path in the tool: a certificate still verifies with no network at all.
 
 
