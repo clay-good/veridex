@@ -3270,6 +3270,85 @@ fn a_complete_rig_sequence_is_clean() {
         .is_empty());
 }
 
+/// A rig sensor whose drops cannot be counted is not a sensor found complete.
+///
+/// This check reads publisher numbering where a recording preserved it and falls back to the
+/// sensor's own cadence where it did not. A stream too short to establish a cadence gets neither —
+/// and it emitted nothing, which `world-model-ready` reads as satisfying "no rig sensor dropping
+/// more than 5% of its frames".
+#[test]
+fn rig_sensors_whose_drops_cannot_be_counted_are_named() {
+    // Three sensors, so this is a rig; the LiDAR carries four frames, far below the eight this check
+    // needs before a cadence means anything.
+    let mut brief = rig_stream("lidar", Modality::PointCloud, 1_000_000_000);
+    brief.frames.truncate(4);
+    let ep = episode(
+        0,
+        vec![
+            brief,
+            rig_stream("gnss", Modality::Gnss, 1_000_000_000),
+            rig_stream("imu", Modality::Imu, 1_000_000_000),
+        ],
+    );
+    let f = autonomy::SequenceComplete::default().run(&dataset(vec![ep]));
+    let abstention = f
+        .iter()
+        .find(|x| x.code == "AUTONOMY.SEQUENCE_UNMEASURED")
+        .unwrap_or_else(|| panic!("{f:#?}"));
+    assert_eq!(abstention.severity, Severity::Info);
+    assert!(
+        abstention.message.contains("lidar"),
+        "{}",
+        abstention.message
+    );
+}
+
+/// The noise direction, and the reason this counts only sensors: a rig log carries a latched
+/// transform tree and a `CameraInfo` channel, neither of which has a cadence whose gaps mean lost
+/// observations. Naming those would put an abstention on every sound recording.
+#[test]
+fn a_short_non_sensor_stream_is_not_reported_as_unjudged() {
+    let mut latched = rig_stream("tf_static", Modality::Calibration, 1_000_000_000);
+    latched.frames.truncate(1);
+    let ep = episode(
+        0,
+        vec![
+            latched,
+            rig_stream("lidar", Modality::PointCloud, 1_000_000_000),
+            rig_stream("gnss", Modality::Gnss, 1_000_000_000),
+            rig_stream("imu", Modality::Imu, 1_000_000_000),
+        ],
+    );
+    let f = autonomy::SequenceComplete::default().run(&dataset(vec![ep]));
+    assert!(
+        !f.iter().any(|x| x.code == "AUTONOMY.SEQUENCE_UNMEASURED"),
+        "{f:#?}"
+    );
+}
+
+/// A metadata-only run has no frames by request, so every sensor is unjudgeable for a reason that is
+/// about the run rather than the rig.
+#[test]
+fn a_metadata_only_run_raises_no_sequence_abstention() {
+    let mut lidar = rig_stream("lidar", Modality::PointCloud, 1_000_000_000);
+    let mut gnss = rig_stream("gnss", Modality::Gnss, 1_000_000_000);
+    let mut imu = rig_stream("imu", Modality::Imu, 1_000_000_000);
+    for s in [&mut lidar, &mut gnss, &mut imu] {
+        s.frames.clear();
+    }
+    let context = veridex_core::check::CheckContext {
+        frames_read: false,
+        attested_keys: Vec::new(),
+        sampled: false,
+    };
+    let f = veridex_core::check::Check::run_in(
+        &autonomy::SequenceComplete::default(),
+        &dataset(vec![episode(0, vec![lidar, gnss, imu])]),
+        &context,
+    );
+    assert!(f.is_empty(), "{f:#?}");
+}
+
 #[test]
 fn sequence_completeness_only_runs_on_rigs() {
     // A manipulation dataset with a dropping stream is not a rig, so the check abstains.

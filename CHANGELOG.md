@@ -10,6 +10,24 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **Rig sensors whose drops could not be counted are named (`AUTONOMY.SEQUENCE_UNMEASURED`).** The
+  third and last of the `world-model-ready` criteria that read silence as a pass.
+  `autonomy.sequence-complete` reads publisher numbering where a recording preserved it and falls
+  back to the sensor's own cadence where it did not — and got neither for a stream too short to
+  establish a cadence, or one whose intervals are so irregular that a gap means an idle bus rather
+  than a loss. It emitted nothing, so "no rig sensor dropping more than 5% of its frames" was
+  certified over sensors that received no such measurement.
+
+  Reported once per episode, naming the streams. Only *sensor* streams count toward it, for the
+  reason `AUTONOMY.RIG_SYNC` learned first: a rig log also carries `/rosout`, a latched transform
+  tree and a `CameraInfo` channel, none of which has a cadence whose gaps mean lost observations,
+  and naming those would put an abstention on every sound recording. That scoping is red-proven
+  too — dropped, the latched-transform fixture fails.
+
+  With this, every `world-model-ready` criterion either measures or says it did not: `rig-sync`
+  and `ego-pose-continuity` gained abstentions in the two commits before, and
+  `calibration-completeness` already accuses absence rather than skipping it.
+
 - **An ego trajectory that was never judged no longer certifies as continuous
   (`AUTONOMY.EGO_POSE_UNMEASURED`).** The companion to the rig-sync abstention, in the other
   criterion that reads silence as a pass. `autonomy.ego-pose-continuity` needs two poses and an

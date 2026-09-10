@@ -758,7 +758,11 @@ impl Check for SequenceComplete {
             "AUTONOMY.SEQUENCE_COMPLETE",
             "AUTONOMY.SEQUENCE_DROPPED",
             "AUTONOMY.SEQUENCE_RENUMBERED",
+            "AUTONOMY.SEQUENCE_UNMEASURED",
         ]
+    }
+    fn abstention_codes(&self) -> &'static [&'static str] {
+        &["AUTONOMY.SEQUENCE_UNMEASURED"]
     }
     fn title(&self) -> &'static str {
         "Rig sequence completeness"
@@ -776,11 +780,31 @@ impl Check for SequenceComplete {
         "1"
     }
     fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        self.run_with(dataset, true)
+    }
+    fn run_in(&self, dataset: &Dataset, context: &CheckContext) -> Vec<Finding> {
+        self.run_with(dataset, context.frames_read)
+    }
+}
+
+impl SequenceComplete {
+    /// `frames_read` is false under a metadata-only ingest, where every stream is empty *by request*
+    /// — so nothing could be judged for a reason that is about the run, not the rig.
+    fn run_with(&self, dataset: &Dataset, frames_read: bool) -> Vec<Finding> {
         let mut findings = Vec::new();
         for ep in &dataset.episodes {
             if !is_rig_episode(ep) {
                 continue;
             }
+            // Sensors this episode could say nothing about. Counted per episode rather than named
+            // one by one: a rig carries several, and one sentence saying which family of streams
+            // went unjudged is read where a dozen findings are skimmed.
+            //
+            // Only `is_sensor` streams, for the reason `AUTONOMY.RIG_SYNC` learned the hard way: a
+            // rig log also carries `/rosout`, a latched transform tree and a `CameraInfo` channel,
+            // none of which has a cadence whose gaps mean dropped observations. Reporting those as
+            // unjudged would be noise on every sound recording.
+            let mut unmeasured: Vec<&str> = Vec::new();
             for stream in &ep.streams {
                 // A publisher that numbers its messages has already counted them, so where the
                 // numbering survived the recording there is nothing left to estimate. The estimate
@@ -792,6 +816,9 @@ impl Check for SequenceComplete {
                     continue;
                 }
                 if stream.frames.len() < Self::MIN_FRAMES {
+                    if stream.modality.is_sensor() {
+                        unmeasured.push(stream.name.as_str());
+                    }
                     continue;
                 }
                 // Median positive inter-frame interval — the sensor's own cadence, robust to the very
@@ -803,6 +830,9 @@ impl Check for SequenceComplete {
                     .filter(|d| *d > 0)
                     .collect();
                 if intervals.is_empty() {
+                    if stream.modality.is_sensor() {
+                        unmeasured.push(stream.name.as_str());
+                    }
                     continue;
                 }
                 intervals.sort_unstable();
@@ -823,10 +853,16 @@ impl Check for SequenceComplete {
                         .sum::<f64>()
                         / intervals.len() as f64;
                     if variance.sqrt() / mean > Self::MAX_INTERVAL_CV {
+                        if stream.modality.is_sensor() {
+                            unmeasured.push(stream.name.as_str());
+                        }
                         continue;
                     }
                 }
                 if median <= 0.0 {
+                    if stream.modality.is_sensor() {
+                        unmeasured.push(stream.name.as_str());
+                    }
                     continue;
                 }
                 // Count the frames that are actually missing, rather than dividing the span by the
@@ -888,6 +924,41 @@ impl Check for SequenceComplete {
                         ),
                     );
                 }
+            }
+            // Sensors this check could not judge: too few frames to imply a cadence, or a cadence
+            // too irregular for a gap to mean a dropped frame rather than an idle bus.
+            // `world-model-ready` judges "no rig sensor dropping more than 5% of its frames" here,
+            // and a criterion passes when its check ran and found nothing — so a rig whose sensors
+            // were all unjudgeable certified against a measurement none of them received.
+            if frames_read && !unmeasured.is_empty() {
+                let named = unmeasured.join(", ");
+                findings.push(
+                    Finding::new(
+                        self.id(),
+                        Category::Autonomy,
+                        Severity::Info,
+                        Location::Episode { episode: ep.index },
+                        "AUTONOMY.SEQUENCE_UNMEASURED",
+                        format!(
+                            "episode {}: {} rig sensor(s) carry neither publisher numbering nor a \
+                             cadence regular enough to imply how many frames were due, so nothing \
+                             here says whether they dropped any ({named})",
+                            ep.index,
+                            unmeasured.len()
+                        ),
+                    )
+                    .with_risk(
+                        "A dropped frame leaves no trace in a recording that does not number its \
+                         messages, and for these sensors the cadence could not stand in for that \
+                         count. A clean result is the absence of a measurement, not evidence that \
+                         nothing was lost.",
+                    )
+                    .with_remedy(
+                        "Record with a transport that preserves publisher sequence numbers (an \
+                         MCAP or ROS 1 bag carries them; a rosbag2 `.db3` does not), or check \
+                         whether these streams are event-driven rather than sampled.",
+                    ),
+                );
             }
         }
         findings
