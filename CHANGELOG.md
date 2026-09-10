@@ -10,6 +10,18 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A Matroska that declares no frame rate has one measured from its blocks.** `DefaultDuration`
+  is optional in the format, and a variable-rate file carries none — so the probe reported no rate
+  for those, `video.media-conformance` had nothing to compare, and a container running at half the
+  rate its manifest declares passed in silence. That is a video/data desync that worsens through
+  every episode, and the check that exists to catch it was not running.
+
+  The fallback measures the same quantity the MP4 path does — frames over the media time they span
+  — from the block timestamps the walk already reads. Over `n` frames the span is `n - 1`
+  intervals, which is what it divides by; dividing by `n` reports every recording a fraction fast,
+  and on a long one that fraction hides under the tolerance it would be compared against. A single
+  frame spans no time and yields no rate at all.
+
 - **Half a CAN dataset is named, not called unrecognized.** A CAN dataset is a pair: the log and
   the `.dbc` that gives its frames meaning. Point Veridex at either one alone — the ordinary
   first-use mistake, since a recorder hands you the log and the database lives somewhere else — and

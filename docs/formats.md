@@ -111,6 +111,12 @@ read: the ISO base media formats (`.mp4`, `.m4v`, `.mov`) and Matroska with its 
 decided by its **magic bytes**, not its extension, so a converter that muxed Matroska into a `.mp4`
 produces a dataset whose frames are still counted.
 
+A Matroska need not state a frame rate either: `DefaultDuration` is optional, and a variable-rate
+file carries none. Where it is absent the rate is **measured** from the block timestamps — the same
+quantity the MP4 path reports, frames over the media time they span — so the rate check runs on such
+a file instead of comparing nothing. A recording of one frame spans no time and yields no rate at
+all, rather than a number invented out of a single timestamp.
+
 A Matroska carries no sample table: nothing in it states how many frames it holds. So the count is
 taken the only way the format allows, by walking the cluster tree and reading each block's *header* —
 payloads are seeked over, never read, and a laced block counts the frames it laces rather than one.

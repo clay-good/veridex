@@ -29,6 +29,8 @@ use crate::cdm::MediaParams;
 const ID_EBML: u64 = 0x1A45_DFA3;
 const ID_DOC_TYPE: u64 = 0x4282;
 const ID_SEGMENT: u64 = 0x1853_8067;
+const ID_INFO: u64 = 0x1549_A966;
+const ID_TIMESTAMP_SCALE: u64 = 0x002A_D7B1;
 const ID_TRACKS: u64 = 0x1654_AE6B;
 const ID_TRACK_ENTRY: u64 = 0xAE;
 const ID_TRACK_NUMBER: u64 = 0xD7;
@@ -39,9 +41,14 @@ const ID_VIDEO: u64 = 0xE0;
 const ID_PIXEL_WIDTH: u64 = 0xB0;
 const ID_PIXEL_HEIGHT: u64 = 0xBA;
 const ID_CLUSTER: u64 = 0x1F43_B675;
+const ID_CLUSTER_TIMESTAMP: u64 = 0xE7;
 const ID_SIMPLE_BLOCK: u64 = 0xA3;
 const ID_BLOCK_GROUP: u64 = 0xA0;
 const ID_BLOCK: u64 = 0xA1;
+
+/// The `TimestampScale` a file that states none is read at: one millisecond in nanoseconds, which is
+/// what the format specifies as the default.
+const DEFAULT_TIMESTAMP_SCALE: u64 = 1_000_000;
 
 /// `TrackType` for a video track.
 const TRACK_TYPE_VIDEO: u64 = 1;
@@ -119,6 +126,10 @@ pub fn probe(path: &Path) -> Result<MediaProbe, String> {
     while r.pos < end {
         let element = r.header()?;
         match element.id {
+            ID_INFO => {
+                let bytes = r.payload(&element, "Info")?;
+                walk.read_info(&bytes);
+            }
             ID_TRACKS => {
                 let bytes = r.payload(&element, "Tracks")?;
                 walk.read_tracks(&bytes);
@@ -128,7 +139,7 @@ pub fn probe(path: &Path) -> Result<MediaProbe, String> {
         }
     }
 
-    let track = walk.video.ok_or_else(|| {
+    let track = walk.video.take().ok_or_else(|| {
         "no video track: the container's Tracks element declares no track of type video".to_string()
     })?;
     // Counted per track number and resolved afterwards, so a file whose clusters precede its
@@ -137,13 +148,22 @@ pub fn probe(path: &Path) -> Result<MediaProbe, String> {
     let frame_count = walk
         .counted
         .then(|| walk.blocks.get(&track.number).copied().unwrap_or(0));
-    // fps is what the file *declares* a frame lasts, and nothing else: deriving it from the segment
-    // duration would divide a value the container rounds by a count this walk may have abstained
-    // from, and report a rate no encoder was asked for.
+    // What a frame lasts, as the file states it — and, when it states nothing, as the recording
+    // itself shows it. `DefaultDuration` is optional, and a variable-rate file carries none, so
+    // reading only that reported no rate at all for those: `video.media-conformance` then compared
+    // nothing, and a container running at half its declared rate passed in silence.
+    //
+    // The measured fallback is the same quantity the MP4 path reports — frames over elapsed media
+    // time — taken from the block timestamps this walk already reads. Over `n` frames the span from
+    // the first to the last is `n - 1` intervals, not `n`, so that is what it divides by; dividing
+    // by `n` would report every recording a fraction fast, and on a long one that fraction is
+    // smaller than the tolerance it would be compared against, which is worse than being wrong
+    // loudly.
     let fps = track
         .default_duration_ns
         .filter(|ns| *ns > 0)
-        .map(|ns| 1e9 / ns as f64);
+        .map(|ns| 1e9 / ns as f64)
+        .or_else(|| walk.measured_fps(track.number));
     Ok(MediaProbe {
         params: MediaParams {
             codec: track.codec,
@@ -164,6 +184,13 @@ struct Walk {
     /// The block count is trustworthy — no cluster was skipped, no block header was malformed, and
     /// no ceiling was reached. False means this walk reports no count at all.
     counted: bool,
+    /// The segment's `TimestampScale`: how many nanoseconds one timestamp tick is.
+    scale_ns: u64,
+    /// The earliest and latest block timestamp seen per track, in ticks. A block's timestamp is its
+    /// cluster's plus its own signed offset, so both are needed to place it.
+    span: BTreeMap<u64, (i64, i64)>,
+    /// The timestamp of the cluster currently being walked, in ticks.
+    cluster_ts: i64,
 }
 
 impl Default for Walk {
@@ -174,6 +201,9 @@ impl Default for Walk {
             video: None,
             blocks: BTreeMap::new(),
             counted: true,
+            scale_ns: DEFAULT_TIMESTAMP_SCALE,
+            span: BTreeMap::new(),
+            cluster_ts: 0,
         }
     }
 }
@@ -188,6 +218,35 @@ struct VideoTrack {
 }
 
 impl Walk {
+    /// The segment's `Info`, for the one field the rate depends on.
+    ///
+    /// A file that states no scale is read at the format's default rather than refused: the default
+    /// is what such a file means, and one millisecond is what almost every writer uses anyway.
+    fn read_info(&mut self, bytes: &[u8]) {
+        for child in children(bytes) {
+            if child.id == ID_TIMESTAMP_SCALE {
+                if let Some(scale) = uint(child.payload).filter(|n| *n > 0) {
+                    self.scale_ns = scale;
+                }
+            }
+        }
+    }
+
+    /// The rate the blocks themselves show for `track`, or `None` when they cannot show one.
+    ///
+    /// A single frame spans no time and a file whose blocks all carry one timestamp measures
+    /// nothing, so both answer `None` rather than dividing by zero or reporting an infinite rate.
+    fn measured_fps(&self, track: u64) -> Option<f64> {
+        if !self.counted {
+            return None;
+        }
+        let frames = *self.blocks.get(&track)?;
+        let (first, last) = *self.span.get(&track)?;
+        let ticks = last.checked_sub(first).filter(|t| *t > 0)?;
+        let seconds = ticks as f64 * self.scale_ns as f64 / 1e9;
+        (frames > 1 && seconds > 0.0).then(|| (frames - 1) as f64 / seconds)
+    }
+
     fn read_tracks(&mut self, bytes: &[u8]) {
         if self.video.is_some() {
             return;
@@ -247,9 +306,16 @@ impl Walk {
             return Ok(());
         }
         let end = element.end(r.len);
+        // Every block's timestamp is relative to its own cluster's, so a cluster that states none is
+        // read at zero — which is what a file with a single cluster carries.
+        self.cluster_ts = 0;
         while r.pos < end {
             let child = r.header()?;
             match child.id {
+                ID_CLUSTER_TIMESTAMP => {
+                    let bytes = r.payload(&child, "cluster timestamp")?;
+                    self.cluster_ts = uint(&bytes).unwrap_or(0) as i64;
+                }
                 ID_SIMPLE_BLOCK => self.count_block(r, &child)?,
                 ID_BLOCK_GROUP => {
                     let group_end = child.end(r.len);
@@ -303,6 +369,20 @@ impl Walk {
             self.counted = false;
             return Ok(());
         }
+        // The block's own offset from its cluster, signed: a frame can be presented before the
+        // cluster's own timestamp.
+        let offset = match (head.get(used), head.get(used + 1)) {
+            (Some(&hi), Some(&lo)) => i16::from_be_bytes([hi, lo]) as i64,
+            _ => 0,
+        };
+        let ts = self.cluster_ts.saturating_add(offset);
+        self.span
+            .entry(track)
+            .and_modify(|(first, last)| {
+                *first = (*first).min(ts);
+                *last = (*last).max(ts);
+            })
+            .or_insert((ts, ts));
         let counter = self.blocks.entry(track).or_insert(0);
         *counter += frames;
         if *counter > MAX_BLOCKS {

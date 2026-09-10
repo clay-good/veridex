@@ -170,6 +170,9 @@ struct Mkv {
     unknown_cluster_size: bool,
     /// Write `DocType` `webm` instead of `matroska`.
     webm: bool,
+    /// Declare no `DefaultDuration`, as a variable-rate file does — leaving the block timestamps as
+    /// the only record of how fast the recording actually ran.
+    no_default_duration: bool,
 }
 
 /// A minimal Matroska describing `frames` frames of `width`x`height` in `codec` at `fps`.
@@ -187,10 +190,13 @@ fn build_mkv(frames: u32, width: u16, height: u16, codec: &str, fps: u32, shape:
     entry.extend(uint_el(&[0xD7], 1)); // TrackNumber
     entry.extend(uint_el(&[0x83], 1)); // TrackType: video
     entry.extend(el(&[0x86], codec.as_bytes())); // CodecID
-    entry.extend(uint_el(
-        &[0x23, 0xE3, 0x83],
-        1_000_000_000 / fps.max(1) as u64,
-    )); // DefaultDuration
+    if !shape.no_default_duration {
+        // DefaultDuration: what the file *declares* a frame lasts, in nanoseconds.
+        entry.extend(uint_el(
+            &[0x23, 0xE3, 0x83],
+            1_000_000_000 / fps.max(1) as u64,
+        ));
+    }
     entry.extend(el(&[0xE0], &video));
     let tracks = el(&[0x16, 0x54, 0xAE, 0x6B], &el(&[0xAE], &entry));
 
@@ -201,7 +207,10 @@ fn build_mkv(frames: u32, width: u16, height: u16, codec: &str, fps: u32, shape:
     let mut written = 0u32;
     while written < frames {
         let mut block = vec![0x81]; // track number 1, as a one-byte vint
-        block.extend_from_slice(&0i16.to_be_bytes()); // relative timestamp
+                                    // The block's own offset from the cluster, in the segment's ticks — one millisecond each by
+                                    // default, so a frame at `fps` sits `1000 / fps` ticks after the one before it.
+        let tick = (written as i64 * 1000 / fps.max(1) as i64) as i16;
+        block.extend_from_slice(&tick.to_be_bytes());
         match shape.lace {
             // Flags with fixed lacing set, then the lace count minus one, then one byte per frame.
             Some(n) => {
@@ -1360,4 +1369,78 @@ fn a_bit_flipped_matroska_never_panics() {
             let _ = veridex_core::media::probe(&path);
         }
     }
+}
+
+/// A Matroska need not declare a frame rate at all: `DefaultDuration` is optional, and a
+/// variable-rate file carries none. Reading only that field reported no rate for those files, so
+/// `video.media-conformance` compared nothing — and a container running at half the rate its
+/// manifest declares passed in silence, which is the shape of a video/data desync that worsens
+/// through every episode.
+///
+/// The rate is measured from the block timestamps instead, which is the same quantity the MP4 path
+/// reports: frames over the media time they span.
+#[test]
+fn a_matroska_that_declares_no_rate_has_one_measured_from_its_blocks() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("vfr.mkv");
+    let vfr = Mkv {
+        no_default_duration: true,
+        ..Mkv::default()
+    };
+    fs::write(
+        &path,
+        build_mkv(31, 640, 480, "V_MPEG4/ISO/AVC", FPS as u32, vfr),
+    )
+    .unwrap();
+    let probe = veridex_core::media::probe(&path).expect("a readable container");
+    // Thirty-one frames one millisecond-tick group apart: thirty intervals over one second.
+    let fps = probe.params.fps.expect("a rate measured from the blocks");
+    assert!((fps - 30.0).abs() < 0.5, "{fps}");
+}
+
+/// And the rate reaches the check: a stream whose manifest declares 30 fps against a container that
+/// really ran at 15 is a finding, not a silence.
+#[test]
+fn a_declared_rate_a_rateless_matroska_does_not_match_is_still_caught() {
+    let dir = tempfile::tempdir().unwrap();
+    write_dataset(dir.path(), 10, VideoPlan::default());
+    let dest = dir.path().join("videos").join(FEATURE);
+    let vfr = Mkv {
+        no_default_duration: true,
+        ..Mkv::default()
+    };
+    for episode in 0..2u64 {
+        // Ten frames at 15 fps, against a manifest that says 30.
+        fs::write(
+            dest.join(format!("episode_{episode:06}.mp4")),
+            build_mkv(10, 640, 480, "V_MPEG4/ISO/AVC", 15, vfr),
+        )
+        .unwrap();
+    }
+    let dataset = ingest(dir.path());
+    let findings = video_findings(&dataset);
+    assert!(
+        findings.iter().any(|f| f.code == "VIDEO.FPS_MISMATCH"),
+        "{findings:#?}"
+    );
+}
+
+/// A single frame spans no time, so nothing about a rate can be measured from it. Reporting one
+/// anyway — an infinity, or a division by zero — would be a number invented out of one timestamp.
+#[test]
+fn a_single_frame_matroska_measures_no_rate_rather_than_dividing_by_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("one.mkv");
+    let vfr = Mkv {
+        no_default_duration: true,
+        ..Mkv::default()
+    };
+    fs::write(
+        &path,
+        build_mkv(1, 640, 480, "V_MPEG4/ISO/AVC", FPS as u32, vfr),
+    )
+    .unwrap();
+    let probe = veridex_core::media::probe(&path).expect("a readable container");
+    assert_eq!(probe.params.fps, None);
+    assert_eq!(probe.frame_count, Some(1));
 }
