@@ -262,3 +262,71 @@ fn a_complete_dataset_directory_gets_no_hint() {
         .incomplete_hints(&Source::Local(dir.path().to_path_buf()))
         .is_empty());
 }
+
+/// A LeRobot dataset is a *directory*, and its pieces are the three things a reader points at
+/// instead: the `meta/` folder, the manifest inside it, and a data shard. Each was answered with
+/// "no adapter recognized the source" and a list of nine format names, for a dataset sitting one
+/// directory away.
+#[test]
+fn the_meta_folder_of_a_lerobot_dataset_names_the_dataset_above_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = dir.path().join("meta");
+    std::fs::create_dir_all(&meta).unwrap();
+    std::fs::write(meta.join("info.json"), "{\"codebase_version\":\"v3.0\"}").unwrap();
+
+    let hints = veridex_core::default_registry().incomplete_hints(&Source::Local(meta));
+    assert_eq!(hints.len(), 1, "{hints:?}");
+    assert!(hints[0].contains("meta/"), "{}", hints[0]);
+    // It names where to point instead, which is the whole reason for saying anything.
+    assert!(
+        hints[0].contains(&dir.path().display().to_string()),
+        "{}",
+        hints[0]
+    );
+}
+
+#[test]
+fn a_lerobot_manifest_file_names_the_dataset_two_levels_up() {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = dir.path().join("meta");
+    std::fs::create_dir_all(&meta).unwrap();
+    let info = meta.join("info.json");
+    std::fs::write(&info, "{\"codebase_version\":\"v3.0\"}").unwrap();
+
+    let hints = veridex_core::default_registry().incomplete_hints(&Source::Local(info));
+    assert_eq!(hints.len(), 1, "{hints:?}");
+    assert!(hints[0].contains("info.json"), "{}", hints[0]);
+    assert!(
+        hints[0].contains(&dir.path().display().to_string()),
+        "{}",
+        hints[0]
+    );
+}
+
+/// Parquet is not LeRobot's alone, so the hint says what the file would mean *if* it is a shard
+/// rather than asserting that it is.
+#[test]
+fn a_parquet_shard_is_named_as_one_file_of_a_dataset() {
+    let dir = tempfile::tempdir().unwrap();
+    let shard = dir.path().join("file-000.parquet");
+    std::fs::write(&shard, b"PAR1").unwrap();
+
+    let hints = veridex_core::default_registry().incomplete_hints(&Source::Local(shard));
+    assert_eq!(hints.len(), 1, "{hints:?}");
+    assert!(
+        hints[0].contains("If it is a LeRobot data shard"),
+        "{}",
+        hints[0]
+    );
+}
+
+/// And the direction that keeps it from becoming noise: an ordinary directory that is not part of a
+/// dataset gets no hint. A directory with no manifest in it is not a `meta/` folder.
+#[test]
+fn an_ordinary_directory_gets_no_lerobot_hint() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("notes.txt"), "nothing to do with robots").unwrap();
+    assert!(veridex_core::default_registry()
+        .incomplete_hints(&Source::Local(dir.path().to_path_buf()))
+        .is_empty());
+}

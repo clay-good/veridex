@@ -10,6 +10,18 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **The pieces of a LeRobot dataset name the dataset they belong to.** A LeRobot dataset is a
+  directory, and the three things a reader points at instead are its `meta/` folder, the `info.json`
+  inside it, and a data shard. Each was answered with "no adapter recognized the source" and a list
+  of nine format names — for a dataset sitting one directory away, whose manifest Veridex had just
+  read well enough to know what the file was.
+
+  Each now says what the file is and which directory to point at instead, through the same
+  `Adapter::incomplete_hint` the CAN halves use. A Parquet file is hedged rather than asserted —
+  Parquet is not LeRobot's alone, so the hint says what the file would mean *if* it is a shard. A
+  directory with no manifest in it is not a `meta/` folder and gets nothing, which is red-proven
+  alongside the hints themselves.
+
 - **PEAK PCAN-Trace (`.trc`) and gzipped logs are read.** With BLF and candump already in, these
   were the last two ways a team is likely to hold CAN and Veridex was not: a `.trc` is what
   PCAN-View and the PEAK driver stack write, and a `.log.gz` is what log rotation leaves behind.

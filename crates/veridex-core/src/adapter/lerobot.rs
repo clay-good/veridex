@@ -697,6 +697,15 @@ fn probe_stream_media(dataset_root: &Path, expected: &Path, declared: MediaParam
     }
 }
 
+/// The last component of a path, for a hint that names the thing the reader typed rather than the
+/// whole absolute path they can already see.
+fn display_name(path: &Path) -> String {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("that directory")
+        .to_string()
+}
+
 fn column_i64(array: &dyn Array, row: usize) -> Option<i64> {
     // A null cell is absent data, not zero: `PrimitiveArray::value` ignores the validity bitmap and
     // would return a garbage `0`, silently fabricating episode/frame/task indices. Abstain instead.
@@ -1532,6 +1541,61 @@ impl Adapter for LeRobotAdapter {
     /// checked without opening a Parquet file.
     fn supports_metadata_only(&self) -> bool {
         true
+    }
+
+    /// A LeRobot dataset is a *directory*, and its pieces are the three things a reader is most
+    /// likely to point at instead: the `meta/` folder, the manifest inside it, and a data shard.
+    ///
+    /// Each is a file this adapter recognizes on sight and cannot ingest on its own, and each was
+    /// answered with "no adapter recognized the source" followed by a list of nine format names. The
+    /// dataset is usually one directory away, so the hint names which one.
+    fn incomplete_hint(&self, source: &Source) -> Option<String> {
+        let Source::Local(path) = source else {
+            return None;
+        };
+        // The `meta/` directory: it holds the manifest, so a reader who found it has found the
+        // dataset and stopped one level too deep.
+        if path.is_dir() {
+            return path.join("info.json").is_file().then(|| {
+                let parent = path
+                    .parent()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "the directory above".into());
+                format!(
+                    "`{}` holds a LeRobot manifest, so it is the `meta/` folder of a dataset rather \
+                     than the dataset. Point Veridex at `{parent}`.",
+                    display_name(path)
+                )
+            });
+        }
+        if !path.is_file() {
+            return None;
+        }
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("it");
+        let in_meta = path
+            .parent()
+            .is_some_and(|p| p.file_name().is_some_and(|n| n == "meta"));
+        // The manifest itself, or one of the files beside it.
+        if in_meta {
+            let dataset = path
+                .parent()
+                .and_then(|p| p.parent())
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "the directory two levels up".into());
+            return Some(format!(
+                "`{name}` is part of a LeRobot dataset's `meta/` folder, which describes the \
+                 dataset rather than being it. Point Veridex at `{dataset}`."
+            ));
+        }
+        // A data shard. Parquet is not LeRobot's alone, so this says what it would mean *if* it is
+        // one rather than asserting that it is.
+        (path.extension().and_then(|e| e.to_str()) == Some("parquet")).then(|| {
+            format!(
+                "`{name}` is a Parquet file. If it is a LeRobot data shard, it is one file of a \
+                 dataset — point Veridex at the directory holding `meta/` and `data/`, which is \
+                 what carries the manifest its rows are checked against."
+            )
+        })
     }
 
     fn ingest(&self, source: &Source, options: &IngestOptions) -> Result<Ingested, IngestError> {
