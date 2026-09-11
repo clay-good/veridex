@@ -2920,6 +2920,31 @@ fn a_rig_with_only_one_measurable_sensor_says_it_compared_nothing() {
     );
 }
 
+/// The boundary the abstention promises, from the side that must stay silent.
+///
+/// "Fewer than two measurable spans" is the rule, so **exactly two** is the smallest rig this check
+/// can compare — and it must compare it rather than abstain. A test that only ever shows three
+/// sensors passes just as well with the comparison moved by one, which would turn the smallest real
+/// rig into an unjudgeable one.
+#[test]
+fn exactly_two_measurable_sensors_are_compared_not_abstained_on() {
+    let mut dead = rig_stream("imu", Modality::Imu, 1_000_000_000);
+    dead.frames.truncate(1); // leaves lidar and gnss: exactly two measurable spans
+    let ep = episode(
+        0,
+        vec![
+            dead,
+            rig_stream("lidar", Modality::PointCloud, 1_000_000_000),
+            rig_stream("gnss", Modality::Gnss, 1_000_000_000),
+        ],
+    );
+    let f = autonomy::RigSync::default().run(&dataset(vec![ep]));
+    assert!(
+        !f.iter().any(|x| x.code == "AUTONOMY.RIG_SYNC_UNCOMPARED"),
+        "two measurable spans are a comparison, not an abstention: {f:#?}"
+    );
+}
+
 /// And the other direction: a rig that *was* compared says nothing about being uncompared.
 #[test]
 fn a_rig_that_could_be_compared_raises_no_abstention() {
@@ -3303,6 +3328,29 @@ fn rig_sensors_whose_drops_cannot_be_counted_are_named() {
     );
 }
 
+/// The boundary of "too few frames to imply a cadence": a stream with exactly the minimum is judged,
+/// not abstained on. One frame fewer is the case the abstention exists for, and the test above shows
+/// that side; this is the side that must stay silent.
+#[test]
+fn a_stream_with_exactly_the_minimum_frames_is_judged() {
+    // `SequenceComplete::MIN_FRAMES` is 8, so eight frames is the shortest stream it will grade.
+    let mut just_enough = rig_stream("lidar", Modality::PointCloud, 1_000_000_000);
+    just_enough.frames.truncate(8);
+    let ep = episode(
+        0,
+        vec![
+            just_enough,
+            rig_stream("gnss", Modality::Gnss, 1_000_000_000),
+            rig_stream("imu", Modality::Imu, 1_000_000_000),
+        ],
+    );
+    let f = autonomy::SequenceComplete::default().run(&dataset(vec![ep]));
+    assert!(
+        !f.iter().any(|x| x.code == "AUTONOMY.SEQUENCE_UNMEASURED"),
+        "eight frames is a cadence this check grades: {f:#?}"
+    );
+}
+
 /// The noise direction, and the reason this counts only sensors: a rig log carries a latched
 /// transform tree and a `CameraInfo` channel, neither of which has a cadence whose gaps mean lost
 /// observations. Naming those would put an abstention on every sound recording.
@@ -3416,6 +3464,18 @@ fn an_ego_trajectory_whose_time_never_advances_says_it_judged_nothing() {
     let f = autonomy::EgoPoseContinuity::default().run(&dataset(vec![rig_episode_with_ego(poses)]));
     assert_eq!(f.len(), 1, "{f:#?}");
     assert_eq!(f[0].code, "AUTONOMY.EGO_POSE_UNMEASURED");
+}
+
+/// The same boundary for the trajectory: "fewer than two poses" means **exactly two** is the shortest
+/// trajectory that can be judged, and it must be judged rather than abstained on.
+#[test]
+fn exactly_two_poses_are_judged_not_abstained_on() {
+    let poses = vec![ego(0, 0.0, 0.0), ego(100_000_000, 0.1, 0.0)];
+    let f = autonomy::EgoPoseContinuity::default().run(&dataset(vec![rig_episode_with_ego(poses)]));
+    assert!(
+        !f.iter().any(|x| x.code == "AUTONOMY.EGO_POSE_UNMEASURED"),
+        "two poses are one measurable step, not nothing: {f:#?}"
+    );
 }
 
 /// And a trajectory that *was* judged says nothing about being unjudged.

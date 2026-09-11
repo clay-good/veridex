@@ -1505,6 +1505,40 @@ fn a_measured_stream_raises_no_abstention() {
     );
 }
 
+/// The boundary the frame-count abstention promises: it fires only when *no* episode of a stream
+/// could be measured, so **one** measured episode must silence it. Where some episodes could be
+/// measured and others could not, the mismatch rollup already speaks for the ones that were.
+#[test]
+fn one_measured_episode_is_enough_to_silence_the_abstention() {
+    let dir = tempfile::tempdir().unwrap();
+    write_dataset(dir.path(), 10, VideoPlan::default());
+    let dest = dir.path().join("videos").join(FEATURE);
+    // Episode 0 keeps its ordinary container; episode 1 is fragmented and states no count.
+    fs::write(
+        dest.join("episode_000001.mp4"),
+        build_mp4_shaped(
+            10,
+            640,
+            480,
+            b"avc1",
+            FPS as u32,
+            Shape {
+                fragmented: true,
+                ..Shape::default()
+            },
+        ),
+    )
+    .unwrap();
+    let dataset = ingest(dir.path());
+    let findings = video_findings(&dataset);
+    assert!(
+        !findings
+            .iter()
+            .any(|f| f.code == "VIDEO.FRAME_COUNT_UNMEASURED"),
+        "one measured episode is a measurement: {findings:#?}"
+    );
+}
+
 /// A live-muxed Matroska is the same case reached through the other reader: its clusters declare no
 /// size, so the walk counts no blocks and states no frame count.
 #[test]
