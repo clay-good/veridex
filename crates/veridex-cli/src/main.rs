@@ -2733,6 +2733,20 @@ fn cmd_diff(rest: &[String]) -> ExitCode {
     };
 
     let parse = |p: &str| -> Result<serde_json::Value, ExitCode> {
+        // Every other command takes a dataset path, so handing `diff` one is the obvious mistake —
+        // and `cannot read <path>: Is a directory` is true without saying what was wanted instead.
+        // The reports the reader needs are two commands away.
+        if std::path::Path::new(p).is_dir() {
+            eprintln!(
+                "veridex: {p} is a dataset directory, and `diff` compares two check *reports* \
+                 rather than two datasets"
+            );
+            eprintln!(
+                "       produce them first: `veridex check {p} --json > before.json`, then \
+                 `veridex diff before.json after.json`"
+            );
+            return Err(ExitCode::from(EXIT_TOOL_ERROR));
+        }
         let bytes = std::fs::read(p).map_err(|e| {
             eprintln!("veridex: cannot read {p}: {e}");
             ExitCode::from(EXIT_TOOL_ERROR)

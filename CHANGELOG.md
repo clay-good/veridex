@@ -997,6 +997,13 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **`diff` given a dataset says what it actually compares.** Every other command takes a dataset
+  path, so handing `diff` one is the obvious mistake — and it failed with `cannot read <path>: Is a
+  directory`, which is true and teaches nothing, for two reports that are one command away. It now
+  says `diff` compares two check *reports* and shows how to produce them (`veridex check <dataset>
+  --json > before.json`). A file that is not a report was already answered properly; only the
+  directory case fell through to a raw OS error.
+
 - **A little-endian CAN signal is decoded from the byte it starts in, not from the front of the
   frame.** The decoder assembled the frame's first eight bytes and shifted by the whole start bit:
   the same answer for a classic CAN frame, and no answer at all beyond one. Every signal a CAN-FD

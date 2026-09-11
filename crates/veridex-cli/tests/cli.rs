@@ -159,6 +159,27 @@ fn diff_requires_two_report_files() {
     assert!(stderr.contains("two report files"));
 }
 
+/// Every other command takes a dataset path, so handing `diff` one is the obvious mistake. It failed
+/// with `cannot read <path>: Is a directory` — true, and no help at all about what `diff` wanted or
+/// how to produce it, when the two reports are one command away.
+#[test]
+fn diff_given_a_dataset_says_it_wants_reports_and_how_to_make_them() {
+    let dir = temp_dir("diff-dataset");
+    let dataset = dir.join("recording");
+    veridex_demo::lerobot::write(&dataset, "clean").expect("write lerobot");
+
+    let (code, _, stderr) = run(&["diff", dataset.to_str().unwrap(), "after.json"]);
+    assert_eq!(code, 2);
+    assert!(
+        stderr.contains("compares two check *reports*"),
+        "it must say what diff compares: {stderr}"
+    );
+    assert!(
+        stderr.contains("--json > before.json"),
+        "and how to produce one: {stderr}"
+    );
+}
+
 /// The committed MCAP fixture standing in for a real dataset file on disk.
 fn fixture_dataset() -> String {
     format!("{}/tests/fixtures/demo.mcap", env!("CARGO_MANIFEST_DIR"))
