@@ -10,6 +10,11 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **`attest` says how to apply what it just wrote.** An attestation is not picked up from beside
+  the dataset — passing it is deliberately an explicit act, since it raises provenance coverage on
+  the strength of a key — and nothing said which flag does that. The command now prints `apply it:
+  veridex check <dataset> --attestation <file>`, naming the file it wrote.
+
 - **A directory an adapter claimed and could not read still names what *is* readable inside it.**
   The "point Veridex at one of these instead" hint fired only for `unsupported format`. A directory
   holding a `.dbc` beside an ASAM `.mf4` — a bus database archived with the measurement it describes

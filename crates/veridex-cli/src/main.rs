@@ -2360,6 +2360,10 @@ fn cmd_attest(rest: &[String]) -> ExitCode {
         signed.attestation.elements.len(),
         signed.attestation.cdm_content_hash
     );
+    // An attestation nobody applies is an inert file. It is not read from beside the dataset — it is
+    // passed in, deliberately, so that raising provenance coverage on the strength of a key is
+    // always an explicit act — and nothing said which flag does that.
+    println!("  apply it: veridex check <dataset> --attestation {out_path}");
     ExitCode::SUCCESS
 }
 

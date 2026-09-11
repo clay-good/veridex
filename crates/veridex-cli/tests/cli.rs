@@ -2367,6 +2367,13 @@ fn an_attestation_raises_provenance_without_touching_the_data() {
     ]);
     assert_eq!(code, 0, "unexpected stderr: {stderr}");
     assert!(stdout.contains("signed by"), "{stdout}");
+    // An attestation nobody applies is an inert file, and it is not picked up from beside the
+    // dataset — passing it is deliberately an explicit act. So the command that writes one says
+    // which flag applies it, naming the file it just wrote.
+    assert!(
+        stdout.contains("--attestation") && stdout.contains(attestation.to_str().unwrap()),
+        "attest must say how to apply what it wrote: {stdout}"
+    );
 
     let (_, after, _) = run(&[
         "check",
