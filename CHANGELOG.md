@@ -10,6 +10,13 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A directory an adapter claimed and could not read still names what *is* readable inside it.**
+  The "point Veridex at one of these instead" hint fired only for `unsupported format`. A directory
+  holding a `.dbc` beside an ASAM `.mf4` — a bus database archived with the measurement it describes
+  — is claimed by the CAN adapter, which then finds no CAN log and fails with a *parse* error; the
+  readable measurement sitting beside it went unmentioned for exactly that reason. Both failures now
+  look inside, which costs nothing: the list only ever names entries an adapter actually recognizes.
+
 - **The pieces of a LeRobot dataset name the dataset they belong to.** A LeRobot dataset is a
   directory, and the three things a reader points at instead are its `meta/` folder, the `info.json`
   inside it, and a data shard. Each was answered with "no adapter recognized the source" and a list

@@ -686,9 +686,18 @@ fn report_ingest_error(
             return ExitCode::from(EXIT_TOOL_ERROR);
         }
     }
-    if let (veridex_core::adapter::IngestError::UnsupportedFormat { .. }, Source::Local(path)) =
-        (error, source)
-    {
+    // Two failures deserve a look inside the directory, and for the same reason. `UnsupportedFormat`
+    // means no adapter claimed it; a `Parse` failure means one *did* claim it and could not read it
+    // — which is what a directory holding a `.dbc` beside an ASAM `.mf4` produces, since the CAN
+    // adapter claims any directory with a database in it and then finds no CAN log. Either way the
+    // dataset the reader wants may be sitting one level inside, and saying so costs nothing: the
+    // list only ever names entries an adapter actually recognizes.
+    let worth_looking_inside = matches!(
+        error,
+        veridex_core::adapter::IngestError::UnsupportedFormat { .. }
+            | veridex_core::adapter::IngestError::Parse { .. }
+    );
+    if let (true, Source::Local(path)) = (worth_looking_inside, source) {
         // A file an adapter recognizes but cannot ingest alone — half of a dataset that takes two
         // files. The error above says nothing was recognized, which is not true of this file, and a
         // reader one `mv` away from working should be told which one.

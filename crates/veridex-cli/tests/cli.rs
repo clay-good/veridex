@@ -3168,6 +3168,26 @@ fn a_directory_holding_datasets_says_so_instead_of_listing_eight_format_names() 
     let (_, _, stderr) = run(&["check", empty.to_str().unwrap()]);
     assert!(stderr.contains("the directory is empty"), "{stderr}");
 
+    // The same help for a directory an adapter *claimed* and then could not read. A `.dbc` beside an
+    // ASAM `.mf4` is a real arrangement — a bus database archived with the measurement it describes
+    // — and the CAN adapter claims any directory holding a database, then finds no CAN log. The
+    // failure is a parse error rather than an unsupported format, and the readable measurement
+    // sitting beside it went unmentioned for exactly that reason.
+    let claimed = dir.join("dbc-beside-mf4");
+    std::fs::create_dir_all(&claimed).expect("mkdir");
+    veridex_demo::mf4::write(&claimed.join("drive.mf4"), "clean").expect("write mf4");
+    std::fs::write(
+        claimed.join("vehicle.dbc"),
+        "BO_ 256 EngineData: 8 ECU\n SG_ RPM : 0|16@1+ (1,0) [0|65535] \"rpm\" ECU\n",
+    )
+    .expect("write dbc");
+    let (code, _, stderr) = run(&["check", claimed.to_str().unwrap()]);
+    assert_eq!(code, 2, "it is still an error");
+    assert!(
+        stderr.contains("no CAN log") && stderr.contains("drive.mf4 (mf4)"),
+        "the refusal must name the readable measurement beside it: {stderr}"
+    );
+
     // A directory of things nothing can read gets no hint — an empty list would be noise.
     let junk = dir.join("junk");
     std::fs::create_dir_all(&junk).expect("mkdir");
