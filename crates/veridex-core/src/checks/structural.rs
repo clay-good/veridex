@@ -833,12 +833,20 @@ impl Check for EpisodeContinuity {
 /// episodes by an exact **content** signature and flags any group holding more than one episode.
 ///
 /// Soundness note: a duplicate claim requires proof that the *frame contents* are identical, so the
-/// signature is built only from episodes whose every frame carries a `content_hash` — and the hash is
-/// part of the signature. An episode with any hashless frame is **not fingerprintable** and is
-/// excluded, because timestamps + schema + stored stats alone do not distinguish two genuinely
+/// signature is built only from streams whose every frame carries a `content_hash` — and the hash is
+/// part of the signature. Timestamps + schema + stored stats alone do not distinguish two genuinely
 /// different same-length episodes (in LeRobot, for instance, every episode shares one relative time
-/// base and dataset-global stats). This keeps the check from false-flagging normal datasets: it fires
-/// only once adapters populate per-frame content hashes, never on shape-only coincidence.
+/// base and dataset-global stats), so a stream with a hashless frame contributes nothing rather than
+/// contributing shape. This keeps the check from false-flagging normal datasets: it fires only on
+/// proven-identical bytes, never on shape-only coincidence.
+///
+/// A hashless stream **excludes that stream, not the episode**. Requiring every stream to be hashed
+/// meant one video feature disabled the check across the whole dataset — which is the ordinary shape
+/// of a real LeRobot corpus, where the pixels live in `.mp4` files outside the Parquet, so exact
+/// duplicate detection never ran on the datasets that most need it. The names of the streams left
+/// out are folded into the signature, so two episodes group together only when the *same* streams
+/// were left out of both, and the finding says which ones they were. An episode with no comparable
+/// stream at all is still excluded entirely: there is nothing there to prove anything with.
 ///
 /// Scope note: this catches *exact* duplicates. *Near*-duplicate detection (the same trajectory
 /// re-recorded with small differences) needs frame-payload similarity, which the MVP design does not
@@ -860,6 +868,11 @@ impl DuplicateEpisode {
     /// needs 32 bytes each, and a 20,000-episode one would hold well over a gigabyte — on a frame
     /// count the input file chooses. Same partition, 4 seconds to 0.4.
     pub(crate) fn signature(ep: &crate::cdm::Episode) -> Option<[u8; 32]> {
+        Self::fingerprint(ep).map(|f| f.digest)
+    }
+
+    /// The signature together with the streams it could not take into account.
+    pub(crate) fn fingerprint(ep: &crate::cdm::Episode) -> Option<Fingerprint> {
         use sha2::{Digest, Sha256};
         // An episode with no streams carries no content to compare — leave it to DegenerateEpisode.
         if ep.streams.is_empty() {
@@ -889,12 +902,24 @@ impl DuplicateEpisode {
         // streams, sorted by name (a duplicate has the same set regardless of listing order).
         let mut streams: Vec<&crate::cdm::Stream> = ep.streams.iter().collect();
         streams.sort_by(|a, b| a.name.cmp(&b.name));
-        h.update((streams.len() as u64).to_le_bytes());
-        for s in streams {
-            // A stream with no frames can't establish content identity.
-            if s.frames.is_empty() {
-                return None;
-            }
+        // A stream with no frames, or with any frame carrying no content hash, cannot establish
+        // content identity. It is set aside by name rather than aborting the episode.
+        let (comparable, uncompared): (Vec<_>, Vec<_>) = streams.into_iter().partition(|s| {
+            !s.frames.is_empty() && s.frames.iter().all(|f| f.value_ref.content_hash.is_some())
+        });
+        if comparable.is_empty() {
+            return None;
+        }
+        let uncompared: Vec<String> = uncompared.iter().map(|s| s.name.clone()).collect();
+        // The set-aside names bind too: two episodes that agree on what was compared but differ in
+        // what could not be compared are not the same evidence, and must not land in one group.
+        h.update([15u8]);
+        h.update((uncompared.len() as u64).to_le_bytes());
+        for name in &uncompared {
+            field(&mut h, 16, name.as_bytes());
+        }
+        h.update((comparable.len() as u64).to_le_bytes());
+        for s in comparable {
             field(&mut h, 4, s.name.as_bytes());
             field(&mut h, 5, format!("{:?}", s.modality).as_bytes());
             match s.declared_rate_hz {
@@ -921,8 +946,8 @@ impl DuplicateEpisode {
             }
             h.update((s.frames.len() as u64).to_le_bytes());
             for f in &s.frames {
-                // The content hash is what proves duplication; without it the episode is not
-                // fingerprintable and the whole check must abstain for it.
+                // Every frame of a comparable stream carries a hash — the partition above is what
+                // guarantees it — so this cannot silently drop a stream's contents.
                 let hash = f.value_ref.content_hash?;
                 h.update(f.ts.to_le_bytes());
                 h.update(hash);
@@ -937,8 +962,20 @@ impl DuplicateEpisode {
                 None => h.update([14u8]),
             }
         }
-        Some(h.finalize().into())
+        Some(Fingerprint {
+            digest: h.finalize().into(),
+            uncompared,
+        })
     }
+}
+
+/// An episode's content signature, and the streams that could not be taken into account.
+pub(crate) struct Fingerprint {
+    pub digest: [u8; 32],
+    /// Streams left out of the comparison, by name, in sorted order — no frames, or a frame with no
+    /// content hash. Folded into `digest`, so two episodes share a signature only when the same
+    /// streams were left out of both.
+    pub uncompared: Vec<String>,
 }
 
 impl Check for DuplicateEpisode {
@@ -967,32 +1004,58 @@ impl Check for DuplicateEpisode {
         // signature -> episode indices, in first-seen order within each group. Episodes that are not
         // fingerprintable (no proven-identical content) return `None` and are skipped, so a duplicate
         // is never claimed from shape/timing coincidence alone.
-        let mut groups: HashMap<[u8; 32], Vec<u64>> = HashMap::new();
+        let mut groups: HashMap<[u8; 32], (Vec<u64>, Vec<String>)> = HashMap::new();
         for ep in &dataset.episodes {
-            if let Some(sig) = Self::signature(ep) {
-                groups.entry(sig).or_default().push(ep.index);
+            if let Some(f) = Self::fingerprint(ep) {
+                groups
+                    .entry(f.digest)
+                    .or_insert_with(|| (Vec::new(), f.uncompared))
+                    .0
+                    .push(ep.index);
             }
         }
         // Keep only groups with more than one episode; sort each group's indices, then order the
         // groups by their smallest index so the report is deterministic.
-        let mut dup_groups: Vec<Vec<u64>> = groups
+        let mut dup_groups: Vec<(Vec<u64>, Vec<String>)> = groups
             .into_values()
-            .filter(|idxs| idxs.len() > 1)
-            .map(|mut idxs| {
+            .filter(|(idxs, _)| idxs.len() > 1)
+            .map(|(mut idxs, uncompared)| {
                 idxs.sort_unstable();
-                idxs
+                (idxs, uncompared)
             })
             .collect();
-        dup_groups.sort_by_key(|idxs| idxs[0]);
+        dup_groups.sort_by_key(|(idxs, _)| idxs[0]);
 
         dup_groups
             .into_iter()
-            .map(|idxs| {
+            .map(|(idxs, uncompared)| {
                 let list = idxs
                     .iter()
                     .map(u64::to_string)
                     .collect::<Vec<_>>()
                     .join(", ");
+                // What the claim rests on, stated in the claim. Where a stream carried no frame
+                // hashes it was not compared, and saying "exact duplicates" without saying so would
+                // overstate evidence the reader cannot see.
+                let scope = if uncompared.is_empty() {
+                    String::new()
+                } else {
+                    let shown = uncompared
+                        .iter()
+                        .take(3)
+                        .map(String::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let listed = match uncompared.len().saturating_sub(3) {
+                        0 => shown,
+                        rest => format!("{shown} and {rest} more"),
+                    };
+                    format!(
+                        " — in every stream that could be compared; {} stream(s) carry no content \
+                         fingerprint and were not compared ({listed})",
+                        uncompared.len()
+                    )
+                };
                 Finding::new(
                     self.id(),
                     Category::Structural,
@@ -1001,7 +1064,7 @@ impl Check for DuplicateEpisode {
                     "STRUCTURAL.DUPLICATE_EPISODE",
                     format!(
                         "episodes {list} are exact duplicates (identical streams, timestamps, and \
-                         stored statistics)"
+                         stored statistics){scope}"
                     ),
                 )
                 .with_risk(
@@ -1587,11 +1650,14 @@ impl ContentMeasurability {
         // Reported once for the dataset: whether a stream's payload is hashable is a property of the
         // source layout, so one finding per episode would repeat the same fact for every episode.
         let mut unhashed: BTreeSet<&str> = BTreeSet::new();
-        // Whether any episode was fingerprintable at all — the duplicate check needs a whole episode.
+        // Whether any episode was fully fingerprinted, and whether any was fingerprinted at all —
+        // the duplicate check compares the streams it can, so those are two different statements.
         let mut any_episode_complete = false;
+        let mut any_episode_partial = false;
         let mut any_frames = false;
         for ep in &dataset.episodes {
             let mut complete = !ep.streams.is_empty();
+            let mut comparable = false;
             for s in &ep.streams {
                 if s.frames.is_empty() {
                     continue;
@@ -1600,9 +1666,12 @@ impl ContentMeasurability {
                 if s.frames.iter().any(|f| f.value_ref.content_hash.is_none()) {
                     unhashed.insert(s.name.as_str());
                     complete = false;
+                } else {
+                    comparable = true;
                 }
             }
             any_episode_complete |= complete;
+            any_episode_partial |= comparable && !complete;
         }
         if unhashed.is_empty() || !any_frames {
             return Vec::new();
@@ -1614,14 +1683,24 @@ impl ContentMeasurability {
             0 => shown,
             rest => format!("{shown} and {rest} more"),
         };
-        // The duplicate check needs *every* stream of an episode hashed, so one hashless feature
-        // disables it for the whole dataset — a much larger consequence than the per-stream one, and
-        // worth stating separately rather than leaving the reader to infer it.
-        let duplicate_note = if any_episode_complete {
-            "the duplicate-episode check still applies to the episodes that were fully fingerprinted"
-        } else {
-            "no episode was fully fingerprinted, so the duplicate-episode check could not run on \
-             this dataset at all"
+        // The duplicate check compares the streams it can and names the rest, so a hashless feature
+        // narrows its evidence rather than disabling it. Which of those happened is worth stating
+        // rather than leaving the reader to infer: a duplicate claim made over part of an episode is
+        // a weaker claim than one made over all of it, and its absence is a weaker clearance.
+        let duplicate_note = match (any_episode_complete, any_episode_partial) {
+            (true, false) => {
+                "the duplicate-episode check compared every stream of every episode it ran on"
+            }
+            (_, true) => {
+                "the duplicate-episode check still ran, comparing the streams that are \
+                 fingerprinted and naming the rest in any finding it makes — so a duplicate is \
+                 claimed on partial evidence and a clean result clears only the streams it could \
+                 compare"
+            }
+            (false, false) => {
+                "no episode carries a single fully fingerprinted stream, so the duplicate-episode \
+                 check could not run on this dataset at all"
+            }
         };
         vec![Finding::new(
             "structural.content-measurability",

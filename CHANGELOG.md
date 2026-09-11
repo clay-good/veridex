@@ -10,6 +10,23 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **One video feature no longer disables duplicate detection across a whole dataset.**
+  `structural.duplicate-episode` proves duplication from per-frame content hashes, and it required
+  *every* frame of *every* stream of an episode to carry one. A LeRobot video feature's pixels live
+  in `.mp4` files outside the Parquet and carry no frame hash — so on the ordinary shape of a real
+  LeRobot corpus, every episode was excluded and the check never ran at all. Two byte-identical
+  episodes went unreported on precisely the datasets the check exists for.
+
+  A hashless stream is now set aside rather than the episode. The names of the streams left out are
+  folded into the signature, so two episodes group together only when the *same* streams were left
+  out of both, and the finding names them — a duplicate claimed over part of an episode says so
+  rather than resting on evidence the reader cannot check. An episode with no comparable stream at
+  all is still excluded: there is nothing there to prove anything with.
+
+  `STRUCTURAL.UNFINGERPRINTED_CONTENT` says which of the three happened — every stream compared, the
+  check ran on partial evidence, or no episode carries a single fingerprinted stream. The middle
+  case is new, and it is the one a real dataset lands in.
+
 - **A camera that stalled mid-recording is now caught.** Every video fact Veridex read was an
   average or a total — the codec, the resolution, the frame count, and the frame rate, which is
   frames over elapsed time. An average absorbs a hole. A camera that froze for half a second in a

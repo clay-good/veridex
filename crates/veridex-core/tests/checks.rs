@@ -4930,9 +4930,64 @@ fn a_hashless_stream_disables_the_content_checks_and_the_report_says_which() {
         .unwrap_or_else(|| panic!("{all:?}"));
     assert_eq!(f.severity, Severity::Info);
     assert!(
-        f.message.contains("no episode was fully fingerprinted"),
+        f.message
+            .contains("no episode carries a single fully fingerprinted stream"),
         "the dataset-wide consequence must be stated, not inferred: {}",
         f.message
+    );
+
+    // The shape a real LeRobot dataset actually has: a hashless video feature *beside* fingerprinted
+    // Parquet streams. Requiring every stream to be hashed made one video feature disable exact
+    // duplicate detection over the whole corpus — so two byte-identical episodes went unreported on
+    // precisely the datasets the check exists for. Now the video is set aside and the rest compared.
+    let hashed_frames = |name: &str| {
+        let mut s = stream(name, "c", None, &[0, 1]);
+        for (i, f) in s.frames.iter_mut().enumerate() {
+            f.value_ref.content_hash = Some([i as u8; 32]);
+        }
+        s
+    };
+    let lerobot_episode = |index: u64| {
+        let mut cam = stream("observation.images.top", "c", None, &[0, 1]);
+        cam.modality = Modality::Video;
+        for f in &mut cam.frames {
+            f.value_ref.content_hash = None;
+        }
+        episode(index, vec![hashed_frames("observation.state"), cam])
+    };
+    let d = dataset(vec![lerobot_episode(0), lerobot_episode(1)]);
+    let dups = structural::DuplicateEpisode.run(&d);
+    assert_eq!(dups.len(), 1, "{dups:#?}");
+    // The claim states what it could not see, rather than resting on evidence the reader has no way
+    // to check.
+    assert!(
+        dups[0]
+            .message
+            .contains("1 stream(s) carry no content fingerprint"),
+        "{}",
+        dups[0].message
+    );
+    assert!(
+        dups[0].message.contains("(observation.images.top)"),
+        "{}",
+        dups[0].message
+    );
+    // Two episodes that differ only in the hashed stream are still not duplicates.
+    let mut different = lerobot_episode(1);
+    different.streams[0].frames[1].value_ref.content_hash = Some([9u8; 32]);
+    let d = dataset(vec![lerobot_episode(0), different]);
+    assert!(structural::DuplicateEpisode.run(&d).is_empty());
+    // The disclosure now says the check ran on partial evidence rather than not at all.
+    let note = structural::ContentMeasurability
+        .run(&d)
+        .into_iter()
+        .find(|f| f.code == "STRUCTURAL.UNFINGERPRINTED_CONTENT")
+        .expect("the hashless video is still disclosed");
+    assert!(
+        note.message
+            .contains("still ran, comparing the streams that are fingerprinted"),
+        "{}",
+        note.message
     );
 
     // A fully fingerprinted dataset is not accused of anything on this count. (It carries the
