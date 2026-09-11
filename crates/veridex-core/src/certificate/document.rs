@@ -99,6 +99,14 @@ pub struct Certificate {
     pub status: Status,
     /// Effective configuration used for the run.
     pub effective_config: EffectiveConfig,
+    /// Check-packs that contributed checks to the run, by name and version.
+    ///
+    /// Empty — and omitted — for a run over the built-in catalog alone, so an existing certificate's
+    /// bytes are unchanged. A certificate issued from a run that loaded one says so: the reader of
+    /// an offline document cannot re-run Veridex to discover that "pass" was a pass under a catalog
+    /// somebody extended.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub check_packs: Vec<crate::engine::PackRecord>,
     /// Checks executed, with versions. A check that crashed is **not** here — see `checks_errored`.
     pub checks_run: Vec<ExecutedCheck>,
     /// Checks that were invoked but raised instead of producing findings.
@@ -335,6 +343,7 @@ impl Certificate {
             cdm_encoding_version: Some(crate::canonical::CANONICAL_VERSION),
             status: verdict.status,
             effective_config: verdict.effective_config.clone(),
+            check_packs: verdict.packs.clone(),
             checks_run: verdict
                 .executed_checks
                 .iter()

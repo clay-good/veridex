@@ -22,6 +22,28 @@ pub enum RegistryError {
     /// Two checks share a check id.
     #[error("duplicate check id: {0}")]
     DuplicateId(&'static str),
+
+    /// A pack's name is not usable as a namespace.
+    #[error("check-pack name {name:?} is not usable: {why}")]
+    PackName {
+        /// The name that was refused.
+        name: &'static str,
+        /// Why it cannot be a namespace.
+        why: &'static str,
+    },
+
+    /// A pack registered a check whose id does not sit under the pack's own namespace.
+    ///
+    /// The registry does not rewrite the id: the id in a pack's source is the id in every report,
+    /// so a reader tracing a finding back to the code that raised it finds the same string. A pack
+    /// that wants a namespace declares it in its ids.
+    #[error("check-pack `{pack}` registered `{check}`, which is not under `{pack}/`")]
+    PackNamespace {
+        /// The pack's declared name.
+        pack: &'static str,
+        /// The offending check id.
+        check: &'static str,
+    },
 }
 
 /// Numeric tolerances for the checks that take one. Applied when the engine's checks are built, so
@@ -297,6 +319,14 @@ pub struct Verdict {
     pub errored_checks: Vec<ErroredCheck>,
     /// Checks that were selected and executed, sorted by id.
     pub executed_checks: Vec<ExecutedCheck>,
+    /// The check-packs that contributed checks to this run, by name and version.
+    ///
+    /// Empty — and omitted from the JSON and from the result hash — for a run over the built-in
+    /// catalog alone, so every existing verdict, certificate and pinned hash is unchanged by the
+    /// existence of packs. A run that *did* load one says so, because a result that cannot state
+    /// which checks produced it is not reproducible from what it states about itself.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub packs: Vec<PackRecord>,
     /// The effective configuration used.
     pub effective_config: EffectiveConfig,
     /// SHA-256 over the canonical JSON of every other field (hex). Two byte-identical runs share it.
@@ -347,7 +377,123 @@ struct DigestView<'a> {
     findings: &'a [Finding],
     errored_checks: &'a [ErroredCheck],
     executed_checks: &'a [ExecutedCheck],
+    /// Skipped when empty, so a run over the built-in catalog alone hashes exactly as it did before
+    /// packs existed. A run with a pack loaded hashes differently from the same run without it,
+    /// which is the property this whole feature is for.
+    #[serde(skip_serializing_if = "<[PackRecord]>::is_empty")]
+    packs: &'a [PackRecord],
     effective_config: &'a EffectiveConfig,
+}
+
+/// Family prefixes the built-in catalog uses. A pack may not take one as its name.
+///
+/// A built-in id carries no `/`, so `mylab/duplicate-episode` can never *collide* with
+/// `structural.duplicate-episode` — but `structural/duplicate-episode` would sit in a report looking
+/// exactly like one, one character apart. A verdict's whole value is that a reader can tell where a
+/// finding came from, so the impersonation is refused rather than left to the eye.
+const RESERVED_PACK_NAMES: &[&str] = &[
+    "autonomy",
+    "coverage",
+    "provenance",
+    "semantic",
+    "statistical",
+    "structural",
+    "temporal",
+    "video",
+];
+
+/// A named, versioned set of third-party checks.
+///
+/// The plugin surface already existed — [`Check`] is public and object-safe, and
+/// [`EngineBuilder::register`] takes any implementation — but a run could not *say* that a check
+/// outside the catalog had contributed to it. A finding from a lab's own rule was indistinguishable
+/// from a built-in one, and two runs that disagreed because one had extra checks loaded looked like
+/// two runs that disagreed about the data. A pack is what a verdict records so that cannot happen.
+pub struct CheckPack {
+    name: &'static str,
+    version: &'static str,
+    checks: Vec<Box<dyn Check>>,
+}
+
+impl std::fmt::Debug for CheckPack {
+    /// Named by what it is, not by what it holds: `Box<dyn Check>` is not `Debug`, and a pack's
+    /// identity in any message is its name, version and the ids it brought.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CheckPack")
+            .field("name", &self.name)
+            .field("version", &self.version)
+            .field(
+                "checks",
+                &self.checks.iter().map(|c| c.id()).collect::<Vec<_>>(),
+            )
+            .finish()
+    }
+}
+
+impl CheckPack {
+    /// Build a pack, refusing a name that cannot serve as a namespace and any check whose id does
+    /// not sit under it.
+    ///
+    /// Validated here rather than at registration so a pack that is wrong is wrong at the point it
+    /// is defined, which is where its author can see it.
+    pub fn new(
+        name: &'static str,
+        version: &'static str,
+        checks: Vec<Box<dyn Check>>,
+    ) -> Result<Self, RegistryError> {
+        let why = if name.is_empty() {
+            Some("a pack name cannot be empty")
+        } else if !name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        {
+            Some("a pack name is lowercase letters, digits and `-`, so an id's namespace ends at the first `/`")
+        } else if RESERVED_PACK_NAMES.contains(&name) {
+            Some("that is a built-in check family, and a pack must not be mistakable for the catalog")
+        } else {
+            None
+        };
+        if let Some(why) = why {
+            return Err(RegistryError::PackName { name, why });
+        }
+        for check in &checks {
+            let id = check.id();
+            let under = id
+                .strip_prefix(name)
+                .and_then(|rest| rest.strip_prefix('/'))
+                .is_some_and(|rest| !rest.is_empty());
+            if !under {
+                return Err(RegistryError::PackNamespace {
+                    pack: name,
+                    check: id,
+                });
+            }
+        }
+        Ok(CheckPack {
+            name,
+            version,
+            checks,
+        })
+    }
+
+    /// The pack's name, which is the namespace every one of its check ids sits under.
+    pub fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// The pack's version, as recorded in the verdict.
+    pub fn version(&self) -> &'static str {
+        self.version
+    }
+}
+
+/// What a verdict records about one check-pack that contributed to it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct PackRecord {
+    /// The pack's name.
+    pub name: String,
+    /// The pack's version.
+    pub version: String,
 }
 
 /// Builds an [`Engine`], rejecting duplicate check ids.
@@ -355,6 +501,7 @@ struct DigestView<'a> {
 pub struct EngineBuilder {
     checks: Vec<Box<dyn Check>>,
     seen: BTreeSet<&'static str>,
+    packs: Vec<PackRecord>,
 }
 
 impl EngineBuilder {
@@ -368,10 +515,32 @@ impl EngineBuilder {
         Ok(self)
     }
 
+    /// Register every check in a pack, and record the pack in the verdicts this engine produces.
+    ///
+    /// Fails on a duplicate id exactly as [`EngineBuilder::register`] does, so a pack cannot shadow
+    /// a built-in check or another pack's.
+    pub fn register_pack(mut self, pack: CheckPack) -> Result<Self, RegistryError> {
+        let CheckPack {
+            name,
+            version,
+            checks,
+        } = pack;
+        for check in checks {
+            self = self.register(check)?;
+        }
+        self.packs.push(PackRecord {
+            name: name.to_string(),
+            version: version.to_string(),
+        });
+        self.packs.sort();
+        Ok(self)
+    }
+
     /// Finish building.
     pub fn build(self) -> Engine {
         Engine {
             checks: self.checks,
+            packs: self.packs,
         }
     }
 }
@@ -402,6 +571,7 @@ pub struct CheckInfo {
 /// A registry of checks that can validate a CDM.
 pub struct Engine {
     checks: Vec<Box<dyn Check>>,
+    packs: Vec<PackRecord>,
 }
 
 impl Engine {
@@ -587,6 +757,7 @@ impl Engine {
             findings: &findings,
             errored_checks: &errored_checks,
             executed_checks: &executed_checks,
+            packs: &self.packs,
             effective_config: &effective_config,
         };
         let result_content_hash = digest_hex(&digest);
@@ -600,6 +771,7 @@ impl Engine {
             findings,
             errored_checks,
             executed_checks,
+            packs: self.packs.clone(),
             effective_config,
             result_content_hash,
         }

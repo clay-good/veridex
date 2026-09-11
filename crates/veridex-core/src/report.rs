@@ -596,6 +596,23 @@ pub fn render_terminal_with(
         verdict.counts.error, verdict.counts.warning, verdict.counts.info
     );
 
+    // Checks from outside the built-in catalog are stated with the counts they contributed to. A
+    // reader comparing two reports needs to know that one of them was graded against a larger
+    // catalog before they read a difference in the findings as a difference in the data.
+    if !verdict.packs.is_empty() {
+        let named: Vec<String> = verdict
+            .packs
+            .iter()
+            .map(|p| format!("{} {}", p.name, p.version))
+            .collect();
+        let _ = writeln!(
+            out,
+            "  Check-packs: {} — findings prefixed `<pack>/` came from these, not the built-in \
+             catalog",
+            named.join(", ")
+        );
+    }
+
     // A partial run is stated before anything else is read, so "no findings" is never mistaken for
     // "no findings anywhere in the dataset".
     match &verdict.coverage {

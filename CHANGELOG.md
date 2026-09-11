@@ -10,6 +10,34 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **Check-packs: third-party checks a verdict can account for.** The plugin surface already
+  existed — `Check` is public and object-safe, and `EngineBuilder::register` takes any
+  implementation — so a third party could add a check to a run **and the verdict could not say it
+  happened**. A finding from a lab's own rule was indistinguishable from a built-in one, nothing
+  recorded which extra checks ran or at what version, and two runs that disagreed because one had
+  extra checks loaded looked like two runs that disagreed about the data.
+
+  A `CheckPack` is a named, versioned set of checks registered together. Its checks are addressed
+  under its own name (`mylab/house-rule`), the verdict records each pack's name and version, and
+  that record is part of the result content hash — so the same dataset checked under a larger
+  catalog is a different result and says so. The report states the packs, and a certificate issued
+  from such a run names them, because the offline reader cannot re-run Veridex to discover that
+  "pass" was a pass under a catalog somebody extended.
+
+  The registry refuses rather than repairs: a check whose id does not sit under its pack's name is
+  refused instead of rewritten, so the id in a pack's source is the id in every report; a pack may
+  not take a built-in family's name, since `structural/duplicate-episode` cannot collide with
+  `structural.duplicate-episode` but would sit in a report looking exactly like it; and a
+  duplicate id is refused however it arrives. A pack cannot sign — a `Check` returns findings, and
+  signing is reachable only from the issuer's key.
+
+  A run that loads no pack is unchanged in every respect — no line in the report, no field in the
+  JSON or the certificate, and the same result hash it had before packs existed. That is asserted
+  as its own test, alongside the one that proves a pack *does* move the hash. Nothing is loaded at
+  runtime: a pack is a crate the caller links, because a plugin that can read the dataset can also
+  read the signing key. See `openspec/changes/add-check-packs/` for what this slice deliberately
+  leaves out.
+
 - **`attest` says how to apply what it just wrote.** An attestation is not picked up from beside
   the dataset — passing it is deliberately an explicit act, since it raises provenance coverage on
   the strength of a key — and nothing said which flag does that. The command now prints `apply it:

@@ -510,6 +510,33 @@ An attestation never enters the CDM, so it cannot change the content hash — a 
 must not change what the data *is*. It is refused if its signature does not verify, or if it is bound
 to a different dataset than the one presented.
 
+## Check-packs
+
+Veridex's checks are a trait, not a closed list: `Check` is public and object-safe, and
+`EngineBuilder::register_pack` takes a **check-pack** — a named, versioned set of checks a lab, a
+hardware vendor or a benchmark maintainer writes for their own data. A pack is a Rust crate the
+caller links; nothing is loaded at runtime, because a plugin that can read the dataset can also
+read the signing key.
+
+What a pack may do is what any check does: read the CDM and return findings. What it may not do is
+be invisible. Every pack's checks are addressed under its own name (`mylab/house-rule`), the
+verdict records each pack's name and version, and that record is part of the result content hash —
+so the same dataset checked under a larger catalog is a different result and says so, rather than
+looking like a disagreement about the data. A certificate issued from such a run names the packs
+too, because the offline reader cannot re-run Veridex to discover that "pass" was a pass under a
+catalog somebody extended.
+
+The registry refuses rather than repairs. A check whose id does not sit under its pack's name is
+refused instead of being rewritten — the id in a pack's source is the id in every report, so a
+reader tracing a finding back to the code that raised it finds the same string. A pack may not
+take a built-in family's name: a built-in id carries no `/`, so `structural/duplicate-episode`
+cannot collide with `structural.duplicate-episode`, but it would sit in a report looking exactly
+like it. And a pack cannot sign anything — a `Check` returns findings, and signing is reachable
+only from the issuer's own key through `veridex certify`.
+
+A run that loads no pack is unchanged in every respect: no line in the report, no field in the
+JSON or the certificate, and the same result hash it had before packs existed.
+
 ## Scope disclosure
 
 Coverage answers *how much of the dataset did we read*. **`SCOPE.NARROWED`** (info, check id
