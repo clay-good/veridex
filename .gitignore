@@ -45,6 +45,10 @@ keys.json
 # Signed certificates, exported provenance, and reports produced during local runs.
 *.veridex.json
 *.veridex.cose
+# `veridex attest` writes `<dataset>.attestation.json` into the working directory, so running it
+# from inside a checkout leaves a signed claim beside the source. It is generated, and signed with a
+# key that is itself ignored above — committing one publishes a claim nobody meant to publish.
+*.attestation.json
 reports/
 out/
 
