@@ -262,6 +262,7 @@ fn a_path_a_finding_quotes_is_not_a_way_around_redaction() {
         status: MediaStatus::Missing,
         observed: MediaParams::default(),
         frame_count: None,
+        longest_frame_gap_ns: None,
     });
     dataset.metadata = vec![("robot".into(), "acme-picker-mk3".into())];
     dataset.episodes[0].streams[0].frame_id = Some("acme_wrist_cam_link".into());

@@ -65,6 +65,7 @@ fn read(uri: &str, container_frames: u64) -> Media {
         status: MediaStatus::Read,
         observed: MediaParams::default(),
         frame_count: Some(container_frames),
+        longest_frame_gap_ns: None,
     }
 }
 
@@ -75,6 +76,7 @@ fn missing(uri: &str) -> Media {
         status: MediaStatus::Missing,
         observed: MediaParams::default(),
         frame_count: None,
+        longest_frame_gap_ns: None,
     }
 }
 
@@ -87,6 +89,7 @@ fn read_without_count(uri: &str) -> Media {
         status: MediaStatus::Read,
         observed: MediaParams::default(),
         frame_count: None,
+        longest_frame_gap_ns: None,
     }
 }
 

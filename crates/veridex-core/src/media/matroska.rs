@@ -164,6 +164,7 @@ pub fn probe(path: &Path) -> Result<MediaProbe, String> {
         .filter(|ns| *ns > 0)
         .map(|ns| 1e9 / ns as f64)
         .or_else(|| walk.measured_fps(track.number));
+    let longest_frame_gap_ns = walk.longest_gap_ns(track.number);
     Ok(MediaProbe {
         params: MediaParams {
             codec: track.codec,
@@ -172,6 +173,7 @@ pub fn probe(path: &Path) -> Result<MediaProbe, String> {
             fps,
         },
         frame_count,
+        longest_frame_gap_ns,
     })
 }
 
@@ -191,6 +193,9 @@ struct Walk {
     span: BTreeMap<u64, (i64, i64)>,
     /// The timestamp of the cluster currently being walked, in ticks.
     cluster_ts: i64,
+    /// Per track, the longest step between two consecutive block timestamps — and whether that
+    /// quantity can be read from this file at all.
+    steps: BTreeMap<u64, Steps>,
 }
 
 impl Default for Walk {
@@ -204,8 +209,29 @@ impl Default for Walk {
             scale_ns: DEFAULT_TIMESTAMP_SCALE,
             span: BTreeMap::new(),
             cluster_ts: 0,
+            steps: BTreeMap::new(),
         }
     }
+}
+
+/// The longest step between consecutive block timestamps on one track, as the walk accumulates it.
+struct Steps {
+    /// The previous block's timestamp, in ticks.
+    prev: i64,
+    /// The longest forward step seen so far, in ticks.
+    longest: i64,
+    /// Whether a step can be measured on this track at all. Two things make it false, and neither is
+    /// a defect in the file:
+    ///
+    /// * a timestamp that goes **backwards**, which is what a stream carrying B-frames looks like in
+    ///   one pass — the blocks are stored in decode order and stamped in presentation order, so the
+    ///   difference between neighbours is not elapsed time;
+    /// * a **laced** block, which holds several frames under one timestamp and spaces them by a
+    ///   duration this walk does not read.
+    ///
+    /// In both cases the honest answer is that this file states no measurable per-frame timing, not
+    /// that its frames were evenly spaced.
+    usable: bool,
 }
 
 /// The facts a video track states about itself.
@@ -245,6 +271,18 @@ impl Walk {
         let ticks = last.checked_sub(first).filter(|t| *t > 0)?;
         let seconds = ticks as f64 * self.scale_ns as f64 / 1e9;
         (frames > 1 && seconds > 0.0).then(|| (frames - 1) as f64 / seconds)
+    }
+
+    /// The longest gap between two consecutive frames of `track`, in nanoseconds, or `None` when
+    /// this file states no timing a single pass can read as elapsed time.
+    fn longest_gap_ns(&self, track: u64) -> Option<u64> {
+        if !self.counted {
+            return None;
+        }
+        let steps = self.steps.get(&track).filter(|s| s.usable)?;
+        // One block states a timestamp and no interval. Zero is a real answer above that — every
+        // block sharing one timestamp — so only the single-block case declines.
+        (*self.blocks.get(&track)? > 1).then(|| steps.longest as u64 * self.scale_ns)
     }
 
     fn read_tracks(&mut self, bytes: &[u8]) {
@@ -383,6 +421,21 @@ impl Walk {
                 *last = (*last).max(ts);
             })
             .or_insert((ts, ts));
+        self.steps
+            .entry(track)
+            .and_modify(|s| {
+                let step = ts - s.prev;
+                if step < 0 || frames > 1 {
+                    s.usable = false;
+                }
+                s.longest = s.longest.max(step);
+                s.prev = ts;
+            })
+            .or_insert(Steps {
+                prev: ts,
+                longest: 0,
+                usable: frames == 1,
+            });
         let counter = self.blocks.entry(track).or_insert(0);
         *counter += frames;
         if *counter > MAX_BLOCKS {

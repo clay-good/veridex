@@ -188,7 +188,8 @@
               "height": 480,
               "fps": 29.97
             },
-            "frame_count": 2
+            "frame_count": 2,
+            "longest_frame_gap_ns": 66666666
           },
           "frame_id": "cam_frame",
           "observed_image_dims": {
@@ -528,7 +529,8 @@
               "height": null,
               "fps": null
             },
-            "frame_count": null
+            "frame_count": null,
+            "longest_frame_gap_ns": 66666666
           },
           "frame_id": null
         }

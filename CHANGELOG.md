@@ -10,6 +10,36 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A camera that stalled mid-recording is now caught.** Every video fact Veridex read was an
+  average or a total — the codec, the resolution, the frame count, and the frame rate, which is
+  frames over elapsed time. An average absorbs a hole. A camera that froze for half a second in a
+  twenty-second clip still holds exactly as many frames as the episode has rows, at the declared
+  resolution and codec, and divides out to 29.4 fps against a declared 30 — two percent off, well
+  inside the rate tolerance. Nothing in the catalog could see it.
+
+  `VIDEO.FRAME_GAP` reports the one quantity that does not average: the longest interval the
+  container's own per-frame timing recorded between two consecutive frames, measured from an MP4's
+  `stts` decoding-time table or a Matroska's block timestamps. It fires at two nominal intervals —
+  a whole frame period in which nothing was recorded — and the threshold is deliberately not
+  configurable, because "a frame period passed with no frame" means the same thing on every
+  dataset. It matters because a loader pairs video frame *i* with data row *i* by index and not by
+  time: the frames the camera never delivered are not skipped in that pairing, they are closed up,
+  so every frame after the gap is paired with an action from a later moment and the offset persists
+  to the end of the episode.
+
+  Where the timing cannot be read, that is said rather than passed over. `VIDEO.FRAME_TIMING_UNMEASURED`
+  covers a fragmented MP4, which leaves its decoding-time table empty exactly as it leaves its
+  sample table empty, and a Matroska track carrying B-frames, which is stored in decode order and
+  stamped in presentation order — a difference between neighbours that is not elapsed time, and is
+  declined rather than reported as a gap the recording never had.
+
+  The measurement binds into the content hash (`CANONICAL_VERSION` 19 → 20): a recording with a
+  hole in it and one without otherwise carry the same codec, resolution, frame count and fps, so
+  without it two datasets a check reaches opposite verdicts on would hash identically. Reading the
+  track's time base also had to be separated from reading its duration — the reserved "unknown"
+  duration says nothing about the time base, and taking the two together let it silence a
+  measurement it has no bearing on.
+
 - **Check-packs: third-party checks a verdict can account for.** The plugin surface already
   existed — `Check` is public and object-safe, and `EngineBuilder::register` takes any
   implementation — so a third party could add a check to a run **and the verdict could not say it

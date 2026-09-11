@@ -115,7 +115,14 @@ use crate::cdm::{
 /// configured rate, so a camera that recorded nothing and one that recorded a whole drive carry the
 /// same schema, the same frame count, the same cadence and the same coordinate frame. Same rule
 /// again.
-pub const CANONICAL_VERSION: u32 = 19;
+///
+/// v20 binds each media file's `longest_frame_gap_ns` — the worst interval its own per-frame timing
+/// recorded between two frames. `VIDEO.FRAME_GAP` fails a stream on it, and it is the one video
+/// quantity an average cannot express: frames-per-second is frames over elapsed time, so a camera
+/// that froze for two seconds in the middle of a minute divides out to exactly its declared rate. A
+/// recording with a hole in it and one without carry the same codec, the same resolution, the same
+/// frame count and the same fps. Same rule again.
+pub const CANONICAL_VERSION: u32 = 20;
 
 const DOMAIN: &[u8] = b"veridex.cdm.v1\0";
 
@@ -507,6 +514,7 @@ impl Stream {
             }
             e.media_params(&m.observed);
             e.opt(&m.frame_count, |e, n| e.u64(*n));
+            e.opt(&m.longest_frame_gap_ns, |e, n| e.u64(*n));
         });
         // frames: order is data-defined and preserved (the recorded timeline)
         e.seq(&self.frames, |e, f| f.encode(e));

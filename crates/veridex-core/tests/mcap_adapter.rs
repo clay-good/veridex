@@ -3506,7 +3506,7 @@ fn the_demo_rig_hashes_the_same_on_every_machine() {
         .dataset;
     assert_eq!(
         veridex_core::content_hash(&d).to_hex(),
-        "00e2d815acc5d2b1120580ef0e484c87e2e58aa4b9833cbea426956868a70b3e",
+        "10ebc9dd461c72bbedd63d669490a77a2d3c9fa5ad341783748cec161b446392",
         "the demo rig's content hash must not depend on the machine that computed it"
     );
 

@@ -52,6 +52,13 @@ struct Shape {
     unknown_duration: bool,
     /// Put a `trak` with no `mdia` ahead of the real video track.
     leading_bare_trak: bool,
+    /// Stall the camera in the middle of the recording: one sample waits this many nominal frame
+    /// intervals instead of one. Zero writes an evenly spaced `stts`, which is what a recorder that
+    /// dropped nothing writes.
+    stall_intervals: u32,
+    /// Write a `stts` that describes no samples — the empty decoding-time table a fragmented file
+    /// carries, for the same reason its `stsz` says zero.
+    no_timing: bool,
 }
 
 fn build_mp4_shaped(
@@ -64,10 +71,19 @@ fn build_mp4_shaped(
 ) -> Vec<u8> {
     let timescale: u32 = 30_000;
     let delta = timescale / fps.max(1);
+    // A stalled recording really is longer than an even one of the same frame count, so the declared
+    // duration is the sum of the intervals below rather than `delta * frames`. A fixture that kept
+    // the even duration would make `fps` — frames over elapsed time — immune to the stall by
+    // construction, and the check's whole claim is that the *real* average barely moves.
+    let stalled_by = if shape.stall_intervals > 0 && frames >= 3 {
+        delta * (shape.stall_intervals - 1)
+    } else {
+        0
+    };
     let duration = if shape.unknown_duration {
         u32::MAX
     } else {
-        delta * frames
+        delta * frames + stalled_by
     };
     let table_frames = if shape.fragmented { 0 } else { frames };
 
@@ -101,7 +117,27 @@ fn build_mp4_shaped(
     } else {
         bx(b"stsz", &sizes)
     };
-    let stbl = [bx(b"stsd", &stsd), size_box].concat();
+    // The decoding-time-to-sample table (§8.6.1.2), run-length coded: every real MP4 carries one,
+    // and it is the only place the container says what happened *between* two frames. A fragmented
+    // file leaves it empty exactly as it leaves `stsz` at zero.
+    let mut runs: Vec<(u32, u32)> = Vec::new();
+    if !shape.fragmented && !shape.no_timing && table_frames > 0 {
+        if shape.stall_intervals > 0 && table_frames >= 3 {
+            let before = table_frames / 2;
+            runs.push((before, delta));
+            runs.push((1, delta * shape.stall_intervals));
+            runs.push((table_frames - before - 1, delta));
+        } else {
+            runs.push((table_frames, delta));
+        }
+    }
+    let mut stts = vec![0u8; 4]; // version + flags
+    stts.extend_from_slice(&(runs.len() as u32).to_be_bytes());
+    for (count, d) in &runs {
+        stts.extend_from_slice(&count.to_be_bytes());
+        stts.extend_from_slice(&d.to_be_bytes());
+    }
+    let stbl = [bx(b"stsd", &stsd), size_box, bx(b"stts", &stts)].concat();
     let minf = bx(b"stbl", &stbl);
     let mdia = [bx(b"mdhd", &mdhd), bx(b"hdlr", &hdlr), bx(b"minf", &minf)].concat();
     let mut moov = Vec::new();
@@ -173,6 +209,12 @@ struct Mkv {
     /// Declare no `DefaultDuration`, as a variable-rate file does — leaving the block timestamps as
     /// the only record of how fast the recording actually ran.
     no_default_duration: bool,
+    /// Stall the camera in the middle of the recording: every block from the midpoint on is pushed
+    /// this many nominal frame intervals later, so one gap is that much longer and the rest are not.
+    stall_intervals: u32,
+    /// Swap each neighbouring pair of block timestamps, which is what a track carrying B-frames
+    /// looks like — stored in decode order, stamped in presentation order.
+    out_of_order: bool,
 }
 
 /// A minimal Matroska describing `frames` frames of `width`x`height` in `codec` at `fps`.
@@ -209,7 +251,18 @@ fn build_mkv(frames: u32, width: u16, height: u16, codec: &str, fps: u32, shape:
         let mut block = vec![0x81]; // track number 1, as a one-byte vint
                                     // The block's own offset from the cluster, in the segment's ticks — one millisecond each by
                                     // default, so a frame at `fps` sits `1000 / fps` ticks after the one before it.
-        let tick = (written as i64 * 1000 / fps.max(1) as i64) as i16;
+        let mut index = written as i64;
+        if shape.out_of_order {
+            // Neighbours swapped: 1, 0, 3, 2, … — every other step goes backwards in time.
+            index = if index % 2 == 0 { index + 1 } else { index - 1 };
+        }
+        let interval = 1000 / fps.max(1) as i64;
+        let stall = if shape.stall_intervals > 0 && index >= frames as i64 / 2 {
+            interval * (shape.stall_intervals - 1) as i64
+        } else {
+            0
+        };
+        let tick = (index * interval + stall) as i16;
         block.extend_from_slice(&tick.to_be_bytes());
         match shape.lace {
             // Flags with fixed lacing set, then the lace count minus one, then one byte per frame.
@@ -449,6 +502,13 @@ fn a_video_that_matches_its_data_and_its_manifest_says_nothing() {
         .find(|s| s.name == FEATURE)
         .and_then(|s| s.media.as_ref())
         .expect("the camera stream carries its media file");
+    // Positive signal: the gaps between the frames were *measured* and found even. Without this the
+    // silence above would read the same whether the timing was checked or never read at all.
+    assert_eq!(
+        media.longest_frame_gap_ns,
+        Some(1_000_000_000 / FPS as u64),
+        "an evenly spaced recording measures exactly one nominal interval as its worst gap"
+    );
     assert_eq!(media.status, MediaStatus::Read);
     assert_eq!(media.frame_count, Some(10));
     assert_eq!(media.observed.width, Some(640));
@@ -745,11 +805,129 @@ fn a_fragmented_container_is_not_read_as_holding_zero_frames() {
         ..Shape::default()
     });
     // Nothing is *accused*: no error, no warning. What the family does say is that it could not
-    // measure this stream's frame count, which is a different statement from silence.
+    // measure this stream's frame count — nor, for the same reason, the gaps between its frames,
+    // since a fragmented file leaves its decoding-time table empty exactly as it leaves its sample
+    // table empty. Both are a different statement from silence.
+    assert!(
+        findings.iter().all(|f| f.severity == Severity::Info
+            && matches!(
+                f.code.as_str(),
+                "VIDEO.FRAME_COUNT_UNMEASURED" | "VIDEO.FRAME_TIMING_UNMEASURED"
+            )),
+        "{findings:#?}"
+    );
+    for code in [
+        "VIDEO.FRAME_COUNT_UNMEASURED",
+        "VIDEO.FRAME_TIMING_UNMEASURED",
+    ] {
+        assert!(
+            findings.iter().any(|f| f.code == code),
+            "{code} is missing from {findings:#?}"
+        );
+    }
+}
+
+/// The fault this measurement exists for: a camera that stopped delivering for half a second in the
+/// middle of a twenty-second clip. Nothing else in the catalog can see it — the file holds exactly
+/// as many frames as the episode has rows, at the declared resolution and codec, and its *average*
+/// rate is 29.4 fps against a declared 30 — 2% off, well inside the 10% rate tolerance. Only the
+/// interval between two particular frames says what happened.
+#[test]
+fn a_camera_that_stalled_mid_recording_is_caught_though_its_average_rate_still_passes() {
+    let dir = tempfile::tempdir().unwrap();
+    write_dataset(dir.path(), 600, VideoPlan::default());
+    let dest = dir.path().join("videos").join(FEATURE);
+    for episode in 0..2u64 {
+        fs::write(
+            dest.join(format!("episode_{episode:06}.mp4")),
+            build_mp4_shaped(
+                600,
+                640,
+                480,
+                b"avc1",
+                FPS as u32,
+                Shape {
+                    stall_intervals: 13,
+                    ..Shape::default()
+                },
+            ),
+        )
+        .unwrap();
+    }
+    let dataset = ingest(dir.path());
+    let findings = video_findings(&dataset);
+
+    let gaps: Vec<_> = findings
+        .iter()
+        .filter(|f| f.code == "VIDEO.FRAME_GAP")
+        .collect();
+    assert_eq!(gaps.len(), 2, "one per episode: {findings:#?}");
+    assert!(
+        gaps[0].message.contains("12.7 frame intervals"),
+        "{}",
+        gaps[0].message
+    );
+    // And nothing else fires — in particular not the rate comparison, which is the whole point.
+    assert!(
+        findings.iter().all(|f| f.code == "VIDEO.FRAME_GAP"),
+        "{findings:#?}"
+    );
+    let media = camera_media(&dataset);
+    let fps = media.observed.fps.expect("a measured rate");
+    assert!(
+        (fps - FPS).abs() / FPS < 0.10,
+        "the average rate is {fps:.3} fps, inside the tolerance that would have caught it"
+    );
+    assert_eq!(media.frame_count, Some(600), "and the frame count agrees");
+}
+
+/// The same fault one container format over, measured from the block timestamps rather than from a
+/// sample table.
+#[test]
+fn a_matroska_with_a_stall_in_it_is_caught_the_same_way() {
+    let (dataset, findings) = run(
+        VideoPlan {
+            container: Container::Matroska(Mkv {
+                stall_intervals: 13,
+                ..Mkv::default()
+            }),
+            ..VideoPlan::default()
+        },
+        600,
+    );
+    assert!(
+        findings.iter().any(|f| f.code == "VIDEO.FRAME_GAP"),
+        "{findings:#?}"
+    );
+    let gap = camera_media(&dataset)
+        .longest_frame_gap_ns
+        .expect("a measured gap");
+    // Thirteen frame intervals at 30 fps, in the segment's one-millisecond ticks. The ticks are
+    // integers, so a frame lasts 33 of them and the stall is 13 x 33 = 429 ms — the quantity the
+    // file actually records, not the 433 ms a real-valued rate would give.
+    assert_eq!(gap, 429_000_000);
+}
+
+/// A track carrying B-frames is stored in decode order and stamped in presentation order, so the
+/// difference between two neighbouring blocks is not elapsed time. Measuring it anyway would report
+/// a gap in every such file; the honest answer is that this file states no timing one pass can read.
+#[test]
+fn out_of_order_block_timestamps_decline_to_measure_rather_than_inventing_a_gap() {
+    let (dataset, findings) = run(
+        VideoPlan {
+            container: Container::Matroska(Mkv {
+                out_of_order: true,
+                ..Mkv::default()
+            }),
+            ..VideoPlan::default()
+        },
+        10,
+    );
+    assert_eq!(camera_media(&dataset).longest_frame_gap_ns, None);
     assert!(
         findings
             .iter()
-            .all(|f| f.severity == Severity::Info && f.code == "VIDEO.FRAME_COUNT_UNMEASURED"),
+            .all(|f| f.severity == Severity::Info && f.code == "VIDEO.FRAME_TIMING_UNMEASURED"),
         "{findings:#?}"
     );
 }
@@ -1286,10 +1464,18 @@ fn a_laced_block_counts_the_frames_it_laces_not_one() {
         },
         10,
     );
-    assert!(findings.is_empty(), "{findings:#?}");
-    // Ten frames in two blocks of five, not two.
+    // Ten frames in two blocks of five, not two — and nothing is accused. A laced block holds its
+    // frames under one timestamp and spaces them by a duration this walk does not read, so the gaps
+    // between them are declined rather than measured as two long ones.
+    assert!(
+        findings
+            .iter()
+            .all(|f| f.severity == Severity::Info && f.code == "VIDEO.FRAME_TIMING_UNMEASURED"),
+        "{findings:#?}"
+    );
     let media = camera_media(&dataset);
     assert_eq!(media.frame_count, Some(10));
+    assert_eq!(media.longest_frame_gap_ns, None);
 }
 
 /// A live muxer writes clusters of unknown size, and their end cannot be found without guessing.
@@ -1307,11 +1493,15 @@ fn a_cluster_of_unknown_size_yields_no_count_rather_than_a_wrong_one() {
         },
         10,
     );
-    // The count is absent, so the family discloses that and accuses the file of nothing.
+    // The count is absent, so the family discloses that and accuses the file of nothing. The blocks
+    // the walk could not reach are also the blocks whose spacing it cannot measure, so the timing
+    // abstention rides along.
     assert!(
-        findings
-            .iter()
-            .all(|f| f.severity == Severity::Info && f.code == "VIDEO.FRAME_COUNT_UNMEASURED"),
+        findings.iter().all(|f| f.severity == Severity::Info
+            && matches!(
+                f.code.as_str(),
+                "VIDEO.FRAME_COUNT_UNMEASURED" | "VIDEO.FRAME_TIMING_UNMEASURED"
+            )),
         "{findings:#?}"
     );
     let media = camera_media(&dataset);

@@ -37,6 +37,10 @@ pub struct MediaProbe {
     pub params: MediaParams,
     /// The video track's sample count — the frames the file holds.
     pub frame_count: Option<u64>,
+    /// The longest interval between two consecutive frames, in nanoseconds, as the container's own
+    /// per-frame timing states it. `None` when the container carries no per-frame timing, or none a
+    /// single pass can read as elapsed time.
+    pub longest_frame_gap_ns: Option<u64>,
 }
 
 /// Read `path`'s headers and report what its video track holds, whichever container it is.
@@ -316,6 +320,17 @@ fn video_track(moov: &[u8]) -> Option<MediaProbe> {
             (Some(n), Some((ts, d))) if ts > 0 && d > 0 => Some(n as f64 * ts as f64 / d as f64),
             _ => None,
         };
+        // The worst interval the track's own timing recorded, which `fps` — an average — cannot
+        // show. A fragmented file's `stts` is empty for the same reason its `stsz` is, so it is not
+        // consulted there: an empty table is "the timing is not here", not "every frame arrived on
+        // time".
+        let longest_frame_gap_ns = if fragmented {
+            None
+        } else {
+            stbl.and_then(|s| find(s, b"stts"))
+                .zip(find(mdia, b"mdhd").and_then(media_timescale))
+                .and_then(|(stts, timescale)| longest_gap_ns(stts, timescale))
+        };
         return Some(MediaProbe {
             params: MediaParams {
                 codec,
@@ -324,9 +339,44 @@ fn video_track(moov: &[u8]) -> Option<MediaProbe> {
                 fps,
             },
             frame_count,
+            longest_frame_gap_ns,
         });
     }
     None
+}
+
+/// The longest single-sample delta in a `stts` box (§8.6.1.2), in nanoseconds.
+///
+/// `stts` is run-length coded: each entry says "the next `sample_count` samples are `sample_delta`
+/// apart". The longest gap between two consecutive frames is therefore the largest `sample_delta`
+/// over the entries that describe at least one sample — a run of zero samples describes nothing, and
+/// reading its delta would report a gap no frame ever waited.
+///
+/// The declared entry count is a number the file chose, so it is intersected with the bytes actually
+/// present rather than believed. A table that declares more entries than it carries is read for what
+/// it carries: the truncation is already reported by the frame count it disagrees with.
+fn longest_gap_ns(stts: &[u8], timescale: u32) -> Option<u64> {
+    if timescale == 0 {
+        return None;
+    }
+    // version+flags (4), entry_count (4), then entry_count x (sample_count u32, sample_delta u32).
+    let declared = u32::from_be_bytes(stts.get(4..8)?.try_into().ok()?) as usize;
+    let table = stts.get(8..)?;
+    let entries = declared.min(table.len() / 8);
+    let mut longest: u32 = 0;
+    let mut described = false;
+    for i in 0..entries {
+        let at = i * 8;
+        let count = u32::from_be_bytes(table.get(at..at + 4)?.try_into().ok()?);
+        let delta = u32::from_be_bytes(table.get(at + 4..at + 8)?.try_into().ok()?);
+        if count > 0 {
+            described = true;
+            longest = longest.max(delta);
+        }
+    }
+    // A table that describes no sample measured nothing, and answers so. Where it described samples,
+    // zero is a real answer — a file whose samples all share one decode time — and is reported.
+    described.then(|| longest as u64 * 1_000_000_000 / timescale as u64)
 }
 
 /// The `hdlr` box's handler type (`vide`, `soun`, …).
@@ -343,28 +393,41 @@ fn handler_type(hdlr: &[u8]) -> Option<String> {
 /// rate derived from it is a fabrication that reports every such file as playing at the wrong speed —
 /// so it is returned as absent, and no rate is derived at all.
 fn media_header(mdhd: &[u8]) -> Option<(u32, u64)> {
-    let version = *mdhd.first()?;
-    match version {
+    let timescale = media_timescale(mdhd)?;
+    let duration = match *mdhd.first()? {
+        // version+flags (4), creation (4), modification (4), timescale (4), duration (4).
         0 => {
-            // version+flags (4), creation (4), modification (4), timescale (4), duration (4).
-            let timescale = u32::from_be_bytes(mdhd.get(12..16)?.try_into().ok()?);
-            let duration = u32::from_be_bytes(mdhd.get(16..20)?.try_into().ok()?);
-            if duration == u32::MAX {
+            let d = u32::from_be_bytes(mdhd.get(16..20)?.try_into().ok()?);
+            if d == u32::MAX {
                 return None;
             }
-            Some((timescale, duration as u64))
+            d as u64
         }
+        // version+flags (4), creation (8), modification (8), timescale (4), duration (8).
         1 => {
-            // version+flags (4), creation (8), modification (8), timescale (4), duration (8).
-            let timescale = u32::from_be_bytes(mdhd.get(20..24)?.try_into().ok()?);
-            let duration = u64::from_be_bytes(mdhd.get(24..32)?.try_into().ok()?);
-            if duration == u64::MAX {
+            let d = u64::from_be_bytes(mdhd.get(24..32)?.try_into().ok()?);
+            if d == u64::MAX {
                 return None;
             }
-            Some((timescale, duration))
+            d
         }
-        _ => None,
-    }
+        _ => return None,
+    };
+    Some((timescale, duration))
+}
+
+/// The `mdhd` box's `timescale` alone — the track's time base, in ticks per second.
+///
+/// Read independently of the duration on purpose. The reserved "unknown" duration says nothing about
+/// the time base, and a file carrying it still states perfectly good per-frame timing; taking the two
+/// together let an unknown duration silence a measurement it has no bearing on.
+fn media_timescale(mdhd: &[u8]) -> Option<u32> {
+    let at = match *mdhd.first()? {
+        0 => 12,
+        1 => 20,
+        _ => return None,
+    };
+    Some(u32::from_be_bytes(mdhd.get(at..at + 4)?.try_into().ok()?))
 }
 
 /// A sample-size box's sample count — the frames the track holds. `stsz` (§8.7.3.2) and `stz2`

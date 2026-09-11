@@ -268,6 +268,31 @@ fn systematic_frame_delta(dataset: &Dataset) -> BTreeMap<&str, i64> {
         .collect()
 }
 
+/// Per stream, how many of its readable containers stated each of the two things this check needs
+/// them to state. A container can parse perfectly and still say neither.
+#[derive(Default)]
+struct Measured {
+    /// Readable containers seen.
+    readable: u64,
+    /// Of those, how many state how many frames they hold.
+    frames: u64,
+    /// Of those, how many state per-frame timing this pass can read as elapsed time.
+    timing: u64,
+}
+
+/// How many nominal frame intervals must pass with no frame before the gap is reported.
+///
+/// Two, so the gap that fires is one where a whole frame period elapsed and nothing was recorded in
+/// it — a frame that is missing, not a frame that arrived late. That makes it immune to the timing
+/// jitter every recorder has, and immune to the container's time base: a track whose timestamps are
+/// integers in units of one frame cannot express a step of 1.5, so there is no resolution at which
+/// this threshold sits inside the quantization noise.
+///
+/// Deliberately not configurable. A threshold a run can move is a threshold a run can move *past* a
+/// defect, and unlike a statistical tolerance there is no dataset for which "a frame period passed
+/// with no frame" means something other than what it says.
+const FRAME_GAP_FACTOR: f64 = 2.0;
+
 /// The media file holds what the dataset says it holds: as many frames as the data stream, at the
 /// declared resolution, codec, and rate.
 pub struct MediaConformance {
@@ -298,10 +323,15 @@ impl Check for MediaConformance {
             "VIDEO.RESOLUTION_MISMATCH",
             "VIDEO.CODEC_MISMATCH",
             "VIDEO.FPS_MISMATCH",
+            "VIDEO.FRAME_GAP",
+            "VIDEO.FRAME_TIMING_UNMEASURED",
         ]
     }
     fn abstention_codes(&self) -> &'static [&'static str] {
-        &["VIDEO.FRAME_COUNT_UNMEASURED"]
+        &[
+            "VIDEO.FRAME_COUNT_UNMEASURED",
+            "VIDEO.FRAME_TIMING_UNMEASURED",
+        ]
     }
     fn title(&self) -> &'static str {
         "Media matches its declared encoding and paired data"
@@ -335,7 +365,7 @@ impl Check for MediaConformance {
         // empty, which is what `ffmpeg -movflags frag_keyframe+empty_moov`, DASH/CMAF and most
         // hardware recorders write. The comparison then never runs, and until this counted it, that
         // was indistinguishable in the report from a comparison that ran and agreed.
-        let mut counted: BTreeMap<&str, (u64, u64)> = BTreeMap::new();
+        let mut counted: BTreeMap<&str, Measured> = BTreeMap::new();
 
         for ep in &dataset.episodes {
             for s in &ep.streams {
@@ -365,10 +395,13 @@ impl Check for MediaConformance {
                         });
                 };
 
-                let seen = counted.entry(s.name.as_str()).or_insert((0, 0));
-                seen.0 += 1;
+                let seen = counted.entry(s.name.as_str()).or_default();
+                seen.readable += 1;
                 if media.frame_count.is_some() {
-                    seen.1 += 1;
+                    seen.frames += 1;
+                }
+                if media.longest_frame_gap_ns.is_some() {
+                    seen.timing += 1;
                 }
 
                 if let Some(container_frames) = media.frame_count {
@@ -410,6 +443,57 @@ impl Check for MediaConformance {
                                     "Re-export the episode so the video and the data table are written \
                                      from the same run; a video shorter than the table is usually an \
                                      encode that stopped early.",
+                                ),
+                            );
+                        }
+                    }
+                }
+
+                // A gap the container's own timing recorded. `fps` cannot show this: it is frames
+                // over elapsed time, so a camera that froze mid-recording still divides out to its
+                // declared rate, and every rate comparison above passes on a file with a hole in it.
+                //
+                // Measured against the container's *observed* rate rather than the manifest's, so
+                // this says "this file disagrees with itself" — a file encoded at the wrong rate is
+                // VIDEO.FPS_MISMATCH, one defect reported once.
+                if let (Some(gap_ns), Some(fps)) = (media.longest_frame_gap_ns, media.observed.fps)
+                {
+                    if fps.is_finite() && fps > 0.0 {
+                        let nominal_ns = 1e9 / fps;
+                        let intervals = gap_ns as f64 / nominal_ns;
+                        if intervals >= FRAME_GAP_FACTOR {
+                            findings.push(
+                                Finding::new(
+                                    self.id(),
+                                    Category::Video,
+                                    Severity::Warning,
+                                    Location::Stream {
+                                        episode: ep.index,
+                                        stream: s.name.clone(),
+                                    },
+                                    "VIDEO.FRAME_GAP",
+                                    format!(
+                                        "episode {} stream `{}`: `{}` runs at {fps:.3} fps but its \
+                                         longest gap between two frames is {:.3}s — {intervals:.1} \
+                                         frame intervals with nothing recorded in them",
+                                        ep.index,
+                                        s.name,
+                                        media.uri,
+                                        gap_ns as f64 / 1e9,
+                                    ),
+                                )
+                                .with_risk(
+                                    "A loader pairs video frame i with data row i, by index and not \
+                                     by time. Frames the camera never delivered are not skipped in \
+                                     that pairing — they are closed up, so every frame after the gap \
+                                     is paired with an action from a later moment, and the offset \
+                                     persists to the end of the episode.",
+                                )
+                                .with_remedy(
+                                    "Check the recording rig for the stall (a dropped USB frame, a \
+                                     saturated write path, a camera that re-exposed); where the gap \
+                                     is real and expected, pair the video by timestamp rather than \
+                                     by index, or cut the episode at the gap.",
                                 ),
                             );
                         }
@@ -541,8 +625,41 @@ impl Check for MediaConformance {
         //
         // Only when *no* episode could be measured: where some could, the rollup above already
         // reports on those, and the ones it skipped are named in that finding's own wording.
-        for (stream, (readable, measured)) in counted {
-            if readable == 0 || measured > 0 {
+        for (stream, seen) in counted {
+            let readable = seen.readable;
+            if readable > 0 && seen.timing == 0 {
+                findings.push(
+                    Finding::new(
+                        self.id(),
+                        Category::Video,
+                        Severity::Info,
+                        Location::Stream {
+                            episode: 0,
+                            stream: stream.to_string(),
+                        },
+                        "VIDEO.FRAME_TIMING_UNMEASURED",
+                        format!(
+                            "stream `{stream}`: {readable} readable container(s), none of which \
+                             states per-frame timing this reader can follow, so the gaps between \
+                             its frames were never measured"
+                        ),
+                    )
+                    .with_risk(
+                        "A recording with a hole in it reads here exactly as one without. Frames \
+                         per second is frames over elapsed time, so a camera that stalled for \
+                         seconds in the middle of an episode still divides out to its declared \
+                         rate and passes every rate comparison this check makes.",
+                    )
+                    .with_remedy(
+                        "A fragmented MP4 leaves its timing in `moof` fragments, as it does its \
+                         sample count; re-mux it non-fragmented (`ffmpeg -i in.mp4 -c copy \
+                         out.mp4`). A Matroska track carrying B-frames stamps its blocks out of \
+                         order, which one pass cannot read as elapsed time; the frame gaps are \
+                         still measurable from the data table's own timestamps.",
+                    ),
+                );
+            }
+            if readable == 0 || seen.frames > 0 {
                 continue;
             }
             findings.push(

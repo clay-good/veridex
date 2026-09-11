@@ -729,6 +729,17 @@ pub struct Media {
     /// Frames the container holds (its sample count). Compared against the frames the paired data
     /// stream carries — that disagreement is the video/data desync. `None` when unread.
     pub frame_count: Option<u64>,
+    /// The longest interval between two consecutive frames, in nanoseconds, as the container's own
+    /// per-frame timing states it.
+    ///
+    /// [`MediaParams::fps`] is frames over elapsed time — an average, and an average absorbs a
+    /// stall. A camera that froze for two seconds in the middle of a minute-long clip still divides
+    /// out to its declared rate, so every rate comparison passed on a recording with a hole in it.
+    /// This is the quantity that does not average: the worst gap the file itself recorded.
+    ///
+    /// `None` when the container states no per-frame timing, or states it in an order a single pass
+    /// cannot read as elapsed time — not zero, which would mean "measured, and perfectly even".
+    pub longest_frame_gap_ns: Option<u64>,
 }
 
 /// Whether a stream's media file could be read.

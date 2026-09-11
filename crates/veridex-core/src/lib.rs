@@ -346,6 +346,7 @@ mod tests {
                 fps: Some(30.0),
             },
             frame_count: Some(100),
+            longest_frame_gap_ns: Some(33_333_333),
         }
     }
 
@@ -364,6 +365,7 @@ mod tests {
             },
             observed: MediaParams::default(),
             frame_count: None,
+            longest_frame_gap_ns: None,
             ..base_media()
         };
         a.episodes[0].streams[0].media = Some(unreadable("no moov box"));
@@ -404,7 +406,7 @@ mod tests {
         };
         let base = content_hash(&sample_dataset());
         type Mutator = fn(&mut Stream);
-        let mutate: [(&str, Mutator); 36] = [
+        let mutate: [(&str, Mutator); 37] = [
             // The fields the encoder has carried from the beginning. Absent from this table until a
             // mutation audit deleted `clock_kind` from `encode` and watched 692 tests pass: a
             // stream's frames are a synchronized rig under one value and an unmeasurable timeline
@@ -554,6 +556,14 @@ mod tests {
             ("media.frame_count", |s| {
                 let mut m = base_media();
                 m.frame_count = Some(97);
+                s.media = Some(m);
+            }),
+            // The worst gap the container's own timing recorded. `VIDEO.FRAME_GAP` fails a stream on
+            // it, and it is the one video quantity the average rate cannot express: a recording with
+            // a hole in it and one without carry the same codec, resolution, frame count and fps.
+            ("media.longest_frame_gap_ns", |s| {
+                let mut m = base_media();
+                m.longest_frame_gap_ns = Some(2_000_000_000);
                 s.media = Some(m);
             }),
             // Three checks abstain on a latched stream, so the same frames reach opposite verdicts

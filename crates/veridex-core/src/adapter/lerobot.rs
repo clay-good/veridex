@@ -668,6 +668,7 @@ fn probe_stream_media(dataset_root: &Path, expected: &Path, declared: MediaParam
             },
             observed: MediaParams::default(),
             frame_count: None,
+            longest_frame_gap_ns: None,
         };
     }
     if !expected.is_file() {
@@ -677,6 +678,7 @@ fn probe_stream_media(dataset_root: &Path, expected: &Path, declared: MediaParam
             status: MediaStatus::Missing,
             observed: MediaParams::default(),
             frame_count: None,
+            longest_frame_gap_ns: None,
         };
     }
     match crate::media::probe(expected) {
@@ -686,6 +688,7 @@ fn probe_stream_media(dataset_root: &Path, expected: &Path, declared: MediaParam
             status: MediaStatus::Read,
             observed: probe.params,
             frame_count: probe.frame_count,
+            longest_frame_gap_ns: probe.longest_frame_gap_ns,
         },
         Err(reason) => Media {
             uri,
@@ -693,6 +696,7 @@ fn probe_stream_media(dataset_root: &Path, expected: &Path, declared: MediaParam
             status: MediaStatus::Unreadable { reason },
             observed: MediaParams::default(),
             frame_count: None,
+            longest_frame_gap_ns: None,
         },
     }
 }
@@ -1863,6 +1867,7 @@ impl Adapter for LeRobotAdapter {
                             },
                             observed: MediaParams::default(),
                             frame_count: None,
+                            longest_frame_gap_ns: None,
                         },
                     );
                 }
