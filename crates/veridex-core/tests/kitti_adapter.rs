@@ -353,6 +353,49 @@ fn a_drive_whose_lidar_recorded_nothing_is_caught_end_to_end() {
 }
 
 #[test]
+fn a_calibration_that_states_a_zero_image_size_states_no_size() {
+    // `S_0N: 0.0 0.0` is what an unconfigured or hand-trimmed `calib_cam_to_cam.txt` carries. Read
+    // literally it is a zero-pixel image, and `autonomy.calibration-plausibility` judges a
+    // principal point against the size the calibration declares — any point at all is outside an
+    // image that small, so the camera would be accused of intrinsics from another resolution on
+    // the strength of a field that said nothing. The ROS path already maps a `CameraInfo` of
+    // `width: 0` to "not declared" (`cdr::camera_info`), and the same silence has to read the same
+    // way whichever container carries it.
+    let (dir, path) = drive("rig");
+    let date_dir = path.parent().expect("date directory");
+    let calib = date_dir.join("calib_cam_to_cam.txt");
+    let text = std::fs::read_to_string(&calib).expect("the demo calibration");
+    let zeroed = text
+        .lines()
+        .map(|line| {
+            if line.starts_with("S_") {
+                format!("{}: 0.000000e+00 0.000000e+00", &line[..4])
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(zeroed.contains("S_00: 0.000000e+00"), "{zeroed}");
+    std::fs::write(&calib, zeroed + "\n").expect("rewrite the calibration");
+
+    let got = ingest_at(&path, IngestOptions::default());
+    let calib = got
+        .dataset
+        .calibration
+        .as_ref()
+        .expect("the calibration is still read");
+    for cam in &calib.intrinsics {
+        assert_eq!(cam.width, None, "{cam:?}");
+        assert_eq!(cam.height, None, "{cam:?}");
+        // The intrinsics themselves are untouched: only the size went unstated.
+        assert!((cam.cx - 690.0).abs() < 1e-6, "{cam:?}");
+    }
+
+    drop(dir);
+}
+
+#[test]
 fn a_receiver_that_never_acquired_a_fix_is_caught_end_to_end() {
     let (_dir, got) = ingest("null-island");
     let engine = veridex_core::checks::default_engine().expect("the standard catalog");

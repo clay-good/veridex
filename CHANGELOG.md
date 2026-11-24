@@ -10,6 +10,28 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Changed
 
+- **Three boundaries the adapter mutation sweep found unpinned, and one calibration field read
+  literally.** Each is a rule something depends on, and each had no test that would notice it
+  moving by one:
+  - A SQLite row whose payload is *exactly* `U - 35` bytes is kept whole on its page; one byte more
+    spills onto overflow pages. A split written `<` rather than `<=` sends the row on the boundary
+    down the overflow path and looks for a next-page pointer in four bytes the row does not leave.
+    Pinned with `local_limit.db3`, three rows real SQLite laid out either side of the limit, with
+    `dbstat` asked to confirm where each one went.
+  - `--max-source-bytes N` names the largest file the run will hold, so a file of exactly `N` is
+    inside it. The obvious way to let one known file through — measure it, pass its size — must not
+    fail on the file it was measured from.
+  - `--sample-fraction 1.0` is the whole dataset, not one past the top of the range. It is the
+    value a user reaches for to compare a sampled run against a full one, and refusing it would
+    make that comparison an error. (It is still a sample: the verdict says so and cannot be
+    certified.)
+  - KITTI's `S_0N: 0.0 0.0` is a calibration that states no image size, not a zero-pixel image.
+    Read literally it put `Some(0)` in the CDM, where `autonomy.calibration-plausibility` judges a
+    principal point against the size the calibration declares — any point at all is outside an
+    image that small. The ROS path already maps a `CameraInfo` of `width: 0` to "not declared"; the
+    same silence now reads the same way whichever container carries it.
+
+
 - **The docs gate now runs both builds: the one with private items, and the one docs.rs runs.** CI
   built the documentation with `--document-private-items` only, for a stated reason — most of this
   crate is crate-private, rustdoc only resolves links in what it documents, and the public-only

@@ -408,8 +408,16 @@ fn read_calibration(
             continue;
         }
         let size = cam.get(&format!("S_{index}")).and_then(|v| numbers(v));
+        // A declared size of zero is not a zero-pixel image, it is a calibration that states no
+        // size — `S_02: 0.0 0.0` is what an unconfigured or hand-trimmed `calib_cam_to_cam.txt`
+        // carries. Taking it literally would put `Some(0)` in the CDM, and
+        // `autonomy.calibration-plausibility` reads a principal point as outside the image it
+        // declares whenever `cx >= width`, so every such camera would be accused of having
+        // intrinsics from another resolution. The ROS path maps a `CameraInfo` of `width: 0` to
+        // `None` for exactly this reason (see `cdr::camera_info`), and the two have to agree:
+        // the same silence read two ways is a finding that depends on the container.
         let (width, height) = match size.as_deref() {
-            Some([w, h]) if *w >= 0.0 && *h >= 0.0 => (Some(*w as u64), Some(*h as u64)),
+            Some([w, h]) if *w > 0.0 && *h > 0.0 => (Some(*w as u64), Some(*h as u64)),
             _ => (None, None),
         };
         let distortion = cam

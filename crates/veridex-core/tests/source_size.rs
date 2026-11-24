@@ -65,6 +65,27 @@ fn write_mcap(dir: &Path) -> PathBuf {
 }
 
 #[test]
+fn a_file_exactly_at_the_ceiling_is_read_and_one_byte_over_is_refused() {
+    // The flag names the largest file the run will hold, so a file of exactly that size is inside
+    // it. Refusing it would make `--max-source-bytes $(stat -f%z file)` — the obvious way to let
+    // one known file through — fail on the very file it was measured from.
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_mcap(dir.path());
+    let size = std::fs::metadata(&path).unwrap().len();
+
+    ingest(&path, &capped(size)).expect("a file the size of the ceiling is within it");
+    let err = ingest(&path, &capped(size - 1)).expect_err("a byte over the ceiling is refused");
+    assert!(
+        matches!(
+            err,
+            IngestError::SourceTooLarge { limit, size: reported, .. }
+                if limit == size - 1 && reported == size
+        ),
+        "{err}"
+    );
+}
+
+#[test]
 fn an_mcap_past_the_ceiling_is_refused_by_name_and_pointed_at_metadata_only() {
     let dir = tempfile::tempdir().unwrap();
     let path = write_mcap(dir.path());

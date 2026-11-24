@@ -269,6 +269,42 @@ fn a_payload_spread_across_overflow_pages_is_reassembled_exactly() {
 }
 
 #[test]
+fn a_row_exactly_on_the_local_payload_limit_is_read_from_its_page() {
+    // SQLite keeps a table row whole on its page while its payload is at most `U - 35` bytes —
+    // 4061 for the 4 KB pages these fixtures use — and spills anything larger. `local_limit.db3`
+    // holds one row a byte under that limit, one exactly on it, and one a byte over, and real
+    // SQLite laid all three out (the generator asks `dbstat` to confirm where each row went).
+    //
+    // The row on the limit is the case a split written `<` rather than `<=` gets wrong: it would
+    // take a row that is wholly on its page down the overflow path and look for a next-page
+    // pointer in the four bytes after it, which a row that size does not leave.
+    let out = ingest("local_limit.db3");
+    let stream = &out.dataset.episodes[0].streams[0];
+    assert_eq!(stream.name, "/diagnostics");
+    let lengths: Vec<Option<u64>> = stream.frames.iter().map(|f| f.value_ref.byte_len).collect();
+    assert_eq!(lengths, vec![Some(4045), Some(4046), Some(4047)]);
+    // Hashes of the bytes Python's sqlite3 inserted, over blobs of `0x00` filler behind a header.
+    let hashes: Vec<String> = stream
+        .frames
+        .iter()
+        .map(|f| hex(&f.value_ref.content_hash.expect("a content hash")))
+        .collect();
+    assert_eq!(hashes.len(), 3);
+    // The three blobs differ only in length and stamp, so no two hashes may coincide.
+    let mut unique = hashes.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), 3, "{hashes:?}");
+    // And nothing was reported unread or undecoded: a misread of the row on the limit shows up
+    // here even if its length survived.
+    assert!(
+        out.report.unread_sources.is_empty(),
+        "{:?}",
+        out.report.unread_sources
+    );
+}
+
+#[test]
 fn a_split_recording_is_read_in_recording_order_not_name_order() {
     // `ros2 bag record --max-bag-size` rolls a long bag into `split_0.db3` … `split_11.db3`, and a
     // lexicographic sort puts `_10` and `_11` ahead of `_2`. Frames are appended to their stream in

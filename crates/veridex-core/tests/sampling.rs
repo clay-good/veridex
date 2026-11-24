@@ -212,6 +212,35 @@ fn a_tiny_fraction_still_draws_at_least_one_episode() {
 }
 
 #[test]
+fn a_fraction_of_exactly_one_is_the_whole_dataset_and_still_says_sample() {
+    // 1.0 is the top of the range the flag documents, not one past it: `--sample-fraction 1.0`
+    // draws every episode. Refusing it would make the one value a user reaches for to compare a
+    // sampled run against the full one an error, and the comparison is the point of the flag.
+    let dir = tempfile::tempdir().unwrap();
+    write_dataset(dir.path(), 6, 2);
+
+    let request = Sample::Fraction {
+        fraction: 1.0,
+        seed: 7,
+    };
+    request
+        .validate()
+        .expect("1.0 is a whole dataset, not an impossible request");
+    let out = check(dir.path(), request.clone()).unwrap();
+    assert_eq!(episode_indices(&out), vec![0, 1, 2, 3, 4, 5]);
+    // Reading everything by way of a sample request is still a sample: the verdict says so, and
+    // may not be certified as a full-dataset one just because the draw happened to cover it.
+    assert_eq!(
+        out.ingested.report.coverage,
+        Coverage::Sample {
+            sample: request,
+            episodes_ingested: 6,
+        }
+    );
+    assert!(out.verdict.coverage.is_partial());
+}
+
+#[test]
 fn a_meaningless_sample_request_is_refused_not_silently_emptied() {
     let dir = tempfile::tempdir().unwrap();
     write_dataset(dir.path(), 4, 2);

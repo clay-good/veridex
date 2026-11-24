@@ -317,6 +317,11 @@ ARM_TOPICS = [
     (1, "/joint_states", "sensor_msgs/msg/JointState", "cdr", QOS_VOLATILE),
 ]
 
+# SQLite keeps a table row whole on its page while the row's payload is at most `U - 35` bytes, and
+# spills the rest of anything larger onto overflow pages (§1.6). For the 4 KB pages Python's
+# `sqlite3` writes with no reserved space that limit is 4061 bytes.
+LOCAL_LIMIT = 4096 - 35
+
 TF_EDGES = [
     ("base_link", "lidar_link", (0.0, 0.0, 1.8)),
     ("base_link", "camera_front", (1.2, 0.0, 1.5)),
@@ -421,6 +426,53 @@ def arm_messages(n=40, pinned=30):
         elbow = 2.0 if i < pinned else 2.0 - i * 0.01
         msgs.append((1, ts, joint_state(ts, ["shoulder", "elbow"], [shoulder, elbow])))
     return msgs
+
+
+def local_limit(path):
+    """Write a bag whose three rows sit just below, exactly on, and just over the local limit.
+
+    The row payload is the blob plus a record header whose width depends on the recording stamp, so
+    the blob length that lands exactly on the limit is *found* rather than asserted: each candidate
+    is written with real SQLite and `dbstat` is asked what payload it produced.
+    """
+    empty = len(header_only("diag_link", START, filler=0))
+
+    def row(blob_len, ts):
+        return header_only("diag_link", ts, filler=blob_len - empty)
+
+    probe = os.path.join(HERE, ".local_limit_probe.db3")
+    on_the_limit = None
+    for candidate in range(LOCAL_LIMIT - 40, LOCAL_LIMIT):
+        write_bag(probe, HOUSEKEEPING_TOPICS[2:], [(9, START, row(candidate, START))])
+        db = sqlite3.connect(probe)
+        payload = db.execute("SELECT mx_payload FROM dbstat WHERE name='messages'").fetchone()[0]
+        db.close()
+        if payload == LOCAL_LIMIT:
+            on_the_limit = candidate
+            break
+    os.remove(probe)
+    assert on_the_limit is not None, "no blob length put a row's payload exactly on the limit"
+
+    sizes = [on_the_limit - 1, on_the_limit, on_the_limit + 1]
+    write_bag(
+        path,
+        HOUSEKEEPING_TOPICS[2:],
+        [(9, START + i, row(n, START + i)) for i, n in enumerate(sizes)],
+    )
+    # SQLite's own account of where it put each row. `mx_payload` is the largest payload a page
+    # holds; the two rows at and under the limit are whole on pages of their own, and the one byte
+    # over spills, keeping `min_local` = 489 bytes on the page and the rest on an overflow page.
+    db = sqlite3.connect(path)
+    pages = db.execute(
+        "SELECT pagetype, payload, mx_payload FROM dbstat WHERE name='messages'"
+    ).fetchall()
+    db.close()
+    whole = sorted(p for kind, p, mx in pages if kind == "leaf" and mx <= LOCAL_LIMIT)
+    spilled = [p for kind, p, mx in pages if kind == "leaf" and mx > LOCAL_LIMIT]
+    assert whole == [LOCAL_LIMIT - 1, LOCAL_LIMIT], whole
+    assert spilled == [489], spilled
+    assert any(kind == "overflow" for kind, _, _ in pages), pages
+    return sizes
 
 
 def main():
@@ -590,6 +642,14 @@ os._exit(0)
         RIG_TOPICS[:1],
         [(1, START + i, point_cloud2("lidar_link", START + i, npoints=2_000)) for i in range(2)],
     )
+
+    # Three payloads around the format's local/overflow split, which for a 4 KB page with no
+    # reserved space falls at `U - 35` = 4061 bytes: one below it, one *exactly* on it, and the
+    # first one that spills. The middle row is the case a `<=` written as `<` gets wrong — it would
+    # send a row that is wholly on its page down the overflow path and look for a next-page pointer
+    # in the four bytes after it, which a row this size does not leave. Real SQLite decides the
+    # split here, and `dbstat` is asked to confirm it did.
+    local_limit(os.path.join(HERE, "local_limit.db3"))
 
     print("wrote fixtures under", HERE)
 
