@@ -3230,6 +3230,11 @@ fn unusable_calibration(dataset: &Dataset) -> Vec<String> {
                  rotation — the uninitialized value, not a measured pose",
                 t.parent_frame, t.child_frame
             ));
+        // `>` rather than `>=`, and no fixture can tell the two apart: for a norm in [1, 2) the
+        // difference `norm - 1.0` is an exact multiple of 2⁻⁵², and `ROTATION_NORM_TOLERANCE` (1e-2)
+        // is not one — so the comparison is never an equality on any input a producer can write. A
+        // mutation sweep flagged it as untested; `tests/checks.rs` pins the behavior either side of
+        // the tolerance instead, which is the most a test can say here.
         } else if (norm - 1.0).abs() > ROTATION_NORM_TOLERANCE {
             out.push(format!(
                 "the transform `{}` → `{}` carries a rotation quaternion of norm {norm:.4}, not \

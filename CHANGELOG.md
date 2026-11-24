@@ -50,12 +50,21 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   and a recording ingested forty times shares every frame with thirty-nine others — moving that line
   by one episode in the wrong direction defeats the check it protects.
 
-  Three survivors are provably **equivalent** and are now documented at their sites rather than left
+  The autonomy family's own configurable tolerance is pinned the same way: a sensor whose
+  `header.stamp` sits **exactly** the permitted offset from the recorder's clock is still one clock,
+  in both directions — the tolerance says how far it *may* sit — and one nanosecond past it, either
+  way, is a finding. Both comparisons were untested, and both mutants accuse a rig that is inside its
+  own tolerance.
+
+  Four survivors are provably **equivalent** and are now documented at their sites rather than left
   looking untested: `stream-presence`'s "present in every episode" guard (the only inputs that
   separate `>=` from `>` are stopped by the empty-list guard below it), the near-duplicate pair
   ceiling (one tracked pair at 200,000, with the overflow disclosed either way), and the
   shorter/longer wording on a systematic video frame delta (a zero delta clears the pattern, so the
-  value reaching that line is never zero). What is left is skip guards whose mutation cannot change
+  value reaching that line is never zero), and the quaternion norm tolerance — for a norm in [1, 2)
+  the difference `norm - 1.0` is an exact multiple of 2⁻⁵² and 1e-2 is not one, so no quaternion a
+  producer can write makes that comparison an equality; the behavior either side of it is pinned
+  instead, which is the most a test can say there. What is left is skip guards whose mutation cannot change
   an answer on any reachable input.
 
 - **A mutation sweep over this release's new code, and what it found.** Flipping every comparison in

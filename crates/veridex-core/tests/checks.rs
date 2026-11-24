@@ -5943,6 +5943,33 @@ fn only_impossible_calibration_is_flagged_never_merely_unusual() {
 }
 
 #[test]
+fn a_quaternion_near_the_norm_tolerance_falls_on_the_right_side_of_it() {
+    // The 1% tolerance separates the rounding an honest producer does from a scale error baked into
+    // a transform. Either side of it, as close as a float can be put: 1.005 is rounding, 1.02 is a
+    // 4% stretch composed into every placement.
+    //
+    // *Exactly* at it is not a case any fixture can build, and the comment at the site says why: for
+    // a norm in [1, 2) the difference `norm - 1.0` is a multiple of 2⁻⁵², while the tolerance 1e-2
+    // is not one, so no quaternion makes the comparison an equality and `>` and `>=` cannot differ.
+    let judge = |w: f64| -> Vec<veridex_core::check::Finding> {
+        let mut t = xf("base_link", "lidar");
+        t.pose.rotation = [0.0, 0.0, 0.0, w];
+        let cal = veridex_core::cdm::Calibration {
+            transforms: vec![t, xf("base_link", "cam")],
+            intrinsics: vec![intr("cam")],
+        };
+        autonomy::CalibrationCompleteness.run(&rig_with_calibration(Some(cal)))
+    };
+    assert!(
+        judge(1.005).is_empty(),
+        "half a percent off unit is the rounding an honest producer does"
+    );
+    let f = judge(1.02);
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "AUTONOMY.CALIBRATION_IMPLAUSIBLE");
+}
+
+#[test]
 fn a_quaternion_that_is_not_unit_is_a_rotation_with_a_scale_in_it() {
     // What a producer that writes only the vector part of a quaternion leaves behind: a 90° yaw
     // recorded as [0.707, 0, 0, 0] instead of [0.707, 0, 0, 0.707]. Every presence check passes —
@@ -6391,6 +6418,48 @@ fn a_sensor_clock_that_steps_backwards_puts_two_capture_times_on_one_instant() {
     assert_eq!(f.len(), 1, "{f:?}");
     assert_eq!(f[0].code, "AUTONOMY.SENSOR_CLOCK_REGRESSION");
     assert_eq!(f[0].severity, Severity::Error);
+}
+
+#[test]
+fn a_sensor_clock_exactly_at_the_offset_tolerance_is_still_one_clock() {
+    // "How far the sensor's clock may sit from the recorder's before the two stop being one clock."
+    // *May* sit: exactly at the tolerance is still allowed, in both directions — a sensor whose
+    // stamps run behind the recorder's clock and one whose stamps run ahead of it. A mutation sweep
+    // found both comparisons untested, and both mutants accuse a rig that is inside its own
+    // tolerance.
+    let tol = sensor_clock().max_offset_ns;
+    for (min_offset_ns, max_offset_ns, direction) in [
+        (tol, tol + 500_000_000, "behind"),
+        (-tol - 500_000_000, -tol, "ahead"),
+    ] {
+        let f = sensor_clock().run(&rig_with_stamps(Some(veridex_core::cdm::HeaderStamps {
+            message_count: 600,
+            unset: 0,
+            min_offset_ns,
+            max_offset_ns,
+            regressions: 0,
+        })));
+        assert!(
+            !f.iter().any(|f| f.code == "AUTONOMY.SENSOR_CLOCK_OFFSET"),
+            "a clock exactly {direction} by the tolerance is within it: {f:?}"
+        );
+    }
+    // One nanosecond past it, in either direction, and the two are different clocks.
+    for (min_offset_ns, max_offset_ns) in
+        [(tol + 1, tol + 500_000_000), (-tol - 500_000_000, -tol - 1)]
+    {
+        let f = sensor_clock().run(&rig_with_stamps(Some(veridex_core::cdm::HeaderStamps {
+            message_count: 600,
+            unset: 0,
+            min_offset_ns,
+            max_offset_ns,
+            regressions: 0,
+        })));
+        assert!(
+            f.iter().any(|f| f.code == "AUTONOMY.SENSOR_CLOCK_OFFSET"),
+            "one nanosecond past the tolerance is a finding: {f:?}"
+        );
+    }
 }
 
 #[test]
