@@ -10,6 +10,15 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **The mutation sweep run over this stretch's own new code, as the house rule requires.** Four
+  comparisons were added across the KITTI reader, the two new calibration rules, the registry's
+  bounds and the label's cell renderer (the rest of the new logic is `==` and `is_empty`, which this
+  sweep does not mutate). Two were rules worth pinning — KITTI's zero image size, already covered,
+  and the label's ellipsis, which claims text was cut and must not appear on a value of exactly 120
+  characters — and two are cost ceilings whose exact boundary is not a promise. All four are in
+  [docs/mutation-sweep.md](docs/mutation-sweep.md).
+
+
 - **`AUTONOMY.CALIBRATION_RESOLUTION`: intrinsics computed for an image size the recording is not.**
   The second of the two silent ways a calibration goes wrong, and until the readers measured image
   sizes it could only be caught obliquely — a principal point outside the *declared* image is the

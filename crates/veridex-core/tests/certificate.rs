@@ -1128,3 +1128,39 @@ fn a_dataset_id_from_file_content_cannot_write_markdown_into_a_dataset_card() {
         "{label}"
     );
 }
+
+/// An ellipsis in a label claims text was cut, so it may not appear when nothing was.
+///
+/// The cell renderer cuts a long value at 120 characters and marks the cut. At exactly 120 nothing
+/// was cut — a trailing "…" there would tell a reader the dataset's name continues when they are
+/// looking at all of it, which is the one thing a label must not do about its own subject.
+#[test]
+fn a_label_marks_a_cut_value_and_only_a_cut_one() {
+    let render = |id: &str| {
+        let mut d = dataset(vec![stream("s", "c", &[0, 1_000_000, 2_000_000])]);
+        d.id = id.into();
+        let (cert, _) = issue_cert(&d);
+        veridex_core::render_label(&sign(cert, &keypair()), true)
+            .lines()
+            .find(|l| l.starts_with("| Dataset "))
+            .expect("the dataset row")
+            .to_string()
+    };
+
+    let exact = "a".repeat(120);
+    let row = render(&exact);
+    assert!(row.contains(&exact), "the whole value is shown: {row}");
+    assert!(
+        !row.contains('…'),
+        "nothing was cut, so nothing may say it was: {row}"
+    );
+
+    let over = "b".repeat(121);
+    let row = render(&over);
+    assert!(row.contains('…'), "a cut value says so: {row}");
+    assert!(
+        !row.contains(&over),
+        "and the rest of the card belongs to its author: {row}"
+    );
+    assert!(row.contains(&"b".repeat(120)), "{row}");
+}

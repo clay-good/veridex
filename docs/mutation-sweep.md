@@ -69,6 +69,22 @@ Three representative ones, because the reasoning is the reusable part:
   there, and returns without writing. The `<` is still right — it is the difference between
   loading a chunk that is part of the array and one that is not.
 
+## The same sweep over new code
+
+The rule this project follows for its own changes: every comparison added by a change is swept
+before it ships. The November 2026 run over the adapters' and checks' new code (KITTI's image and
+OXTS reading, the two new calibration rules, the registry's bounds, the label's cell renderer) found
+four comparisons — the others are `==` and `is_empty`, which this sweep does not mutate — and two of
+them were rules worth pinning:
+
+| Site | The rule | Pinned by |
+| --- | --- | --- |
+| `kitti.rs` `*w > 0.0` | `S_0N: 0.0 0.0` states no size | `kitti_adapter::a_calibration_that_states_a_zero_image_size_states_no_size` |
+| `label.rs` `out.chars().count() < flattened.chars().count()` | An ellipsis claims text was cut, so a value of exactly 120 characters must not carry one | `certificate::a_label_marks_a_cut_value_and_only_a_cut_one` |
+
+The other two are cost ceilings (`registry.rs`'s 1 MiB record ceiling and the image-header prefix),
+where the exact boundary is not a promise and what is tested is that exceeding it is refused.
+
 ## Two things the harness gets wrong if you let it
 
 **Three answers, and the third is the common one.** Of the survivors looked at by hand here, the
