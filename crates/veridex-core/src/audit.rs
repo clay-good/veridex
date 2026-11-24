@@ -187,6 +187,19 @@ pub enum AuditError {
         /// What the parser said.
         detail: String,
     },
+    /// One line is past the ceiling on an entry, so it was not held in memory to be parsed.
+    ///
+    /// An entry is a few hundred bytes of JSON. A log is a file somebody hands you — a colleague's,
+    /// a vendor's, a CI artifact — and `veridex audit` read it whole, so one line of a few gigabytes
+    /// was a few gigabytes of allocation before anything was parsed. The log's *length* is not
+    /// bounded, because a long-lived issuance log is the point of the thing; the line is.
+    #[error("line {line}: {found} bytes is past the {MAX_ENTRY_BYTES}-byte ceiling on one entry")]
+    EntryTooLarge {
+        /// 1-based line number.
+        line: usize,
+        /// How many bytes were read before the ceiling was passed.
+        found: usize,
+    },
     /// A line declares a schema this build does not know.
     #[error("line {line}: audit schema `{found}`, expected `{expected}`")]
     UnknownSchema {
@@ -300,6 +313,102 @@ impl AuditReport {
     /// which is what [`AuditReport::head`] is for.
     pub fn intact(&self) -> bool {
         self.broken.is_none()
+    }
+}
+
+/// The largest one entry may be. An entry is a seq, two hashes, a timestamp, a short record and an
+/// optional signature — a few hundred bytes — so this is three orders of magnitude of headroom and
+/// still a bounded allocation per line.
+pub const MAX_ENTRY_BYTES: usize = 256 * 1024;
+
+/// How much of the end of a log [`append`] reads to find the entry to chain onto.
+///
+/// Appending used to read the **whole** log to find its last line, which made issuing the nth
+/// certificate cost n — the one operation a long-lived log does over and over. The last entry is in
+/// the last line, so only the tail has to be read; this window holds the longest entry the reader
+/// will accept, which is what makes "the last line is in here" true rather than hopeful.
+const TAIL_WINDOW: u64 = (MAX_ENTRY_BYTES * 2) as u64;
+
+/// Verify a log read from `reader`, a line at a time, holding one entry at most.
+///
+/// The streaming form of [`verify_log`], and what the CLI uses: a log's length is not bounded —
+/// a long-lived issuance log is the point — but the memory a reader gives it is.
+pub fn verify_log_reader<R: std::io::BufRead>(mut reader: R) -> Result<AuditReport, AuditError> {
+    let mut text = String::new();
+    let mut line_no = 0usize;
+    let mut lines: Vec<String> = Vec::new();
+    loop {
+        line_no += 1;
+        let mut raw = Vec::new();
+        let read = read_line_bounded(&mut reader, &mut raw, line_no)?;
+        if read == 0 {
+            break;
+        }
+        // Not UTF-8 is not an entry, and is reported as the parse failure it is rather than as an
+        // I/O error about the file.
+        let line = String::from_utf8_lossy(&raw).into_owned();
+        lines.push(line);
+    }
+    for line in &lines {
+        text.push_str(line);
+        if !line.ends_with('\n') {
+            text.push('\n');
+        }
+    }
+    verify_log(&text)
+}
+
+/// Read one `\n`-terminated line into `out`, refusing one past [`MAX_ENTRY_BYTES`].
+///
+/// Returns how many bytes were read, `0` at end of file. `BufRead::read_line` would read a line of
+/// any length, which is the allocation this exists to bound.
+fn read_line_bounded<R: std::io::BufRead>(
+    reader: &mut R,
+    out: &mut Vec<u8>,
+    line: usize,
+) -> Result<usize, AuditError> {
+    loop {
+        let available = match reader.fill_buf() {
+            Ok(buf) => buf,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => {
+                return Err(AuditError::NotAnEntry {
+                    line,
+                    detail: e.to_string(),
+                })
+            }
+        };
+        if available.is_empty() {
+            return Ok(out.len());
+        }
+        match available.iter().position(|&b| b == b'\n') {
+            Some(at) => {
+                out.extend_from_slice(&available[..=at]);
+                reader.consume(at + 1);
+                // The ceiling is checked after the newline too, so a line that is over it and
+                // *does* end is refused rather than parsed.
+                if out.len() > MAX_ENTRY_BYTES {
+                    return Err(AuditError::EntryTooLarge {
+                        line,
+                        found: out.len(),
+                    });
+                }
+                return Ok(out.len());
+            }
+            None => {
+                let taken = available.len();
+                out.extend_from_slice(available);
+                reader.consume(taken);
+                // No newline yet and already past the ceiling: stop here rather than reading the
+                // rest of a line whose length the file chooses.
+                if out.len() > MAX_ENTRY_BYTES {
+                    return Err(AuditError::EntryTooLarge {
+                        line,
+                        found: out.len(),
+                    });
+                }
+            }
+        }
     }
 }
 
@@ -465,16 +574,7 @@ pub fn append(
     record: &Record,
     keypair: Option<&SigningKeypair>,
 ) -> std::io::Result<Entry> {
-    let existing = match std::fs::read_to_string(path) {
-        Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(e),
-    };
-    let last = existing
-        .lines()
-        .rev()
-        .find(|l| !l.trim().is_empty())
-        .and_then(|l| serde_json::from_str::<Entry>(l).ok());
+    let last = last_entry_of(path)?;
     let entry = next_entry(last.as_ref(), record, keypair);
     use std::io::Write;
     let mut file = std::fs::OpenOptions::new()
@@ -484,6 +584,35 @@ pub fn append(
     writeln!(file, "{}", render_entry(&entry))?;
     file.flush()?;
     Ok(entry)
+}
+
+/// The last entry in the log at `path`, read from its tail rather than from the whole file.
+///
+/// `None` for a log that is absent, empty, or whose last line is not an entry this build can read —
+/// the same three cases the whole-file read treated alike, and all three mean "nothing to chain
+/// onto", which [`next_entry`] turns into a genesis entry. A log whose tail is unreadable is not
+/// silently restarted, though: the lines are searched backwards within the window, so a trailing
+/// blank line or a partially written final line still finds the entry before it.
+fn last_entry_of(path: &std::path::Path) -> std::io::Result<Option<Entry>> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let len = file.metadata()?.len();
+    let from = len.saturating_sub(TAIL_WINDOW);
+    file.seek(SeekFrom::Start(from))?;
+    let mut tail = Vec::with_capacity(TAIL_WINDOW.min(len) as usize);
+    file.take(TAIL_WINDOW).read_to_end(&mut tail)?;
+    let text = String::from_utf8_lossy(&tail);
+    // Backwards, and the first line that parses wins: the window may begin mid-line, and that
+    // fragment is not an entry.
+    Ok(text
+        .lines()
+        .rev()
+        .filter(|l| !l.trim().is_empty())
+        .find_map(|l| serde_json::from_str::<Entry>(l).ok()))
 }
 
 /// The chain head a caller pinned, when it is *not* the head the log actually has.

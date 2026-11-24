@@ -329,3 +329,116 @@ fn a_log_can_be_asked_whether_it_records_one_certificate_document() {
         audit::CertificateRecord::Absent
     );
 }
+
+/// A log is somebody else's file, so one line of it cannot be a gigabyte of allocation.
+///
+/// `veridex audit` read the whole log into a `String` before parsing a byte of it. A log's *length*
+/// is not something to bound — a long-lived issuance log is the point of the thing, and refusing a
+/// large one would make the tool useless exactly where it matters — but one entry is a few hundred
+/// bytes of JSON, so a single line of a few gigabytes is the allocation worth refusing. Verification
+/// now streams a line at a time and the ceiling is per line.
+#[test]
+fn one_oversized_line_is_refused_rather_than_held_in_memory() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("audit.jsonl");
+    audit::append(&path, &record("demo", 0), None).expect("append");
+    audit::append(&path, &record("demo", 1), None).expect("append");
+
+    // A third line that is a well-formed entry with one absurdly long field: past the ceiling, and
+    // it would parse if it were held.
+    let long = format!(
+        "{{\"schema\":\"veridex.audit/1\",\"seq\":2,\"prev\":\"{}\",\"entry_hash\":\"{}\",\
+         \"record\":{{\"action\":\"issued\",\"dataset_id\":\"{}\",\"cdm_hash\":\"{}\",\
+         \"outcome\":\"pass\",\"key_id\":\"\",\"certificate_hash\":\"{}\",\
+         \"timestamp\":\"2026-11-24T00:00:00Z\"}}}}",
+        "0".repeat(64),
+        "0".repeat(64),
+        "x".repeat(audit::MAX_ENTRY_BYTES + 64),
+        "0".repeat(64),
+        "0".repeat(64)
+    );
+    assert!(long.len() > audit::MAX_ENTRY_BYTES);
+    {
+        use std::io::Write as _;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("open");
+        writeln!(file, "{long}").expect("write");
+    }
+
+    let file = std::fs::File::open(&path).expect("open");
+    let err = audit::verify_log_reader(std::io::BufReader::new(file))
+        .expect_err("a line past the ceiling is refused");
+    let text = err.to_string();
+    assert!(
+        text.contains("line 3") && text.contains("ceiling"),
+        "the refusal says which line and why: {text}"
+    );
+
+    // And a log of ordinary entries still verifies through the same path, so the ceiling is not a
+    // refusal of logs.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let good = dir.path().join("good.jsonl");
+    for i in 0..4 {
+        audit::append(&good, &record("demo", i), None).expect("append");
+    }
+    let file = std::fs::File::open(&good).expect("open");
+    let report = audit::verify_log_reader(std::io::BufReader::new(file)).expect("verifies");
+    assert!(report.intact());
+    assert_eq!(report.entries.len(), 4);
+}
+
+/// Appending reads the log's tail, not the log.
+///
+/// Issuing the nth certificate used to read n-1 entries back out of the file to find the one to
+/// chain onto, which made the one operation a long-lived log repeats cost more every time. The last
+/// entry is in the last line; only the tail has to be read. What this holds is that the shortcut
+/// finds the *same* entry the whole-file read found — including across a file much larger than the
+/// window, and with a trailing blank line in the way.
+#[test]
+fn appending_chains_onto_the_last_entry_of_a_long_log() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("audit.jsonl");
+    for i in 0..3 {
+        audit::append(&path, &record("demo", i), None).expect("append");
+    }
+    // Pad the middle of the log so the file is far larger than the tail window, without making any
+    // single line large: 2000 entries of a few hundred bytes each.
+    for i in 0..2000u16 {
+        let mut r = record("padding", 7);
+        r.timestamp = format!("2026-11-24T00:00:{:02}Z", i % 60);
+        audit::append(&path, &r, None).expect("append");
+    }
+    let before = std::fs::read_to_string(&path).expect("read");
+    assert!(
+        before.len() as u64 > 256 * 1024,
+        "the file has to exceed the tail window for this to mean anything: {}",
+        before.len()
+    );
+    let last_line = before.lines().last().expect("a last line").to_string();
+
+    // A trailing blank line, which a hand-edited log often has.
+    {
+        use std::io::Write as _;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("open");
+        writeln!(file).expect("write");
+    }
+
+    let appended = audit::append(&path, &record("demo", 9), None).expect("append");
+    let prior: audit::Entry = serde_json::from_str(&last_line).expect("the prior entry parses");
+    assert_eq!(
+        appended.prev, prior.entry_hash,
+        "the new entry chains onto the log's real last entry"
+    );
+    assert_eq!(appended.seq, prior.seq + 1);
+
+    // And the whole log still verifies, which is the only proof that nothing was skipped.
+    let file = std::fs::File::open(&path).expect("open");
+    let report = audit::verify_log_reader(std::io::BufReader::new(file)).expect("verifies");
+    assert!(report.intact(), "{:?}", report.broken);
+    assert_eq!(report.head, appended.entry_hash);
+}

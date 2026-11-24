@@ -133,6 +133,20 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **An audit log could make its reader hold the whole file, and every append re-read it.** `veridex
+  audit <log>` read the file into memory before parsing a byte, so one line of a few gigabytes was a
+  few gigabytes of allocation — and the file comes from whoever handed it over. A log's *length* is
+  not something to bound (a long-lived issuance log is the point of the thing, and refusing a large
+  one would make the tool useless exactly where it matters), so verification now streams a line at a
+  time with the ceiling per **entry**: 256 KiB, three orders of magnitude above the few hundred bytes
+  an entry is. Separately, `append` read the whole log to find the line to chain onto, which made
+  issuing the nth certificate cost n — the one operation a long-lived log repeats. The last entry is
+  in the last line, so only the tail is read now, searched backwards so a trailing blank or a
+  partially written final line still finds the entry before it. A test holds the shortcut to finding
+  the same entry the whole-file read found, across a file far larger than the window, and proves it
+  by verifying the whole chain afterwards.
+
+
 - **A dataset could write escape sequences to the reader's terminal through `veridex inspect`.** A
   Zarr store's `.zattrs` sets the task string, the author and the scenario metadata, and `inspect`
   printed all three verbatim — so a store whose task was `\u001b[2J\u001b[1;1HStatus: PASS  Trust:

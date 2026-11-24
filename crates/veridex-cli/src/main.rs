@@ -2384,14 +2384,17 @@ fn cmd_audit(rest: &[String]) -> ExitCode {
         eprintln!("veridex: audit requires an audit log path");
         return ExitCode::from(EXIT_TOOL_ERROR);
     };
-    let text = match std::fs::read_to_string(path) {
-        Ok(t) => t,
+    // Streamed, a line at a time: a log's length is not bounded — a long-lived issuance log is the
+    // point of the thing — but the memory this gives it is, and the file comes from whoever handed
+    // it over.
+    let file = match std::fs::File::open(path) {
+        Ok(f) => f,
         Err(e) => {
             eprintln!("veridex: cannot read {path}: {e}");
             return ExitCode::from(EXIT_TOOL_ERROR);
         }
     };
-    let report = match veridex_core::audit::verify_log(&text) {
+    let report = match veridex_core::audit::verify_log_reader(std::io::BufReader::new(file)) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("veridex: {path}: {e}");
