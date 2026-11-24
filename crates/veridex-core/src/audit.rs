@@ -106,7 +106,7 @@ pub struct Entry {
     pub timestamp: String,
     /// The Veridex version that wrote the entry.
     pub veridex_version: String,
-    /// SHA-256 over [`AUDIT_DOMAIN`] plus this entry's canonical body (every field above). The link
+    /// SHA-256 over the module's domain tag plus this entry's canonical body (every field above). The link
     /// the next entry records.
     pub entry_hash: String,
     /// Ed25519 over the same message `entry_hash` digests, hex, when a key signed this entry.
