@@ -2564,7 +2564,18 @@ fn docs_checks_md_lists_no_unknown_finding_codes() {
         .collect();
 
     // A finding code looks like FAMILY.CODE — uppercase family, '.', then uppercase/underscore.
+    // The one namespace the docs may name that no registered check emits: the **example pack** in
+    // the check-pack sections of `README.md` and `docs/checks.md`. The plugin surface's whole point
+    // is codes the catalog does not have, so a snippet showing one cannot satisfy this guard — and
+    // writing the example with a non-code-shaped string would make it a worse example. Exempted by
+    // one narrow prefix rather than by pattern, so a *catalog* code with a typo in it is still
+    // caught, and `tests/variant_docs.rs`-style vacuity is impossible: the assertion below requires
+    // the example to actually appear.
+    const EXAMPLE_PACK_PREFIX: &str = "MYLAB.";
     let is_finding_code = |s: &str| -> bool {
+        if s.starts_with(EXAMPLE_PACK_PREFIX) {
+            return false;
+        }
         match s.split_once('.') {
             Some((family, code)) => {
                 !family.is_empty()
@@ -2665,6 +2676,16 @@ fn docs_checks_md_lists_no_unknown_finding_codes() {
                 "{name} names `{token}`, which no registered check emits"
             );
         }
+    }
+    // The exemption is not dead: the example pack is documented on both pages, and if it ever stops
+    // being, the exemption should go with it rather than sit here excusing a namespace nobody uses.
+    for page in ["README.md", "docs/checks.md"] {
+        let text = std::fs::read_to_string(root.join(page)).expect("the page is readable");
+        assert!(
+            text.contains(EXAMPLE_PACK_PREFIX),
+            "{page} no longer shows the example check-pack, so the `{EXAMPLE_PACK_PREFIX}` \
+             exemption above has nothing to excuse and should be removed"
+        );
     }
     assert!(
         checked > 100,

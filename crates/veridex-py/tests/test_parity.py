@@ -842,6 +842,151 @@ def test_cli_and_python_audit_agree(tmp_path):
         raise AssertionError("a report is not an audit log")
 
 
+def test_a_python_check_pack_runs_beside_the_catalog(tmp_path):
+    """A pack written in Python contributes checks under the same accountability a Rust pack has.
+
+    The extensibility spec asks for the plugin API from both Rust and Python. These are the
+    properties that make such a run mean something: the pack's check runs, its finding is addressed
+    under the pack's name, the verdict records the pack, the result hash moves, and the dataset hash
+    does not.
+    """
+    dataset = _demo_dataset(tmp_path)
+
+    seen = {}
+
+    def gripper_rule(cdm_json):
+        # The CDM arrives as JSON: the same model every built-in check reads.
+        cdm = json.loads(cdm_json)
+        seen["episodes"] = len(cdm["episodes"])
+        return [
+            {
+                "code": "MYLAB.NO_GRIPPER",
+                "message": "no gripper stream in this recording",
+                "severity": "warning",
+                "episode": 0,
+                "risk": "A manipulation policy trained without the gripper channel cannot learn to grasp.",
+                "remedy": "Record the gripper state alongside the arm.",
+            }
+        ]
+
+    pack = veridex.CheckPack("mylab", "1.0.0")
+    assert pack.api_version == veridex.PLUGIN_API_VERSION
+    pack.add_check(
+        id="mylab/gripper-recorded",
+        title="The gripper stream is present",
+        run=gripper_rule,
+        codes=["MYLAB.NO_GRIPPER"],
+        category="structural",
+        severity="warning",
+    )
+
+    plain = _cli_check_json(dataset)
+    with_pack = json.loads(veridex.check_with_packs(str(dataset), [pack]))
+
+    # The pack's check ran, and saw the real CDM.
+    assert seen["episodes"] > 0, "the check was handed the real CDM"
+    assert any(
+        c["check_id"] == "mylab/gripper-recorded" for c in with_pack["verdict"]["executed_checks"]
+    ), with_pack["verdict"]["executed_checks"]
+    # Beside the catalog, not in place of it.
+    assert len(with_pack["verdict"]["executed_checks"]) == len(
+        plain["verdict"]["executed_checks"]
+    ) + 1
+    # Its finding is attributable to the pack by id, and carries what it returned.
+    finding = next(
+        f for f in with_pack["verdict"]["findings"] if f["code"] == "MYLAB.NO_GRIPPER"
+    )
+    assert finding["check_id"] == "mylab/gripper-recorded"
+    assert finding["severity"] == "warning"
+    assert "gripper" in finding["message"]
+    # The verdict records the pack, and the run is a different *result* over the same data.
+    assert {"name": "mylab", "version": "1.0.0"} in with_pack["verdict"]["packs"]
+    assert (
+        with_pack["verdict"]["cdm_content_hash"] == plain["verdict"]["cdm_content_hash"]
+    ), "the dataset is the same dataset"
+    assert (
+        with_pack["verdict"]["result_content_hash"] != plain["verdict"]["result_content_hash"]
+    ), "a run under a larger catalog is a different result and says so"
+
+
+def test_a_python_pack_is_refused_the_same_way_a_rust_one_is(tmp_path):
+    """Every refusal is the core's own, so the two surfaces cannot disagree on what a valid pack is."""
+    dataset = _demo_dataset(tmp_path)
+    nothing = lambda cdm: []
+
+    # An incompatible plugin API: refused, not loaded.
+    future = veridex.CheckPack("mylab", "1.0.0", "2.0")
+    future.add_check(
+        id="mylab/x", title="x", run=nothing, codes=["MYLAB.X"], category="structural"
+    )
+    try:
+        veridex.check_with_packs(str(dataset), [future])
+    except ValueError as e:
+        assert "plugin API 2.0" in str(e), str(e)
+    else:
+        raise AssertionError("a pack from another plugin API must be refused")
+
+    # A check id outside the pack's namespace: refused at the same place.
+    stray = veridex.CheckPack("mylab", "1.0.0")
+    stray.add_check(
+        id="house-rule", title="x", run=nothing, codes=["MYLAB.X"], category="structural"
+    )
+    try:
+        veridex.check_with_packs(str(dataset), [stray])
+    except ValueError as e:
+        assert "not under `mylab/`" in str(e), str(e)
+    else:
+        raise AssertionError("an id outside the pack's namespace must be refused")
+
+    # A pack impersonating a built-in family.
+    impostor = veridex.CheckPack("structural", "1.0.0")
+    impostor.add_check(
+        id="structural/x", title="x", run=nothing, codes=["X.Y"], category="structural"
+    )
+    try:
+        veridex.check_with_packs(str(dataset), [impostor])
+    except ValueError as e:
+        assert "built-in check family" in str(e), str(e)
+    else:
+        raise AssertionError("a pack must not be mistakable for the catalog")
+
+
+def test_a_python_check_that_misbehaves_is_errored_not_silent(tmp_path):
+    """The one outcome a plugin surface must never have is "found nothing"."""
+    dataset = _demo_dataset(tmp_path)
+
+    def raises(cdm_json):
+        raise RuntimeError("the lab's rule is broken")
+
+    pack = veridex.CheckPack("mylab", "1.0.0")
+    pack.add_check(
+        id="mylab/broken",
+        title="A rule that raises",
+        run=raises,
+        codes=["MYLAB.BROKEN"],
+        category="structural",
+    )
+    report = json.loads(veridex.check_with_packs(str(dataset), [pack]))
+    errored = report["verdict"]["errored_checks"]
+    assert any(e["check_id"] == "mylab/broken" for e in errored), errored
+    # And the rest of the run completed: one check failing does not sink the verdict.
+    assert len(report["verdict"]["executed_checks"]) > 1
+
+    # A code the check never declared is the same kind of failure: a finding no report can explain.
+    undeclared = veridex.CheckPack("mylab", "1.0.0")
+    undeclared.add_check(
+        id="mylab/undeclared",
+        title="A rule that emits what it did not declare",
+        run=lambda cdm: [{"code": "MYLAB.SOMETHING_ELSE", "message": "x"}],
+        codes=["MYLAB.DECLARED"],
+        category="structural",
+    )
+    report = json.loads(veridex.check_with_packs(str(dataset), [undeclared]))
+    assert any(
+        e["check_id"] == "mylab/undeclared" for e in report["verdict"]["errored_checks"]
+    ), report["verdict"]["errored_checks"]
+
+
 if __name__ == "__main__":
     # Minimal runner when pytest is unavailable. Defined last, so every test above it exists.
     import tempfile

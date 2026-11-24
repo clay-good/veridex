@@ -201,3 +201,116 @@ fn two_packs_cannot_register_the_same_id() {
         "a duplicate id must be refused however it arrives"
     );
 }
+
+/// The plugin API a pack declares is a compatibility statement, and an incompatible one is refused
+/// rather than loaded.
+#[test]
+fn a_pack_built_for_another_plugin_api_is_refused() {
+    use veridex_core::engine::PLUGIN_API_VERSION;
+    let current = CheckPack::for_api(
+        PLUGIN_API_VERSION,
+        "mylab",
+        "0.1.0",
+        vec![Box::new(AlwaysFires("mylab/house-rule"))],
+    );
+    assert!(
+        current.is_ok(),
+        "a pack built for this API loads: {:?}",
+        current.err()
+    );
+    // A later minor of the same major is the same contract: additive changes keep every pack
+    // loading, which is what makes the minor worth having.
+    assert!(CheckPack::for_api(
+        "1.99",
+        "mylab",
+        "0.1.0",
+        vec![Box::new(AlwaysFires("mylab/house-rule"))]
+    )
+    .is_ok());
+    // A different major is not, and the error names both versions.
+    for declared in ["2.0", "0.9", "", "one", "1x.0"] {
+        let err = CheckPack::for_api(
+            declared,
+            "mylab",
+            "0.1.0",
+            vec![Box::new(AlwaysFires("mylab/house-rule"))],
+        )
+        .expect_err("an incompatible API is refused");
+        match &err {
+            RegistryError::PluginApi {
+                pack,
+                declared: d,
+                supported,
+            } => {
+                assert_eq!(*pack, "mylab");
+                assert_eq!(d, declared);
+                assert_eq!(*supported, PLUGIN_API_VERSION);
+            }
+            other => panic!("expected a plugin-API refusal for `{declared}`, got {other:?}"),
+        }
+        // And it says what it did instead of loading, because a half-loaded pack is the failure
+        // this refusal exists to prevent.
+        assert!(
+            err.to_string()
+                .contains("refused rather than partially loaded"),
+            "{err}"
+        );
+    }
+}
+
+/// A pack loaded through the *pipeline* — the path the Python binding and any embedding caller take —
+/// runs beside the catalog rather than in place of it, and the verdict says so.
+#[test]
+fn a_pack_loaded_through_the_pipeline_runs_beside_the_catalog() {
+    let ingested = |d: veridex_core::cdm::Dataset| veridex_core::Ingested {
+        dataset: d,
+        report: veridex_core::adapter::IngestReport {
+            format_id: "test",
+            source_version: None,
+            coverage: veridex_core::adapter::Coverage::Full,
+            mapped_fields: vec![],
+            unmapped_fields: vec![],
+            unread_sources: vec![],
+            omitted_fields: vec![],
+        },
+    };
+    let plain = veridex_core::pipeline::check_ingested(
+        ingested(dataset()),
+        &veridex_core::RunConfig::default(),
+        None,
+    );
+    let with_pack = veridex_core::pipeline::check_ingested_with_packs(
+        ingested(dataset()),
+        &veridex_core::RunConfig::default(),
+        None,
+        veridex_core::RunControl::default(),
+        None,
+        vec![pack("mylab", "mylab/house-rule").expect("a valid pack")],
+    );
+    // Every catalog check still ran: a pack adds, it does not replace.
+    assert_eq!(
+        with_pack.verdict.executed_checks.len(),
+        plain.verdict.executed_checks.len() + 1,
+        "the pack's check runs beside the catalog's"
+    );
+    // The pack's finding is there, addressed under the pack's name.
+    assert!(
+        with_pack
+            .verdict
+            .findings
+            .iter()
+            .any(|f| f.check_id == "mylab/house-rule"),
+        "the pack's finding is in the verdict"
+    );
+    // And the run is a different result from the one without it, by its own hash — so a report
+    // produced under a larger catalog can never be mistaken for one produced under the catalog.
+    assert_ne!(
+        with_pack.verdict.result_content_hash, plain.verdict.result_content_hash,
+        "a run under a larger catalog is a different result and says so"
+    );
+    // The dataset is the same dataset, which is the other half of that claim.
+    assert_eq!(
+        with_pack.verdict.cdm_content_hash,
+        plain.verdict.cdm_content_hash
+    );
+}

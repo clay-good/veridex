@@ -350,9 +350,38 @@ print(manifest["verdict"]["coverage"])
 ```
 
 Python mirrors the CLI's *operations* — `check`, `certify`, `verify`, `provenance`, `inspect`, `diff`,
-`effective_config`, `label`, `attest`.
+`effective_config`, `label`, `attest`, `supersedes`, `overlap`, `audit`, `emit_cdm` / `check_cdm`.
 `watch` is not among them by design: it is a loop around `check`, not an operation, and a Python
 caller already owns their own loop.
+
+**Your own checks, in Python.** A lab's house rule does not need a Rust crate: a
+[check-pack](docs/checks.md#check-packs) can be written here, and runs beside the built-in catalog
+under the same accountability a Rust pack has.
+
+```python
+pack = veridex.CheckPack("mylab", "1.0.0")          # api_version defaults to veridex.PLUGIN_API_VERSION
+pack.add_check(
+    id="mylab/gripper-recorded",                     # every id sits under the pack's name
+    title="The gripper stream is present",
+    category="structural",
+    severity="error",
+    codes=["MYLAB.NO_GRIPPER"],                      # a finding code it does not declare is an error
+    run=lambda cdm: [] if "gripper" in cdm else [
+        {"code": "MYLAB.NO_GRIPPER", "message": "no gripper stream in this recording"}
+    ],
+)
+report = json.loads(veridex.check_with_packs("my-dataset/", [pack]))
+print(report["verdict"]["packs"])                    # [{'name': 'mylab', 'version': '1.0.0'}]
+```
+
+The callable is handed the CDM as a JSON string and returns findings. A pack is *added* to the
+catalog, never substituted for it; the verdict records each pack's name and version, and that record
+is inside the result content hash, so a run under a larger catalog is a different result and says so
+rather than looking like a disagreement about the data. A check that raises, returns something else,
+or emits a code it did not declare is recorded as **errored** — the run continues and the verdict
+says that check failed to run, which is the one thing a plugin surface must never turn into "found
+nothing". `veridex.PLUGIN_API_VERSION` is the contract a pack declares; an incompatible major is
+refused rather than partially loaded.
 
 Build the extension locally with [maturin](https://github.com/PyO3/maturin):
 `maturin develop -m crates/veridex-py/Cargo.toml`.

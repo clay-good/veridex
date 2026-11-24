@@ -1005,6 +1005,12 @@ fn version() -> &'static str {
 #[pymodule]
 fn veridex(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", veridex_core::VERSION)?;
+    m.add(
+        "PLUGIN_API_VERSION",
+        veridex_core::engine::PLUGIN_API_VERSION,
+    )?;
+    m.add_class::<PyCheckPack>()?;
+    m.add_function(wrap_pyfunction!(check_with_packs, m)?)?;
     m.add_function(wrap_pyfunction!(check, m)?)?;
     m.add_function(wrap_pyfunction!(check_sarif, m)?)?;
     m.add_function(wrap_pyfunction!(check_html, m)?)?;
@@ -1026,4 +1032,395 @@ fn veridex(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(audit, m)?)?;
     m.add_function(wrap_pyfunction!(version, m)?)?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Check-packs from Python: a lab's own rules, under the same accountability
+// ---------------------------------------------------------------------------
+
+/// One check a Python caller defined: its declared identity plus the callable that runs it.
+struct PythonCheck {
+    /// Leaked once at construction. The `Check` trait takes `&'static str` because a built-in
+    /// check's id is a literal; a Python pack's ids arrive at runtime, and leaking them is the
+    /// honest cost of letting a runtime string be a check id. A pack is built once per process.
+    id: &'static str,
+    title: &'static str,
+    version: &'static str,
+    codes: &'static [&'static str],
+    category: veridex_core::Category,
+    severity: veridex_core::Severity,
+    scope: veridex_core::Scope,
+    /// The Python callable. Takes the CDM as a JSON string and returns a list of findings.
+    run: Py<PyAny>,
+}
+
+/// The findings a Python check returned, as declared in its own vocabulary.
+#[derive(serde::Deserialize)]
+struct PyFinding {
+    code: String,
+    message: String,
+    #[serde(default)]
+    severity: Option<String>,
+    #[serde(default)]
+    episode: Option<u64>,
+    #[serde(default)]
+    stream: Option<String>,
+    #[serde(default)]
+    risk: Option<String>,
+    #[serde(default)]
+    remedy: Option<String>,
+}
+
+impl veridex_core::Check for PythonCheck {
+    fn id(&self) -> &'static str {
+        self.id
+    }
+    fn title(&self) -> &'static str {
+        self.title
+    }
+    fn category(&self) -> veridex_core::Category {
+        self.category
+    }
+    fn default_severity(&self) -> veridex_core::Severity {
+        self.severity
+    }
+    fn scope(&self) -> veridex_core::Scope {
+        self.scope
+    }
+    fn version(&self) -> &'static str {
+        self.version
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        self.codes
+    }
+    fn run(&self, dataset: &veridex_core::cdm::Dataset) -> Vec<veridex_core::check::Finding> {
+        // The CDM as JSON: the same model every built-in check reads, in the one shape a Python
+        // caller can already work with. Serializing per check costs a copy of a few megabytes and
+        // buys a plugin surface that needs no binding for every CDM type.
+        let cdm = serde_json::to_string(dataset).expect("the CDM serializes");
+        // A Python exception, a malformed return, or a code the check never declared all become a
+        // panic here, which the engine's fault isolation turns into an `errored` check: the run
+        // continues, and the verdict says this check failed to run rather than that it found
+        // nothing. Dropping to "no findings" is the one outcome a plugin surface must never have.
+        let findings: Vec<PyFinding> = Python::attach(|py| {
+            let returned = self
+                .run
+                .call1(py, (cdm,))
+                .unwrap_or_else(|e| panic!("check `{}` raised: {e}", self.id));
+            let json: String = py
+                .import("json")
+                .and_then(|m| m.call_method1("dumps", (returned,)))
+                .and_then(|s| s.extract())
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "check `{}` returned something that is not JSON-serializable: {e}",
+                        self.id
+                    )
+                });
+            serde_json::from_str(&json).unwrap_or_else(|e| {
+                panic!(
+                    "check `{}` must return a list of {{code, message, …}} objects: {e}",
+                    self.id
+                )
+            })
+        });
+        findings
+            .into_iter()
+            .map(|f| {
+                assert!(
+                    self.codes.contains(&f.code.as_str()),
+                    "check `{}` emitted `{}`, which it does not declare — a finding code that is \
+                     not in the catalog is one no report can explain",
+                    self.id,
+                    f.code
+                );
+                let severity = match f.severity.as_deref() {
+                    None => self.severity,
+                    Some("error") => veridex_core::Severity::Error,
+                    Some("warning") => veridex_core::Severity::Warning,
+                    Some("info") => veridex_core::Severity::Info,
+                    Some(other) => panic!(
+                        "check `{}` returned severity `{other}`: expected error, warning or info",
+                        self.id
+                    ),
+                };
+                let location = match (f.episode, f.stream) {
+                    (Some(episode), Some(stream)) => {
+                        veridex_core::Location::Stream { episode, stream }
+                    }
+                    (Some(episode), None) => veridex_core::Location::Episode { episode },
+                    (None, Some(_)) => panic!(
+                        "check `{}` named a stream without an episode: a stream location is an \
+                         episode's stream",
+                        self.id
+                    ),
+                    (None, None) => veridex_core::Location::Dataset,
+                };
+                let mut finding = veridex_core::check::Finding::new(
+                    self.id,
+                    self.category,
+                    severity,
+                    location,
+                    // Leaked for the same reason the id is: a finding's code is `&'static str`
+                    // because the catalog's codes are literals.
+                    Box::leak(f.code.into_boxed_str()),
+                    f.message,
+                );
+                if let Some(risk) = f.risk {
+                    finding = finding.with_risk(risk);
+                }
+                if let Some(remedy) = f.remedy {
+                    finding = finding.with_remedy(remedy);
+                }
+                finding
+            })
+            .collect()
+    }
+}
+
+/// `veridex.CheckPack(name, version, api_version=veridex.PLUGIN_API_VERSION)`
+///
+/// A named, versioned set of checks a lab, a hardware vendor or a benchmark maintainer writes for
+/// their own data — the same surface Rust callers get from `veridex_core::engine::CheckPack`, and
+/// under the same accountability. Every one of a pack's check ids sits under its name
+/// (`mylab/house-rule`), the verdict records the pack's name and version, and that record is part of
+/// the result content hash, so a run under a larger catalog says so rather than looking like a
+/// disagreement about the data.
+///
+/// ```python
+/// pack = veridex.CheckPack("mylab", "1.0.0")
+/// pack.add_check(
+///     id="mylab/gripper-recorded",
+///     title="The gripper stream is present",
+///     category="structural",
+///     severity="error",
+///     codes=["MYLAB.NO_GRIPPER"],
+///     run=lambda cdm: ([] if "gripper" in cdm else
+///                      [{"code": "MYLAB.NO_GRIPPER", "message": "no gripper stream"}]),
+/// )
+/// report = veridex.check("dataset/", packs=[pack])
+/// ```
+///
+/// The callable is handed the CDM as a **JSON string** and returns a list of
+/// `{"code", "message"}` objects, optionally with `severity`, `episode`, `stream`, `risk` and
+/// `remedy`. A check that raises, returns something else, or emits a code it did not declare is
+/// recorded in the verdict as `errored` — the run continues and says the check failed to run, rather
+/// than reading as a check that found nothing.
+///
+/// What a Python pack cannot do is what a Rust pack cannot do: sign anything. A check returns
+/// findings; signing is reachable only from the issuer's own key through `veridex.certify`.
+#[pyclass(name = "CheckPack")]
+struct PyCheckPack {
+    name: String,
+    version: String,
+    api_version: String,
+    checks: Vec<PythonCheckSpec>,
+}
+
+/// One `add_check` call, kept until the pack is handed to a run.
+struct PythonCheckSpec {
+    id: String,
+    title: String,
+    version: String,
+    codes: Vec<String>,
+    category: String,
+    severity: String,
+    scope: String,
+    run: Py<PyAny>,
+}
+
+#[pymethods]
+impl PyCheckPack {
+    #[new]
+    #[pyo3(signature = (name, version, api_version=None))]
+    fn new(name: &str, version: &str, api_version: Option<&str>) -> Self {
+        PyCheckPack {
+            name: name.to_string(),
+            version: version.to_string(),
+            api_version: api_version
+                .unwrap_or(veridex_core::engine::PLUGIN_API_VERSION)
+                .to_string(),
+            checks: Vec::new(),
+        }
+    }
+
+    /// Add a check to this pack. `category` is one of the catalog's seven families, `severity` is
+    /// the check's default (`error`, `warning`, `info`), and `scope` is `dataset`, `episode` or
+    /// `stream`.
+    #[pyo3(signature = (id, title, run, codes, category, severity="warning", scope="dataset", version="1"))]
+    #[allow(clippy::too_many_arguments)]
+    fn add_check(
+        &mut self,
+        id: &str,
+        title: &str,
+        run: Py<PyAny>,
+        codes: Vec<String>,
+        category: &str,
+        severity: &str,
+        scope: &str,
+        version: &str,
+    ) -> PyResult<()> {
+        if codes.is_empty() {
+            return Err(PyValueError::new_err(format!(
+                "check `{id}` declares no finding codes: a check that can emit a finding no report \
+                 can explain is not a check"
+            )));
+        }
+        self.checks.push(PythonCheckSpec {
+            id: id.to_string(),
+            title: title.to_string(),
+            version: version.to_string(),
+            codes,
+            category: category.to_string(),
+            severity: severity.to_string(),
+            scope: scope.to_string(),
+            run,
+        });
+        Ok(())
+    }
+
+    /// The pack's name, which is the namespace every one of its check ids sits under.
+    #[getter]
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The pack's version, as recorded in the verdict.
+    #[getter]
+    fn version(&self) -> &str {
+        &self.version
+    }
+
+    /// The plugin API this pack declares it was written against.
+    #[getter]
+    fn api_version(&self) -> &str {
+        &self.api_version
+    }
+}
+
+fn category_by_name(name: &str) -> PyResult<veridex_core::Category> {
+    Ok(match name {
+        "structural" => veridex_core::Category::Structural,
+        "temporal" => veridex_core::Category::Temporal,
+        "statistical" => veridex_core::Category::Statistical,
+        "semantic" => veridex_core::Category::Semantic,
+        "video" => veridex_core::Category::Video,
+        "provenance" => veridex_core::Category::Provenance,
+        "autonomy" => veridex_core::Category::Autonomy,
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "unknown category `{other}`: a check belongs to exactly one of structural, \
+                 temporal, statistical, semantic, video, provenance, autonomy"
+            )))
+        }
+    })
+}
+
+fn severity_by_name(name: &str) -> PyResult<veridex_core::Severity> {
+    Ok(match name {
+        "error" => veridex_core::Severity::Error,
+        "warning" => veridex_core::Severity::Warning,
+        "info" => veridex_core::Severity::Info,
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "unknown severity `{other}`: expected error, warning or info"
+            )))
+        }
+    })
+}
+
+fn scope_by_name(name: &str) -> PyResult<veridex_core::Scope> {
+    Ok(match name {
+        "dataset" => veridex_core::Scope::Dataset,
+        "episode" => veridex_core::Scope::Episode,
+        "stream" => veridex_core::Scope::Stream,
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "unknown scope `{other}`: expected dataset, episode or stream"
+            )))
+        }
+    })
+}
+
+/// Turn the Python packs a caller passed into core packs, refusing anything the core refuses.
+///
+/// Every refusal is the core's own — an incompatible plugin API, a name that cannot be a namespace,
+/// a check id that does not sit under it — so the two surfaces cannot disagree about what a valid
+/// pack is.
+fn core_packs(
+    packs: Vec<PyRef<'_, PyCheckPack>>,
+) -> PyResult<Vec<veridex_core::engine::CheckPack>> {
+    let mut out = Vec::new();
+    for pack in packs {
+        let name: &'static str = Box::leak(pack.name.clone().into_boxed_str());
+        let version: &'static str = Box::leak(pack.version.clone().into_boxed_str());
+        let mut checks: Vec<Box<dyn veridex_core::Check>> = Vec::new();
+        for spec in &pack.checks {
+            let codes: Vec<&'static str> = spec
+                .codes
+                .iter()
+                .map(|c| &*Box::leak(c.clone().into_boxed_str()))
+                .collect();
+            checks.push(Box::new(PythonCheck {
+                id: Box::leak(spec.id.clone().into_boxed_str()),
+                title: Box::leak(spec.title.clone().into_boxed_str()),
+                version: Box::leak(spec.version.clone().into_boxed_str()),
+                codes: Box::leak(codes.into_boxed_slice()),
+                category: category_by_name(&spec.category)?,
+                severity: severity_by_name(&spec.severity)?,
+                scope: scope_by_name(&spec.scope)?,
+                run: Python::attach(|py| spec.run.clone_ref(py)),
+            }));
+        }
+        out.push(
+            veridex_core::engine::CheckPack::for_api(&pack.api_version, name, version, checks)
+                .map_err(to_py_err)?,
+        );
+    }
+    Ok(out)
+}
+
+/// `veridex.check_with_packs(path, packs, format=None, config=None, metadata_only=False) -> str`
+///
+/// As `veridex.check`, with third-party check-packs loaded **beside** the built-in catalog — never
+/// in place of it, which is what makes a report from one Veridex a report from every Veridex.
+///
+/// The verdict records each pack's name and version, and that record is inside the result content
+/// hash: the same dataset checked under a larger catalog is a different result and says so. A
+/// certificate issued from such a run names the packs too, because an offline reader cannot re-run
+/// Veridex to discover that "pass" was a pass under a catalog somebody extended.
+#[pyfunction]
+#[pyo3(signature = (path, packs, format=None, config=None, metadata_only=false))]
+fn check_with_packs(
+    path: &str,
+    packs: Vec<PyRef<'_, PyCheckPack>>,
+    format: Option<&str>,
+    config: Option<&str>,
+    metadata_only: bool,
+) -> PyResult<String> {
+    let packs = core_packs(packs)?;
+    let registry = veridex_core::default_registry();
+    let run_config = run_config_from(config)?;
+    let opts = ingest_options_from(None, None, 0, metadata_only)?;
+    let mut ingested = match format {
+        Some(f) => registry.ingest_as(f, &source_for(path), &opts),
+        None => registry.ingest(&source_for(path), &opts),
+    }
+    .map_err(to_py_err)?;
+    ingested.dataset.canonicalize_order();
+    let out = veridex_core::pipeline::check_ingested_with_packs(
+        ingested,
+        &run_config,
+        None,
+        veridex_core::RunControl::default(),
+        None,
+        packs,
+    );
+    let dataset_id = out.ingested.dataset.id.clone();
+    Ok(veridex_core::render_json_with_readiness(
+        &out.verdict,
+        Some(out.trust),
+        None,
+        Some(&dataset_id),
+    ))
 }

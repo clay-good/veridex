@@ -586,6 +586,40 @@ only from the issuer's own key through `veridex certify`.
 A run that loads no pack is unchanged in every respect: no line in the report, no field in the
 JSON or the certificate, and the same result hash it had before packs existed.
 
+**A pack declares which plugin API it was written against.** `veridex_core::engine::PLUGIN_API_VERSION`
+(`veridex.PLUGIN_API_VERSION` in Python) is `major.minor`, and only the major is a compatibility
+statement: additive changes — a new defaulted trait method, a new finding field — raise the minor and
+keep every existing pack loading. A pack declaring a different major is **refused**, not loaded and
+hoped for, because the failure a compatible-looking load produces is a wrong verdict rather than an
+error. A Rust pack built against this crate has the current API by construction
+(`CheckPack::new`); `CheckPack::for_api` is for one whose version arrives at runtime.
+
+**And a pack can be written in Python**, which is where a lab's house rule usually wants to live:
+
+```python
+pack = veridex.CheckPack("mylab", "1.0.0")
+pack.add_check(
+    id="mylab/gripper-recorded",
+    title="The gripper stream is present",
+    category="structural",
+    severity="error",
+    codes=["MYLAB.NO_GRIPPER"],
+    run=lambda cdm: [] if "gripper" in cdm else [
+        {"code": "MYLAB.NO_GRIPPER", "message": "no gripper stream in this recording"}
+    ],
+)
+report = veridex.check_with_packs("my-dataset/", [pack])
+```
+
+The callable is handed the CDM as a **JSON string** — the same model every built-in check reads — and
+returns a list of `{"code", "message"}` objects, optionally with `severity`, `episode`, `stream`,
+`risk` and `remedy`. Every refusal is the core's own, so the two surfaces cannot disagree about what
+a valid pack is: an incompatible plugin API, a name that cannot be a namespace, an id outside it, a
+name that impersonates a built-in family. A check that raises, returns something else, or emits a
+code it never declared is recorded in the verdict as **errored**: the run continues and says that
+check failed to run, rather than reading as a check that found nothing — the one outcome a plugin
+surface must never have. Signing stays out of reach either way; a check returns findings.
+
 ## Scope disclosure
 
 Coverage answers *how much of the dataset did we read*. **`SCOPE.NARROWED`** (info, check id

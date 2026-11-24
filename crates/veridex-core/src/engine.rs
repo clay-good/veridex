@@ -32,6 +32,24 @@ pub enum RegistryError {
         why: &'static str,
     },
 
+    /// A pack declares a plugin-API version this build cannot run.
+    ///
+    /// Refused rather than attempted: a pack built against a different API may call a trait method
+    /// that no longer means what it did, and a run with a partially understood pack in it is a
+    /// verdict nobody can trace. The version is the API's **major** — breaking changes happen there
+    /// and nowhere else, so a pack written for `1.0` keeps loading under `1.7`.
+    #[error(
+        "check-pack `{pack}` declares plugin API {declared}, and this build runs          {supported} — a pack is refused rather than partially loaded"
+    )]
+    PluginApi {
+        /// The pack that declared it.
+        pack: &'static str,
+        /// What the pack asked for.
+        declared: String,
+        /// What this build offers.
+        supported: &'static str,
+    },
+
     /// A pack registered a check whose id does not sit under the pack's own namespace.
     ///
     /// The registry does not rewrite the id: the id in a pack's source is the id in every report,
@@ -524,9 +542,55 @@ impl std::fmt::Debug for CheckPack {
     }
 }
 
+/// The plugin API this build runs: the contract a check-pack is written against.
+///
+/// `major.minor`, and only the **major** is a compatibility statement. A pack declares what it was
+/// built for and [`CheckPack::for_api`] refuses a major this build does not run, rather than loading
+/// it and hoping — a pack written against a different trait may call a method that no longer means
+/// what it did, and a verdict with a partially understood pack in it is one nobody can trace.
+///
+/// Additive changes (a new defaulted trait method, a new finding field) raise the minor and keep
+/// every existing pack loading. The Python binding exposes this same string as
+/// `veridex.PLUGIN_API_VERSION`, because a pack written in Python is written against the same
+/// contract.
+pub const PLUGIN_API_VERSION: &str = "1.0";
+
+/// The major of a `major.minor` version string, or `None` when it is not one.
+fn api_major(version: &str) -> Option<&str> {
+    let major = version.split('.').next()?;
+    (!major.is_empty() && major.chars().all(|c| c.is_ascii_digit())).then_some(major)
+}
+
 impl CheckPack {
+    /// Build a pack that declares which plugin API it was written against, refusing a major this
+    /// build does not run.
+    ///
+    /// The version a pack passes is its own claim, not a negotiation: there is no "load it anyway"
+    /// path, because the failure a compatible-looking load produces is a wrong verdict rather than
+    /// an error.
+    pub fn for_api(
+        api_version: &str,
+        name: &'static str,
+        version: &'static str,
+        checks: Vec<Box<dyn Check>>,
+    ) -> Result<Self, RegistryError> {
+        let ours = api_major(PLUGIN_API_VERSION);
+        if api_major(api_version) != ours || ours.is_none() {
+            return Err(RegistryError::PluginApi {
+                pack: name,
+                declared: api_version.to_string(),
+                supported: PLUGIN_API_VERSION,
+            });
+        }
+        CheckPack::new(name, version, checks)
+    }
+
     /// Build a pack, refusing a name that cannot serve as a namespace and any check whose id does
     /// not sit under it.
+    ///
+    /// Declares the API this build runs implicitly, which is what a pack compiled against this
+    /// crate has by construction. [`CheckPack::for_api`] is for a pack whose API version arrives at
+    /// runtime — one written in Python, or read from a manifest.
     ///
     /// Validated here rather than at registration so a pack that is wrong is wrong at the point it
     /// is defined, which is where its author can see it.

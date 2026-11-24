@@ -7,7 +7,6 @@
 use crate::adapter::{AdapterRegistry, Coverage, IngestError, IngestOptions, Ingested, Source};
 use crate::canonical::content_hash;
 use crate::certificate::{score, ProvenanceCoverage, TrustScore};
-use crate::checks::default_engine_with;
 use crate::engine::{CoverageNote, RunConfig, Verdict};
 
 /// The result of a full check: the ingested dataset, its verdict, and its trust score.
@@ -103,11 +102,41 @@ pub fn check_ingested_controlled(
 /// engine emits the coverage findings itself — and it has to reach every renderer, so it is carried
 /// into the engine beside the coverage note rather than printed by one front end.
 pub fn check_ingested_cached(
+    ingested: Ingested,
+    run_config: &RunConfig,
+    attestation: Option<&crate::engine::AppliedAttestation>,
+    control: crate::engine::RunControl<'_>,
+    cached: Option<crate::engine::CachedInput>,
+) -> CheckOutput {
+    check_ingested_with_packs(
+        ingested,
+        run_config,
+        attestation,
+        control,
+        cached,
+        Vec::new(),
+    )
+}
+
+/// As [`check_ingested_cached`], with third-party [`CheckPack`](crate::engine::CheckPack)s loaded
+/// beside the built-in catalog.
+///
+/// The pipeline builds the engine itself — the catalog is not the caller's to choose, so that a
+/// report from one Veridex is a report from every Veridex — and this is the one way past that: packs
+/// are *added*, never substituted, and the verdict records each one by name and version so a run
+/// under a larger catalog says so rather than looking like a disagreement about the data.
+///
+/// A duplicate or mis-namespaced pack is a programming error at this point: the pack type validates
+/// itself at construction, so the only way to reach a conflict here is to register two packs that
+/// collide. That is reported by panicking rather than silently dropping a check, because a run
+/// missing a check it was asked for is exactly what the pack record exists to prevent.
+pub fn check_ingested_with_packs(
     mut ingested: Ingested,
     run_config: &RunConfig,
     attestation: Option<&crate::engine::AppliedAttestation>,
     control: crate::engine::RunControl<'_>,
     cached: Option<crate::engine::CachedInput>,
+    packs: Vec<crate::engine::CheckPack>,
 ) -> CheckOutput {
     // Normalize episode/stream order before validating so the verdict and reports are
     // order-independent, matching the order-independent content hash. The hash itself is unaffected
@@ -121,8 +150,14 @@ pub fn check_ingested_cached(
     run_config.tolerances = run_config.tolerances.finite_or_default();
     // The standard check set has unique ids by construction (asserted by tests). Build it with the
     // run's tolerances so a configured threshold takes effect.
-    let engine =
-        default_engine_with(&run_config.tolerances).expect("standard checks have unique ids");
+    let mut builder = crate::checks::default_builder_with(&run_config.tolerances)
+        .expect("standard checks have unique ids");
+    for pack in packs {
+        builder = builder
+            .register_pack(pack)
+            .expect("a check-pack's ids do not collide with the catalog's or another pack's");
+    }
+    let engine = builder.build();
     // Carry what the ingest actually covered into the verdict, so a sampled run is never readable as
     // a whole-dataset one — in the report, and under a certificate's signature.
     let coverage = match &ingested.report.coverage {

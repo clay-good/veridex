@@ -25,6 +25,27 @@ SHALL be discoverable, and breaking changes SHALL only occur on a major version.
 - **THEN** Veridex refuses to load it and reports the version mismatch
 - **AND** it does not run with a partially loaded plugin
 
+<!-- Implemented in v0.1. `veridex_core::engine::PLUGIN_API_VERSION` is the contract, exposed to
+     Python as `veridex.PLUGIN_API_VERSION`: `major.minor`, where only the **major** is a
+     compatibility statement, so an additive change (a new defaulted trait method, a new finding
+     field) raises the minor and keeps every existing pack loading. `CheckPack::for_api` refuses a
+     different major with both versions named, and there is no load-it-anyway path — the failure a
+     compatible-looking load produces is a wrong verdict rather than an error.
+
+     The Rust surface is `Check` (public, object-safe) plus `EngineBuilder::register_pack`, and a
+     pack compiled against this crate has the current API by construction. The **Python** surface is
+     `veridex.CheckPack(name, version, api_version=…)` with `add_check(...)`, run through
+     `veridex.check_with_packs(path, packs)`: a check's callable is handed the CDM as a JSON string —
+     the same model every built-in check reads — and returns findings as dicts. A check that raises,
+     returns something else, or emits a code it did not declare is recorded as **errored**, so the
+     run continues and the verdict says the check failed to run rather than that it found nothing,
+     which is the one outcome a plugin surface must never have.
+
+     Nothing is loaded from a path at runtime, in either language: a plugin that can read the dataset
+     can also read the signing key, so a pack is code the caller themself links or defines. See
+     crates/veridex-core/src/engine.rs, crates/veridex-py/src/lib.rs,
+     crates/veridex-core/tests/check_packs.rs and crates/veridex-py/tests/test_parity.py. -->
+
 ### Requirement: Custom checks are first-class
 Custom checks SHALL carry the same metadata, severities, determinism, and finding structure as
 built-in checks, and SHALL be distinguishable in results by a namespaced ID and their source pack.

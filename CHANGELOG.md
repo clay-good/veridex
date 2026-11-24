@@ -94,6 +94,31 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **Check-packs from Python, and a plugin API version that means something.** The extensibility
+  spec asks for the plugin surface "from both Rust and Python", and from Python there was none: a
+  lab's house rule meant writing a Rust crate. `veridex.CheckPack(name, version)` with
+  `add_check(id=…, codes=…, run=…)`, run through `veridex.check_with_packs(path, packs)`, closes
+  that. A check's callable is handed the CDM as a **JSON string** — the same model every built-in
+  check reads, in the one shape a Python caller already works with — and returns findings as dicts.
+
+  The accountability is the Rust surface's, unchanged: ids sit under the pack's name, the verdict
+  records each pack's name and version, and that record is inside the result content hash, so a run
+  under a larger catalog is a different result and says so rather than looking like a disagreement
+  about the data. A pack is **added** to the catalog, never substituted for it — the new
+  `pipeline::check_ingested_with_packs` is the only way past the pipeline's own engine, which is
+  what makes a report from one Veridex a report from every Veridex. Every refusal is the core's own,
+  so the two surfaces cannot disagree about what a valid pack is. And a check that raises, returns
+  something else, or emits a code it never declared is recorded as **errored**: the run continues
+  and the verdict says that check failed to run, rather than reading as a check that found nothing.
+
+  The API version is now a real contract rather than an absent one.
+  `veridex_core::engine::PLUGIN_API_VERSION` (`veridex.PLUGIN_API_VERSION`) is `major.minor`, only
+  the major is a compatibility statement, and `CheckPack::for_api` refuses a different major with
+  both versions named — there is no load-it-anyway path, because what a compatible-looking load
+  produces is a wrong verdict rather than an error. Nothing is loaded from a path at runtime in
+  either language, for the reason the docs already gave: a plugin that can read the dataset can also
+  read the signing key.
+
 - **An append-only record of what was certified and verified.** A certificate is a portable
   document, and once it leaves the machine that made it, the history of its making is gone: an issuer
   who runs `certify` twenty times and keeps the twentieth has told nobody about the nineteen, and a

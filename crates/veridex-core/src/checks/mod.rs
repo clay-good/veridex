@@ -128,9 +128,18 @@ pub fn default_engine() -> Result<Engine, RegistryError> {
 
 /// Build an [`Engine`] preloaded with the standard checks at the given [`Tolerances`].
 pub fn default_engine_with(t: &Tolerances) -> Result<Engine, RegistryError> {
+    Ok(default_builder_with(t)?.build())
+}
+
+/// The standard catalog as a builder, for a caller that will add check-packs to it before building.
+///
+/// Exposed so the pipeline can load packs *beside* the catalog rather than in place of it: the
+/// catalog is not a caller's to choose, which is what makes a report from one Veridex a report from
+/// every Veridex.
+pub fn default_builder_with(t: &Tolerances) -> Result<crate::engine::EngineBuilder, RegistryError> {
     let mut builder = Engine::builder();
     for check in standard_checks_with(t) {
         builder = builder.register(check)?;
     }
-    Ok(builder.build())
+    Ok(builder)
 }
