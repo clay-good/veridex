@@ -10,6 +10,17 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A count in a finding must agree with the list beside it, across the whole demo sweep.** Many
+  findings are written as "*N* stream(s) … (`a`, `b`, `c` and 2 more)": two numbers for one fact,
+  produced by different expressions — the count from one filter, the list from another, with a cap
+  and an "and N more" tail between them. When they drift the sentence contradicts itself and a
+  reader cannot tell which half is the defect. The new invariant reads every message the sweep
+  produces, finds the count nearest a parenthesised list, and requires the names shown plus the
+  tail to equal it. It is an invariant over the real catalog on real datasets, because the sentences
+  it covers are ones no single test asserts on. (Red-proved by narrowing one message's cap from four
+  names to three: the sweep catches it on the KITTI drive.)
+
+
 - **An MF4 bit offset past the byte, and a non-finite OXTS reading.** Two more from the sweep's
   triage. `cn_bit_offset` is the offset *within* the byte at `cn_byte_offset`, so the standard's
   range is 0-7: an 8 is a writer that meant the next byte, and reading it anyway shifts the field a

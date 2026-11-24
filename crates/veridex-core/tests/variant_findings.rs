@@ -1308,3 +1308,110 @@ fn a_fault_always_costs_data_score() {
         "the sweep must reach datasets that carry faults, got {with_faults}"
     );
 }
+
+/// A count in a finding's message must agree with the list beside it.
+///
+/// Many findings are written as "*N* stream(s) … (`a`, `b`, `c` and 2 more)": a count, then the
+/// names it counted. Two numbers for one fact, produced by different expressions — the count from
+/// one filter, the list from another, often with a cap and an "and N more" tail between them. When
+/// they drift, the sentence is self-contradicting and a reader cannot tell which half is the
+/// defect: `AUTONOMY.SENSOR_CLOCK_UNREAD` counts every stream that samples the world and
+/// `AUTONOMY.CALIBRATION_UNCHECKED` counts only the AV-native ones, so the same rig could be
+/// described as 8 streams by one and under 3 by the other, and nothing in the suite could see it.
+///
+/// So this reads every message the sweep produces and, where it finds both a count and a
+/// parenthesised list, requires the two to add up: the names shown plus the "and N more" tail must
+/// equal the count the sentence claims. It is an invariant over the real catalog on real datasets,
+/// which is the only way to cover a sentence no single test asserts on.
+#[test]
+fn every_count_in_a_finding_agrees_with_the_list_beside_it() {
+    /// The **last** "<n> <noun>(s)" in `message`, which is the one a list after it enumerates.
+    ///
+    /// The last, not the first: `STRUCTURAL.UNCOMPARED_EPISODES` says "this run covers 1
+    /// episode(s), too few for 7 check(s) … (seven names)" — two counts in one sentence, and it is
+    /// the nearer one the list belongs to.
+    fn trailing_count(message: &str) -> Option<usize> {
+        const NOUNS: [&str; 5] = [
+            " stream(s)",
+            " episode(s)",
+            " check(s)",
+            " camera(s)",
+            " camera streams",
+        ];
+        let bytes = message.as_bytes();
+        let mut found = None;
+        let mut at = 0usize;
+        while at < bytes.len() {
+            if bytes[at].is_ascii_digit() && (at == 0 || !bytes[at - 1].is_ascii_digit()) {
+                let end = bytes[at..]
+                    .iter()
+                    .position(|b| !b.is_ascii_digit())
+                    .map_or(bytes.len(), |p| at + p);
+                if let Ok(n) = message[at..end].parse::<usize>() {
+                    let rest = &message[end..];
+                    if NOUNS.iter().any(|noun| rest.starts_with(noun)) {
+                        found = Some(n);
+                    }
+                }
+                at = end;
+            } else {
+                at += 1;
+            }
+        }
+        found
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut checked_messages = 0usize;
+    for (name, target) in sweep_datasets(dir.path()) {
+        let Some(checked) = checked_for(&target) else {
+            continue;
+        };
+        for f in &checked.verdict.findings {
+            let Some(count) = trailing_count(&f.message) else {
+                continue;
+            };
+            // The list is the last parenthesised group, which is where every one of these messages
+            // puts it. A message with no parentheses states a count and names nothing, which is a
+            // different (and legitimate) shape.
+            let Some(open) = f.message.rfind(" (") else {
+                continue;
+            };
+            let open = open + 2;
+            let Some(close) = f.message[open..].rfind(')') else {
+                continue;
+            };
+            let listed = &f.message[open..open + close];
+            // Skip a parenthetical that is prose rather than a list of names.
+            if listed.contains(" is ") || listed.contains(" the ") || listed.is_empty() {
+                continue;
+            }
+            // "a, b, c and 7 more" — the tail is counted, not listed.
+            let (names_part, more) = match listed.rsplit_once(" and ") {
+                Some((head, tail)) => match tail
+                    .strip_suffix(" more")
+                    .and_then(|n| n.parse::<usize>().ok())
+                {
+                    Some(n) => (head, n),
+                    None => (listed, 0),
+                },
+                None => (listed, 0),
+            };
+            let shown = names_part.split(", ").filter(|s| !s.is_empty()).count();
+            checked_messages += 1;
+            assert_eq!(
+                shown + more,
+                count,
+                "{name}: `{}` says {count} but accounts for {} — the count and the list beside it \
+                 are two numbers for one fact: {}",
+                f.code,
+                shown + more,
+                f.message
+            );
+        }
+    }
+    assert!(
+        checked_messages >= 10,
+        "the sweep must reach messages of this shape, saw {checked_messages}"
+    );
+}
