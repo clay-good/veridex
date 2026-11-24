@@ -631,7 +631,7 @@ const MAX_JPEG_SEGMENTS: usize = 64;
 /// lossless and arithmetic-coded variants beside them, all of which carry
 /// `[precision u8][height u16][width u16]` in the same place. `DHT`, `DQT`, `APPn` and the rest are
 /// skipped; the entropy-coded scan is never reached, so no pixel is decoded.
-fn jpeg_dimensions(data: &[u8]) -> Option<(u32, u32)> {
+pub(crate) fn jpeg_dimensions(data: &[u8]) -> Option<(u32, u32)> {
     if data.get(..2)? != [0xFF, 0xD8] {
         return None;
     }
@@ -673,7 +673,7 @@ fn jpeg_dimensions(data: &[u8]) -> Option<(u32, u32)> {
 ///
 /// `IHDR` is the first chunk by the spec, at a fixed offset behind the 8-byte signature, so there is
 /// no chain to walk and no pixel to decode.
-fn png_dimensions(data: &[u8]) -> Option<(u32, u32)> {
+pub(crate) fn png_dimensions(data: &[u8]) -> Option<(u32, u32)> {
     if data.get(..8)? != b"\x89PNG\r\n\x1a\n" || data.get(12..16)? != b"IHDR" {
         return None;
     }

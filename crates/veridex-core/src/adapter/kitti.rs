@@ -357,6 +357,35 @@ fn read_text(path: &Path) -> Result<Option<String>, IngestError> {
     ))
 }
 
+/// How many bytes of an image sample this reader will look at.
+///
+/// A PNG's `IHDR` is at a fixed offset behind the signature and a JPEG's first `SOFn` is a short
+/// walk from the front, so the dimensions are in the first few hundred bytes of either. Reading a
+/// fixed prefix keeps a camera sample's cost the same whatever the file's size — Veridex never
+/// decodes a pixel, and a drive is thousands of samples.
+const IMAGE_HEADER_BYTES: usize = 1024;
+
+/// The dimensions a camera sample declares in its own header, or `None` when it declares none.
+///
+/// KITTI's cameras are `.png` by the dev kit's layout, and a rig that re-encoded its drive to
+/// `.jpg` is the same recording in another container — so both are probed, and anything else is
+/// simply unmeasured. Without this the four cameras of every KITTI drive carried no dimensions at
+/// all: `autonomy.image-integrity` abstained (`AUTONOMY.IMAGE_UNMEASURED`), which means the
+/// dead-camera fault — a stream of well-formed zero-sized frames at the right cadence — was
+/// unreportable on this format, and a resolution that changed part-way through a drive was
+/// invisible.
+fn image_header_dims(path: &Path) -> Result<Option<(u32, u32)>, IngestError> {
+    use std::io::Read as _;
+    let Ok(file) = std::fs::File::open(path) else {
+        return Ok(None);
+    };
+    let mut head = Vec::with_capacity(IMAGE_HEADER_BYTES);
+    file.take(IMAGE_HEADER_BYTES as u64)
+        .read_to_end(&mut head)
+        .map_err(|e| IngestError::Io(e.to_string()))?;
+    Ok(super::cdr::png_dimensions(&head).or_else(|| super::cdr::jpeg_dimensions(&head)))
+}
+
 /// A KITTI calibration file: `key: v1 v2 …` per line, which is how every one of the three is written.
 fn read_calib(path: &Path) -> Result<BTreeMap<String, String>, IngestError> {
     let Some(text) = read_text(path)? else {
@@ -711,6 +740,7 @@ fn ingest_drive(path: &Path, options: &IngestOptions) -> Result<Ingested, Ingest
             unfixed: 0,
         };
         let mut point_counts = super::cdr::PointCountAccum::default();
+        let mut image_dims = super::cdr::ImageDimAccum::default();
         let mut values = super::stats::StreamValues::default();
         // The `oxts` directory is one file per sample holding three records — position, orientation
         // and velocity, and the inertial measurement — so its rows feed three accumulators and
@@ -745,6 +775,19 @@ fn ingest_drive(path: &Path, options: &IngestOptions) -> Result<Ingested, Ingest
                                 .len();
                             if len % VELODYNE_POINT_BYTES == 0 {
                                 point_counts.observe(len / VELODYNE_POINT_BYTES);
+                            }
+                        }
+                        // A camera sample's own header, which is the only thing in a drive that
+                        // says how large its images are. A sample that declares nothing is folded
+                        // in as unmeasured rather than skipped: "no frame was measured" and "a
+                        // stream of empty frames" are opposite verdicts.
+                        Modality::Video => {
+                            // A file that declares no dimensions at all is not an empty frame —
+                            // the accumulator would read a zero as the dead-camera fault — so
+                            // nothing is observed for it, and the stream reports measurements only
+                            // for the samples that carried them.
+                            if let Some((w, h)) = image_header_dims(p)? {
+                                image_dims.observe(w, h);
                             }
                         }
                         // The three fields the plausibility rules read, and what the receiver
@@ -814,7 +857,7 @@ fn ingest_drive(path: &Path, options: &IngestOptions) -> Result<Ingested, Ingest
             point_fields: None,
             observed_diagnostics: None,
             observed_point_counts: point_counts.finish(),
-            observed_image_dims: None,
+            observed_image_dims: image_dims.finish(),
             observed_body_decodes: None,
             observed_byte_order: None,
             observed_header_stamps: None,

@@ -10,6 +10,18 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **KITTI reads each camera sample's own image size, so the image rules answer instead of
+  abstaining.** A PNG's `IHDR` sits at a fixed offset behind the signature, so the dimensions are a
+  bounded prefix read with no pixel decoded (JPEG too, for a drive re-encoded that way). Without it
+  the four cameras of every drive carried no dimensions, `autonomy.image-integrity` reported
+  `AUTONOMY.IMAGE_UNMEASURED`, and the dead-camera fault — a stream of well-formed zero-sized frames
+  at the right cadence — was unreportable on this format. The demo drive's samples now declare the
+  1392x512 its calibration's `S_0N` states, and a new `shrinking-camera` variant re-encodes
+  `image_02` at half size half-way through the drive: every frame present, on time, in the right
+  frame, the frame count matching the manifest, the calibration still stating the original size — and
+  `AUTONOMY.IMAGE_RESIZED` reports it.
+
+
 - **KITTI's demo variants are now held to their own documentation, and one claim was already
   wrong.** Five formats' variants were checked against the bullets that describe them; KITTI's were
   checked by nothing, because this generator writes a *tree* (`<root>/<date>/<drive>`) and the

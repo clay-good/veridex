@@ -424,6 +424,75 @@ fn a_nan_in_the_inertial_fields_is_reported_rather_than_summarized_away() {
 }
 
 #[test]
+fn a_camera_sample_gives_up_its_size_without_a_pixel_being_decoded() {
+    // The only thing in a KITTI drive that says how large its images are is each sample's own
+    // header, and the dev kit's samples are PNGs: `IHDR` sits at a fixed offset behind the
+    // signature. Without reading it the four cameras of every drive carried no dimensions, so
+    // `autonomy.image-integrity` abstained (`AUTONOMY.IMAGE_UNMEASURED`) — which means the
+    // dead-camera fault, a stream of well-formed zero-sized frames at the right cadence, was
+    // unreportable on this format.
+    let (_dir, got) = ingest("rig");
+    for name in ["image_00", "image_01", "image_02", "image_03"] {
+        let stream = got.dataset.episodes[0]
+            .streams
+            .iter()
+            .find(|s| s.name == name)
+            .unwrap_or_else(|| panic!("the {name} stream"));
+        let dims = stream
+            .observed_image_dims
+            .as_ref()
+            .unwrap_or_else(|| panic!("{name} carries measured dimensions"));
+        // The size the calibration's `S_0N` states, read independently from the samples: the two
+        // agreeing is what a clean drive looks like.
+        assert_eq!((dims.min_width, dims.max_width), (1392, 1392), "{dims:?}");
+        assert_eq!((dims.min_height, dims.max_height), (512, 512), "{dims:?}");
+        assert_eq!(dims.empty, 0, "{dims:?}");
+        assert_eq!(dims.message_count, stream.frames.len() as u64, "{dims:?}");
+    }
+
+    // And the abstention is gone, which is the point: a clean drive no longer reports that the
+    // image rules had nothing to measure.
+    let codes = codes_for(&got);
+    assert!(
+        !codes.contains(&"AUTONOMY.IMAGE_UNMEASURED".to_string()),
+        "{codes:?}"
+    );
+}
+
+#[test]
+fn a_camera_re_encoded_half_way_through_a_drive_is_caught_end_to_end() {
+    // The defect the image family exists for, in the format that publishes the calibration it
+    // contradicts: `image_02` is 1392x512 for the first half of the drive and 696x256 for the
+    // second. Every frame is present, on time and in the right coordinate frame, the frame count
+    // matches the manifest, and the calibration still states the original size — so the intrinsics
+    // are wrong for half the recording and every presence test passes.
+    let (_dir, got) = ingest("shrinking-camera");
+    let stream = got.dataset.episodes[0]
+        .streams
+        .iter()
+        .find(|s| s.name == "image_02")
+        .expect("the re-encoded camera");
+    let dims = stream.observed_image_dims.as_ref().expect("measured");
+    assert_eq!((dims.min_width, dims.max_width), (696, 1392), "{dims:?}");
+
+    let codes = codes_for(&got);
+    assert!(
+        codes.contains(&"AUTONOMY.IMAGE_RESIZED".to_string()),
+        "{codes:?}"
+    );
+    // The other three cameras are untouched, so the finding is about the stream and not the drive.
+    for name in ["image_00", "image_01", "image_03"] {
+        let other = got.dataset.episodes[0]
+            .streams
+            .iter()
+            .find(|s| s.name == name)
+            .expect("a camera");
+        let dims = other.observed_image_dims.as_ref().expect("measured");
+        assert_eq!((dims.min_width, dims.max_width), (1392, 1392), "{name}");
+    }
+}
+
+#[test]
 fn every_one_of_the_thirty_oxts_fields_is_either_mapped_or_disclosed() {
     // `dataformat.txt` defines thirty fields and the report accounts for them by number: the mapped
     // list says where each one went, the unmapped note says which were not read. A field in neither

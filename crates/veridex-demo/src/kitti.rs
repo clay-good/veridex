@@ -34,7 +34,13 @@
 //!   says which part it speaks for. That camera then genuinely ends before the others, which
 //!   `TEMPORAL.END_OFFSET` reports too, and both facts are true.
 //!
-//! Usage: `cargo run -p veridex-demo --example make_demo_kitti -- <output-dir> [rig|dead-lidar|unsynced|null-island|no-fix|missing-samples]`
+//! - `shrinking-camera` — the same drive whose `image_02` is re-encoded at half size half-way
+//!   through: 1392x512 for the first ten samples and 696x256 for the rest. Every frame is present,
+//!   on time and in the right frame, and the calibration still states the original size — so the
+//!   presence, cadence and frame-count rules all pass while the intrinsics are wrong for half the
+//!   recording → `AUTONOMY.IMAGE_RESIZED`.
+//!
+//! Usage: `cargo run -p veridex-demo --example make_demo_kitti -- <output-dir> [rig|dead-lidar|unsynced|null-island|no-fix|missing-samples|shrinking-camera]`
 //!
 //! Then: `veridex check <output-dir>/2011_09_26/2011_09_26_drive_0005_sync`.
 
@@ -51,6 +57,7 @@ pub const VARIANTS: &[&str] = &[
     "null-island",
     "no-fix",
     "missing-samples",
+    "shrinking-camera",
 ];
 
 /// The date directory a drive sits under, and the drive's own name — the shape KITTI publishes.
@@ -64,6 +71,24 @@ const SAMPLES: usize = 20;
 /// Points in one demo sweep.
 const POINTS: usize = 64;
 
+/// The image size KITTI's `calib_cam_to_cam.txt` states in `S_0N`, and the one the camera samples
+/// declare in their own `IHDR`. The two agreeing is what a clean drive looks like.
+const IMAGE_WIDTH: u32 = 1392;
+const IMAGE_HEIGHT: u32 = 512;
+
+/// A PNG signature and `IHDR` for `width` x `height` — the header a reader probes, with no pixel
+/// data behind it, because Veridex never decodes one.
+fn png_header(width: u32, height: u32) -> Vec<u8> {
+    let mut v = b"\x89PNG\r\n\x1a\n".to_vec();
+    v.extend_from_slice(&13u32.to_be_bytes()); // IHDR length
+    v.extend_from_slice(b"IHDR");
+    v.extend_from_slice(&width.to_be_bytes());
+    v.extend_from_slice(&height.to_be_bytes());
+    // Bit depth 8, colour type 2 (truecolour), default compression, filter and interlace.
+    v.extend_from_slice(&[8, 2, 0, 0, 0]);
+    v
+}
+
 /// Write the demo KITTI raw drive under `dir`, replacing anything already there.
 ///
 /// Returns the drive directory, which is the dataset a reader points Veridex at.
@@ -74,6 +99,7 @@ pub fn write(dir: &Path, variant: &str) -> Result<(), DemoError> {
     let null_island = variant == "null-island";
     let no_fix = variant == "no-fix";
     let missing_samples = variant == "missing-samples";
+    let shrinking_camera = variant == "shrinking-camera";
 
     crate::fresh_dir(dir)?;
     let date_dir = dir.join(DATE);
@@ -113,18 +139,28 @@ pub fn write(dir: &Path, variant: &str) -> Result<(), DemoError> {
             lines.push('\n');
         }
         fs::write(drive.join(sensor).join("timestamps.txt"), lines).map_err(DemoError::Io)?;
-        // A camera sample is a PNG. The bytes are a real PNG header plus a payload that varies per
-        // sample, so frames are content-distinct the way a real recording's are — Veridex
-        // fingerprints a camera file and never decodes it.
+        // A camera sample is a PNG, and its `IHDR` carries the real thing: the 1392x512 the
+        // calibration's `S_0N` was computed for, which is what makes the image rules answer on this
+        // format instead of abstaining. The payload behind the header varies per sample, so frames
+        // are content-distinct the way a real recording's are — Veridex fingerprints a camera file
+        // and decodes no pixel of it.
         let written = if missing_samples && sensor == "image_00" {
             SAMPLES - 5
         } else {
             SAMPLES
         };
         for i in 0..written {
-            let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+            // `shrinking-camera` re-encodes the second half of `image_02` at half size: a
+            // resolution that changed part-way through one recording, which every presence,
+            // cadence and frame-count test passes.
+            let (w, h) = if shrinking_camera && sensor == "image_02" && i * 2 >= SAMPLES {
+                (IMAGE_WIDTH / 2, IMAGE_HEIGHT / 2)
+            } else {
+                (IMAGE_WIDTH, IMAGE_HEIGHT)
+            };
+            let mut bytes = png_header(w, h);
             bytes.extend_from_slice(&(i as u32).to_le_bytes());
-            bytes.resize(64, i as u8);
+            bytes.resize(96, i as u8);
             fs::write(
                 drive.join(sensor).join("data").join(format!("{i:010}.png")),
                 bytes,

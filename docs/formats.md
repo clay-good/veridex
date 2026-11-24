@@ -896,7 +896,13 @@ each stream carries the times that sensor was sampled at and the cross-stream ch
 the `unsynced` variant is a LiDAR whose timestamps span two thirds of the others', and
 `AUTONOMY.RIG_SYNC` reports it rig-wide — one finding about the rig rather than one per pair, which
 is what reading the OXTS unit's three records buys: the drive is over the rig threshold, so the
-rig-wide check answers instead of the pairwise `TEMPORAL.CLOCK_SKEW`. **Point counts** come from each
+rig-wide check answers instead of the pairwise `TEMPORAL.CLOCK_SKEW`. **Image sizes** come from each camera sample's own
+`IHDR` — a fixed offset behind the PNG signature, so no pixel is decoded and the read is a bounded
+prefix whatever the file's size. Without it the four cameras of every drive carried no dimensions at
+all and the image rules abstained, which made the dead-camera fault — a stream of well-formed
+zero-sized frames at the right cadence — unreportable on this format; the `shrinking-camera` variant
+is a camera re-encoded at half size half-way through a drive, which every presence, cadence and
+frame-count rule passes and `AUTONOMY.IMAGE_RESIZED` reports. **Point counts** come from each
 sweep's own length: a KITTI `.bin` is `float32 [x, y, z, reflectance]` per point, so the count is the
 file size over sixteen, read from `stat` with no point payload decoded — which is what catches a
 drive whose LiDAR recorded nothing. **Calibration** is the real thing: the per-camera intrinsics and

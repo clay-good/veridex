@@ -597,7 +597,7 @@ fn every_kitti_variant_emits_what_its_documentation_claims() {
         veridex_demo::kitti::VARIANTS,
         veridex_demo::kitti::write,
         None,
-        |root| veridex_demo::kitti::drive_path(root),
+        veridex_demo::kitti::drive_path,
     );
 }
 
