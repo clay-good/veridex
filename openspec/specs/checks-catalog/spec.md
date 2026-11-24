@@ -151,16 +151,54 @@ Veridex SHALL provide checks that flag likely personally identifiable informatio
 publishing. These checks SHALL only flag, never redact or modify data, and SHALL be clearly
 probabilistic.
 
-**Decided against, not pending.** Detecting a face means decoding pixels and running a model over
-them, and Veridex's design commitment is the opposite: it reads structure and metadata and
-fingerprints bytes, never interprets them. Closing this requirement would mean giving that up, so it
-is recorded here as a limit rather than a backlog item, and stated in the README and
-[docs/checks.md](../../../docs/checks.md) so a Veridex pass is never read as a PII review.
+<!-- Implemented in v0.1 for the data Veridex reads; the pixel half stays refused by design.
 
-#### Scenario: Likely faces in camera frames are flagged for review
-- **WHEN** a video stream likely contains human faces
-- **THEN** a privacy check emits a finding indicating likely PII and where
-- **AND** Veridex does not alter the frames and marks the finding as a probabilistic signal
+     `provenance.personal-data` answers both halves of this requirement as honestly as a tool that
+     decodes nothing can.
+
+     `PROVENANCE.PERSONAL_DATA` (warning) flags a recorded string that looks like personal data: an
+     email address, a telephone number as a person writes one, or a path naming the user who ran the
+     recorder. It matches on the text Veridex already reads — dataset metadata values, provenance
+     element values, episode task and label strings — and the path is the commonest of the three by
+     a long way, because it arrives in a lineage or source field and nobody means to publish it. The
+     finding names the field and the kind and **never the value**: a finding travels wherever the
+     report does, and one that quoted the address would publish exactly what it warns about. It is
+     flag-only, probabilistic in those words, and deliberately a short list of shapes that cannot
+     plausibly be a sensor name or an id — a check that fires on honest data teaches its reader to
+     ignore it.
+
+     `PROVENANCE.IMAGERY_WITHOUT_CONSENT` (info) reports a dataset that carries camera streams and
+     records neither a `consent` nor a `redaction` element. It is **not** a claim that a person
+     appears in them. Veridex does not decode a pixel, so it cannot know, and a tool that implied
+     otherwise would be worse than silent. What it reports is the thing a consumer cannot discover
+     from any other field and a producer can still fix: there is imagery here, and no record of the
+     permission it was taken under.
+
+     The original scenario below — "a video stream likely contains human faces" — stays **refused**.
+     Deciding that means decoding pixels and running a model over them, and this tool's design
+     commitment is the opposite: it reads structure and metadata and fingerprints bytes, never
+     interprets them. So the scenario is restated to what is built, the refusal is kept beside it,
+     and the README and [docs/checks.md](../../../docs/checks.md) both say that a Veridex pass is
+     not a PII review of the imagery. See crates/veridex-core/src/checks/provenance.rs. -->
+
+#### Scenario: Recorded personal data is flagged for review
+- **WHEN** a dataset's metadata, provenance, task or label text holds what looks like an email
+  address, a telephone number, or a path naming the user who ran the recorder
+- **THEN** a privacy check emits a finding naming the field and the kind of personal datum
+- **AND** the finding does not quote the value, Veridex does not alter the dataset, and the finding
+  states that it is a pattern match rather than a judgement
+
+#### Scenario: Imagery with no record of consent is reported as such
+- **WHEN** a dataset carries camera streams and records no consent or redaction status
+- **THEN** a privacy check reports the imagery and the absent record
+- **AND** the finding states that Veridex decodes no pixels and so makes no claim about whether a
+  person appears in the frames
+
+#### Scenario: Faces in camera frames are not detected, and the report says so
+- **WHEN** a consumer asks whether a dataset's imagery contains identifiable people
+- **THEN** no Veridex check answers that question, because answering it means interpreting pixels
+- **AND** the documentation states the limit, so a Veridex pass is never read as a PII review of
+  the imagery
 
 ### Requirement: Every check documents its rationale and remedy
 Each catalog check SHALL ship with a stable ID, the training-time risk it addresses, and a

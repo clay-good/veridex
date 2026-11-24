@@ -37,6 +37,32 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **What a dataset records about people, and what nobody can tell from the outside.** The catalog's
+  privacy requirement had stood as a refusal: detecting a face means decoding pixels and running a
+  model over them, which this tool's design is the opposite of. That refusal was right about pixels
+  and wrong about the requirement, because most personal data that gets published in a robot dataset
+  is not in the pictures at all — it is in the text beside them. `provenance.personal-data` reads
+  the strings Veridex already reads (dataset metadata values, provenance element values, episode task
+  and label text) and flags the shapes that cannot plausibly be a sensor name or an id:
+  `PROVENANCE.PERSONAL_DATA` (warning) for an email address, a telephone number as a person writes
+  one, or a path naming the user who ran the recorder — `/home/<user>/`, `/Users/<user>/`,
+  `C:\Users\<user>\`, which arrives in a lineage or source field and is nobody's intention to
+  publish. The finding names **the field and the kind and never the value**: a finding travels
+  wherever the report does, so one that quoted the address would publish exactly what it warns
+  about. One finding per (kind, field), so a task string copied into a thousand episodes is one
+  finding rather than a thousand.
+
+  The second half is the honest answer to the question the refusal was about.
+  `PROVENANCE.IMAGERY_WITHOUT_CONSENT` (info) reports a dataset carrying camera streams with neither
+  a `consent` nor a `redaction` element, and says in the finding itself that Veridex decodes no pixel
+  and therefore makes **no claim** about whether a person appears in them. What it reports is the one
+  thing a consumer cannot discover from any other field and a producer can still fix before
+  publishing: there is imagery here, and no record of the permission it was taken under. Flag-only
+  and probabilistic in those words — Veridex never edits your data, and `--redact` keeps a value out
+  of a *report* you are sharing, which is a different problem from keeping it out of the dataset. The
+  catalog is now 53 checks and 125 finding codes; the pixel question stays refused by design, and the
+  README, [docs/checks.md](docs/checks.md) and the spec all say so where a reader looks for it.
+
 - **A run can be watched, bounded in time, and re-used.** The two `validation-engine` requirements
   that were left unbuilt are built.
 

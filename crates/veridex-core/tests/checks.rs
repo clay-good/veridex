@@ -1695,7 +1695,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 52);
+    assert_eq!(verdict.executed_checks.len(), 53);
 }
 
 #[test]
@@ -8186,6 +8186,193 @@ fn a_conflict_is_judged_across_every_provenance_scope() {
         codes.contains(&"PROVENANCE.LICENSE_CONFLICT".to_string()),
         "{codes:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// `provenance.personal-data` — what a dataset records about people.
+// ---------------------------------------------------------------------------
+
+/// The codes `provenance.personal-data` produces on a dataset whose `source_file` provenance
+/// element holds `value`. A `source_file` because that is where this arrives in practice: a
+/// recorder writes the path it read, and the path is under somebody's home directory.
+fn personal_codes(value: &str) -> Vec<String> {
+    use veridex_core::check::Check;
+    let mut d = dataset(vec![episode(0, vec![stream("s", "c", None, &[0, 1])])]);
+    d.provenance = vec![Provenance {
+        scope: ProvenanceScope::Dataset,
+        elements: vec![el("source_file", Some(value), ProvenanceClass::Known)],
+    }];
+    provenance::PersonalData
+        .run(&d)
+        .into_iter()
+        .map(|f| f.code)
+        .collect()
+}
+
+#[test]
+fn a_recorder_path_under_a_home_directory_is_reported() {
+    // The commonest personal datum in a robot dataset and the one nobody means to publish: the
+    // path names the person who ran the recorder.
+    for path in [
+        "/home/aileen/ros2_ws/rosbag2_2026_01_04/",
+        "/Users/aileen/data/drive_0001.bag",
+        r"C:\Users\aileen\recordings\run4.mcap",
+    ] {
+        assert_eq!(
+            personal_codes(path),
+            ["PROVENANCE.PERSONAL_DATA"],
+            "`{path}`"
+        );
+    }
+}
+
+#[test]
+fn an_email_address_and_a_telephone_number_are_reported() {
+    assert_eq!(
+        personal_codes("recorded by a.okonkwo@lab.example.edu"),
+        ["PROVENANCE.PERSONAL_DATA"]
+    );
+    assert_eq!(
+        personal_codes("contact +44 7700 900123"),
+        ["PROVENANCE.PERSONAL_DATA"]
+    );
+}
+
+#[test]
+fn the_finding_never_quotes_the_value_it_warns_about() {
+    // The whole design: a finding travels wherever the report does, so one that printed the
+    // address would publish exactly what it was warning about. The field and the kind, never the
+    // value.
+    use veridex_core::check::Check;
+    let mut d = dataset(vec![episode(0, vec![stream("s", "c", None, &[0, 1])])]);
+    d.provenance = vec![Provenance {
+        scope: ProvenanceScope::Dataset,
+        elements: vec![el(
+            "source_file",
+            Some("/home/aileen/bags/a.okonkwo@lab.example.edu"),
+            ProvenanceClass::Known,
+        )],
+    }];
+    for f in provenance::PersonalData.run(&d) {
+        let text = format!("{} {} {}", f.message, f.risk, f.remedy);
+        assert!(
+            !text.contains("aileen") && !text.contains("a.okonkwo"),
+            "the value leaked into the finding: {text}"
+        );
+        assert!(f.message.contains("source_file"), "{}", f.message);
+    }
+}
+
+#[test]
+fn the_ordinary_strings_a_dataset_is_full_of_are_silent() {
+    // A check that fires on honest data teaches its reader to ignore it. Every one of these is a
+    // shape a real dataset carries in the fields this check reads.
+    for value in [
+        "apache-2.0",
+        "/data/shared/lerobot/pusht",
+        "/home/shared/datasets/run1",
+        "episode_000123.parquet",
+        "1735689600123456789",
+        "123456789",
+        "realsense_d435i serial 827312071234",
+        "pick up the red block and place it in the bowl",
+        "git+https://github.com/example/recorder@3f9c1ab",
+        "v1.2.3-rc4 build 20260104",
+        "0.001 0.000 -0.002 1.000",
+    ] {
+        assert!(
+            personal_codes(value).is_empty(),
+            "`{value}` is not personal data"
+        );
+    }
+}
+
+#[test]
+fn a_value_repeated_across_every_episode_is_one_finding() {
+    // Otherwise a thousand-episode dataset gets a thousand copies of one fact, and the real
+    // findings are buried under them.
+    use veridex_core::check::Check;
+    let mut d = dataset(
+        (0..40)
+            .map(|i| {
+                let mut e = episode(i, vec![stream("s", "c", None, &[0, 1])]);
+                e.task = Some("teleoperated by r.vasquez@example.org".to_string());
+                e
+            })
+            .collect(),
+    );
+    d.provenance = vec![];
+    let codes: Vec<String> = provenance::PersonalData
+        .run(&d)
+        .into_iter()
+        .map(|f| f.code)
+        .collect();
+    assert_eq!(codes, ["PROVENANCE.PERSONAL_DATA"], "{codes:?}");
+}
+
+#[test]
+fn imagery_with_no_consent_record_is_reported_without_claiming_a_person_is_in_it() {
+    use veridex_core::check::Check;
+    let mut cam = stream(
+        "observation.images.wrist",
+        "c",
+        Some(30.0),
+        &[0, 33_000_000],
+    );
+    cam.modality = Modality::Video;
+    let d = dataset(vec![episode(0, vec![cam])]);
+    let findings = provenance::PersonalData.run(&d);
+    let f = findings
+        .iter()
+        .find(|f| f.code == "PROVENANCE.IMAGERY_WITHOUT_CONSENT")
+        .expect("a camera stream and no consent status");
+    assert_eq!(f.severity, Severity::Info);
+    assert!(
+        f.message.contains("observation.images.wrist"),
+        "{}",
+        f.message
+    );
+    // It must not read as a claim about pixels, because Veridex decodes none.
+    let risk = f.risk.clone();
+    assert!(
+        risk.contains("never decodes a pixel"),
+        "the finding must say what it cannot know: {risk}"
+    );
+}
+
+#[test]
+fn a_recorded_consent_status_answers_the_question() {
+    use veridex_core::check::Check;
+    let mut cam = stream(
+        "observation.images.wrist",
+        "c",
+        Some(30.0),
+        &[0, 33_000_000],
+    );
+    cam.modality = Modality::Video;
+    let mut d = dataset(vec![episode(0, vec![cam])]);
+    d.provenance = vec![Provenance {
+        scope: ProvenanceScope::Dataset,
+        elements: vec![el(
+            "consent",
+            Some("written consent on file, operators only"),
+            ProvenanceClass::Known,
+        )],
+    }];
+    assert!(
+        provenance::PersonalData
+            .run(&d)
+            .iter()
+            .all(|f| f.code != "PROVENANCE.IMAGERY_WITHOUT_CONSENT"),
+        "a dataset that carries its own answer is not asked the question"
+    );
+}
+
+#[test]
+fn a_dataset_with_no_cameras_is_not_asked_about_imagery() {
+    use veridex_core::check::Check;
+    let d = dataset(vec![episode(0, vec![stream("s", "c", None, &[0, 1])])]);
+    assert!(provenance::PersonalData.run(&d).is_empty());
 }
 
 // ---------------------------------------------------------------------------

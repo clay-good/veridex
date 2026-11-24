@@ -20,14 +20,14 @@ veridex check my-dataset/
 This is a real run, against the demo recording the [Quickstart](#quickstart) builds — every finding
 with its location and message, and the training *risk* and the *remedy* for anything at warning or
 error. Trimmed to fit: the terminal also prints the CDM content hash and a per-episode rollup with
-the worst episode first, and the eight informational findings are elided here, `--full` adding their
+the worst episode first, and the nine informational findings are elided here, `--full` adding their
 risk and remedy too.
 
 ```
 Veridex report
   Status:   FAIL   Trust: 76 (C)  [data 81 · provenance 66%]
-  Findings: 1 error · 1 warning · 8 info
-  By category: provenance 2 · semantic 2 · statistical 2 · structural 2 · temporal 2
+  Findings: 1 error · 1 warning · 9 info
+  By category: provenance 3 · semantic 2 · statistical 2 · structural 2 · temporal 2
 
 Findings:
   [error] TEMPORAL.CLOCK_SKEW  episode 0
@@ -381,10 +381,11 @@ cargo clippy --all-targets
 ## Status
 
 **Early implementation, runs end-to-end.** Against a full [OpenSpec](openspec/) design, this is what
-is in and tested. Every requirement in those specs is now either built or recorded as a decision
-with its reasoning — the two that are not built say so in the spec beside them (a privacy check
-would mean decoding pixels, which this tool's design refuses; incremental validation cannot be both
-cheap and identical to a full run) rather than reading as pending work.
+is in and tested. Every requirement in those specs is now built, with one half-requirement
+recorded as a decision beside it in the spec: deciding whether a *face* is in frame would mean
+decoding pixels, which this tool's design refuses, so the privacy requirement is built for the data
+Veridex does read — recorded personal data and imagery carried without a record of consent — and
+the pixel question is kept as a stated limit rather than reading as pending work.
 
 | Piece | What is in |
 |---|---|
@@ -438,8 +439,12 @@ remote source without `--metadata-only` is refused by name: Veridex validates, i
 download.
 
 What Veridex does **not** tell you, stated plainly because silence would read as a pass: it never
-decodes a pixel or a point, so it says nothing about the *content* of your imagery — no PII or face
-detection, and no *perceptual* duplicate detection. It does catch exact duplicate episodes and
+decodes a pixel or a point, so it says nothing about the *content* of your imagery — no face
+detection in the pictures, and no *perceptual* duplicate detection. (It does read the dataset's own
+text: `provenance.personal-data` flags a recorded email address, telephone number or recorder home
+path, and reports camera streams carried with no record of consent or redaction. That is the half of
+the privacy question answerable without interpreting pixels, and it is where most accidentally
+published personal data sits.) It does catch exact duplicate episodes and
 **partial** copies (`STRUCTURAL.NEAR_DUPLICATE_EPISODE` — a re-upload with its tail trimmed, an
 episode contained in a longer one), because those share frames byte-for-byte; a re-encoded or
 noise-perturbed copy shares no bytes and is out of reach without decoding. Where a stream carries no

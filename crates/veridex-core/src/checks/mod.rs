@@ -114,6 +114,7 @@ pub fn standard_checks_with(t: &Tolerances) -> Vec<Box<dyn Check>> {
         Box::new(provenance::ProvenanceCompleteness),
         Box::new(provenance::LicenseCompatibility),
         Box::new(provenance::TimeSource),
+        Box::new(provenance::PersonalData),
     ]
 }
 

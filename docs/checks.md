@@ -147,6 +147,8 @@ is why the extension list and the magic-byte dispatch are kept in step.
 | `provenance.license-compatibility` | `PROVENANCE.LICENSE_CONFLICT` | warning | Two or more recorded licenses whose terms cannot all be satisfied by one derived dataset: a no-derivatives source in the pool at all (no terms exist under which the pool may be used), two different share-alike families (the derived work cannot carry both), a non-commercial source beside a permissive one (the pool is non-commercial, which the permissive sources' users will not expect), or a share-alike source beside permissive ones. Read from **every** provenance scope, so a dataset whose episodes came from different sources is judged on all of them rather than on the dataset-level record alone. Reachable end-to-end for HDF5 and Zarr, whose merged layouts record a license per episode group (proven on the `merged_sources.h5` fixture and on a pooled Zarr store). The formats that carry one dataset-level license cannot reach it from that record alone, and the MCAP reader keeps the first value per provenance key by design. Information, not legal advice. |
 | `provenance.time-source` | `PROVENANCE.SIMULATED_CLOCK` | warning | The recording carries a `rosgraph_msgs/Clock` channel, so the graph that produced it ran on **simulated time**: a node started with `use_sim_time` takes its clock from that topic instead of the system clock, and every other node in the graph does the same. Two things follow and nothing reported either. Every temporal result — rate, gap, jitter, span, cross-sensor sync — is then about the simulator's clock rather than about hardware, so "this rig is synchronized to 2 ms" is a statement about a simulation loop. And the data itself is in all likelihood not from physical sensors, while the topics, the cadences, the transform tree and the trust score are a rig's — so pooled with real recordings it puts the sim-to-real gap inside the training set where no verdict would show it. A warning, not a judgement about the data: simulated data is legitimate training data and world models are routinely built from it; a corpus that cannot tell which of its recordings were simulated is the problem. Read from the recording's own topic inventory, in the positive direction only — a recording *without* a clock channel says nothing about where its time came from, and this check says nothing about it either. It also answers the `clock` provenance element, which every other bag leaves unknown. Reachable for MCAP, ROS 2 rosbag2 and ROS 1 rosbag; no other format carries the question. |
 | `provenance.license-compatibility` | `PROVENANCE.LICENSE_UNRECOGNIZED` | info | A recorded license identifier states no term this check recognizes, so what it permits a derived dataset to do was **not evaluated**. The classification is mechanical — SPDX and the Hugging Face card vocabulary both spell non-commercial `-nc`, no-derivatives `-nd` and share-alike `-sa`, and a version suffix never changes which applies — and a string outside that vocabulary and outside the known permissive and copyleft families is reported unevaluated rather than assumed permissive, which is the one mistake this check must never make. Silent where **no** license is recorded at all: `PROVENANCE.MISSING_LICENSE` already reports that absence as a warning, so the report cannot be read as "the licensing is fine". |
+| `provenance.personal-data` | `PROVENANCE.PERSONAL_DATA` | warning | A recorded string looks like personal data: an email address, a telephone number as a person writes one, or a path naming the user who ran the recorder (`/home/<user>/`, `/Users/<user>/`, `C:\Users\<user>\`). Matched on the text Veridex already reads — dataset metadata values, provenance element values, episode task and label strings — and the last of the three is the commonest by far, because it arrives in a `source_file` or a `derived_from` and nobody means to publish it. The finding names **the field and the kind, never the value**: a finding travels wherever the report does, and one that quoted the address would publish exactly what it warns about. Reported once per (kind, field), so a value repeated across every episode is one finding. Deliberately a short list of conservative shapes: a nine-digit run is every counter and id in a dataset, not a government number, and a check that fires on honest data teaches its reader to ignore it. A **flag** — Veridex never edits your data; `--redact` keeps the value out of a report you are sharing, which is a different problem from keeping it out of the dataset. Probabilistic by construction, and the risk text says so. |
+| `provenance.personal-data` | `PROVENANCE.IMAGERY_WITHOUT_CONSENT` | info | The dataset carries camera streams and records neither a `consent` nor a `redaction` provenance element. **Not a claim that a person appears in them**: Veridex does not decode a pixel — here or anywhere — so it cannot know, and a tool that implied otherwise would be worse than silent. What it reports is that there is imagery and no record of the permission it was taken under, which is the one thing a consumer cannot discover from any other field and a producer can still fix before publishing. Answered by recording the consent the imagery was taken under or the redaction applied before publishing — a `consent_status` or `redaction_status` key in an MCAP `Metadata` record, a rosbag2 `custom_data` entry, an HDF5 root attribute or a Zarr `.zattrs` entry, which Veridex reads as the `consent` and `redaction` elements; it reads that answer and reports it. Info, not warning: a dataset without the record is incompletely described, not defective, and the catalog's pixel-level question — whether a face is in frame — stays **refused by design** rather than guessed at. |
 
 An element a verified producer attestation supplies is **not** reported missing. The trust score
 counts it as covered — that is what an attestation is for — so reporting it missing would have the
@@ -255,16 +257,24 @@ make an episode a rig.
 
 ## What the catalog does not check
 
-Two capabilities the [checks-catalog spec](../openspec/specs/checks-catalog/spec.md) describes have
-no implementation, and neither is a gap Veridex intends to close by decoding data. A third limit is
-not a missing check at all but a property of one source format, recorded here for the same reason.
+One capability the [checks-catalog spec](../openspec/specs/checks-catalog/spec.md) describes has no
+implementation, and it is not a gap Veridex intends to close by decoding data. Two further limits
+are not missing checks at all — one is the unreachable half of a check that *is* built, the other a
+property of one source format — recorded here for the same reason.
 
-**Privacy and safety (likely faces, readable text).** Detecting a face in a camera frame requires
-decoding pixels and running a model over them. Veridex's design commitment is the opposite — it
-reads structure and metadata and fingerprints bytes, never interprets them — so it says nothing
-about the content of your imagery. Treat a Veridex pass as evidence that a dataset is *structurally*
-sound and traceable, never as a review for personally identifiable information. Run a dedicated PII
-tool before publishing.
+**Faces and readable text in imagery.** Deciding whether a person is in frame requires decoding
+pixels and running a model over them. Veridex's design commitment is the opposite — it reads
+structure and metadata and fingerprints bytes, never interprets them — so it says nothing about the
+content of your imagery. Treat a Veridex pass as evidence that a dataset is *structurally* sound and
+traceable, never as a review for personally identifiable information in the pictures. Run a
+dedicated PII tool before publishing.
+
+What *is* checked is the half of that question a tool which decodes nothing can answer honestly, and
+it is where most published personal data actually sits: `provenance.personal-data` flags recorded
+text that looks like an email address, a telephone number, or a path naming the user who ran the
+recorder, and reports camera streams carried with no record of the consent or redaction they were
+published under (`PROVENANCE.PERSONAL_DATA`, `PROVENANCE.IMAGERY_WITHOUT_CONSENT`, both in the
+provenance table above). Neither reads a pixel, and neither claims to.
 
 **Perturbed copies.** Exact duplicates are detected by content (`STRUCTURAL.DUPLICATE_EPISODE`), and
 *partial* copies — a re-upload with its tail trimmed, an episode contained in a longer one — by frame

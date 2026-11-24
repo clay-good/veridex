@@ -3934,3 +3934,101 @@ fn a_recording_made_on_simulated_time_says_so_end_to_end() {
         "…and stop reporting the clock as unknown, because the recording does say"
     );
 }
+
+#[test]
+fn a_recorder_path_and_unconsented_imagery_are_reported_end_to_end() {
+    // The provenance a recorder writes about itself, read through a real file rather than a
+    // hand-built CDM. Two facts about this bag that nothing in the report named before: its lineage
+    // string carries the home directory of the person who recorded it, and it carries camera
+    // imagery with no record of the permission it was taken under.
+    let camera_bag = |lineage: Option<&str>, consent: Option<&str>| -> Vec<u8> {
+        let mut out = Vec::new();
+        {
+            let mut w = mcap::Writer::new(Cursor::new(&mut out)).expect("writer");
+            let schema = w
+                .add_schema("sensor_msgs/msg/Image", "ros2msg", b"")
+                .unwrap();
+            let chan = w
+                .add_channel(schema, "/camera/image_raw", "cdr", &BTreeMap::new())
+                .unwrap();
+            for (seq, t) in (0..6u64).map(|i| (i, i * 33_333_333)) {
+                w.write_to_known_channel(
+                    &mcap::records::MessageHeader {
+                        channel_id: chan,
+                        sequence: seq as u32,
+                        log_time: t,
+                        publish_time: t,
+                    },
+                    b"payload",
+                )
+                .unwrap();
+            }
+            let mut meta = BTreeMap::new();
+            meta.insert("license".to_string(), "CC-BY-4.0".to_string());
+            if let Some(l) = lineage {
+                meta.insert("source_dataset".to_string(), l.to_string());
+            }
+            if let Some(c) = consent {
+                meta.insert("consent_status".to_string(), c.to_string());
+            }
+            w.write_metadata(&mcap::records::Metadata {
+                name: "recording_info".to_string(),
+                metadata: meta,
+            })
+            .expect("write metadata");
+            w.finish().expect("finish");
+        }
+        out
+    };
+    let codes = |bytes: &[u8]| -> Vec<String> {
+        let path = write_temp_mcap(bytes);
+        let mut d = McapAdapter
+            .ingest(
+                &Source::Local(path.to_path_buf()),
+                &IngestOptions::default(),
+            )
+            .expect("ingest")
+            .dataset;
+        d.canonicalize_order();
+        let engine = veridex_core::checks::default_engine().expect("the standard catalog");
+        let hash = veridex_core::content_hash(&d);
+        let mut codes: Vec<String> = engine
+            .run(&d, hash, &veridex_core::RunConfig::default())
+            .findings
+            .into_iter()
+            .map(|f| f.code)
+            .collect();
+        codes.sort();
+        codes.dedup();
+        codes
+    };
+
+    let leaky = codes(&camera_bag(
+        Some("/home/aileen/ros2_ws/bags/warehouse_2026_01_04"),
+        None,
+    ));
+    assert!(
+        leaky.contains(&"PROVENANCE.PERSONAL_DATA".to_string()),
+        "the lineage names the person who recorded it: {leaky:?}"
+    );
+    assert!(
+        leaky.contains(&"PROVENANCE.IMAGERY_WITHOUT_CONSENT".to_string()),
+        "imagery and no consent record: {leaky:?}"
+    );
+
+    // The same bag with a path that names nobody and a recorded consent status: both findings are
+    // gone, and nothing else about the bag changed.
+    let clean = codes(&camera_bag(
+        Some("/srv/datasets/warehouse_2026_01_04"),
+        Some("written consent on file, operators only"),
+    ));
+    for code in [
+        "PROVENANCE.PERSONAL_DATA",
+        "PROVENANCE.IMAGERY_WITHOUT_CONSENT",
+    ] {
+        assert!(
+            !clean.contains(&code.to_string()),
+            "{code} must not fire on a bag that answers both questions: {clean:?}"
+        );
+    }
+}

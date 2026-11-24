@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use crate::cdm::{Dataset, ProvenanceClass, ProvenanceScope};
+use crate::cdm::{Dataset, Modality, ProvenanceClass, ProvenanceScope};
 use crate::check::{Category, Check, CheckContext, Finding, Location, Scope, Severity};
 
 /// A provenance element Veridex expects a trustworthy dataset to carry, with the severity of its
@@ -734,5 +734,273 @@ impl Check for TimeSource {
              published. Simulated data is legitimate training data — a corpus that cannot tell \
              which of its recordings were simulated is the problem.",
         )]
+    }
+}
+
+/// Patterns that make a recorded string **likely** personal data, and the word for each kind.
+///
+/// Deliberately few and deliberately conservative. Every one of them is a shape that cannot plausibly
+/// be a sensor name, a license id or a file of measurements — and nothing here reaches for the shapes
+/// that only look specific: a nine-digit run is not a social-security number, a date of birth is not
+/// distinguishable from a calibration date, and a flagged dataset that is clean is worse than an
+/// unflagged one that is not, because a reader learns to ignore the finding.
+///
+/// Matched on text Veridex **already reads** — the dataset's metadata values, its provenance
+/// element values, its task and label strings. No pixel is decoded here or anywhere, and the
+/// imagery half of the question is answered by `PROVENANCE.IMAGERY_WITHOUT_CONSENT` below rather
+/// than guessed at.
+type PersonalPattern = (&'static str, fn(&str) -> bool);
+
+const PERSONAL_PATTERNS: &[PersonalPattern] = &[
+    ("an email address", looks_like_email),
+    ("a telephone number", looks_like_phone),
+    ("a user's home directory", looks_like_home_directory),
+];
+
+/// `name@host.tld`: an `@` with a label either side and a dotted host with a plausible suffix.
+fn looks_like_email(text: &str) -> bool {
+    text.split_whitespace().any(|word| {
+        let word = word.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '@' && c != '.');
+        let Some((local, host)) = word.split_once('@') else {
+            return false;
+        };
+        if local.is_empty() || host.len() < 4 || !host.contains('.') {
+            return false;
+        }
+        let suffix = host.rsplit('.').next().unwrap_or("");
+        (2..=24).contains(&suffix.len())
+            && suffix.chars().all(|c| c.is_ascii_alphabetic())
+            && local
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "._%+-".contains(c))
+    })
+}
+
+/// A telephone number as a person writes one: an international prefix or a grouped run of digits
+/// with separators — never a bare run, which is every counter, id and checksum in a dataset.
+fn looks_like_phone(text: &str) -> bool {
+    let digits = |s: &str| s.chars().filter(|c| c.is_ascii_digit()).count();
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .windows(3)
+        .map(|w| w.join(" "))
+        .chain(text.split_whitespace().map(str::to_string))
+        .any(|candidate| {
+            let separated = candidate.contains('-') || candidate.contains(' ');
+            let prefixed = candidate.trim_start().starts_with('+');
+            if !(separated || prefixed) {
+                return false;
+            }
+            // Only digits and the punctuation a phone number is written with, and a count in the
+            // range the E.164 plan allows.
+            let shaped = candidate
+                .chars()
+                .all(|c| c.is_ascii_digit() || "+-() ".contains(c));
+            shaped && (9..=15).contains(&digits(&candidate))
+        })
+}
+
+/// `/home/<user>/`, `/Users/<user>/`, `C:\Users\<user>\` — a path that names the person who ran the
+/// recorder. The commonest personal datum in a robot dataset, and the one nobody means to publish.
+fn looks_like_home_directory(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    for prefix in ["/home/", "/users/", "\\users\\", "c:\\users\\"] {
+        if let Some(rest) = lower.split(prefix).nth(1) {
+            let user = rest
+                .split(['/', '\\', ' ', '"', '\''])
+                .next()
+                .unwrap_or_default();
+            // A home directory names somebody; the root of one names nobody.
+            if !user.is_empty() && user != "shared" && user != "public" {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// **Personal data and imagery consent.** What a dataset records *about people*, and what nobody can
+/// tell from the outside.
+///
+/// Two findings, and the line between them is the architectural commitment this tool is built on:
+/// Veridex reads structure and metadata and fingerprints bytes, and never interprets them.
+///
+/// `PROVENANCE.PERSONAL_DATA` flags a recorded value that looks like personal data — an email
+/// address, a telephone number, a path naming the user who ran the recorder. These are matched on the
+/// text Veridex already reads: dataset metadata values, provenance element values, task and label
+/// strings. The commonest of them is the home-directory path, which arrives in a `source_file` or a
+/// `derived_from` and is nobody's intention to publish. The finding names **where** and **what
+/// kind** and never the value itself, because a finding travels into every report, and a report that
+/// quoted the email address would publish exactly what it was warning about.
+///
+/// `PROVENANCE.IMAGERY_WITHOUT_CONSENT` reports a dataset that carries camera streams and records no
+/// consent status. It is **not** a claim that a person appears in them: Veridex does not decode a
+/// pixel, so it cannot know, and a tool that implied otherwise would be worse than silent. What it
+/// says is that the dataset carries imagery and no record of the permission under which it was
+/// taken, which is the thing a producer can actually act on before publishing — and the thing a
+/// consumer cannot discover from any other field.
+///
+/// Both are **flags**: nothing here is redacted, blurred or removed, and the dataset is never
+/// modified. Both are probabilistic by construction, which the risk text says in those words. The
+/// pixel half of the catalog's privacy requirement stays refused by design, and
+/// [docs/checks.md](../../../docs/checks.md) says so where a reader will look for it.
+pub struct PersonalData;
+
+impl Check for PersonalData {
+    fn id(&self) -> &'static str {
+        "provenance.personal-data"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &[
+            "PROVENANCE.PERSONAL_DATA",
+            "PROVENANCE.IMAGERY_WITHOUT_CONSENT",
+        ]
+    }
+    fn title(&self) -> &'static str {
+        "Personal data and imagery consent"
+    }
+    fn category(&self) -> Category {
+        Category::Provenance
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Warning
+    }
+    fn scope(&self) -> Scope {
+        Scope::Dataset
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        let mut findings = Vec::new();
+
+        // Every string the CDM carries that a producer wrote, with the field it came from — the
+        // same places the redactor substitutes, for the same reason: these are where a dataset is
+        // identifying.
+        let mut text: Vec<(String, &str)> = Vec::new();
+        for (key, value) in &dataset.metadata {
+            text.push((format!("metadata `{key}`"), value.as_str()));
+        }
+        for record in &dataset.provenance {
+            for element in &record.elements {
+                if let Some(value) = &element.value {
+                    text.push((format!("provenance `{}`", element.key), value.as_str()));
+                }
+            }
+        }
+        // Episode text is labelled by the *field*, not by the episode — a task string written once
+        // and copied into a thousand episodes is one fact about the dataset, and a finding per
+        // episode would bury every other finding in the report under it.
+        for episode in &dataset.episodes {
+            if let Some(task) = &episode.task {
+                text.push(("an episode task".to_string(), task.as_str()));
+            }
+            for label in &episode.labels {
+                text.push((
+                    format!("an episode `{}` label", label.key),
+                    label.value.as_str(),
+                ));
+            }
+        }
+
+        // One finding per (kind, field), sorted, so a value repeated across every episode is one
+        // finding rather than a thousand.
+        let mut found: BTreeSet<(&str, String)> = BTreeSet::new();
+        for (field, value) in &text {
+            for (kind, matches) in PERSONAL_PATTERNS {
+                if matches(value) {
+                    found.insert((kind, field.clone()));
+                }
+            }
+        }
+        for (kind, field) in found {
+            findings.push(
+                Finding::new(
+                    self.id(),
+                    Category::Provenance,
+                    Severity::Warning,
+                    Location::Dataset,
+                    "PROVENANCE.PERSONAL_DATA",
+                    // The value is deliberately not quoted: this finding travels into every report,
+                    // and one that printed the email address would publish what it is warning about.
+                    format!(
+                        "{field} holds what looks like {kind} — the value is not quoted here, \
+                         because this finding travels wherever the report does"
+                    ),
+                )
+                .with_risk(
+                    "A dataset published with a person's address, number or user name in its \
+                     metadata publishes it to everyone who pulls the dataset, and it is in the \
+                     content hash, so it cannot be quietly removed afterwards without changing \
+                     every certificate issued over it. This is a pattern match on recorded text, \
+                     not a judgement: it can be wrong in both directions.",
+                )
+                .with_remedy(
+                    "Read the field and decide. Where it should not ship, re-export without it — \
+                     Veridex only ever flags, and never edits your data. `veridex check --redact` \
+                     keeps the value out of a report you are sharing, which is a different problem \
+                     from keeping it out of the dataset.",
+                ),
+            );
+        }
+
+        // The imagery half, which is not a claim about pixels.
+        let cameras: BTreeSet<&str> = dataset
+            .episodes
+            .iter()
+            .flat_map(|e| e.streams.iter())
+            .filter(|s| s.modality == Modality::Video)
+            .map(|s| s.name.as_str())
+            .collect();
+        let consent_recorded = dataset
+            .provenance
+            .iter()
+            .flat_map(|p| p.elements.iter())
+            .any(|e| {
+                // The CDM's own keys, which `provenance_key_for` maps a producer's `consent_status`,
+                // `data_consent`, `redacted` or `pii_redaction` onto. Either answers the question:
+                // consent says the imagery was taken with permission, redaction says what was
+                // removed from it before publishing.
+                (e.key == "consent" || e.key == "redaction")
+                    && e.class != ProvenanceClass::Unknown
+                    && e.has_real_value()
+            });
+        if !cameras.is_empty() && !consent_recorded {
+            let shown: Vec<&str> = cameras.iter().take(4).copied().collect();
+            let listed = match cameras.len().saturating_sub(4) {
+                0 => shown.join(", "),
+                rest => format!("{} and {rest} more", shown.join(", ")),
+            };
+            findings.push(
+                Finding::new(
+                    self.id(),
+                    Category::Provenance,
+                    Severity::Info,
+                    Location::Dataset,
+                    "PROVENANCE.IMAGERY_WITHOUT_CONSENT",
+                    format!(
+                        "{} camera stream(s) are recorded ({listed}) and the dataset records no \
+                         consent status for the imagery",
+                        cameras.len()
+                    ),
+                )
+                .with_risk(
+                    "Veridex never decodes a pixel, so it cannot tell you whether a person appears \
+                     in this imagery — and neither can anything else in this report. What it can \
+                     tell you is that the dataset carries imagery and no record of the permission \
+                     it was taken under, which is the one thing a consumer cannot discover from any \
+                     other field and a producer can still fix.",
+                )
+                .with_remedy(
+                    "Record the consent the recording was made under, or the redaction applied to \
+                     it before publishing — a `consent_status` or `redaction_status` key in an MCAP \
+                     `Metadata` record, a rosbag2 `custom_data` entry, an HDF5 root attribute or a \
+                     Zarr `.zattrs` entry, which Veridex reads as the `consent` and `redaction` \
+                     provenance elements. Then the dataset carries its own answer. Veridex reads \
+                     that answer and reports it; it does not look at your images.",
+                ),
+            );
+        }
+        findings
     }
 }

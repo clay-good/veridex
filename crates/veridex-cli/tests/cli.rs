@@ -2167,7 +2167,7 @@ fn a_label_says_what_the_certificate_says_and_nothing_more() {
         // `STRUCTURAL.FRAME_COUNT_UNDECLARED`: an MCAP file states no total frame count, so the
         // declared-vs-actual comparison had nothing to test against and says that rather than
         // passing silently.
-        "| Findings | 1 error · 1 warning · 8 info |",
+        "| Findings | 1 error · 1 warning · 9 info |",
         "| Provenance |",
         "veridex verify",
     ] {
