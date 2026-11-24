@@ -73,6 +73,10 @@ const COMMANDS: &[(&str, &str)] = &[
         "supersedes",
         "relate two certificates for one dataset: does the later one supersede the earlier (--key <pub>; --json)",
     ),
+    (
+        "audit",
+        "walk an append-only issuance log and say whether its chain is intact (--expect-head <hash>; --json)",
+    ),
     ("checks", "list the built-in check catalog"),
 ];
 
@@ -119,6 +123,11 @@ struct Args {
     attestation: Option<String>,
     /// Repeatable `--set key=value` pairs for `attest`, in the order given.
     set: Vec<String>,
+    /// `--audit-log <file>`: the append-only issuance log to extend (`certify`, `verify`).
+    audit_log: Option<String>,
+    /// `--expect-head <hash>`: the chain head `audit` must find, so a log shortened from the end is
+    /// caught by the one value the log's holder cannot forge.
+    expect_head: Option<String>,
     /// Every positional argument, in order. `path` is the first; `diff` takes two.
     positionals: Vec<String>,
 }
@@ -136,7 +145,7 @@ impl Args {
     /// The single source of truth for [`reject_flags_except`]. Adding a flag to the parser without
     /// adding it here means it is never checked, so the two lists are kept adjacent, and a test
     /// asserts this covers the parser's whole flag set.
-    fn given_flags(&self) -> [(&'static str, bool); 34] {
+    fn given_flags(&self) -> [(&'static str, bool); 36] {
         [
             ("--json", self.json),
             ("--sarif", self.sarif),
@@ -175,6 +184,8 @@ impl Args {
             ("--full", self.full),
             ("--attestation", self.attestation.is_some()),
             ("--set", !self.set.is_empty()),
+            ("--audit-log", self.audit_log.is_some()),
+            ("--expect-head", self.expect_head.is_some()),
         ]
     }
 }
@@ -259,6 +270,7 @@ const COMMAND_FLAGS: &[(&str, &[&[&str]], &str)] = &[
                 "--profile",
                 "--config",
                 "--attestation",
+                "--audit-log",
             ],
             INGEST_FLAGS,
         ],
@@ -267,7 +279,14 @@ const COMMAND_FLAGS: &[(&str, &[&[&str]], &str)] = &[
     (
         "verify",
         &[
-            &["--json", "--certificate", "--key", "--allow-any-issuer"],
+            &[
+                "--json",
+                "--certificate",
+                "--key",
+                "--allow-any-issuer",
+                "--audit-log",
+                "--timestamp",
+            ],
             INGEST_FLAGS,
         ],
         "--certificate <cert.json> --key <public> [<dataset>]",
@@ -318,6 +337,11 @@ const COMMAND_FLAGS: &[(&str, &[&[&str]], &str)] = &[
         &[&["--json", "--fail-on-regression"]],
         "<report-a.json> <report-b.json>",
     ),
+    (
+        "audit",
+        &[&["--json", "--expect-head"]],
+        "<audit-log.jsonl>",
+    ),
     ("checks", &[&["--json"]], ""),
 ];
 
@@ -349,6 +373,8 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
     let mut certificate = None;
     let mut out = None;
     let mut timestamp = None;
+    let mut audit_log = None;
+    let mut expect_head = None;
     let mut emit = None;
     let mut fail_on = None;
     let mut min_score = None;
@@ -432,6 +458,8 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
             "--sample-episodes" => sample_episodes = Some(value("--sample-episodes")?),
             "--sample-fraction" => sample_fraction = Some(value("--sample-fraction")?),
             "--sample-seed" => sample_seed = Some(value("--sample-seed")?),
+            "--audit-log" => audit_log = Some(value("--audit-log")?),
+            "--expect-head" => expect_head = Some(value("--expect-head")?),
             "--interval" => interval = Some(value("--interval")?),
             "--iterations" => iterations = Some(value("--iterations")?),
             other if other.starts_with('-') => return Err(format!("unknown option `{other}`")),
@@ -475,6 +503,8 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
         full,
         attestation,
         set,
+        audit_log,
+        expect_head,
         positionals,
     })
 }
@@ -584,6 +614,7 @@ fn main() -> ExitCode {
         Some("verify") => cmd_verify(&args[1..]),
         Some("supersedes") => cmd_supersedes(&args[1..]),
         Some("overlap") => cmd_overlap(&args[1..]),
+        Some("audit") => cmd_audit(&args[1..]),
         Some("keygen") => cmd_keygen(&args[1..]),
         Some("diff") => cmd_diff(&args[1..]),
         Some("watch") => cmd_watch(&args[1..]),
@@ -2055,14 +2086,14 @@ fn cmd_certify(rest: &[String]) -> ExitCode {
             return ExitCode::from(EXIT_TOOL_ERROR);
         }
     }
-    let json = match serde_json::to_string_pretty(&signed) {
+    let document = match serde_json::to_string_pretty(&signed) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("veridex: {e}");
             return ExitCode::from(EXIT_TOOL_ERROR);
         }
     };
-    if let Err(e) = std::fs::write(&out_path, json) {
+    if let Err(e) = std::fs::write(&out_path, &document) {
         eprintln!("veridex: cannot write {out_path}: {e}");
         return ExitCode::from(EXIT_TOOL_ERROR);
     }
@@ -2084,6 +2115,33 @@ fn cmd_certify(rest: &[String]) -> ExitCode {
         print!("{}", veridex_core::render_readiness(r, "  "));
     }
     println!("wrote {out_path}");
+    // The issuance log, when one was asked for. Written after the certificate, so the log never
+    // claims an issuance whose document does not exist, and signed with the same issuer key — a
+    // chain alone is only evidence against an attacker who cannot recompute it.
+    if let Some(log_path) = &args.audit_log {
+        let record = veridex_core::audit::Record {
+            action: veridex_core::audit::Action::Issued,
+            dataset_id: signed.certificate.dataset_id.clone(),
+            cdm_hash: signed.certificate.cdm_content_hash.clone(),
+            outcome: veridex_core::status_label(signed.certificate.status).to_string(),
+            key_id: signed.public_key.clone(),
+            certificate_hash: veridex_core::audit::document_hash(document.as_bytes()),
+            timestamp: signed.certificate.issuance.timestamp.clone(),
+        };
+        match veridex_core::audit::append(std::path::Path::new(log_path), &record, Some(&keypair)) {
+            Ok(entry) => println!(
+                "logged issuance {} to {log_path} (head {})",
+                entry.seq,
+                &entry.entry_hash[..16]
+            ),
+            Err(e) => {
+                // A failed log write is a tool error, not a warning: the point of the log is that it
+                // is complete, and an issuance missing from it is the case it exists to rule out.
+                eprintln!("veridex: cannot append to audit log {log_path}: {e}");
+                return ExitCode::from(EXIT_TOOL_ERROR);
+            }
+        }
+    }
     // The certificate is written either way -- a signed record of a failing dataset is exactly as
     // useful as one of a passing dataset, and refusing to issue it would hide the result rather
     // than report it. But the exit code is the part CI reads, and `20` is the documented code for
@@ -2187,11 +2245,39 @@ fn cmd_verify(rest: &[String]) -> ExitCode {
         None => None,
     };
 
-    match verify(
+    let verification = verify(
         &signed,
         presented_hash.as_deref(),
         expected_issuer.as_deref(),
-    ) {
+    );
+    // Record the verification *and its outcome*, before deciding what to print. A log that held only
+    // the verifications that succeeded would be a worse record than none: the question an auditor
+    // asks is how many times a certificate failed to check out, and who kept trying.
+    if let Some(log_path) = &args.audit_log {
+        let outcome = match &verification {
+            Ok(_) if presented_hash.is_some() => "verified".to_string(),
+            Ok(_) => "verified (certificate only, no dataset presented)".to_string(),
+            Err(e) => format!("failed: {e}"),
+        };
+        let record = veridex_core::audit::Record {
+            action: veridex_core::audit::Action::Verified,
+            dataset_id: signed.certificate.dataset_id.clone(),
+            cdm_hash: signed.certificate.cdm_content_hash.clone(),
+            outcome,
+            // The key that was *trusted*, where one was named — not the certificate's own, which is
+            // the thing being checked rather than the thing doing the checking.
+            key_id: expected_issuer.clone().unwrap_or_default(),
+            certificate_hash: veridex_core::audit::document_hash(cert_json.as_bytes()),
+            // A verifier holds no signing key, so this entry is unsigned and the timestamp is the
+            // verifying machine's. Both facts are visible in the entry rather than implied.
+            timestamp: args.timestamp.clone().unwrap_or_else(issued_timestamp),
+        };
+        if let Err(e) = veridex_core::audit::append(std::path::Path::new(log_path), &record, None) {
+            eprintln!("veridex: cannot append to audit log {log_path}: {e}");
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
+    }
+    match verification {
         Ok(v) => {
             // Everything printed here is covered by the signature that just verified, including the
             // readiness block — a tampered certificate never reaches this branch.
@@ -2225,6 +2311,99 @@ fn cmd_verify(rest: &[String]) -> ExitCode {
             eprintln!("✗ verification failed: {e}");
             ExitCode::from(EXIT_FAIL)
         }
+    }
+}
+
+/// `veridex audit` — walk an issuance log and say whether it is intact.
+///
+/// Three outcomes, three exit codes, because a CI job needs to tell them apart: `0` the chain is
+/// intact (and matches `--expect-head`, where one was given), `20` the chain is broken or the head
+/// is not the one expected, `2` the file is not a Veridex audit log at all. The third is deliberately
+/// not the second: "someone edited your log" and "you passed me the wrong file" are different
+/// answers, and a pipeline that treats a typo as evidence of tampering will be ignored within a week.
+fn cmd_audit(rest: &[String]) -> ExitCode {
+    let args = match parse_args_or_exit(rest) {
+        Ok(a) => a,
+        Err(code) => return code,
+    };
+    if let Err(code) = reject_flags_except("audit", &args) {
+        return code;
+    }
+    if let Err(code) = reject_extra_positionals("audit", &args, "audit log path") {
+        return code;
+    }
+    let Some(path) = &args.path else {
+        eprintln!("veridex: audit requires an audit log path");
+        return ExitCode::from(EXIT_TOOL_ERROR);
+    };
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("veridex: cannot read {path}: {e}");
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
+    };
+    let report = match veridex_core::audit::verify_log(&text) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("veridex: {path}: {e}");
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
+    };
+    // A pinned head is the only thing that catches a log shortened from the end, so a mismatch is a
+    // failure even when every entry still in the file chains perfectly.
+    let head_mismatch = veridex_core::audit::head_mismatch(&report, args.expect_head.as_deref());
+
+    if args.json {
+        println!(
+            "{}",
+            veridex_core::audit::render_log_json(&report, args.expect_head.as_deref())
+        );
+    } else {
+        println!("Veridex audit log — {path}");
+        println!(
+            "  {} entr{} · {} signed · head {}",
+            report.entries.len(),
+            if report.entries.len() == 1 {
+                "y"
+            } else {
+                "ies"
+            },
+            report.signed,
+            &report.head[..report.head.len().min(16)]
+        );
+        for entry in &report.entries {
+            println!(
+                "  {:>4}  {:<8}  {}  {}  {}",
+                entry.seq,
+                entry.action.tag(),
+                &entry.cdm_hash[..entry.cdm_hash.len().min(12)],
+                entry.timestamp,
+                entry.outcome
+            );
+        }
+        match (&report.broken, head_mismatch) {
+            (Some(b), _) => println!("  ✗ chain broken: {b}"),
+            (None, Some(expected)) => println!(
+                "  ✗ head is {} but {} was expected: entries were dropped from the end, or this is \
+                 not the log you pinned",
+                &report.head[..report.head.len().min(16)],
+                &expected[..expected.len().min(16)]
+            ),
+            (None, None) => {
+                println!("  ✓ chain intact");
+                // Said every time, because it is the limit a reader will otherwise assume away.
+                println!(
+                    "  Note: a chain proves no past entry was altered. It cannot prove none was \
+                     dropped from the end — pin this head (`--expect-head`) or publish it."
+                );
+            }
+        }
+    }
+    if report.intact() && head_mismatch.is_none() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(EXIT_FAIL)
     }
 }
 
@@ -3172,6 +3351,14 @@ fn option_docs() -> Vec<OptionDoc> {
             ),
         ),
         doc("--allow-any-issuer", "verify without pinning an issuer key — accepts ANY signer"),
+        doc(
+            "--audit-log <file>",
+            "append this issuance or verification to a hash-chained log (created if absent)",
+        ),
+        doc(
+            "--expect-head <hash>",
+            "the chain head audit must find — the only thing that catches entries dropped from the end",
+        ),
         doc("--force", "overwrite existing key files"),
         always("--version", "print the version"),
         always("--help", "print this help"),
@@ -3272,6 +3459,9 @@ fn exit_codes_for(command: &str) -> &'static str {
         "diff" => "0 no regression · 20 regression (with --fail-on-regression) · 2 tool-error",
         "supersedes" => "0 supersedes · 20 does not supersede · 2 tool-error",
         "overlap" => "0 nothing shared · 20 shared episodes or frames · 2 tool-error",
+        // "the log was edited" and "that is not a log" are different answers, so they are different
+        // codes: a pipeline that treats a mistyped path as evidence of tampering gets ignored.
+        "audit" => "0 chain intact · 20 chain broken or head not as expected · 2 not an audit log",
         // Everything else does its own job or cannot: rendering a label, reading a manifest, writing
         // a keypair. The dataset's verdict is not this command's answer.
         _ => "0 success · 2 tool-error",

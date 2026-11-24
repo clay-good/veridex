@@ -145,6 +145,40 @@ whether the dataset got better or worse rather than only which document is newer
 the bytes it was issued over, and it keeps verifying: nothing offline can be withdrawn, and Veridex
 does not pretend otherwise. What a supersession says is which document describes the dataset now.
 
+## The issuance log
+
+A certificate is a portable document, and once it leaves the machine that made it, the history of its
+making is gone. An issuer who runs `certify` twenty times and keeps the twentieth has told nobody
+about the other nineteen; a verifier who could not get a certificate to check out has told nobody
+either. `--audit-log` keeps that history where the issuer can publish it and anyone can check it.
+
+```sh
+veridex certify dataset/ --key issuer.key --out cert.json --audit-log issuance.jsonl
+veridex verify  dataset/ --certificate cert.json --key issuer.pub --audit-log issuance.jsonl
+veridex audit   issuance.jsonl
+```
+
+Each line is one JSON entry: what happened (`issued` or `verified`), the dataset id, the content hash
+and the encoding version it was computed under, the outcome as it was reported, the key involved, a
+hash of the certificate document itself, and the timestamp the writing machine supplied. Every entry
+also names the **hash of the entry before it**, so the file is a chain, and `veridex audit` walks it:
+**0** the chain is intact, **20** it is broken or its head is not the one you pinned, **2** the file
+is not an issuance log at all — a mistyped path is not evidence of tampering, and a gate that
+conflated the two would be ignored within a week.
+
+What it proves, and what it does not, stated here because "audit log" sounds like more than any one
+file can be:
+
+| | |
+|---|---|
+| **Altering a past entry** | Detected, with the line. An entry written by `certify` is also **signed** by the issuer key that signed the certificate, so re-chaining a forged history needs the secret key, not just a text editor |
+| **Dropping entries from the end** | *Not* detected by the file alone: a truncated chain is a valid chain, one entry shorter. `audit` prints the chain **head** for you to pin (`--expect-head`), publish or commit — a value the log's holder cannot change without being caught |
+| **The time in an entry** | The writing machine's, exactly as in a certificate's issuance block. A machine that lies about its clock writes a lie here. The *order* is the chain's, which no clock can change |
+| **A failed verification** | Recorded, with the reason. A log holding only the successes would be worse than none: how often a certificate failed to check out is the question an auditor is asking |
+
+`veridex audit --json` prints the same answer for a script, and the Python binding
+`veridex.audit(log_text, expect_head=None)` returns that JSON byte-for-byte.
+
 ## What a certificate is not
 
 It is a statement of fact about a specific dataset — what was checked, what was found, under which

@@ -3907,3 +3907,208 @@ fn certify_takes_no_saved_model() {
     assert_eq!(code, 2, "{stderr}");
     assert!(stderr.contains("--cdm"), "{stderr}");
 }
+
+// ---------------------------------------------------------------------------
+// The issuance log: `--audit-log` on certify and verify, and `veridex audit`.
+// ---------------------------------------------------------------------------
+
+/// A demo dataset, a keypair, and the paths a certified run writes to.
+fn audit_fixture(tag: &str) -> (std::path::PathBuf, String, String, String, String) {
+    let dir = temp_dir(tag);
+    let demo = dir.join("demo.mcap");
+    veridex_demo::mcap::write(&demo, "skew").expect("write the demo recording");
+    let key = dir.join("issuer");
+    let (code, _, err) = run(&["keygen", key.to_str().unwrap(), "--force"]);
+    assert_eq!(code, 0, "{err}");
+    (
+        dir.clone(),
+        demo.to_str().unwrap().to_string(),
+        key.to_str().unwrap().to_string(),
+        dir.join("cert.json").to_str().unwrap().to_string(),
+        dir.join("audit.jsonl").to_str().unwrap().to_string(),
+    )
+}
+
+#[test]
+fn certify_and_verify_append_to_the_issuance_log_and_audit_walks_it() {
+    let (_dir, demo, key, cert, log) = audit_fixture("audit-happy");
+    let (code, out, err) = run(&[
+        "certify",
+        &demo,
+        "--key",
+        &key,
+        "--out",
+        &cert,
+        "--audit-log",
+        &log,
+    ]);
+    assert_eq!(
+        code, 20,
+        "the demo fails validation, which is still an issuance: {err}"
+    );
+    assert!(out.contains("logged issuance 0"), "{out}");
+
+    let pub_key = format!("{key}.pub");
+    let (code, _, err) = run(&[
+        "verify",
+        &demo,
+        "--certificate",
+        &cert,
+        "--key",
+        &pub_key,
+        "--audit-log",
+        &log,
+    ]);
+    assert_eq!(code, 0, "{err}");
+
+    let (code, out, err) = run(&["audit", &log]);
+    assert_eq!(code, 0, "an untouched log is intact: {err}{out}");
+    assert!(out.contains("2 entries"), "{out}");
+    assert!(
+        out.contains("1 signed"),
+        "the issuance is signed, the verification is not: {out}"
+    );
+    assert!(out.contains("✓ chain intact"), "{out}");
+    // The limit is printed, not left for the reader to infer.
+    assert!(
+        out.contains("cannot prove none was dropped from the end"),
+        "{out}"
+    );
+    // One entry per action, in order, each naming what happened.
+    let text = std::fs::read_to_string(&log).expect("read the log");
+    assert_eq!(text.lines().count(), 2);
+    assert!(text
+        .lines()
+        .next()
+        .unwrap()
+        .contains("\"action\":\"issued\""));
+    assert!(text
+        .lines()
+        .nth(1)
+        .unwrap()
+        .contains("\"action\":\"verified\""));
+}
+
+#[test]
+fn a_failed_verification_is_logged_as_a_failure() {
+    // The entry an auditor actually wants: someone presented a certificate that did not check out.
+    // A log that recorded only the successes would be worse than no log.
+    let (dir, demo, key, cert, log) = audit_fixture("audit-failed-verify");
+    let (code, _, err) = run(&[
+        "certify",
+        &demo,
+        "--key",
+        &key,
+        "--out",
+        &cert,
+        "--audit-log",
+        &log,
+    ]);
+    assert_eq!(code, 20, "{err}");
+    // A different dataset: the certificate is bound to the first one's hash.
+    let other = dir.join("other.mcap");
+    veridex_demo::mcap::write(&other, "clean").expect("write a second recording");
+    let pub_key = format!("{key}.pub");
+    let (code, _, _) = run(&[
+        "verify",
+        other.to_str().unwrap(),
+        "--certificate",
+        &cert,
+        "--key",
+        &pub_key,
+        "--audit-log",
+        &log,
+    ]);
+    assert_eq!(code, 20, "a transplanted certificate must not verify");
+    let text = std::fs::read_to_string(&log).expect("read the log");
+    assert!(
+        text.lines().nth(1).unwrap().contains("failed:"),
+        "the failure must be in the log: {text}"
+    );
+    // And the chain is intact: recording a failure is not a corruption.
+    let (code, out, _) = run(&["audit", &log]);
+    assert_eq!(code, 0, "{out}");
+}
+
+#[test]
+fn an_edited_log_is_reported_broken_with_its_line() {
+    let (_dir, demo, key, cert, log) = audit_fixture("audit-edited");
+    let (_, _, err) = run(&[
+        "certify",
+        &demo,
+        "--key",
+        &key,
+        "--out",
+        &cert,
+        "--audit-log",
+        &log,
+    ]);
+    assert!(std::path::Path::new(&log).exists(), "{err}");
+    let text = std::fs::read_to_string(&log).expect("read");
+    std::fs::write(
+        &log,
+        text.replace("\"outcome\":\"fail\"", "\"outcome\":\"pass\""),
+    )
+    .expect("write");
+    let (code, out, _) = run(&["audit", &log]);
+    assert_eq!(code, 20, "an edited log must not exit 0: {out}");
+    assert!(out.contains("chain broken"), "{out}");
+    assert!(out.contains("line 1"), "the break names its line: {out}");
+}
+
+#[test]
+fn a_pinned_head_catches_a_log_shortened_from_the_end() {
+    // The one thing the chain cannot do by itself, and the flag that does it.
+    let (_dir, demo, key, cert, log) = audit_fixture("audit-truncated");
+    for _ in 0..2 {
+        run(&[
+            "certify",
+            &demo,
+            "--key",
+            &key,
+            "--out",
+            &cert,
+            "--audit-log",
+            &log,
+        ]);
+    }
+    let (code, out, _) = run(&["audit", &log, "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let head = serde_json::from_str::<serde_json::Value>(&out).expect("json")["head"]
+        .as_str()
+        .expect("a head")
+        .to_string();
+
+    let text = std::fs::read_to_string(&log).expect("read");
+    let first_only = format!("{}\n", text.lines().next().unwrap());
+    std::fs::write(&log, first_only).expect("write");
+
+    // Without the pin, the shortened log is a valid chain — stated as a test so it cannot quietly
+    // become a claim the tool does not support.
+    let (code, _, _) = run(&["audit", &log]);
+    assert_eq!(code, 0, "a truncated chain is still a chain");
+    // With the pin, it is caught.
+    let (code, out, _) = run(&["audit", &log, "--expect-head", &head]);
+    assert_eq!(code, 20, "{out}");
+    assert!(out.contains("dropped from the end"), "{out}");
+}
+
+#[test]
+fn audit_refuses_a_file_that_is_not_an_issuance_log() {
+    // Exit 2, not 20: "you passed the wrong file" is not "someone edited your log".
+    let dir = temp_dir("audit-not-a-log");
+    let report = dir.join("report.json");
+    std::fs::write(&report, "{\"status\":\"pass\"}\n").expect("write");
+    let (code, _, err) = run(&["audit", report.to_str().unwrap()]);
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("not a Veridex audit entry"), "{err}");
+}
+
+#[test]
+fn commands_that_do_not_write_a_log_refuse_the_flag() {
+    // The flag belongs to the two commands that have something to record. `check` issues nothing.
+    let (_dir, demo, ..) = audit_fixture("audit-flag-scope");
+    let (code, _, err) = run(&["check", &demo, "--audit-log", "/tmp/nope.jsonl"]);
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("check does not support --audit-log"), "{err}");
+}

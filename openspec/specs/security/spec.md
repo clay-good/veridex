@@ -53,6 +53,39 @@ checkable.
 - **THEN** an append-only audit entry records the issuance with the content hash and issuer
 - **AND** altering a prior entry is detectable
 
+#### Scenario: A verification that failed is recorded as such
+- **WHEN** a certificate is checked against a dataset and does not verify
+- **THEN** an audit entry records the attempt and the reason it failed
+- **AND** the log does not hold only the attempts that succeeded
+
+#### Scenario: Entries dropped from the end are detectable only against a pinned head
+- **WHEN** the last entries are removed from a log
+- **THEN** walking the remaining file reports an intact chain, because a shorter chain is a valid one
+- **AND** the tool reports the chain head for pinning and states this limit with every result
+
+<!-- Implemented in v0.1. `veridex certify --audit-log <file>` and `veridex verify --audit-log <file>`
+     append one JSON line per action: what happened (`issued` / `verified`), the dataset id, the CDM
+     content hash and the encoding version it was computed under, the outcome **as it was reported**
+     (a failed verification included, with its reason — a log holding only the successes would be
+     worse than none, because how often a certificate failed to check out is the question an auditor
+     is asking), the key involved, a SHA-256 of the certificate document itself, and the timestamp the
+     writing machine supplied. Each entry names the hash of the entry before it, so the file is a
+     chain, and `veridex audit <file>` walks it: 0 intact, 20 broken or not the head that was pinned
+     (`--expect-head`), 2 not an audit log at all — a mistyped path is not evidence of tampering.
+
+     An issuance entry is also **signed** by the same Ed25519 key that signed the certificate, which
+     is what makes the chain evidence rather than a checksum: re-chaining an edited history needs the
+     issuer's secret key, not a text editor. A verification entry is unsigned, because a verifier
+     holds no signing key, and the entry says so by carrying no signature rather than by implication.
+
+     The two limits are asserted as tests and printed with every result, so they cannot quietly
+     become claims: entries dropped from the *end* are undetectable from inside the file (hence the
+     head, for pinning or publishing), and the time in an entry is the writing machine's, exactly as
+     in a certificate's issuance block — the *order* is the chain's, which no clock can change. This
+     crate reads no clock and the entry is built by a pure function; the front end supplies the time
+     and does the file write. See crates/veridex-core/src/audit.rs,
+     crates/veridex-core/tests/audit.rs and docs/trust-chain.md. -->
+
 ### Requirement: Threat model
 Veridex SHALL document its threat model, including: a compromised or malicious dataset producer
 asserting false provenance; a tampered certificate; a transplanted certificate; a malicious plugin;

@@ -786,6 +786,62 @@ def test_cli_and_python_cdm_cache_agree(tmp_path):
         raise AssertionError("a model whose hash does not match must not validate")
 
 
+def test_cli_and_python_audit_agree(tmp_path):
+    """Walking an issuance log must give the same answer on both surfaces.
+
+    Three states: intact, edited, and short of entries that were once in it — the third caught only
+    by a pinned head, which is the limit the log states about itself.
+    """
+    binary = os.environ.get("VERIDEX_BIN", "target/debug/veridex")
+    dataset = _demo_dataset(tmp_path)
+    key = tmp_path / "issuer"
+    subprocess.run([binary, "keygen", str(key), "--force"], check=True, capture_output=True)
+    log = tmp_path / "audit.jsonl"
+    cert = tmp_path / "cert.json"
+    for _ in range(2):
+        subprocess.run(
+            [binary, "certify", str(dataset), "--key", str(key), "--out", str(cert),
+             "--audit-log", str(log)],
+            capture_output=True,
+            text=True,
+        )
+
+    def cli_audit(*extra):
+        result = subprocess.run(
+            [binary, "audit", str(log), "--json", *extra], capture_output=True, text=True
+        )
+        return json.loads(result.stdout), result.returncode
+
+    text = log.read_text()
+    cli, code = cli_audit()
+    assert code == 0, cli
+    assert json.loads(veridex.audit(text)) == cli, "Python and CLI must agree on an intact log"
+    assert cli["entries"] == 2 and cli["signed"] == 2 and cli["intact"]
+
+    # A pinned head that is not this log's head: both surfaces refuse it.
+    cli, code = cli_audit("--expect-head", "0" * 64)
+    assert code == 20
+    assert json.loads(veridex.audit(text, "0" * 64)) == cli
+    assert cli["intact"] is False and cli["expected_head"] == "0" * 64
+
+    # An edited entry: the same break, named the same way, on both surfaces.
+    edited = text.replace('"outcome":"fail"', '"outcome":"pass"', 1)
+    assert edited != text
+    log.write_text(edited)
+    cli, code = cli_audit()
+    assert code == 20
+    assert json.loads(veridex.audit(edited)) == cli
+    assert "altered" in cli["broken"]
+
+    # And a file that is not a log at all is an error on both, not a break.
+    try:
+        veridex.audit('{"status":"pass"}\n')
+    except ValueError as e:
+        assert "not a Veridex audit entry" in str(e), str(e)
+    else:
+        raise AssertionError("a report is not an audit log")
+
+
 if __name__ == "__main__":
     # Minimal runner when pytest is unavailable. Defined last, so every test above it exists.
     import tempfile

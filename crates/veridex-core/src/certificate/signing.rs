@@ -107,6 +107,12 @@ impl SigningKeypair {
         self.key.sign(message).to_bytes()
     }
 
+    /// Sign arbitrary bytes, returning the signature as hex — what a detached signature is stored
+    /// as in an audit entry, so the caller never handles raw signature bytes.
+    pub(crate) fn sign_hex(&self, message: &[u8]) -> String {
+        to_hex(&self.sign_bytes(message))
+    }
+
     /// Construct from a 32-byte seed (deterministic; useful for tests and reproducible issuance).
     ///
     /// The seed is taken by value and scrubbed before returning, so this function leaves no copy of

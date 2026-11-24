@@ -28,6 +28,7 @@
 #![forbid(unsafe_code)]
 
 pub mod adapter;
+pub mod audit;
 pub mod canonical;
 pub mod cdm;
 pub mod cdm_cache;
@@ -56,6 +57,7 @@ pub use adapter::{
     default_registry, Adapter, AdapterRegistry, Coverage, Detection, IngestError, IngestOptions,
     IngestReport, Ingested, Sample, Source, UnmappedField,
 };
+pub use audit::{AuditError, AuditReport, Break as AuditBreak};
 pub use canonical::{content_hash, ContentHash, CANONICAL_VERSION};
 pub use certificate::{
     conflicts, readiness_verdict, render_label, render_readiness, render_verified, score, sign,

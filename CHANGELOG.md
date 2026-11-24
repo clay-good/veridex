@@ -10,6 +10,40 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Changed
 
+- **A mutation sweep over the whole catalog, and the boundary pins it forced.** The previous sweep
+  covered this release's new code. This one covered every comparison in all seven check families —
+  194 sites, `>` ↔ `>=` and `<` ↔ `<=`, each run against the catalog's unit tests and then against
+  the entire `veridex-core` suite. **78 survived both**: thresholds the checks promise in prose that
+  no test could see.
+
+  Fifteen of them are now killed by `crates/veridex-core/tests/boundaries.rs`, a file of nothing but
+  "exactly at the threshold, and the first value past it". Each pin is a promise the docs make: a
+  rate deviation exactly at the conformance tolerance is silent; a jitter CV exactly at `max_cv` is
+  not "exceeds `max_cv`"; a stream with exactly `MIN_INTERVALS` intervals is measured rather than
+  skipped; a start- or end-offset exactly at the allowance (the configured tolerance plus the slower
+  stream's sampling period) is honest data; a duration factor of exactly 1.0 **disables** the episode
+  check instead of flagging every episode; a near-duplicate or frozen-episode stream of exactly
+  `MIN_FRAMES` is evidence; a stream frozen in exactly half its episodes is the dataset's shape, not
+  a fault; a video gap of exactly two frame intervals **is** a dropped frame (this one is `>=` on
+  purpose, and the mutant that loosened it let the commonest case through); and an fps deviation
+  exactly at the tolerance is silent.
+
+  Two things the writing of them taught, both recorded in the file: a test at the *far* side of a
+  threshold passes under either comparison, which is how these survived a suite that already had
+  tests pointed at them; and where a check allows a rounding slack, equality is not the boundary —
+  the first value it must stay silent about is the one exactly at the slack, computed the same way
+  the check computes it, in values that are exact in binary. One survivor turned out to be provably
+  **equivalent** rather than untested (`extreme-outlier`'s `min > max` guard: equal bounds pass it
+  and the two guards below then force a zero z-score, so neither spelling can produce different
+  output) and is now documented as such at the site, which is the honest answer rather than a test
+  that cannot fail.
+
+  The remaining survivors are message and display comparisons — how many names a finding lists before
+  "and N more", which end of a range a tie names, the `+` on a signed delta — and skip guards whose
+  mutation cannot change an answer on any reachable input. One of those ties is now pinned anyway
+  (`extreme-outlier` names the maximum when both ends are equally extreme), because a finding that
+  named a different end on a different machine would be a report that does not reproduce.
+
 - **A mutation sweep over this release's new code, and what it found.** Flipping every comparison in
   the four new checks, the pooling module and the KITTI reader (`>` ↔ `>=`, `<` ↔ `<=`) and running
   the suite against each: **19 of 31 mutants survived**, meaning nineteen thresholds the code
@@ -36,6 +70,26 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   rather than left looking untested.
 
 ### Added
+
+- **An append-only record of what was certified and verified.** A certificate is a portable
+  document, and once it leaves the machine that made it, the history of its making is gone: an issuer
+  who runs `certify` twenty times and keeps the twentieth has told nobody about the nineteen, and a
+  verifier who could not get one to check out has told nobody either. `certify --audit-log <file>`
+  and `verify --audit-log <file>` append one JSON line per action — what happened, the dataset id,
+  the content hash and the encoding version behind it, the outcome *as it was reported*, the key
+  involved, a SHA-256 of the certificate document, and the writing machine's timestamp. Every entry
+  names the hash of the entry before it, so the file is a chain, and an issuance is **signed** by the
+  same key that signed the certificate: rewriting a past entry into a consistent history needs the
+  secret key rather than a text editor. `veridex audit <file>` walks it — **0** intact, **20** broken
+  or not the head you pinned with `--expect-head`, **2** not a log at all, because a mistyped path is
+  not evidence of tampering.
+
+  A failed verification is recorded with its reason, deliberately: a log holding only the successes
+  would be worse than none. And the two limits are tests rather than small print — entries dropped
+  from the *end* are undetectable from inside the file, which is what the printed chain head is for,
+  and the time in an entry is the writing machine's, while the *order* is the chain's. Closes the
+  `security` spec's "Tamper evidence and audit" requirement, which until now had no implementation
+  and no decision beside it. `veridex.audit(log_text, expect_head=None)` returns the same JSON.
 
 - **What a dataset records about people, and what nobody can tell from the outside.** The catalog's
   privacy requirement had stood as a refusal: detecting a face means decoding pixels and running a

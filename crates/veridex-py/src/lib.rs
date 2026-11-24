@@ -645,6 +645,28 @@ fn emit_cdm(path: &str, format: Option<&str>, metadata_only: bool) -> PyResult<S
     ))
 }
 
+/// `veridex.audit(log_text, expect_head=None) -> str`
+///
+/// Walk an append-only issuance log and return the JSON `veridex audit --json` prints: whether the
+/// chain is intact, how many entries it holds, how many carried a verified signature, the chain
+/// head, and the first break if there is one.
+///
+/// Takes the log's *text* rather than a path, like every other binding here, so a caller can audit a
+/// log they fetched rather than one on this disk.
+///
+/// `expect_head` pins the head. Without it a log shortened from the end is a valid chain one entry
+/// shorter, and nothing inside the file can say otherwise — the chain proves no past entry was
+/// altered, not that none was dropped.
+///
+/// Raises `ValueError` when the text is not a Veridex audit log at all, which is a different answer
+/// from a log that was edited.
+#[pyfunction]
+#[pyo3(signature = (log_text, expect_head=None))]
+fn audit(log_text: &str, expect_head: Option<&str>) -> PyResult<String> {
+    let report = veridex_core::audit::verify_log(log_text).map_err(to_py_err)?;
+    Ok(veridex_core::audit::render_log_json(&report, expect_head))
+}
+
 /// `veridex.check_cdm(cdm_json, config=None, profile=None, redact=False) -> str`
 ///
 /// Validate a saved Canonical Dataset Model and return the report, byte-identical to
@@ -1001,6 +1023,7 @@ fn veridex(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(overlap, m)?)?;
     m.add_function(wrap_pyfunction!(emit_cdm, m)?)?;
     m.add_function(wrap_pyfunction!(check_cdm, m)?)?;
+    m.add_function(wrap_pyfunction!(audit, m)?)?;
     m.add_function(wrap_pyfunction!(version, m)?)?;
     Ok(())
 }

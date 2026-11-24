@@ -907,6 +907,12 @@ impl ExtremeOutlier {
             && stats.mean.is_finite()
             && stats.std.is_finite())
             || stats.std <= 0.0
+            // `>` rather than `>=` deliberately, and the difference is unobservable: bounds that are
+            // *equal* pass this guard, but the two below then force `mean == min == max`, so both
+            // z-scores are zero and no finding can follow. A mutation sweep flagged this comparison
+            // as untested; it is untestable, because the two spellings cannot produce different
+            // output. Left as `>` because that is what the guard means — contradictory bounds are
+            // `range-sanity`'s finding, and a constant stream is `STATISTICAL.DEGENERATE`'s.
             || stats.min > stats.max
             || stats.mean < stats.min
             || stats.mean > stats.max
