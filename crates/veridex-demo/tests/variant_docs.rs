@@ -12,7 +12,7 @@
 //! than substituting one, so a name that has drifted is a copied command that fails — which, for a
 //! reader whose first contact with the tool is the quickstart, is the tool not working.
 
-use veridex_demo::{candbc, lerobot, mcap, mf4, rlds};
+use veridex_demo::{candbc, kitti, lerobot, mcap, mf4, rlds};
 
 const ROOT: &str = env!("CARGO_MANIFEST_DIR");
 
@@ -82,6 +82,12 @@ fn generators() -> Vec<Generator> {
             variants: rlds::VARIANTS,
             module: "src/rlds.rs",
             example: "examples/make_demo_rlds.rs",
+        },
+        Generator {
+            name: "kitti",
+            variants: kitti::VARIANTS,
+            module: "src/kitti.rs",
+            example: "examples/make_demo_kitti.rs",
         },
         Generator {
             name: "candbc",

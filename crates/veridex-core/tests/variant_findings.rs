@@ -225,6 +225,19 @@ fn write_generated(dir: &Path) -> Vec<(String, std::path::PathBuf)> {
         }
     }
 
+    // A KITTI raw drive, the tenth adapter: a sensor rig recorded as a directory per sensor. Each
+    // variant is written into its own tree because the calibration lives in the date directory
+    // above the drive, so a drive is not a self-contained path.
+    for variant in veridex_demo::kitti::VARIANTS {
+        let root = dir.join(format!("kitti-{variant}"));
+        if veridex_demo::kitti::write(&root, variant).is_ok() {
+            out.push((
+                format!("kitti/{variant}"),
+                veridex_demo::kitti::drive_path(&root),
+            ));
+        }
+    }
+
     // A Zarr replay buffer whose two episodes disagree about the width of the same stream: `action`
     // is (4, 2) in one and (4, 3) in the other, the shape of a re-export that widened an actuator
     // vector and left the earlier episodes behind. Every episode is well-formed on its own, so only

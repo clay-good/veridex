@@ -853,6 +853,61 @@ clean:
 raster and the cycle count each group declares — without opening or decompressing a single data
 block, which is the cheapest way to inventory a large measurement.
 
+It works on a **KITTI raw** drive too — and on the shape a great many hand-rolled autonomy rigs
+copied from it: **one directory per sensor**, each with its own `timestamps.txt` and a `data/` folder
+of one file per sample, with the calibration in text files beside the drive.
+
+```sh
+# a four-camera, LiDAR and GPS/IMU drive in the published KITTI layout
+cargo run -p veridex-demo --example make_demo_kitti -- /tmp/demo-kitti
+cargo run -p veridex-cli -- check /tmp/demo-kitti/2011_09_26/2011_09_26_drive_0005_sync
+
+# the same drive with every Velodyne sweep empty, which nothing but the file's own length can see
+cargo run -p veridex-demo --example make_demo_kitti -- /tmp/dead-lidar dead-lidar
+```
+
+Every fact comes out of the files. **Frames** are the lines of each sensor's own `timestamps.txt`, so
+each stream carries the times that sensor was sampled at and the cross-stream checks compare them —
+the `unsynced` variant is a LiDAR whose timestamps span two thirds of the others', and
+`TEMPORAL.CLOCK_SKEW` reports it on every pair the sensor is in. **Point counts** come from each
+sweep's own length: a KITTI `.bin` is `float32 [x, y, z, reflectance]` per point, so the count is the
+file size over sixteen, read from `stat` with no point payload decoded — which is what catches a
+drive whose LiDAR recorded nothing. **Calibration** is the real thing: the per-camera intrinsics and
+the image size they were computed for from `calib_cam_to_cam.txt`, and the `velo -> cam` and
+`imu -> velo` rigid transforms from the other two files, each rotation carried as a quaternion so the
+calibration rules can check it. The three cameras hang off camera 0 by the rotation and translation
+the calibration records between them, which puts every sensor in one tree for the spatial checks to
+resolve through. **GNSS values** are the first three fields of each OXTS row — latitude, longitude,
+altitude — summarized per dimension and named by what they are, which is what lets the plausibility
+rules grade a drive.
+
+Three things this reader deliberately does not claim.
+
+A KITTI timestamp is a **naive** civil time — `2011-09-26 13:02:25.964389445`, with no offset. It is
+read as UTC, which is exact for every interval (rate, gap, jitter, span, cross-sensor drift are all
+differences) and is an assumption about the absolute instant alone. The assumption is recorded in the
+dataset's metadata rather than left in the reader.
+
+The sensors are **not named by the files**. The rig is famous and the files say nothing about it, so
+`provenance.sensor` stays unknown rather than being filled in from what a reader of this format
+happens to know. `calib_time`, which the calibration files do state, is read.
+
+A sensor directory this reader has no modality for, a `timestamps.txt` line that is not a timestamp,
+and a `data/` folder holding fewer samples than the timestamps state are each **disclosed** rather
+than passed over: the frames are the samples the manifest and the directory agree on, and
+`COVERAGE.SOURCE_UNREAD` names the difference. A part-uploaded drive must not read as a shorter one.
+
+`--metadata-only` reads the per-sensor `timestamps.txt` and nothing else: the sensor inventory, each
+one's modality, and the sample count every manifest states, which is this format's declared episode
+length. No sample is opened, and like every other format the run carries **no frames** — so the
+temporal family abstains and says so. The sample times are in those manifests and are deliberately
+not materialized: a run that emitted them would answer the timing questions while its coverage note
+said it had read nothing.
+
+Nothing is read whole into memory. Every sample is an independently addressed file, so a frame's
+content fingerprint is streamed through a fixed buffer — unlike the random-access containers, where
+the summary is at the end of the file and the file has to be resident.
+
 ## Reading a dataset you have not downloaded
 
 One source is not a file at all. `veridex check hf://org/name --metadata-only` reads a dataset's

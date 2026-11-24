@@ -46,7 +46,7 @@ Findings:
   default), ROS 1 rosbag (`.bag`, where a great deal of pre-ROS 2 robot data still sits), CAN+DBC
   (candump text, Vector BLF — the binary format most vehicle traffic is recorded in — PCAN-Trace,
   any of them gzipped, classic frames and CAN-FD),
-  and ASAM MDF/MF4 all map
+  ASAM MDF/MF4, and KITTI raw (a directory per sensor) all map
   into one Canonical Dataset Model, so you check them the same way — no per-format tooling.
 - **Catches the failures that quietly ruin training.** Clock skew across sensors, broken episode
   boundaries, timeline gaps, duplicate frames, a video whose frame count no longer matches the
@@ -101,7 +101,7 @@ also captures **provenance**.
 
 ```mermaid
 flowchart LR
-    A[Your dataset<br/>LeRobot · RLDS/TFDS · HDF5 · Zarr · MCAP · rosbag2 · rosbag · CAN+DBC · MF4] --> B[Adapter]
+    A[Your dataset<br/>LeRobot · RLDS/TFDS · HDF5 · Zarr · MCAP · rosbag2 · rosbag · CAN+DBC · MF4 · KITTI] --> B[Adapter]
     B --> C[Canonical Dataset Model<br/>one neutral shape]
     C --> D[Validation engine<br/>structural · temporal · statistical · semantic<br/>video · autonomy · provenance checks]
     D --> E[Trust score<br/>0–100 · A–F grade]
@@ -391,7 +391,7 @@ is in and tested:
 | **Video/media checks** | Read an `.mp4` or `.mkv`/`.webm` container's headers — never a pixel — and catch the missing, unparseable, desynced, or re-encoded video behind a camera stream. Also the one video fault an average cannot express: a camera that **stalled mid-recording**. Frames per second is frames over elapsed time, so a camera that froze for half a second in a twenty-second clip holds exactly as many frames as the episode has rows and still divides out to within two percent of its declared rate. `VIDEO.FRAME_GAP` reads the longest interval the container's own per-frame timing recorded — an MP4's `stts`, a Matroska's block timestamps — because a loader pairs frame *i* with row *i* by index and not by time, so the frames the camera never delivered are closed up rather than skipped and every pair after the gap is off |
 | **Trust score** | The v1 rubric, the `standard` / `strict` threshold profiles, and the `world-model-ready` readiness profile |
 | **Reporting** | Terminal, JSON, SARIF 2.1.0 and self-contained HTML, each with rollups by category, episode and stream, and each shareable through `--redact` |
-| **Adapters** | LeRobot v2.0/2.1/3.0, RLDS/TFDS, HDF5, Zarr, MCAP, ROS 2 rosbag2, ROS 1 rosbag, CAN+DBC (candump, Vector BLF and PCAN-Trace; classic and FD), ASAM MDF/MF4 — with a passing cross-format neutrality gate (the same logical dataset yields equivalent CDMs as LeRobot v3 and as MCAP, and as rosbag2 and as MCAP) |
+| **Adapters** | LeRobot v2.0/2.1/3.0, RLDS/TFDS, HDF5, Zarr, MCAP, ROS 2 rosbag2, ROS 1 rosbag, CAN+DBC (candump, Vector BLF and PCAN-Trace; classic and FD), ASAM MDF/MF4, KITTI raw (a **directory per sensor** — the layout the KITTI dev kit publishes and the shape a great many hand-rolled autonomy rigs copied from it, with the per-sensor `timestamps.txt` as the manifest, the point count read from each sweep's own length, and a transform tree built from the calibration text files beside the drive) — with a passing cross-format neutrality gate (the same logical dataset yields equivalent CDMs as LeRobot v3 and as MCAP, and as rosbag2 and as MCAP) |
 | **Provenance** | Per-format extraction into the six scored elements — see [what each format can supply](docs/checks.md#what-each-format-can-supply) — with one curated key table shared by every source that carries free-form metadata, so `sensor` means the same thing in an MCAP record, a rosbag2 `custom_data` entry, an HDF5 attribute, a Zarr `.zattrs` and an MF4 header comment's `<common_properties>` — the place CANape, INCA and the fleet loggers write what a run was, and the reason an MF4 reads 4/6 rather than 1/6. Read **per episode** where a source records it that way: an HDF5 or Zarr collection pooled from several sessions states its license, operator and lineage per episode group, so a merged file is reported as the several sources it is rather than as one. The recorded license is **read**, not merely counted: `provenance.license-compatibility` says what an SPDX identifier or a Hub card's slug permits a derived dataset to do — non-commercial, no-derivatives, share-alike — and refuses a pool whose sources' terms cannot all be satisfied at once, because training data is a derived work of every source in it. Informational by design (a license is a fact about the data, not a defect in it), and never legal advice. Plus scenario-dimension coverage and scenario/map/sim reference extraction (OpenSCENARIO / OpenDRIVE / OSI / simulator, version read from the referenced sidecar's own ASAM header), emitted as Croissant + W3C PROV |
 | **Certificates** | Ed25519 signing with offline verification (tamper and transplant rejection), **supersession** — `veridex supersedes` relates two certificates for one dataset from the keys that signed them, the bytes each is bound to and when each was issued, so a team holding two valid documents can tell which describes the dataset now, and a release gate can ask in one command. A supersession is never a revocation: the superseded certificate stays true about the bytes it was issued over, and keeps verifying — and **producer attestation** — provenance a producer signs for, bound to the dataset's content hash and disclosed by the key that signed it. Findings are named **by code**, not only by family, because a family count cannot tell a check that measured nothing from one that measured something wrong; the trust label carries the same in a `Could not measure` row |
 | **CLI** | `check`, `inspect`, `checks`, `certify`, `verify`, `supersedes`, `overlap`, `provenance`, `keygen`, `diff`, `watch`, `label`, `attest`, plus `check --print-config` and `check --redact`. `veridex <command> --help` shows just that command's options and its real argument shape, derived from the same table the parser enforces — see the [Quickstart](#quickstart) |
@@ -410,14 +410,15 @@ section it writes about itself, an HDF5 file's `/mask` split group or anything e
 beside the episodes, CAN traffic on an id the `.dbc` never defines. Each raises a warning in the
 verdict, because a clean result over the part that was read is not a clean result over the dataset.
 
-Eight formats support `--metadata-only`, each reading the thing that describes the dataset without
+Nine formats support `--metadata-only`, each reading the thing that describes the dataset without
 being it:
 LeRobot's `meta/`, a rosbag2's `metadata.yaml`, a TFDS export's `dataset_info.json` +
 `features.json`, a Zarr store's `.zarray`/`.zattrs` and episode boundaries, the summary section an
 MCAP writes at the end of itself, an HDF5 file's group tree and array headers, an MF4's block header
 tree — which names every channel and its raster without opening or decompressing a data block — and
 a **ROS 1 rosbag**'s index section, the connection list and per-chunk message counts a finished
-`rosbag record` writes at the end and its header points at. One test
+`rosbag record` writes at the end and its header points at, and a **KITTI raw** drive's per-sensor
+`timestamps.txt`, which states the sensor inventory and the sample count each manifest declares. One test
 holds them to the invariant the mode rests on: the same episodes, streams, datatypes and shapes a
 full read finds, minus the frames. CAN+DBC is a stream of frames with nothing in front of it, and is
 refused by name.

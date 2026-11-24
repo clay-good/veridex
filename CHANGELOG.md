@@ -10,6 +10,40 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A tenth format: KITTI raw, a rig recorded as a directory per sensor.** The layout the KITTI raw
+  dev kit publishes — one directory per sensor, each with its own `timestamps.txt` and a `data/`
+  folder of one file per sample, with the calibration in text files beside the drive — and the shape
+  a great many hand-rolled autonomy rigs copied from it.
+
+  Every fact comes out of the files. **Frames** are the lines of each sensor's own `timestamps.txt`,
+  so each stream carries the times that sensor was sampled at and the cross-stream checks compare
+  them. **Point counts** come from each sweep's own length: a KITTI `.bin` is
+  `float32 [x, y, z, reflectance]` per point, so the count is the file size over sixteen, read from
+  `stat` with no point payload decoded — which is what catches a drive whose LiDAR recorded nothing.
+  **Calibration** is the real thing: the per-camera intrinsics and the image size they were computed
+  for, and the `velo -> cam` and `imu -> velo` rigid transforms, each rotation carried as a
+  quaternion so the calibration rules can check it, with the other cameras hanging off camera 0 —
+  one connected tree for the spatial checks to resolve through. **GNSS values** are the first three
+  fields of each OXTS row, summarized per dimension and named by what they are.
+
+  Three things it does not claim. A KITTI timestamp is a **naive** civil time with no offset: it is
+  read as UTC, which is exact for every interval and an assumption about the absolute instant alone,
+  recorded in the dataset's metadata rather than left in the reader. The **sensors are not named by
+  the files** — the rig is famous and the files say nothing about it, so `provenance.sensor` stays
+  unknown rather than being filled in from what a reader of the format happens to know; `calib_time`,
+  which the files do state, is read. And a sensor directory this reader has no modality for, a line
+  that is not a timestamp, and a `data/` folder holding fewer samples than the manifest states are
+  each **disclosed**: the frames are the samples the manifest and the directory agree on, and
+  `COVERAGE.SOURCE_UNREAD` names the difference, because a part-uploaded drive must not read as a
+  shorter one.
+
+  Nothing is read whole into memory — every sample is an independently addressed file, so a frame's
+  fingerprint is streamed through a fixed buffer. `--metadata-only` reads the per-sensor manifests
+  for the inventory and the declared sample count and opens no sample. A drive is one episode, so
+  sampling is refused by name. The demo generator writes five variants (a clean drive, a dead LiDAR,
+  an unsynced one, a receiver that never fixed, and a part-uploaded one) and the whole sweep of
+  cross-run invariants now runs over them.
+
 - **The episodes two datasets both contain.** Every check in the catalog looks inside one dataset. A
   corpus is assembled from several, and the failure that costs a training run is not inside any of
   them: the same recording, exported twice, arrives through two sources and is trained on twice.

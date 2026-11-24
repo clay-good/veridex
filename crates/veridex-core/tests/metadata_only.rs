@@ -544,6 +544,7 @@ fn every_format_that_supports_it_is_named_in_the_docs() {
             "zarr" => "Zarr",
             "mf4" => "MF4",
             "rosbag1" => "ROS 1 rosbag",
+            "kitti" => "KITTI raw",
             other => panic!("no documented name known for the `{other}` adapter — add one here, and name the format in the three documents below"),
         }
     };
@@ -594,6 +595,12 @@ fn one_dataset_per_supporting_format() -> Vec<Sample2> {
     )
     .expect("the CLI's committed MCAP fixture");
 
+    // The demo KITTI drive, whose per-sensor `timestamps.txt` is the manifest a metadata-only run
+    // answers from — the one manifest here that states every sample *and* its time.
+    let kitti = tempfile::tempdir().unwrap();
+    veridex_demo::kitti::write(kitti.path(), "rig").expect("the demo drive");
+    let kitti_path = veridex_demo::kitti::drive_path(kitti.path());
+
     // The demo ROS 1 rig, which writes the index section a finished recorder does — the thing a
     // metadata-only run answers from.
     let bag = tempfile::tempdir().unwrap();
@@ -615,6 +622,11 @@ fn one_dataset_per_supporting_format() -> Vec<Sample2> {
             format: "rosbag1",
             path: bag_path,
             _keep: Some(bag),
+        },
+        Sample2 {
+            format: "kitti",
+            path: kitti_path,
+            _keep: Some(kitti),
         },
         Sample2 {
             format: "rosbag2",

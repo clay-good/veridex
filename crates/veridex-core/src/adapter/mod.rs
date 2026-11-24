@@ -16,6 +16,7 @@ pub mod candbc;
 pub(crate) mod cdr;
 pub(crate) mod chunks;
 pub mod hdf5;
+pub mod kitti;
 pub mod lerobot;
 pub mod mcap;
 pub mod mdf4;
@@ -1115,6 +1116,7 @@ pub fn default_registry() -> AdapterRegistry {
     reg.register(Box::new(lerobot::LeRobotAdapter));
     reg.register(Box::new(mcap::McapAdapter));
     reg.register(Box::new(rosbag1::Rosbag1Adapter));
+    reg.register(Box::new(kitti::KittiAdapter));
     reg.register(Box::new(rosbag2::Rosbag2Adapter));
     reg.register(Box::new(candbc::CanDbcAdapter));
     reg.register(Box::new(mdf4::Mdf4Adapter));
