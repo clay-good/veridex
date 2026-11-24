@@ -1035,6 +1035,79 @@ def test_cli_and_python_explain_agree(tmp_path):
     assert "TEMPORAL.CLOCK_SKEW" in expected["near"]
 
 
+def test_cli_and_python_registry_agree(tmp_path):
+    """Publishing and looking up must give the same record on both surfaces."""
+    binary = os.environ.get("VERIDEX_BIN", "target/debug/veridex")
+    dataset = _demo_dataset(tmp_path)
+    key = tmp_path / "issuer"
+    subprocess.run([binary, "keygen", str(key), "--force"], check=True, capture_output=True)
+    cert = tmp_path / "cert.json"
+    subprocess.run(
+        [binary, "certify", str(dataset), "--key", str(key), "--out", str(cert)],
+        capture_output=True,
+        text=True,
+    )
+    cert_json = cert.read_text()
+    hash_ = json.loads(cert_json)["certificate"]["cdm_content_hash"]
+
+    # Publish the same certificate into two registries, one through each surface, at the same
+    # timestamp — the records must be identical documents.
+    cli_reg = tmp_path / "cli-registry"
+    py_reg = tmp_path / "py-registry"
+    at = "2026-03-01T10:05:00Z"
+    subprocess.run(
+        [binary, "registry", "publish", "--registry", str(cli_reg),
+         "--certificate", str(cert), "--timestamp", at],
+        check=True, capture_output=True, text=True,
+    )
+    py_record = json.loads(veridex.registry_publish(cert_json, str(py_reg), at))
+    cli_record = json.loads(
+        subprocess.run(
+            [binary, "registry", "lookup", "--registry", str(cli_reg), hash_, "--json"],
+            capture_output=True, text=True,
+        ).stdout
+    )
+    assert py_record == cli_record
+
+    # Lookups agree, by hash and by dataset identity.
+    for target in (hash_, py_record["dataset_id"]):
+        cli_out = subprocess.run(
+            [binary, "registry", "lookup", "--registry", str(cli_reg), target, "--json"],
+            capture_output=True, text=True,
+        )
+        assert json.loads(cli_out.stdout) == json.loads(
+            veridex.registry_lookup(str(py_reg), target)
+        ), target
+
+    # Revocation, and the badge that reflects it.
+    subprocess.run(
+        [binary, "registry", "revoke", "--registry", str(cli_reg), hash_,
+         "--reason", "withdrawn", "--timestamp", "2026-05-01T09:00:00Z"],
+        check=True, capture_output=True, text=True,
+    )
+    py_revoked = json.loads(
+        veridex.registry_revoke(str(py_reg), hash_, "withdrawn", "2026-05-01T09:00:00Z")
+    )
+    cli_revoked = json.loads(
+        subprocess.run(
+            [binary, "registry", "lookup", "--registry", str(cli_reg), hash_, "--json"],
+            capture_output=True, text=True,
+        ).stdout
+    )
+    assert py_revoked == cli_revoked
+    assert py_revoked["status"]["revoked"]["reason"] == "withdrawn"
+    badge = veridex.registry_badge(str(py_reg), hash_)
+    assert badge.startswith("<svg") and "revoked" in badge
+
+    # And nothing published for it raises rather than returning an empty answer.
+    try:
+        veridex.registry_lookup(str(py_reg), "nobody")
+    except ValueError as e:
+        assert "no certificate published" in str(e), str(e)
+    else:
+        raise AssertionError("an absent record is not an answer")
+
+
 if __name__ == "__main__":
     # Minimal runner when pytest is unavailable. Defined last, so every test above it exists.
     import tempfile

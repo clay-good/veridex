@@ -645,6 +645,93 @@ fn emit_cdm(path: &str, format: Option<&str>, metadata_only: bool) -> PyResult<S
     ))
 }
 
+/// `veridex.registry_publish(certificate_json, registry_dir, published_at=None) -> str`
+///
+/// Publish a signed certificate into a **static registry** — a directory of JSON records any static
+/// host can serve — and return the record as JSON. The certificate is verified first, with the same
+/// function `veridex.verify` calls: a registry that accepts an unverifiable document is a place
+/// where one looks verified.
+///
+/// Publishing a newer certificate for a dataset identity supersedes the older record rather than
+/// overwriting it, so a registry's history stays checkable.
+#[pyfunction]
+#[pyo3(signature = (certificate_json, registry_dir, published_at=None))]
+fn registry_publish(
+    certificate_json: &str,
+    registry_dir: &str,
+    published_at: Option<&str>,
+) -> PyResult<String> {
+    let signed: veridex_core::SignedCertificate =
+        serde_json::from_str(certificate_json).map_err(to_py_err)?;
+    let at = published_at
+        .map(str::to_string)
+        .unwrap_or_else(unix_timestamp);
+    let record = veridex_core::registry::publish(std::path::Path::new(registry_dir), &signed, &at)
+        .map_err(to_py_err)?;
+    Ok(veridex_core::registry::render_record_json(&record))
+}
+
+/// `veridex.registry_lookup(registry_dir, target) -> str`
+///
+/// Look a certificate up by the dataset's CDM content hash, or by its dataset identity — in which
+/// case the most recently issued record for that name is returned, because a dataset id is not
+/// unique over time. The record carries the signed certificate verbatim, so the caller verifies it
+/// themselves with `veridex.verify`.
+///
+/// Raises `ValueError` when nothing is published for it: "no record" and "a record that failed" are
+/// different answers.
+#[pyfunction]
+fn registry_lookup(registry_dir: &str, target: &str) -> PyResult<String> {
+    let dir = std::path::Path::new(registry_dir);
+    let record = match veridex_core::registry::lookup_by_hash(dir, target) {
+        Ok(record) => record,
+        Err(veridex_core::registry::RegistryError::NotFound(_)) => {
+            veridex_core::registry::lookup_by_dataset(dir, target)
+                .map_err(to_py_err)?
+                .into_iter()
+                .next()
+                .expect("a non-empty lookup")
+        }
+        Err(e) => return Err(to_py_err(e)),
+    };
+    Ok(veridex_core::registry::render_record_json(&record))
+}
+
+/// `veridex.registry_revoke(registry_dir, cdm_content_hash, reason="", at=None) -> str`
+///
+/// Record the issuer's withdrawal of a published certificate. The certificate still verifies
+/// afterwards — bytes that have left cannot be recalled — and what changes is the issuer's current
+/// word, which a lookup reports.
+#[pyfunction]
+#[pyo3(signature = (registry_dir, cdm_content_hash, reason="", at=None))]
+fn registry_revoke(
+    registry_dir: &str,
+    cdm_content_hash: &str,
+    reason: &str,
+    at: Option<&str>,
+) -> PyResult<String> {
+    let at = at.map(str::to_string).unwrap_or_else(unix_timestamp);
+    let record = veridex_core::registry::revoke(
+        std::path::Path::new(registry_dir),
+        cdm_content_hash,
+        reason,
+        &at,
+    )
+    .map_err(to_py_err)?;
+    Ok(veridex_core::registry::render_record_json(&record))
+}
+
+/// `veridex.registry_badge(registry_dir, target) -> str`
+///
+/// The status badge for a published record, as an SVG string. A revoked or superseded certificate
+/// renders grey rather than showing its grade: a badge is read at a glance.
+#[pyfunction]
+fn registry_badge(registry_dir: &str, target: &str) -> PyResult<String> {
+    let record: veridex_core::registry::Record =
+        serde_json::from_str(&registry_lookup(registry_dir, target)?).map_err(to_py_err)?;
+    Ok(veridex_core::registry::badge(&record))
+}
+
 /// `veridex.explain(query) -> str`
 ///
 /// What one finding code or check id is, as the JSON `veridex explain --json` prints: the check
@@ -1081,6 +1168,10 @@ fn veridex(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(check_cdm, m)?)?;
     m.add_function(wrap_pyfunction!(audit, m)?)?;
     m.add_function(wrap_pyfunction!(explain, m)?)?;
+    m.add_function(wrap_pyfunction!(registry_publish, m)?)?;
+    m.add_function(wrap_pyfunction!(registry_lookup, m)?)?;
+    m.add_function(wrap_pyfunction!(registry_revoke, m)?)?;
+    m.add_function(wrap_pyfunction!(registry_badge, m)?)?;
     m.add_function(wrap_pyfunction!(version, m)?)?;
     Ok(())
 }

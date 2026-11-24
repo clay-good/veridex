@@ -45,6 +45,7 @@ pub mod overlap;
 pub mod pipeline;
 pub mod profile;
 pub mod redact;
+pub mod registry;
 pub mod remote;
 pub mod report;
 pub mod scenario;

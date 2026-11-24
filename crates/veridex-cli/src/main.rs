@@ -82,6 +82,10 @@ const COMMANDS: &[(&str, &str)] = &[
         "explain",
         "say what one finding code or check id is: the check behind it, whether it is a measurement or an abstention, and where its full entry lives (--json)",
     ),
+    (
+        "registry",
+        "publish, look up, revoke or badge a certificate in a static registry directory (publish|lookup|revoke|badge --registry <dir>; --json)",
+    ),
 ];
 
 /// Parsed command line for the data-consuming commands.
@@ -132,6 +136,10 @@ struct Args {
     /// `--expect-head <hash>`: the chain head `audit` must find, so a log shortened from the end is
     /// caught by the one value the log's holder cannot forge.
     expect_head: Option<String>,
+    /// `--registry <dir>`: the static registry directory to publish into or look up in.
+    registry: Option<String>,
+    /// `--reason <text>`: why a certificate is being revoked, as the issuer words it.
+    reason: Option<String>,
     /// Every positional argument, in order. `path` is the first; `diff` takes two.
     positionals: Vec<String>,
 }
@@ -149,7 +157,7 @@ impl Args {
     /// The single source of truth for [`reject_flags_except`]. Adding a flag to the parser without
     /// adding it here means it is never checked, so the two lists are kept adjacent, and a test
     /// asserts this covers the parser's whole flag set.
-    fn given_flags(&self) -> [(&'static str, bool); 36] {
+    fn given_flags(&self) -> [(&'static str, bool); 38] {
         [
             ("--json", self.json),
             ("--sarif", self.sarif),
@@ -190,6 +198,8 @@ impl Args {
             ("--set", !self.set.is_empty()),
             ("--audit-log", self.audit_log.is_some()),
             ("--expect-head", self.expect_head.is_some()),
+            ("--registry", self.registry.is_some()),
+            ("--reason", self.reason.is_some()),
         ]
     }
 }
@@ -348,6 +358,18 @@ const COMMAND_FLAGS: &[(&str, &[&[&str]], &str)] = &[
     ),
     ("checks", &[&["--json"]], ""),
     ("explain", &[&["--json"]], "<CODE|check-id>"),
+    (
+        "registry",
+        &[&[
+            "--json",
+            "--registry",
+            "--certificate",
+            "--reason",
+            "--out",
+            "--timestamp",
+        ]],
+        "publish|lookup|revoke|badge --registry <dir> …",
+    ),
 ];
 
 /// The flag groups `command` honors, or nothing for a name that is not a command.
@@ -380,6 +402,8 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
     let mut timestamp = None;
     let mut audit_log = None;
     let mut expect_head = None;
+    let mut registry = None;
+    let mut reason = None;
     let mut emit = None;
     let mut fail_on = None;
     let mut min_score = None;
@@ -465,6 +489,8 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
             "--sample-seed" => sample_seed = Some(value("--sample-seed")?),
             "--audit-log" => audit_log = Some(value("--audit-log")?),
             "--expect-head" => expect_head = Some(value("--expect-head")?),
+            "--registry" => registry = Some(value("--registry")?),
+            "--reason" => reason = Some(value("--reason")?),
             "--interval" => interval = Some(value("--interval")?),
             "--iterations" => iterations = Some(value("--iterations")?),
             other if other.starts_with('-') => return Err(format!("unknown option `{other}`")),
@@ -510,6 +536,8 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
         set,
         audit_log,
         expect_head,
+        registry,
+        reason,
         positionals,
     })
 }
@@ -621,6 +649,7 @@ fn main() -> ExitCode {
         Some("supersedes") => cmd_supersedes(&args[1..]),
         Some("overlap") => cmd_overlap(&args[1..]),
         Some("audit") => cmd_audit(&args[1..]),
+        Some("registry") => cmd_registry(&args[1..]),
         Some("keygen") => cmd_keygen(&args[1..]),
         Some("diff") => cmd_diff(&args[1..]),
         Some("watch") => cmd_watch(&args[1..]),
@@ -2529,6 +2558,191 @@ fn cmd_explain(rest: &[String]) -> ExitCode {
     }
 }
 
+/// `veridex registry <publish|lookup|revoke|badge> --registry <dir>` — a static registry, which is
+/// a directory.
+///
+/// A certificate verifies offline and always will. What offline verification cannot answer is the
+/// question a *consumer* has when handed a dataset and no document: has anyone certified these
+/// bytes, and is that certificate still the issuer's current word on them? Those are lookups, and
+/// this is the smallest thing to look in: `index.json` plus one file per content hash, publishable
+/// by copying the directory to any static host.
+///
+/// Exit codes are a gate's: **0** published, or found and current; **20** found but superseded or
+/// revoked — a true statement about the bytes and not the issuer's current word, which a release
+/// gate should not wave through; **2** nothing published for it, or the path is not a registry.
+fn cmd_registry(rest: &[String]) -> ExitCode {
+    let args = match parse_args_or_exit(rest) {
+        Ok(a) => a,
+        Err(code) => return code,
+    };
+    if let Err(code) = reject_flags_except("registry", &args) {
+        return code;
+    }
+    let Some(registry) = args.registry.as_deref().map(std::path::Path::new) else {
+        eprintln!("veridex: registry requires --registry <dir>");
+        return ExitCode::from(EXIT_TOOL_ERROR);
+    };
+    let Some(action) = args.positionals.first().map(String::as_str) else {
+        eprintln!("veridex: registry takes an action: publish, lookup, revoke or badge");
+        return ExitCode::from(EXIT_TOOL_ERROR);
+    };
+    // The second positional is the action's argument: a content hash or a dataset id for `lookup`
+    // and `revoke`, nothing for `publish` (which reads `--certificate`).
+    let target = args.positionals.get(1).cloned();
+
+    /// Read the certificate `--certificate` names, or say why not.
+    fn certificate_of(args: &Args) -> Result<veridex_core::SignedCertificate, ExitCode> {
+        let Some(path) = &args.certificate else {
+            eprintln!("veridex: registry publish requires --certificate <cert.json>");
+            return Err(ExitCode::from(EXIT_TOOL_ERROR));
+        };
+        let text = std::fs::read_to_string(path).map_err(|e| {
+            eprintln!("veridex: cannot read {path}: {e}");
+            ExitCode::from(EXIT_TOOL_ERROR)
+        })?;
+        serde_json::from_str(&text).map_err(|e| {
+            eprintln!("veridex: {path} is not a valid certificate: {e}");
+            ExitCode::from(EXIT_TOOL_ERROR)
+        })
+    }
+
+    /// Find one record by content hash, or — when the argument is not a hash — by dataset id,
+    /// reporting the most recent certificate for that name.
+    fn find(
+        registry: &std::path::Path,
+        target: &str,
+    ) -> Result<veridex_core::registry::Record, ExitCode> {
+        match veridex_core::registry::lookup_by_hash(registry, target) {
+            Ok(record) => Ok(record),
+            Err(veridex_core::registry::RegistryError::NotFound(_)) => {
+                match veridex_core::registry::lookup_by_dataset(registry, target) {
+                    // Newest first, so the first is the current word on that name.
+                    Ok(records) => Ok(records.into_iter().next().expect("non-empty")),
+                    Err(e) => {
+                        eprintln!("veridex: {e}");
+                        Err(ExitCode::from(EXIT_TOOL_ERROR))
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("veridex: {e}");
+                Err(ExitCode::from(EXIT_TOOL_ERROR))
+            }
+        }
+    }
+
+    match action {
+        "publish" => {
+            let signed = match certificate_of(&args) {
+                Ok(s) => s,
+                Err(code) => return code,
+            };
+            let at = args.timestamp.clone().unwrap_or_else(issued_timestamp);
+            match veridex_core::registry::publish(registry, &signed, &at) {
+                Ok(record) => {
+                    if args.json {
+                        println!("{}", veridex_core::registry::render_record_json(&record));
+                    } else {
+                        println!(
+                            "published {} — grade {} ({}), bound to {}",
+                            record.dataset_id,
+                            record.certificate.certificate.trust_score.grade.letter(),
+                            record.certificate.certificate.trust_score.score,
+                            &record.cdm_content_hash[..16]
+                        );
+                        println!(
+                            "  {}/{}/{}.json",
+                            registry.display(),
+                            veridex_core::registry::BY_HASH_DIR,
+                            record.cdm_content_hash
+                        );
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("veridex: {e}");
+                    ExitCode::from(EXIT_TOOL_ERROR)
+                }
+            }
+        }
+        "lookup" => {
+            let Some(target) = target else {
+                eprintln!("veridex: registry lookup takes a content hash or a dataset id");
+                return ExitCode::from(EXIT_TOOL_ERROR);
+            };
+            let record = match find(registry, &target) {
+                Ok(r) => r,
+                Err(code) => return code,
+            };
+            if args.json {
+                println!("{}", veridex_core::registry::render_record_json(&record));
+            } else {
+                print!("{}", veridex_core::registry::render_record(&record));
+            }
+            // A superseded or revoked certificate is found, and is not the issuer's current word.
+            if record.status.is_current() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(EXIT_FAIL)
+            }
+        }
+        "revoke" => {
+            let Some(target) = target else {
+                eprintln!("veridex: registry revoke takes the content hash to withdraw");
+                return ExitCode::from(EXIT_TOOL_ERROR);
+            };
+            let at = args.timestamp.clone().unwrap_or_else(issued_timestamp);
+            let reason = args.reason.clone().unwrap_or_default();
+            match veridex_core::registry::revoke(registry, &target, &reason, &at) {
+                Ok(record) => {
+                    if args.json {
+                        println!("{}", veridex_core::registry::render_record_json(&record));
+                    } else {
+                        print!("{}", veridex_core::registry::render_record(&record));
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("veridex: {e}");
+                    ExitCode::from(EXIT_TOOL_ERROR)
+                }
+            }
+        }
+        "badge" => {
+            let Some(target) = target else {
+                eprintln!("veridex: registry badge takes a content hash or a dataset id");
+                return ExitCode::from(EXIT_TOOL_ERROR);
+            };
+            let record = match find(registry, &target) {
+                Ok(r) => r,
+                Err(code) => return code,
+            };
+            let svg = veridex_core::registry::badge(&record);
+            match &args.out {
+                Some(path) => {
+                    if let Err(e) = std::fs::write(path, &svg) {
+                        eprintln!("veridex: cannot write {path}: {e}");
+                        return ExitCode::from(EXIT_TOOL_ERROR);
+                    }
+                    println!("wrote {path}");
+                }
+                None => println!("{svg}"),
+            }
+            if record.status.is_current() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(EXIT_FAIL)
+            }
+        }
+        other => {
+            eprintln!(
+                "veridex: unknown registry action `{other}` (publish, lookup, revoke or badge)"
+            );
+            ExitCode::from(EXIT_TOOL_ERROR)
+        }
+    }
+}
+
 /// Write a secret key file. On Unix the file is created `0600` (owner-only) so another local user
 /// on a shared host or CI runner cannot read the issuer's private signing key and forge certificates.
 #[cfg(unix)]
@@ -3486,6 +3700,14 @@ fn option_docs() -> Vec<OptionDoc> {
         doc(
             "--expect-head <hash>",
             "the chain head audit must find — the only thing that catches entries dropped from the end",
+        ),
+        doc(
+            "--registry <dir>",
+            "the static registry directory to publish into or look up in (a plain directory, servable by any static host)",
+        ),
+        doc(
+            "--reason <text>",
+            "why a certificate is being revoked, as the issuer words it",
         ),
         doc("--force", "overwrite existing key files"),
         always("--version", "print the version"),

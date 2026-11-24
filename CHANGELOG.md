@@ -277,6 +277,46 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   `security` spec's "Tamper evidence and audit" requirement, which until now had no implementation
   and no decision beside it. `veridex.audit(log_text, expect_head=None)` returns the same JSON.
 
+- **The registry, as a directory.** The `registry` spec was marked roadmap — the hosted service and
+  commercial layer — and nothing in it was built. Most of it does not need a service. A certificate
+  verifies offline and always will; what offline verification cannot answer is the question a
+  *consumer* has when handed a dataset and no document: has anyone certified these bytes, and is
+  that certificate still the issuer's current word? Those are lookups, and the smallest thing to look
+  in is a **directory**.
+
+  `veridex registry publish|lookup|revoke|badge --registry <dir>` writes `index.json` plus one
+  record per dataset content hash, publishable by copying the directory to any static host — no
+  server, no database, no account. A record carries the signed certificate **verbatim**, so a lookup
+  hands back the document rather than a summary and the consumer verifies it themselves; publication
+  verifies first, with the same function `veridex verify` calls, because a registry that accepts an
+  unverifiable document is a place where one looks verified. `lookup` exits **0** current, **20**
+  found but superseded or revoked, **2** nothing published — "no record" and "a record that failed"
+  are different answers.
+
+  Three properties keep it from becoming an authority, each asserted as a test. It cannot make a
+  certificate valid. It cannot withdraw one: revocation records the *issuer's* statement beside a
+  certificate that still verifies afterwards, because bytes that have left cannot be recalled and a
+  trust tool that implied otherwise would be lying about the thing it exists to be honest about. And
+  nothing requires it — `check`, `certify` and `verify` read no registry, so a consumer who never
+  looks loses nothing. Badges render locally (an image request to a badge service tells that host who
+  is reading which dataset's page) and show grey for a withdrawn certificate rather than its grade.
+  The spec's status line now says what is built and what stays roadmap: the service around the
+  directory.
+
+- **Spec coverage is checked, not claimed.** "All the specs are built" is easy to assert and hard to
+  check. [docs/spec-coverage.md](docs/spec-coverage.md) maps each of the **84** requirements across
+  the twelve capability specs to the code that implements it and a test that fails if it stops
+  working, generated from a table in `tests/spec_coverage.rs` with three guards: **complete** (a
+  requirement with no row fails the build, so adding one to a spec forces the decision about what
+  implements it), **current** (a row naming a requirement no spec declares fails too), and **honest**
+  (every source path must exist and every named test must exist as a `fn` in the file it names —
+  writing this table caught three rows that named tests which did not exist).
+
+  Alongside it, a guard that the Python bindings cover every CLI command, read out of the CLI's own
+  command table and the module's registrations rather than a third list: `watch` is excluded with its
+  reason in the code, and the four new `registry_*` bindings are there because adding a command
+  without one would have broken the parity claim silently.
+
 - **The rate a Zarr store declares, and the last check with nowhere to fire.** A store's `.zattrs`
   is free-form, and `fps` is what LeRobot, UMI and Diffusion Policy write there (`control_freq` is
   robomimic's name for it). Nothing read it, so a Zarr store declared no rate at all — which left

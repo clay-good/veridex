@@ -194,6 +194,37 @@ answer of "no".
 `veridex audit --json` prints the same answers for a script, and the Python binding
 `veridex.audit(log_text, expect_head=None, certificate_json=None)` returns that JSON byte-for-byte.
 
+## Publishing certificates where anyone can look them up
+
+A certificate verifies offline and always will. What offline verification cannot answer is the
+question a *consumer* has when they are handed a dataset and no document: has anyone certified these
+bytes, and is that certificate still the issuer's current word on them? Those are lookups, and a
+lookup needs somewhere to look. The smallest thing that is not a service is a **directory**:
+
+```sh
+veridex registry publish --registry ./registry --certificate cert.json
+veridex registry lookup  --registry ./registry <cdm-hash|dataset-id>
+veridex registry badge   --registry ./registry my-dataset --out badge.svg
+veridex registry revoke  --registry ./registry <cdm-hash> --reason "the calibration was wrong"
+```
+
+The directory holds `index.json` — every record, newest first, without the documents — and
+`by-hash/<cdm hash>.json`, one record per dataset's bytes, carrying the signed certificate
+**verbatim**. Copy the directory to any static host and it is published: no server, no database, no
+account. `lookup` exits **0** when the record is the issuer's current word, **20** when it is found
+but superseded or revoked, and **2** when nothing is published for it — "no record" and "a record
+that failed" are different answers.
+
+| | |
+|---|---|
+| **A registry cannot make a certificate valid** | Publication verifies first, with the same function `veridex verify` calls, and a lookup hands back the document for the consumer to verify themselves. A registry that lied would be caught by the signature it cannot forge |
+| **A registry cannot withdraw one** | Revocation records the *issuer's* statement beside the certificate. The certificate still verifies afterwards, and the lookup says so — bytes that have left cannot be recalled, and a trust tool that implied otherwise would be lying about the thing it exists to be honest about |
+| **Supersession is not a second mechanism** | Publishing a newer certificate for the same dataset identity relates the two with the same code `veridex supersedes` uses and marks the older record superseded, keeping it. A registry whose history can be edited is a registry whose claims cannot be checked |
+| **Nothing requires it** | No part of `check`, `certify` or `verify` reads a registry. Publishing is an extra step a producer takes, and a consumer who never looks loses nothing a certificate gave them — which is asserted as a test, not claimed |
+
+What stays roadmap is the *service* around the directory: an HTTP API, accounts, continuous
+monitoring. Those are deployment; the computation such an endpoint would run is the one above.
+
 ## What a certificate is not
 
 It is a statement of fact about a specific dataset — what was checked, what was found, under which

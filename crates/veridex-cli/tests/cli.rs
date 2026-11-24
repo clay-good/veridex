@@ -4311,3 +4311,193 @@ fn provenance_recorded_for_every_episode_is_not_announced_as_partial() {
         "a term recorded for every episode is not partial: {out}"
     );
 }
+
+#[test]
+fn a_registry_is_a_directory_anyone_can_publish_look_up_and_revoke_in() {
+    // The whole flow a producer and a consumer share, through the real binary: certify, publish,
+    // look up by hash and by name, badge, revoke — and the exit codes a gate reads.
+    let dir = temp_dir("registry-flow");
+    let demo = dir.join("demo.mcap");
+    veridex_demo::mcap::write(&demo, "clean").expect("write the demo recording");
+    let key = dir.join("issuer");
+    run(&["keygen", key.to_str().unwrap(), "--force"]);
+    let cert = dir.join("cert.json");
+    let (_, _, err) = run(&[
+        "certify",
+        demo.to_str().unwrap(),
+        "--key",
+        key.to_str().unwrap(),
+        "--out",
+        cert.to_str().unwrap(),
+    ]);
+    assert!(cert.exists(), "{err}");
+    let registry = dir.join("registry");
+    let _ = std::fs::remove_dir_all(&registry);
+    let reg = registry.to_str().unwrap().to_string();
+
+    let (code, out, err) = run(&[
+        "registry",
+        "publish",
+        "--registry",
+        &reg,
+        "--certificate",
+        cert.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("published demo"), "{out}");
+    // A static host serves exactly these two things.
+    assert!(registry.join("index.json").exists());
+    assert!(registry.join("by-hash").is_dir());
+
+    let hash = serde_json::from_str::<serde_json::Value>(
+        &std::fs::read_to_string(&cert).expect("read cert"),
+    )
+    .expect("json")["certificate"]["cdm_content_hash"]
+        .as_str()
+        .expect("a hash")
+        .to_string();
+
+    // Found by the hash a consumer computes from the dataset they hold, and by the dataset's name.
+    for target in [hash.as_str(), "demo"] {
+        let (code, out, err) = run(&["registry", "lookup", "--registry", &reg, target]);
+        assert_eq!(code, 0, "{err}");
+        assert!(out.contains("status      current"), "{out}");
+        assert!(
+            out.contains("cannot make one valid and cannot withdraw one"),
+            "the limit travels with the answer: {out}"
+        );
+    }
+    // The machine form is the record itself, certificate included, so a consumer can verify it.
+    let (_, out, _) = run(&["registry", "lookup", "--registry", &reg, &hash, "--json"]);
+    let doc: serde_json::Value = serde_json::from_str(&out).expect("json");
+    assert_eq!(doc["status"], serde_json::json!("current"));
+    assert!(doc["certificate"]["signature"].is_string());
+
+    // A badge, which a README embeds.
+    let svg = dir.join("badge.svg");
+    let (code, _, err) = run(&[
+        "registry",
+        "badge",
+        "--registry",
+        &reg,
+        "demo",
+        "--out",
+        svg.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert!(std::fs::read_to_string(&svg)
+        .expect("svg")
+        .starts_with("<svg"));
+
+    // Revocation: the issuer's word, and the gate's answer changes even though the certificate
+    // still verifies offline.
+    let (code, out, err) = run(&[
+        "registry",
+        "revoke",
+        "--registry",
+        &reg,
+        &hash,
+        "--reason",
+        "the calibration was wrong",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("the calibration was wrong"), "{out}");
+    let (code, out, _) = run(&["registry", "lookup", "--registry", &reg, &hash]);
+    assert_eq!(
+        code, 20,
+        "a revoked certificate must not pass a gate: {out}"
+    );
+    // And it still verifies against the dataset, because bytes that have left cannot be recalled.
+    let (code, _, err) = run(&[
+        "verify",
+        demo.to_str().unwrap(),
+        "--certificate",
+        cert.to_str().unwrap(),
+        "--key",
+        &format!("{}.pub", key.to_str().unwrap()),
+    ]);
+    assert_eq!(code, 0, "{err}");
+
+    // Nothing published for it is a tool error, not a verdict: "no record" and "a record that
+    // failed" are different answers.
+    let (code, _, err) = run(&["registry", "lookup", "--registry", &reg, "nobody"]);
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("no certificate published"), "{err}");
+    // And an action this command does not have says so.
+    let (code, _, err) = run(&["registry", "frobnicate", "--registry", &reg]);
+    assert_eq!(code, 2);
+    assert!(err.contains("unknown registry action"), "{err}");
+}
+
+#[test]
+fn the_python_bindings_expose_every_cli_operation() {
+    // The `cli` spec requires parity with the Python API, and the README says Python mirrors the
+    // CLI's *operations*. That claim breaks silently the moment a command is added without a
+    // binding — a Python caller then has to shell out to the binary for one operation, which is
+    // exactly what the bindings exist to avoid.
+    //
+    // The two lists are read out of the sources, so this needs no third list to go stale: the CLI's
+    // `COMMANDS` table and the `#[pymodule]`'s registrations.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let cli = std::fs::read_to_string(root.join("veridex-cli/src/main.rs")).expect("main.rs");
+    let py = std::fs::read_to_string(root.join("veridex-py/src/lib.rs")).expect("py lib.rs");
+
+    let table = cli
+        .split_once("const COMMANDS: &[(&str, &str)] = &[")
+        .expect("the COMMANDS table")
+        .1;
+    let table = table.split_once("\n];").expect("the table ends").0;
+    // A command's name is the *first* string of its tuple, and its description is the second — both
+    // start a line with a quote, so the two are told apart by shape: a name is one short word of
+    // lowercase letters.
+    let commands: Vec<String> = table
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix('"'))
+        .filter_map(|l| l.split('"').next())
+        .filter(|name| {
+            !name.is_empty()
+                && name.len() <= 12
+                && name.chars().all(|c| c.is_ascii_lowercase() || c == '-')
+        })
+        .map(str::to_string)
+        .collect();
+    assert!(commands.len() > 10, "parsed {commands:?}");
+
+    let bindings: std::collections::BTreeSet<String> = py
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("m.add_function(wrap_pyfunction!("))
+        .filter_map(|l| l.split(',').next())
+        .map(str::to_string)
+        .collect();
+    assert!(bindings.len() > 10, "parsed {bindings:?}");
+
+    // `watch` is excluded by design, stated here rather than left as an absence: it is a loop
+    // around `check`, not an operation, and a Python caller already owns their own loop.
+    const BY_DESIGN: &[(&str, &str)] = &[(
+        "watch",
+        "a loop around `check` rather than an operation; a Python caller owns their own loop",
+    )];
+
+    for command in &commands {
+        if BY_DESIGN.iter().any(|(name, _)| name == command) {
+            continue;
+        }
+        // A command maps to a binding of the same name, or to one prefixed with it: `registry` is
+        // four operations in the CLI's one command (`registry_publish`, `registry_lookup`, …).
+        let covered = bindings.iter().any(|b| {
+            b == command || b.starts_with(&format!("{command}_")) || b == &command.replace('-', "_")
+        });
+        assert!(
+            covered,
+            "`veridex {command}` has no Python binding. Add one, or add it to BY_DESIGN with the \
+             reason it is not an operation — the README claims Python mirrors every one."
+        );
+    }
+    // And the exclusion list cannot name a command that no longer exists.
+    for (name, _) in BY_DESIGN {
+        assert!(
+            commands.iter().any(|c| c == name),
+            "BY_DESIGN names `{name}`, which is not a command any more"
+        );
+    }
+}

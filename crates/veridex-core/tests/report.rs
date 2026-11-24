@@ -764,7 +764,22 @@ fn no_user_facing_message_was_mangled_by_the_formatter() {
     let mut mangled = Vec::new();
     for path in &files {
         let text = std::fs::read_to_string(path).expect("source is UTF-8");
+        // A fenced block inside a doc comment is not prose: an ASCII diagram of a directory layout
+        // or a shell transcript aligns its columns with spaces on purpose, and reading that as a
+        // mangled sentence would mean no documentation here could ever draw one.
+        let mut in_doc_fence = false;
         for (n, line) in text.lines().enumerate() {
+            let doc = line.trim_start();
+            if doc.starts_with("//!") || doc.starts_with("///") {
+                let body = doc.trim_start_matches('/').trim_start_matches('!').trim();
+                if body.starts_with("```") {
+                    in_doc_fence = !in_doc_fence;
+                    continue;
+                }
+                if in_doc_fence {
+                    continue;
+                }
+            }
             let chars: Vec<char> = line.chars().collect();
             let mut i = 0;
             while i < chars.len() {

@@ -152,6 +152,8 @@ veridex provenance <dataset> --emit croissant                     # extract + em
 veridex inspect    <dataset>                                      # summarize the dataset
 veridex checks                                                    # list the built-in check catalog
 veridex explain TEMPORAL.CLOCK_SKEW                               # what one code in a report means
+veridex registry publish --registry ./reg --certificate c.json    # publish a certificate where anyone can look it up
+veridex registry lookup  --registry ./reg <hash|dataset>          # has anyone certified these bytes, and does it still stand?
 veridex diff       <old.json> <new.json>                         # diff two report JSONs
 veridex watch      <dataset> [--interval <secs>] [--iterations <n>]  # re-validate as it records
 veridex attest     <dataset> --key producer.key --set clock=ptp   # sign provenance you can vouch for
@@ -352,7 +354,9 @@ print(manifest["verdict"]["coverage"])
 
 Python mirrors the CLI's *operations* — `check`, `certify`, `verify`, `provenance`, `inspect`, `diff`,
 `effective_config`, `label`, `attest`, `supersedes`, `overlap`, `audit`, `explain`,
-`emit_cdm` / `check_cdm`.
+`emit_cdm` / `check_cdm`, and `registry_publish` / `registry_lookup` / `registry_revoke` /
+`registry_badge`. A test reads the CLI's own command table and the binding list and fails if a
+command has no counterpart, so that claim cannot quietly stop being true.
 `watch` is not among them by design: it is a loop around `check`, not an operation, and a Python
 caller already owns their own loop.
 
@@ -412,11 +416,17 @@ cargo clippy --all-targets
 ## Status
 
 **Early implementation, runs end-to-end.** Against a full [OpenSpec](openspec/) design, this is what
-is in and tested. Every requirement in those specs is now built, with one half-requirement
-recorded as a decision beside it in the spec: deciding whether a *face* is in frame would mean
-decoding pixels, which this tool's design refuses, so the privacy requirement is built for the data
-Veridex does read — recorded personal data and imagery carried without a record of consent — and
-the pixel question is kept as a stated limit rather than reading as pending work.
+is in and tested. All **84** requirements across the twelve capability specs are built, and that is
+checked rather than claimed: [docs/spec-coverage.md](docs/spec-coverage.md) maps every requirement to
+the code that implements it and a test that fails if it stops working, and three guards in
+`tests/spec_coverage.rs` hold the map complete (a requirement with no row fails the build), current
+(a row naming a requirement no spec declares fails too) and honest (every path and test name must
+exist). One half-requirement is recorded as a decision beside it in the spec: deciding whether a
+*face* is in frame would mean decoding pixels, which this tool's design refuses, so the privacy
+requirement is built for the data Veridex does read — recorded personal data and imagery carried
+without a record of consent — and the pixel question is kept as a stated limit. The `registry` spec
+is built as a **static** registry, a directory any host can serve; the hosted service around it
+stays roadmap, and its spec says so.
 
 | Piece | What is in |
 |---|---|
@@ -436,6 +446,7 @@ the pixel question is kept as a stated limit rather than reading as pending work
 | **Bounded runs** | `--deadline <secs>` bounds a run in wall-clock time, the read included — where nearly all of the time goes. A read that stops is refused rather than reported (the episodes it never reached are not a sample, they are wherever it stopped); a run stopped during the checks keeps what it found and marks itself three ways: a `COVERAGE.CANCELLED` **warning** so it can never present as a clean pass, a `cancelled` block in the JSON, and a refusal from `certify` — and it hashes differently from the complete run. `--progress` reports each check on stderr, so a piped `--json` run can still be watched |
 | **Checking again without reading again** | `check --emit-cdm <file>` saves the Canonical Dataset Model a read built; `check --cdm <file>` validates it. For the hash the model names the verdict is **identical** to a full read's — the model is the whole of what a read computes — plus one informational finding saying the dataset was not opened. Re-running the catalog after an upgrade or a moved threshold is then free on a corpus that costs hours to read. A cache from another CDM encoding is refused, a cache that no longer hashes to the hash it states does not load, and `certify` takes none: a certificate is a claim about a dataset, and the issuer should have read it at least once |
 | **Issuance log** | `certify --audit-log <file>` and `verify --audit-log <file>` append to a hash-chained, append-only record: what happened, to which dataset and content hash, with which key, and the outcome as it was reported — a verification that *failed* included, because how often a certificate failed to check out is the question an auditor is asking. Every entry names the hash of the one before it, and an issuance is signed by the same key that signed the certificate, so rewriting a past entry into a consistent history needs the secret key. `veridex audit <file>` walks the chain: **0** intact, **20** broken or not the head you pinned (`--expect-head`), **2** not a log at all. `--certificate <c.json>` asks the question a consumer holding a certificate has instead — does the issuer's own record name **this document**? — matched by digest, so "not this document, but entries for the same dataset" is reported as its own answer rather than as a match. What it cannot prove, printed every time rather than left to be assumed: entries dropped from the *end* are undetectable from inside the file, which is what pinning or publishing the head is for — see [docs/trust-chain.md](docs/trust-chain.md#the-issuance-log) |
+| **Registry** | `veridex registry publish|lookup|revoke|badge --registry <dir>` — a **static** registry, which is a directory: `index.json` plus one record per dataset content hash, publishable by copying it to any static host. It answers the question offline verification cannot: has anyone certified *these bytes*, and is that certificate still the issuer's current word? A record carries the signed certificate verbatim, publication verifies it first with the same function `verify` calls, revocation records the issuer's withdrawal beside a certificate that still verifies, and publishing a newer certificate for one dataset supersedes the older record rather than overwriting it. `lookup` exits 0 current · 20 superseded or revoked · 2 nothing published. Nothing in `check`, `certify` or `verify` reads a registry, which a test asserts — see [docs/trust-chain.md](docs/trust-chain.md#publishing-certificates-where-anyone-can-look-them-up) |
 | **Partial runs** | `--sample-episodes` / `--sample-fraction`, resolved before any data is read, and `--metadata-only`, which checks what a dataset says about itself without opening a data file. Both are reported as partial coverage everywhere they could be mistaken for a full check, with the frame-dependent checks abstaining rather than misfiring |
 
 Two things the adapters do that are easy to miss, because both are about what a run did *not* read.
