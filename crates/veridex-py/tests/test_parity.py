@@ -717,6 +717,7 @@ def test_cli_and_python_overlap_agree(tmp_path):
     assert result.returncode == 20, f"shared episodes exit 20: {result.stderr}"
     assert py == json.loads(result.stdout), "Python and CLI overlap must agree"
     assert py["overlaps"] is True
+    assert py["shares_anything"] is True
     assert py["shared_episodes"] == 2
 
     # One dataset is not a comparison, on either surface.

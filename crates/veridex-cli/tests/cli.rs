@@ -3721,7 +3721,7 @@ fn overlap_reports_the_episodes_two_datasets_both_contain() {
     // Each side is named by the path the caller gave, and each member by its own episode index.
     assert!(stdout.contains("episode 0 = "), "{stdout}");
     // The limit is stated rather than left for the reader to assume.
-    assert!(stdout.contains("Exact matches only"), "{stdout}");
+    assert!(stdout.contains("exact matches only"), "{stdout}");
 
     let (code, stdout, _) = run(&["overlap", &a, &b, "--json"]);
     assert_eq!(code, 20);
@@ -3739,7 +3739,29 @@ fn overlap_is_silent_and_exits_zero_on_datasets_that_share_nothing() {
     let b = lerobot_demo(&dir, "saturated");
     let (code, stdout, stderr) = run(&["overlap", &a, &b]);
     assert_eq!(code, 0, "{stdout}{stderr}");
-    assert!(stdout.contains("NO SHARED EPISODES"), "{stdout}");
+    assert!(stdout.contains("NOTHING SHARED"), "{stdout}");
+}
+
+#[test]
+fn overlap_finds_a_re_export_that_shares_no_whole_episode() {
+    // The realistic pooling case: the same recording arrives re-timed, so no episode is
+    // byte-for-byte the other's and most of the frames are the same bytes. The `jitter` variant is
+    // the clean dataset with one episode's spacing perturbed, which is exactly that shape.
+    let dir = temp_dir("overlap-reexport");
+    let a = lerobot_demo(&dir, "clean");
+    let b = lerobot_demo(&dir, "jitter");
+    let (code, stdout, stderr) = run(&["overlap", &a, &b]);
+    assert_eq!(
+        code, 20,
+        "either kind of sharing fails the gate: {stdout}{stderr}"
+    );
+    assert!(
+        stdout.contains("share most of their frames"),
+        "the re-exported episode is reported as frames in common: {stdout}"
+    );
+    // And the episode that *is* byte-for-byte identical is reported once, as a group, not twice.
+    let frame_rows = stdout.matches("% of their frames").count();
+    assert_eq!(frame_rows, 1, "{stdout}");
 }
 
 #[test]

@@ -24,9 +24,18 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   corpus it is about to join in one line; `--json` and `veridex.overlap([paths])` give the same
   document byte for byte.
 
-  What it will and will not claim is stated in the output, not left to be assumed. **Exact matches
-  only**: a re-export that recomputed its statistics or re-encoded its video is the same recording
-  and is not reported, because the signature covers those fields.
+  It answers **two** questions, because one is stronger than the other. A **shared episode** is
+  exact: byte-for-byte the same recording. A **shared-frame** row is a re-export — the same recording
+  arrived with its statistics recomputed, its video re-encoded or its tail trimmed, so no episode is
+  identical and most of the frames are the same bytes. The second is the common case and the
+  signature cannot see it, so it is counted from the frames: per episode, over the fingerprints that
+  identify one episode of their own dataset, at the same `near_duplicate_fraction` threshold and the
+  same denominator `structural.near-duplicate-episode` uses within a dataset. Both rules keep the
+  number honest — a fingerprint held by more than one of its own episodes (a padded frame, a frozen
+  camera) names no recording, and counted per dataset rather than per episode a single coincidental
+  frame reads as a double-digit percentage. A pair an exact group already speaks for is left to it.
+
+  The rest of what it will and will not claim is stated in the output, not left to be assumed.
   **An episode nobody can fingerprint is excluded, counted and named** — two episodes nobody can
   fingerprint are not thereby the same recording, which is the finding this comparison would
   otherwise invent on every format that stores its pixels out of band. **Duplication inside one

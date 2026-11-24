@@ -660,7 +660,10 @@ fn overlap(paths: Vec<String>, format: Option<&str>) -> PyResult<String> {
         })
         .collect();
     Ok(veridex_core::overlap::render_overlap_json(
-        &veridex_core::overlap::overlap(&sources),
+        &veridex_core::overlap::overlap(
+            &sources,
+            veridex_core::engine::Tolerances::default().near_duplicate_fraction,
+        ),
     ))
 }
 

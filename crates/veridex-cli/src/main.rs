@@ -3088,7 +3088,7 @@ fn exit_codes_for(command: &str) -> &'static str {
         "check" | "certify" | "watch" => "0 pass · 10 pass-with-warnings · 20 fail · 2 tool-error",
         "diff" => "0 no regression · 20 regression (with --fail-on-regression) · 2 tool-error",
         "supersedes" => "0 supersedes · 20 does not supersede · 2 tool-error",
-        "overlap" => "0 no shared episodes · 20 shared episodes · 2 tool-error",
+        "overlap" => "0 nothing shared · 20 shared episodes or frames · 2 tool-error",
         // Everything else does its own job or cannot: rendering a label, reading a manifest, writing
         // a keypair. The dataset's verdict is not this command's answer.
         _ => "0 success · 2 tool-error",
@@ -3271,13 +3271,20 @@ fn cmd_overlap(rest: &[String]) -> ExitCode {
             dataset: &i.dataset,
         })
         .collect();
-    let report = veridex_core::overlap::overlap(&sources);
+    // The same threshold `structural.near-duplicate-episode` applies within a dataset, so a
+    // near-match means the same thing on either side of a dataset boundary.
+    let report = veridex_core::overlap::overlap(
+        &sources,
+        veridex_core::engine::Tolerances::default().near_duplicate_fraction,
+    );
     if args.json {
         println!("{}", veridex_core::overlap::render_overlap_json(&report));
     } else {
         print!("{}", veridex_core::overlap::render_overlap(&report));
     }
-    if report.overlaps() {
+    // Either kind of sharing fails the gate: a re-export shares no whole episode and is the same
+    // recording all the same.
+    if report.shares_anything() {
         ExitCode::from(EXIT_FAIL)
     } else {
         ExitCode::SUCCESS
