@@ -75,7 +75,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ),
     (
         "audit",
-        "walk an append-only issuance log and say whether its chain is intact (--expect-head <hash>; --json)",
+        "walk an append-only issuance log and say whether its chain is intact (--expect-head <hash>; --certificate <c.json> asks whether that document is recorded; --json)",
     ),
     ("checks", "list the built-in check catalog"),
 ];
@@ -339,7 +339,7 @@ const COMMAND_FLAGS: &[(&str, &[&[&str]], &str)] = &[
     ),
     (
         "audit",
-        &[&["--json", "--expect-head"]],
+        &[&["--json", "--expect-head", "--certificate"]],
         "<audit-log.jsonl>",
     ),
     ("checks", &[&["--json"]], ""),
@@ -2354,11 +2354,51 @@ fn cmd_audit(rest: &[String]) -> ExitCode {
     // failure even when every entry still in the file chains perfectly.
     let head_mismatch = veridex_core::audit::head_mismatch(&report, args.expect_head.as_deref());
 
+    // What this log says about one certificate document, when the caller asked. Matched on the hash
+    // of the bytes the issuer wrote: a log entry names a certificate by digest, so the question is
+    // about a document rather than about a claim.
+    let certificate = match &args.certificate {
+        None => None,
+        Some(path) => match std::fs::read(path) {
+            Ok(bytes) => Some((
+                path.clone(),
+                veridex_core::audit::certificate_in_log(&report, &bytes),
+            )),
+            Err(e) => {
+                eprintln!("veridex: cannot read {path}: {e}");
+                return ExitCode::from(EXIT_TOOL_ERROR);
+            }
+        },
+    };
+    // A certificate the log does not record is a failure of the question the caller asked, even on
+    // an intact chain: they wanted to know whether this document is in the issuer's own record.
+    let unrecorded = matches!(
+        certificate.as_ref().map(|(_, r)| r),
+        Some(veridex_core::audit::CertificateRecord::Absent)
+            | Some(veridex_core::audit::CertificateRecord::SameDatasetOnly { .. })
+    );
+
     if args.json {
-        println!(
-            "{}",
-            veridex_core::audit::render_log_json(&report, args.expect_head.as_deref())
-        );
+        let mut doc: serde_json::Value = serde_json::from_str(
+            &veridex_core::audit::render_log_json(&report, args.expect_head.as_deref()),
+        )
+        .unwrap_or_else(|_| serde_json::json!({}));
+        if let Some((_, record)) = &certificate {
+            use veridex_core::audit::CertificateRecord::*;
+            doc["certificate"] = match record {
+                ThisDocument { seqs } => {
+                    serde_json::json!({ "recorded": true, "entries": seqs })
+                }
+                SameDatasetOnly { seqs } => serde_json::json!({
+                    "recorded": false,
+                    "same_dataset_entries": seqs,
+                }),
+                Absent => serde_json::json!({ "recorded": false }),
+            };
+            doc["intact"] =
+                serde_json::json!(report.intact() && head_mismatch.is_none() && !unrecorded);
+        }
+        println!("{doc}");
     } else {
         println!("Veridex audit log — {path}");
         println!(
@@ -2382,6 +2422,38 @@ fn cmd_audit(rest: &[String]) -> ExitCode {
                 entry.outcome
             );
         }
+        if let Some((cert_path, record)) = &certificate {
+            use veridex_core::audit::CertificateRecord::*;
+            match record {
+                ThisDocument { seqs } => println!(
+                    "  ✓ {cert_path} is recorded in this log (entr{} {})",
+                    if seqs.len() == 1 { "y" } else { "ies" },
+                    seqs.iter()
+                        .map(u64::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                // The distinction worth having: a log that records *an* issuance for this dataset is
+                // not a log that records *this document*. Either the certificate was re-issued over
+                // the same bytes, or the file has been re-serialized since it was logged — and
+                // neither is the same as "the issuer's own record names this document".
+                SameDatasetOnly { seqs } => println!(
+                    "  ✗ {cert_path} is not recorded in this log, which does hold {} entr{} for \
+                     the same dataset ({}) — a certificate re-issued over the same bytes, or this \
+                     file re-serialized since it was logged",
+                    seqs.len(),
+                    if seqs.len() == 1 { "y" } else { "ies" },
+                    seqs.iter()
+                        .map(u64::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                Absent => println!(
+                    "  ✗ {cert_path} is not recorded in this log, and neither is any certificate \
+                     for its dataset"
+                ),
+            }
+        }
         match (&report.broken, head_mismatch) {
             (Some(b), _) => println!("  ✗ chain broken: {b}"),
             (None, Some(expected)) => println!(
@@ -2400,7 +2472,7 @@ fn cmd_audit(rest: &[String]) -> ExitCode {
             }
         }
     }
-    if report.intact() && head_mismatch.is_none() {
+    if report.intact() && head_mismatch.is_none() && !unrecorded {
         ExitCode::SUCCESS
     } else {
         ExitCode::from(EXIT_FAIL)
@@ -3461,7 +3533,7 @@ fn exit_codes_for(command: &str) -> &'static str {
         "overlap" => "0 nothing shared · 20 shared episodes or frames · 2 tool-error",
         // "the log was edited" and "that is not a log" are different answers, so they are different
         // codes: a pipeline that treats a mistyped path as evidence of tampering gets ignored.
-        "audit" => "0 chain intact · 20 chain broken or head not as expected · 2 not an audit log",
+        "audit" => "0 chain intact (and the certificate recorded, with --certificate) · 20 chain broken, head not as expected, or certificate not recorded · 2 not an audit log",
         // Everything else does its own job or cannot: rendering a label, reading a manifest, writing
         // a keypair. The dataset's verdict is not this command's answer.
         _ => "0 success · 2 tool-error",

@@ -132,6 +132,14 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   or not the head you pinned with `--expect-head`, **2** not a log at all, because a mistyped path is
   not evidence of tampering.
 
+  There is a second question a log answers, for the consumer rather than the issuer:
+  `veridex audit <log> --certificate <cert.json>` asks whether the issuer's own record names **this
+  document**. Matched by digest over the certificate's bytes, because that is what an entry holds, so
+  three outcomes are distinguished rather than two — recorded; not recorded though the log holds
+  entries for the same dataset (a re-issue over the same bytes, or this file re-serialized since it
+  was logged); or nothing about the dataset at all. An intact chain that does not name your
+  certificate is still an answer of "no", and exits 20 saying so.
+
   A failed verification is recorded with its reason, deliberately: a log holding only the successes
   would be worse than none. And the two limits are tests rather than small print — entries dropped
   from the *end* are undetectable from inside the file, which is what the printed chain head is for,

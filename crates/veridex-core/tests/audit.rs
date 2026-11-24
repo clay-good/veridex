@@ -286,3 +286,46 @@ fn every_field_of_an_entry_is_inside_its_hash() {
         );
     }
 }
+
+#[test]
+fn a_log_can_be_asked_whether_it_records_one_certificate_document() {
+    // What a consumer holding a certificate and a published log actually wants to know: does the
+    // issuer's own record name *this document*? Matched by digest, because that is what an entry
+    // holds — so the answer is about bytes, not about claims.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("audit.jsonl");
+    let document = br#"{"certificate":{"cdm_content_hash":"abc123"},"signature":"ff"}"#;
+    let mut r = record("demo", 0);
+    r.cdm_hash = "abc123".to_string();
+    r.certificate_hash = audit::document_hash(document);
+    audit::append(&path, &r, None).expect("append");
+    let report = audit::verify_log(&std::fs::read_to_string(&path).expect("read")).expect("parses");
+
+    assert_eq!(
+        audit::certificate_in_log(&report, document),
+        audit::CertificateRecord::ThisDocument { seqs: vec![0] }
+    );
+
+    // The distinction that makes this worth a type: the same certificate content, re-serialized,
+    // is a different document — and a log that records *an* issuance for the dataset is not a log
+    // that records this file.
+    let reserialized = br#"{ "certificate": { "cdm_content_hash": "abc123" }, "signature": "ff" }"#;
+    assert_eq!(
+        audit::certificate_in_log(&report, reserialized),
+        audit::CertificateRecord::SameDatasetOnly { seqs: vec![0] },
+        "re-serialized is not this document, and saying so is the point"
+    );
+
+    // A certificate for another dataset entirely: the log says nothing about it.
+    let other = br#"{"certificate":{"cdm_content_hash":"ffffff"}}"#;
+    assert_eq!(
+        audit::certificate_in_log(&report, other),
+        audit::CertificateRecord::Absent
+    );
+    // And something that is not a certificate at all is absent rather than an error: `audit` is
+    // answering "is this in the log", and nothing that is not in the log can be.
+    assert_eq!(
+        audit::certificate_in_log(&report, b"not json"),
+        audit::CertificateRecord::Absent
+    );
+}

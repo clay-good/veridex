@@ -4112,3 +4112,60 @@ fn commands_that_do_not_write_a_log_refuse_the_flag() {
     assert_eq!(code, 2, "{err}");
     assert!(err.contains("check does not support --audit-log"), "{err}");
 }
+
+#[test]
+fn audit_says_whether_a_certificate_document_is_in_the_log() {
+    // The question a consumer holding both actually asks: does the issuer's own record name this
+    // document? Exit 20 when it does not, even on an intact chain — the chain was not the question.
+    let (_dir, demo, key, cert, log) = audit_fixture("audit-certificate");
+    let (_, _, err) = run(&[
+        "certify",
+        &demo,
+        "--key",
+        &key,
+        "--out",
+        &cert,
+        "--audit-log",
+        &log,
+    ]);
+    assert!(std::path::Path::new(&cert).exists(), "{err}");
+
+    let (code, out, _) = run(&["audit", &log, "--certificate", &cert]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("is recorded in this log"), "{out}");
+
+    // A second certificate over the same dataset, issued without the log: the log holds an entry
+    // for the dataset and none for this document, and the two are reported differently.
+    let unlogged = format!("{cert}.second");
+    let (_, _, _) = run(&[
+        "certify",
+        &demo,
+        "--key",
+        &key,
+        "--out",
+        &unlogged,
+        "--timestamp",
+        "2026-01-01T00:00:00Z",
+    ]);
+    let (code, out, _) = run(&["audit", &log, "--certificate", &unlogged]);
+    assert_eq!(
+        code, 20,
+        "an unrecorded certificate fails the question: {out}"
+    );
+    assert!(out.contains("not recorded in this log"), "{out}");
+    assert!(
+        out.contains("same dataset"),
+        "the log does hold entries for the dataset, which is a different answer: {out}"
+    );
+    assert!(
+        out.contains("✓ chain intact"),
+        "and the chain is fine: {out}"
+    );
+
+    // The JSON carries the same answer, and `intact` folds it in so one field is enough for a gate.
+    let (code, out, _) = run(&["audit", &log, "--certificate", &unlogged, "--json"]);
+    assert_eq!(code, 20);
+    let doc: serde_json::Value = serde_json::from_str(&out).expect("json");
+    assert_eq!(doc["certificate"]["recorded"], serde_json::json!(false));
+    assert_eq!(doc["intact"], serde_json::json!(false));
+}

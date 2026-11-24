@@ -176,8 +176,23 @@ file can be:
 | **The time in an entry** | The writing machine's, exactly as in a certificate's issuance block. A machine that lies about its clock writes a lie here. The *order* is the chain's, which no clock can change |
 | **A failed verification** | Recorded, with the reason. A log holding only the successes would be worse than none: how often a certificate failed to check out is the question an auditor is asking |
 
-`veridex audit --json` prints the same answer for a script, and the Python binding
-`veridex.audit(log_text, expect_head=None)` returns that JSON byte-for-byte.
+There is a second question a log answers, and it is the one a *consumer* holding a certificate asks:
+
+```sh
+veridex audit issuance.jsonl --certificate cert.json
+```
+
+Does the issuer's own record name **this document**? Matched by digest over the certificate's bytes,
+because that is what an entry holds — so the answer is about a document rather than about a claim,
+and three outcomes are distinguished rather than two. The document is recorded (exit 0). It is not,
+though the log holds entries for the same dataset (exit 20) — a certificate re-issued over the same
+bytes, or this file re-serialized since it was logged, and a reader should know which they have. Or
+the log says nothing about the dataset at all (exit 20). The chain being intact is a separate
+question, reported separately, because an intact log that does not name your certificate is still an
+answer of "no".
+
+`veridex audit --json` prints the same answers for a script, and the Python binding
+`veridex.audit(log_text, expect_head=None, certificate_json=None)` returns that JSON byte-for-byte.
 
 ## What a certificate is not
 

@@ -833,6 +833,24 @@ def test_cli_and_python_audit_agree(tmp_path):
     assert json.loads(veridex.audit(edited)) == cli
     assert "altered" in cli["broken"]
 
+    # The certificate question: the same answer on both surfaces, including the distinction between
+    # "not this document" and "nothing for this dataset".
+    log.write_text(text)
+    cert_bytes = cert.read_text()
+    cli_cert, code = cli_audit("--certificate", str(cert))
+    assert code == 0, cli_cert
+    assert json.loads(veridex.audit(text, None, cert_bytes)) == cli_cert
+    assert cli_cert["certificate"]["recorded"] is True
+
+    other = tmp_path / "other.json"
+    other.write_text(json.dumps(json.loads(cert_bytes)))  # same content, re-serialized
+    cli_other, code = cli_audit("--certificate", str(other))
+    assert code == 20
+    assert json.loads(veridex.audit(text, None, other.read_text())) == cli_other
+    assert cli_other["certificate"]["recorded"] is False
+    assert cli_other["certificate"]["same_dataset_entries"], cli_other
+    assert cli_other["intact"] is False
+
     # And a file that is not a log at all is an error on both, not a break.
     try:
         veridex.audit('{"status":"pass"}\n')

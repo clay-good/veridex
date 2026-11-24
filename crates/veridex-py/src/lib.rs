@@ -645,7 +645,7 @@ fn emit_cdm(path: &str, format: Option<&str>, metadata_only: bool) -> PyResult<S
     ))
 }
 
-/// `veridex.audit(log_text, expect_head=None) -> str`
+/// `veridex.audit(log_text, expect_head=None, certificate_json=None) -> str`
 ///
 /// Walk an append-only issuance log and return the JSON `veridex audit --json` prints: whether the
 /// chain is intact, how many entries it holds, how many carried a verified signature, the chain
@@ -658,13 +658,45 @@ fn emit_cdm(path: &str, format: Option<&str>, metadata_only: bool) -> PyResult<S
 /// shorter, and nothing inside the file can say otherwise — the chain proves no past entry was
 /// altered, not that none was dropped.
 ///
+/// `certificate_json` asks the other question a log answers: does the issuer's own record name
+/// **this certificate document**? Matched by digest over the bytes passed, because that is what an
+/// entry holds — so a re-serialized certificate is reported as `{"recorded": false,
+/// "same_dataset_entries": [...]}` rather than as a match or as an absence. When it is given,
+/// `intact` folds the answer in, so one field is enough for a gate.
+///
 /// Raises `ValueError` when the text is not a Veridex audit log at all, which is a different answer
 /// from a log that was edited.
 #[pyfunction]
-#[pyo3(signature = (log_text, expect_head=None))]
-fn audit(log_text: &str, expect_head: Option<&str>) -> PyResult<String> {
+#[pyo3(signature = (log_text, expect_head=None, certificate_json=None))]
+fn audit(
+    log_text: &str,
+    expect_head: Option<&str>,
+    certificate_json: Option<&str>,
+) -> PyResult<String> {
     let report = veridex_core::audit::verify_log(log_text).map_err(to_py_err)?;
-    Ok(veridex_core::audit::render_log_json(&report, expect_head))
+    let rendered = veridex_core::audit::render_log_json(&report, expect_head);
+    let Some(document) = certificate_json else {
+        return Ok(rendered);
+    };
+    // The same answer, and the same folding into `intact`, as `veridex audit --certificate --json`:
+    // one field is enough for a gate, and the detail is beside it.
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&rendered).unwrap_or_else(|_| serde_json::json!({}));
+    use veridex_core::audit::CertificateRecord::*;
+    let record = veridex_core::audit::certificate_in_log(&report, document.as_bytes());
+    doc["certificate"] = match &record {
+        ThisDocument { seqs } => serde_json::json!({ "recorded": true, "entries": seqs }),
+        SameDatasetOnly { seqs } => {
+            serde_json::json!({ "recorded": false, "same_dataset_entries": seqs })
+        }
+        Absent => serde_json::json!({ "recorded": false }),
+    };
+    doc["intact"] = serde_json::json!(
+        report.intact()
+            && veridex_core::audit::head_mismatch(&report, expect_head).is_none()
+            && matches!(record, ThisDocument { .. })
+    );
+    Ok(doc.to_string())
 }
 
 /// `veridex.check_cdm(cdm_json, config=None, profile=None, redact=False) -> str`

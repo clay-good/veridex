@@ -512,3 +512,70 @@ pub fn render_log_json(report: &AuditReport, expect_head: Option<&str>) -> Strin
     })
     .to_string()
 }
+
+/// What a log says about one certificate document.
+///
+/// Three answers, and the difference between the second and third is the point of having the type:
+/// a log that records *an* issuance for a dataset is not a log that records *this document*.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CertificateRecord {
+    /// The log holds an entry whose certificate hash is this document's: this exact document was
+    /// recorded.
+    ThisDocument {
+        /// The matching entries, in chain order (an issuance, and any verifications of it).
+        seqs: Vec<u64>,
+    },
+    /// No entry names this document, but the log does record issuances bound to the same dataset
+    /// content hash — a certificate re-issued over the same bytes, or this document re-serialized.
+    SameDatasetOnly {
+        /// The entries bound to that content hash.
+        seqs: Vec<u64>,
+    },
+    /// The log says nothing about this dataset at all.
+    Absent,
+}
+
+/// What `log` records about the certificate document `certificate_bytes`, which must be the bytes as
+/// the issuer wrote them.
+///
+/// Matched on the hash of the document, not on what the document claims: a log entry names a
+/// certificate by digest, so "this document was recorded" is a statement about bytes. A
+/// re-serialized certificate — same content, different whitespace — is therefore *not* this
+/// document, and [`CertificateRecord::SameDatasetOnly`] is how that is reported rather than as a
+/// match or as an absence. Nothing here verifies a signature; that is `verify`'s job, and a log can
+/// only say what it was told.
+pub fn certificate_in_log(report: &AuditReport, certificate_bytes: &[u8]) -> CertificateRecord {
+    let document = document_hash(certificate_bytes);
+    let this: Vec<u64> = report
+        .entries
+        .iter()
+        .filter(|e| e.certificate_hash == document)
+        .map(|e| e.seq)
+        .collect();
+    if !this.is_empty() {
+        return CertificateRecord::ThisDocument { seqs: this };
+    }
+    // Fall back to the dataset the document is bound to, read from the document itself.
+    let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(certificate_bytes) else {
+        return CertificateRecord::Absent;
+    };
+    let bound = parsed
+        .get("certificate")
+        .and_then(|c| c.get("cdm_content_hash"))
+        .and_then(|h| h.as_str())
+        .unwrap_or_default();
+    if bound.is_empty() {
+        return CertificateRecord::Absent;
+    }
+    let same: Vec<u64> = report
+        .entries
+        .iter()
+        .filter(|e| e.cdm_hash == bound)
+        .map(|e| e.seq)
+        .collect();
+    if same.is_empty() {
+        CertificateRecord::Absent
+    } else {
+        CertificateRecord::SameDatasetOnly { seqs: same }
+    }
+}
