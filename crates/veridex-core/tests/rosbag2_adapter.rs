@@ -269,6 +269,53 @@ fn a_payload_spread_across_overflow_pages_is_reassembled_exactly() {
 }
 
 #[test]
+fn a_calibrated_rig_under_the_threshold_says_the_rig_rules_stood_down() {
+    // `small_rig.db3` is a real recording of one LiDAR, one camera, its `CameraInfo` and a
+    // `/tf_static` tree — two AV-native sensor streams, one under the rig threshold. The rig rules
+    // therefore do not judge the calibration it carries, and the point of
+    // `AUTONOMY.CALIBRATION_UNCHECKED` is that the report says so instead of reading clean. Proven
+    // on a bag rather than a hand-built model because the question is whether an adapter can
+    // produce this shape at all.
+    let out = ingest("small_rig.db3");
+    let rig_sensors = out.dataset.episodes[0]
+        .streams
+        .iter()
+        .filter(|s| s.modality.is_rig_sensor())
+        .count();
+    assert_eq!(
+        rig_sensors, 1,
+        "the shape under test is below the threshold"
+    );
+    assert!(
+        out.dataset
+            .calibration
+            .as_ref()
+            .is_some_and(|c| !c.transforms.is_empty() && !c.intrinsics.is_empty()),
+        "the bag does carry the calibration that goes unjudged"
+    );
+
+    let engine = veridex_core::checks::default_engine().expect("the standard catalog");
+    let hash = veridex_core::content_hash(&out.dataset);
+    let findings = engine
+        .run(&out.dataset, hash, &veridex_core::RunConfig::default())
+        .findings;
+    let note = findings
+        .iter()
+        .find(|f| f.code == "AUTONOMY.CALIBRATION_UNCHECKED")
+        .unwrap_or_else(|| {
+            panic!(
+                "the calibration went unjudged and nothing said so: {:?}",
+                findings.iter().map(|f| &f.code).collect::<Vec<_>>()
+            )
+        });
+    assert!(
+        note.message.contains("1 stream(s)"),
+        "it names how far short the recording fell: {}",
+        note.message
+    );
+}
+
+#[test]
 fn a_row_exactly_on_the_local_payload_limit_is_read_from_its_page() {
     // SQLite keeps a table row whole on its page while its payload is at most `U - 35` bytes —
     // 4061 for the 4 KB pages these fixtures use — and spills anything larger. `local_limit.db3`

@@ -3687,6 +3687,85 @@ fn a_rig_without_calibration_is_flagged() {
 }
 
 #[test]
+fn a_calibration_on_a_rig_one_stream_under_the_bar_is_not_silently_unjudged() {
+    // The rig rules are gated on three AV-native sensor streams across two modalities, and the gate
+    // is right — a bus-only measurement is not what they reason about. Its *silence* was the fault:
+    // a drive one stream under the bar got no calibration judgement and no word that none was made.
+    // That is how the whole rig family came to stand down on a KITTI drive whose published
+    // calibration sat beside it unexamined, and the report said nothing at all.
+    let cal = veridex_core::cdm::Calibration {
+        // A real calibration, and a broken one: `cam` has no intrinsics and the tree is in two
+        // pieces. Neither is reported here, because neither rule ran.
+        transforms: vec![xf("base_link", "lidar"), xf("mast", "cam")],
+        intrinsics: vec![],
+    };
+    let ep = episode(
+        0,
+        vec![
+            rig_stream("lidar", Modality::PointCloud, 1_000_000_000),
+            rig_stream("gnss", Modality::Gnss, 1_000_000_000),
+            rig_stream("cam", Modality::Video, 1_000_000_000),
+        ],
+    );
+    let mut d = dataset(vec![ep]);
+    d.calibration = Some(cal);
+    assert!(
+        !veridex_core::checks::autonomy::is_rig_episode(&d.episodes[0]),
+        "two rig-sensor streams is one under the threshold, which is the case under test"
+    );
+
+    let f = autonomy::CalibrationCompleteness.run(&d);
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "AUTONOMY.CALIBRATION_UNCHECKED");
+    assert_eq!(
+        f[0].severity,
+        Severity::Info,
+        "a statement about the run, not an accusation about the data"
+    );
+    // It names how far short the dataset fell, which is the number a reader fixes.
+    assert!(
+        f[0].message.contains("2 stream(s)") && f[0].message.contains("2 transform(s)"),
+        "{}",
+        f[0].message
+    );
+
+    // One more rig-sensor stream and the rules themselves run: the abstention gives way to the two
+    // defects that were sitting there unexamined.
+    let mut over = d.clone();
+    over.episodes[0]
+        .streams
+        .push(rig_stream("imu", Modality::Imu, 1_000_000_000));
+    let codes: Vec<String> = autonomy::CalibrationCompleteness
+        .run(&over)
+        .into_iter()
+        .map(|x| x.code)
+        .collect();
+    assert!(
+        !codes.iter().any(|c| c == "AUTONOMY.CALIBRATION_UNCHECKED"),
+        "{codes:?}"
+    );
+    assert!(
+        codes.iter().any(|c| c == "AUTONOMY.CALIBRATION_INCOMPLETE"),
+        "{codes:?}"
+    );
+
+    // And a dataset with a transform tree and no AV-native sensor at all is not a rig that fell
+    // short: an arm recording must not be told that rules it was never measured for did not run.
+    let mut arm = dataset(vec![episode(
+        0,
+        vec![rig_stream("cam", Modality::Video, 1_000_000_000)],
+    )]);
+    arm.calibration = Some(veridex_core::cdm::Calibration {
+        transforms: vec![xf("base_link", "cam")],
+        intrinsics: vec![intr("cam")],
+    });
+    assert!(
+        autonomy::CalibrationCompleteness.run(&arm).is_empty(),
+        "an arm with a transform tree is not an under-threshold rig"
+    );
+}
+
+#[test]
 fn a_fully_calibrated_rig_is_clean() {
     let cal = veridex_core::cdm::Calibration {
         transforms: vec![xf("base_link", "lidar"), xf("base_link", "cam")],

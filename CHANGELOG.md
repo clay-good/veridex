@@ -10,6 +10,20 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **`AUTONOMY.CALIBRATION_UNCHECKED`: a calibration the rig rules did not judge now says so.** The
+  rig family is gated on three AV-native sensor streams across two modalities, and the gate is
+  right — a bus-only measurement is not what those rules reason about. Its *silence* was not: a
+  recording one stream under the bar got no calibration judgement and no word that none was made,
+  which is exactly how the whole family came to stand down on a KITTI drive with its published
+  calibration beside it. The abstention is narrow on purpose — a calibration with something in it
+  **and** at least one AV-native sensor stream — so an arm recording with a transform tree is not
+  told that rules it was never measured for did not run. It names how far short the dataset fell,
+  because that is the number a reader fixes, and because a criterion passes only when its check ran
+  and found nothing, a dataset in this state can no longer certify `world-model-ready` on the
+  calibration criterion. Proven on a real bag (`small_rig.db3`: one LiDAR, one camera, its
+  `CameraInfo` and a `/tf_static` tree) as well as on a hand-built model.
+
+
 - **The adapter mutation sweep, completed and triaged, with its result written down.** 338
   comparisons across every adapter and decoder, each mutant judged by its file's own format tests
   plus the crate's unit tests: 110 killed, 220 survived, 7 did not compile, 1 timed out. A survivor

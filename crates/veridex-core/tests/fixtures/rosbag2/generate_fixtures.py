@@ -649,6 +649,20 @@ os._exit(0)
     # send a row that is wholly on its page down the overflow path and look for a next-page pointer
     # in the four bytes after it, which a row this size does not leave. Real SQLite decides the
     # split here, and `dbstat` is asked to confirm it did.
+    # A small rig: one LiDAR, one camera and the calibration for both. Two AV-native sensor
+    # streams is one under the rig threshold, so the calibration rules stand down — and the
+    # abstention that says so (`AUTONOMY.CALIBRATION_UNCHECKED`) needs a real recording to fire on,
+    # not only a hand-built model.
+    small = [RIG_TOPICS[0], RIG_TOPICS[1], RIG_TOPICS[2], RIG_TOPICS[5]]
+    small_msgs = []
+    for i in range(6):
+        ts = START + i * 100_000_000
+        small_msgs.append((1, ts, point_cloud2("lidar_link", ts, npoints=8)))
+        small_msgs.append((2, ts, image("camera_front", ts)))
+        small_msgs.append((3, ts, camera_info("camera_front", ts)))
+    small_msgs.append((6, START, tf_message(START, TF_EDGES[:2])))
+    write_bag(os.path.join(HERE, "small_rig.db3"), small, small_msgs)
+
     local_limit(os.path.join(HERE, "local_limit.db3"))
 
     print("wrote fixtures under", HERE)

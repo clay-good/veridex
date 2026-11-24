@@ -1227,7 +1227,11 @@ impl Check for CalibrationCompleteness {
             "AUTONOMY.CALIBRATION_INCOMPLETE",
             "AUTONOMY.CALIBRATION_IMPLAUSIBLE",
             "AUTONOMY.CALIBRATION_AMBIGUOUS",
+            "AUTONOMY.CALIBRATION_UNCHECKED",
         ]
+    }
+    fn abstention_codes(&self) -> &'static [&'static str] {
+        &["AUTONOMY.CALIBRATION_UNCHECKED"]
     }
     fn title(&self) -> &'static str {
         "Rig calibration completeness"
@@ -1439,6 +1443,8 @@ impl Check for CalibrationCompleteness {
             for reason in ambiguous_calibration(dataset) {
                 findings.push(ambiguous(reason));
             }
+        } else if let Some(note) = calibration_unjudged(dataset) {
+            findings.push(note);
         }
         findings
     }
@@ -3268,6 +3274,79 @@ const ROTATION_NORM_TOLERANCE: f64 = 1e-2;
 /// is a report size the input file chooses. The overflow is counted and reported, never dropped
 /// silently: a bound that stops a check mid-judgement has to reach the verdict.
 const MAX_UNUSABLE_REPORTED: usize = 8;
+
+/// The abstention for a dataset that carries a calibration while falling under the rig threshold.
+///
+/// The rig rules are gated on [`is_rig_episode`] — three rig-sensor streams across two AV-native
+/// modalities — because a bus-only measurement or a manipulation recording is not what they reason
+/// about. The gate is right and its silence was not: a drive that falls one stream under it got no
+/// calibration judgement and no word that none was made. That is how the whole rig family came to
+/// stand down on a KITTI drive, whose published calibration sat beside it unexamined, while the
+/// report said nothing at all (the reader fix is in `adapter/kitti.rs`; this is the one that makes
+/// the next instance visible instead of silent).
+///
+/// Narrow on purpose. It fires only on data that is **sensor-rig-shaped and under the bar**: a
+/// calibration with something in it, at least one AV-native sensor stream, and no episode over the
+/// threshold. An arm recording with a transform tree and no such sensor is not a rig that fell
+/// short, and telling it that the rig rules did not run would be noise about something it was never
+/// measured for — the same reason `autonomy.sensor-frame-resolution` gates its own abstention.
+fn calibration_unjudged(dataset: &Dataset) -> Option<Finding> {
+    let calibration = dataset.calibration.as_ref()?;
+    if calibration.transforms.is_empty() && calibration.intrinsics.is_empty() {
+        return None;
+    }
+    // The widest rig-sensor stream count any one episode reaches, and the modalities behind it:
+    // what the threshold is judged on, reported so a reader can see how far short it fell.
+    let (streams, modalities) = dataset
+        .episodes
+        .iter()
+        .map(|ep| {
+            let sensors: BTreeSet<&str> = ep
+                .streams
+                .iter()
+                .filter(|s| s.modality.is_rig_sensor())
+                .map(|s| s.modality.tag())
+                .collect();
+            let count = ep
+                .streams
+                .iter()
+                .filter(|s| s.modality.is_rig_sensor())
+                .count();
+            (count, sensors.len())
+        })
+        .max()
+        .unwrap_or((0, 0));
+    if streams == 0 {
+        return None;
+    }
+    Some(
+        Finding::new(
+            "autonomy.calibration-completeness",
+            Category::Autonomy,
+            Severity::Info,
+            Location::Dataset,
+            "AUTONOMY.CALIBRATION_UNCHECKED",
+            format!(
+                "this dataset carries a calibration ({} transform(s), {} set(s) of camera \
+                 intrinsics) and no episode reaches {RIG_SENSOR_THRESHOLD} sensor streams across \
+                 two AV-native modalities — the widest is {streams} stream(s) across {modalities} \
+                 — so the completeness, plausibility and ambiguity rules had nothing to judge it on",
+                calibration.transforms.len(),
+                calibration.intrinsics.len()
+            ),
+        )
+        .with_risk(
+            "The calibration in this dataset went ungraded. A clean calibration result here is the \
+             absence of a check, not evidence that the sensors can be related to one another — and \
+             a rig one stream under the threshold is graded as though it carried no rig at all.",
+        )
+        .with_remedy(
+            "If this is a sensor rig, read the sensors the recording holds: a unit writing \
+             position, orientation and inertial measurements is three streams, not one. If it is \
+             not a rig, the calibration is still there to be checked by hand.",
+        ),
+    )
+}
 
 /// Every way a dataset's calibration is present and cannot be used, as sentences naming the element.
 ///
