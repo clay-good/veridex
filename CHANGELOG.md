@@ -21,6 +21,22 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   later. The reason to run both is that only one of them documents what a crates.io reader gets.)
 
 
+- **And the CLI's own thresholds, which decide exit codes.** The sweep had never covered
+  `veridex-cli`. Two of its comparisons are gates a CI job reads: `--min-score N` means "fail if the
+  score is **below** N", so a score of exactly N passes — the mutant failed a dataset that met the
+  bar someone set, which is the one outcome that flag must never produce. And provenance recorded
+  for *every* episode of a merged store prints no "recorded for N of M episode(s)" note: that note
+  is the difference between a term governing the whole dataset and one governing part of it, and
+  "(recorded for 2 of 2)" is noise on an ordinary pooled dataset.
+
+  One more is documented at its site instead: `--iterations n` runs exactly n ticks, and no test can
+  pin it, because later ticks over an unchanged dataset print nothing at all — a watch prints a diff
+  only when the fingerprint moves, so one tick too many is invisible in the output while costing a
+  full re-ingest of a growing recording. (The sweep also flagged the CLI's own civil-date conversion,
+  the third copy of the arithmetic that was once a real bug — and that one was already covered: the
+  first run had used `--test cli`, which never compiles the binary's own unit tests, so everything
+  they cover looked like a survivor.)
+
 - **Three more adapter boundaries, each a rule rather than a bound.** A LaserScan return exactly at
   `range_min` or `range_max` **is** a measurement: those are the window the scanner declares it can
   measure *in*, inclusive, and a scanner reports its maximum for an open direction — so the mutants

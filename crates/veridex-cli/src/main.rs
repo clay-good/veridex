@@ -3184,6 +3184,12 @@ fn cmd_watch(rest: &[String]) -> ExitCode {
             // A watch is read as it runs, and stdout is block-buffered when it is a pipe.
             let _ = std::io::stdout().flush();
         }
+        // `>=`, so `--iterations n` runs exactly n ticks. A mutation sweep flagged it and no test
+        // can pin it: later ticks over an unchanged dataset print nothing at all — the diff is
+        // printed only when the fingerprint moves — so running one tick too many is invisible in
+        // the output, and a test cannot change the dataset between ticks of a subprocess
+        // deterministically. What the off-by-one would cost is one extra full re-ingest of a
+        // growing recording, which is the thing the tick count exists to bound.
         if max_ticks.is_some_and(|n| tick >= n) {
             break;
         }

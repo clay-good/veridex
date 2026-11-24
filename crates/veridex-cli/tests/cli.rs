@@ -4215,3 +4215,99 @@ fn explain_answers_one_code_and_refuses_a_string_that_is_not_one() {
     assert_eq!(code, 2);
     assert!(err.contains("finding code or a check id"), "{err}");
 }
+
+#[test]
+fn a_score_exactly_at_min_score_passes_and_one_below_fails() {
+    // `--min-score N` means "fail if the trust score is below N", so a score of exactly N passes.
+    // A mutation sweep found no test between the two, and the mutant that moved the line fails a
+    // dataset that meets the bar a CI job set — the one outcome this flag must never produce.
+    let dataset = fixture_dataset();
+    let (_, stdout, _) = run(&["check", &dataset, "--json"]);
+    let score = serde_json::from_str::<serde_json::Value>(&stdout).expect("json")["trust_score"]
+        ["score"]
+        .as_i64()
+        .expect("a score");
+
+    let at = run(&["check", &dataset, "--min-score", &score.to_string()]);
+    assert!(
+        !at.2.contains("below the required minimum"),
+        "a score of exactly the minimum meets it: {}",
+        at.2
+    );
+    let below = run(&["check", &dataset, "--min-score", &(score + 1).to_string()]);
+    assert_eq!(below.0, 20, "{}", below.2);
+    assert!(
+        below.2.contains("below the required minimum"),
+        "one point short must say so, with both numbers: {}",
+        below.2
+    );
+    assert!(below.2.contains(&score.to_string()), "{}", below.2);
+    // And far below the bar, the ordinary case, for the same reason.
+    let (code, _, stderr) = run(&["check", &dataset, "--min-score", "1"]);
+    assert!(!stderr.contains("below the required minimum"), "{stderr}");
+    assert_ne!(code, 2, "a score above the floor is not a tool error");
+}
+
+/// Copy a committed Zarr fixture into `into`, so a test can add per-episode attributes to it.
+fn copy_zarr_fixture(name: &str, into: &std::path::Path) {
+    fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
+        std::fs::create_dir_all(to).expect("create dir");
+        for entry in std::fs::read_dir(from).expect("read fixture") {
+            let entry = entry.expect("entry");
+            let target = to.join(entry.file_name());
+            if entry.file_type().expect("file type").is_dir() {
+                copy_dir(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), &target).expect("copy file");
+            }
+        }
+    }
+    let from = std::path::PathBuf::from(format!(
+        "{}/../veridex-core/tests/fixtures/zarr/{name}",
+        env!("CARGO_MANIFEST_DIR")
+    ));
+    copy_dir(&from, into);
+}
+
+#[test]
+fn provenance_recorded_for_every_episode_is_not_announced_as_partial() {
+    // A merged store records its lineage per episode group, and `inspect` says so: "recorded for 1
+    // of 2 episode(s)" is the difference between a term that governs the whole dataset and one that
+    // governs part of it. The boundary is coverage of *every* episode, which must print no note at
+    // all — "(recorded for 2 of 2 episode(s))" is noise on an ordinary pooled dataset, and a
+    // mutation sweep found no test between the two.
+    let dir = temp_dir("per-episode-provenance");
+    let partial = dir.join("partial.zarr");
+    let _ = std::fs::remove_dir_all(&partial);
+    copy_zarr_fixture("group_layout.zarr", &partial);
+    std::fs::write(
+        partial.join("ep_0/.zattrs"),
+        br#"{"license": "apache-2.0"}"#,
+    )
+    .expect("write ep_0 attrs");
+    let (code, out, err) = run(&["inspect", partial.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.contains("recorded for 1 of 2 episode(s)"),
+        "a term recorded for one of two episodes says so: {out}"
+    );
+
+    // The same store with both episodes covered: the term governs the dataset, and the note is gone.
+    let full = dir.join("full.zarr");
+    let _ = std::fs::remove_dir_all(&full);
+    copy_zarr_fixture("group_layout.zarr", &full);
+    for ep in ["ep_0", "ep_1"] {
+        std::fs::write(
+            full.join(ep).join(".zattrs"),
+            br#"{"license": "apache-2.0"}"#,
+        )
+        .expect("write attrs");
+    }
+    let (code, out, err) = run(&["inspect", full.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("license: apache-2.0"), "{out}");
+    assert!(
+        !out.contains("recorded for"),
+        "a term recorded for every episode is not partial: {out}"
+    );
+}
