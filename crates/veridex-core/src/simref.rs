@@ -456,6 +456,65 @@ mod tests {
     }
 
     #[test]
+    fn a_header_cut_off_mid_attribute_is_scanned_to_its_end_and_no_further() {
+        // Every one of these ends the buffer in the middle of a different scan: the element name,
+        // the whitespace before an attribute, an attribute name, the whitespace before its `=`, and
+        // the whitespace after it. The attribute walker is a hand-written byte scan over a file
+        // Veridex did not write, so each of those loops has to stop at the last byte rather than one
+        // past it — and a mutation sweep found that no test took any of them to the end. The
+        // documents tested before all closed their tag, so every scan terminated on a `>` and the
+        // end-of-input branch was never reached.
+        for truncated in [
+            "<FileHeader",
+            "<FileHeader ",
+            "<FileHeader\t",
+            "<FileHeader revMajor",
+            "<FileHeader revMajor ",
+            "<FileHeader revMajor=",
+            "<FileHeader revMajor= ",
+            "<FileHeader revMajor=\"",
+            "<FileHeader revMajor=\"1",
+            "<FileHeader revMajor=\"1\"",
+            "<FileHeader revMajor=\"1\" revMinor",
+            "<FileHeader revMajor=\"1\" revMinor=",
+            "<header",
+            "<header revMajor=\"1\" revMinor=\"7",
+            "<",
+        ] {
+            assert_eq!(
+                asam_header_version(truncated),
+                None,
+                "`{truncated}` declares no complete revision"
+            );
+        }
+        // And the whole point of scanning rather than parsing: a document that *is* complete still
+        // reads, from either standard's header, with attributes in either order.
+        assert_eq!(
+            asam_header_version("<FileHeader revMinor=\"7\" revMajor=\"1\"/>").as_deref(),
+            Some("1.7")
+        );
+    }
+
+    #[test]
+    fn a_version_run_that_ends_at_the_last_byte_is_read_as_far_as_it_goes() {
+        // The dot-walker looks one byte ahead to decide whether a `.` continues the run, so a value
+        // whose last byte *is* that dot is the case where the look-ahead sits exactly at the end.
+        assert_eq!(version_from_value("carla 0.9.").as_deref(), Some("0.9"));
+        assert_eq!(version_from_value("0.9").as_deref(), Some("0.9"));
+        assert_eq!(
+            version_from_value("9.").as_deref(),
+            None,
+            "no run, just a digit and a dot"
+        );
+        // And the rule that keeps a date from being read as a version is a boundary too: ASAM and
+        // tool versions are small numbers, so a first component of one or two digits is a version
+        // and three is something else.
+        assert_eq!(version_from_value("99.1").as_deref(), Some("99.1"));
+        assert_eq!(version_from_value("100.1"), None);
+        assert_eq!(version_from_value("run_2026.08.16"), None);
+    }
+
+    #[test]
     fn a_sidecar_version_is_read_only_for_a_real_relative_file_of_the_right_kind() {
         let dir = std::env::temp_dir().join(format!(
             "veridex-simref-{}-{}",

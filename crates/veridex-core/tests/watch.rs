@@ -134,3 +134,23 @@ fn a_single_file_dataset_is_fingerprinted_like_a_directory_one() {
         "a growing single-file log must change the fingerprint"
     );
 }
+
+#[test]
+fn a_tree_of_exactly_the_ceiling_is_fingerprinted_and_one_entry_more_is_not() {
+    // The ceiling is on entries a single fingerprint will *visit*, and "more than" is what the
+    // refusal says. So a tree of exactly that many is fingerprinted — the mutation sweep found no
+    // test between the two, and the mutant that moved the line refused a tree the message promises
+    // to accept.
+    let dir = temp_dir("ceiling-edge");
+    for i in 0..3 {
+        write(&dir.join(format!("f{i}")), b"x");
+    }
+    assert!(
+        fingerprint_within(&dir, 3).is_ok(),
+        "three entries under a ceiling of three is not more than three"
+    );
+    assert!(
+        fingerprint_within(&dir, 2).is_err(),
+        "and three under a ceiling of two is"
+    );
+}

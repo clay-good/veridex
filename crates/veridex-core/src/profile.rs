@@ -82,6 +82,9 @@ impl Profile {
         /// The stricter of two thresholds. A non-finite configured value yields the other operand
         /// rather than panicking; `finite_or_default` sanitizes those before they reach a report.
         fn stricter<T: PartialOrd>(profile: T, base: T) -> T {
+            // A tie returns `base`, and returning `profile` instead would return the same value —
+            // the two are equal. So `<` and `<=` cannot produce different output, which is why a
+            // mutation sweep found no test between them.
             if profile < base {
                 profile
             } else {

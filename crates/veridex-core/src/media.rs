@@ -224,6 +224,11 @@ struct InnerBox<'a> {
 fn boxes(buf: &[u8]) -> Vec<InnerBox<'_>> {
     let mut out = Vec::new();
     let mut pos = 0usize;
+    // `<=`, and `<` would be unobservable: the only input the two spellings disagree about is a
+    // trailing box with exactly its 8 header bytes left, which by definition carries no payload — so
+    // no consumer of this list (every one of them searches by box type and reads a payload) can tell
+    // whether it was included. The same holds for the 16-byte 64-bit-header bound below. A mutation
+    // sweep flagged both; both are untestable rather than untested.
     while pos + 8 <= buf.len() {
         let size32 =
             u32::from_be_bytes([buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3]]) as u64;
@@ -498,6 +503,134 @@ mod tests {
         std::fs::write(&path, b"\x00\x00\x00\x04ftyp____").unwrap();
         let err = probe_mp4(&path).unwrap_err();
         assert!(err.contains("smaller than its own header"), "{err}");
+    }
+
+    #[test]
+    fn a_box_of_exactly_its_header_is_walked_rather_than_refused() {
+        // The refusal above is for a box declaring *less* than its own 8-byte header. A box
+        // declaring exactly 8 is a well-formed empty box — `free`, a placeholder, the padding a
+        // writer leaves — and must be walked past, not rejected. A mutation sweep found nothing
+        // between the two, and the mutant that moved the line refused every container with an empty
+        // box in it.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty-box.mp4");
+        // An 8-byte `free`, then an 8-byte `ftyp`: no `moov`, so the probe fails — but on the
+        // absence of the header, not on either box's size.
+        let mut bytes = Vec::new();
+        for kind in [b"free", b"ftyp"] {
+            bytes.extend_from_slice(&8u32.to_be_bytes());
+            bytes.extend_from_slice(kind);
+        }
+        std::fs::write(&path, &bytes).unwrap();
+        let err = probe_mp4(&path).unwrap_err();
+        assert!(
+            !err.contains("smaller than its own header"),
+            "an 8-byte box is exactly its header, not smaller than it: {err}"
+        );
+        assert!(err.contains("moov"), "{err}");
+    }
+
+    /// A 32-bit-size box.
+    fn bx(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(8 + payload.len());
+        out.extend_from_slice(&(8 + payload.len() as u32).to_be_bytes());
+        out.extend_from_slice(kind);
+        out.extend_from_slice(payload);
+        out
+    }
+
+    /// The same box with a 64-bit size (`size32 == 1`, then the real size), which is how a large box
+    /// is written — and the only shape with a 16-byte header.
+    fn bx64(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(16 + payload.len());
+        out.extend_from_slice(&1u32.to_be_bytes());
+        out.extend_from_slice(kind);
+        out.extend_from_slice(&(16 + payload.len() as u64).to_be_bytes());
+        out.extend_from_slice(payload);
+        out
+    }
+
+    /// A minimal but real video track: `frames` samples over `duration` units of a `timescale` base,
+    /// with a `vide` handler so the probe accepts it. `wrap` wraps each `mdia` child, so a test can
+    /// write the same track with 32-bit or 64-bit box headers.
+    fn video_moov(frames: u32, timescale: u32, duration: u32, wrap64: bool) -> Vec<u8> {
+        let wrap = |kind: &[u8; 4], payload: &[u8]| -> Vec<u8> {
+            if wrap64 {
+                bx64(kind, payload)
+            } else {
+                bx(kind, payload)
+            }
+        };
+        let mut hdlr = vec![0u8; 8];
+        hdlr.extend_from_slice(b"vide");
+        let mut mdhd = vec![0u8; 12];
+        mdhd.extend_from_slice(&timescale.to_be_bytes());
+        mdhd.extend_from_slice(&duration.to_be_bytes());
+        let mut stsz = vec![0u8; 8];
+        stsz.extend_from_slice(&frames.to_be_bytes());
+        let stbl = bx(b"stbl", &bx(b"stsz", &stsz));
+        let minf = bx(b"minf", &stbl);
+        let mut mdia_payload = Vec::new();
+        mdia_payload.extend_from_slice(&wrap(b"hdlr", &hdlr));
+        mdia_payload.extend_from_slice(&wrap(b"mdhd", &mdhd));
+        mdia_payload.extend_from_slice(&minf);
+        let trak = bx(b"trak", &bx(b"mdia", &mdia_payload));
+        bx(b"moov", &trak)
+    }
+
+    #[test]
+    fn a_real_track_is_found_whatever_header_size_its_boxes_use() {
+        // The inner-box walk is over a buffer rather than a file, and three of its bounds had no
+        // test between "readable" and "one byte short": the 8-byte header minimum, the 16-byte
+        // 64-bit header minimum, and the inner size-vs-remaining check. A track is the only thing
+        // that makes them observable — an early-ended walk simply reports "no video track", which is
+        // what a container with no track reports too.
+        let dir = tempfile::tempdir().unwrap();
+        for (label, wrap64) in [("32-bit", false), ("64-bit", true)] {
+            let path = dir.path().join(format!("track-{label}.mp4"));
+            std::fs::write(&path, video_moov(120, 30, 120, wrap64)).unwrap();
+            let probe = probe_mp4(&path)
+                .unwrap_or_else(|e| panic!("the {label} container holds a video track: {e}"));
+            assert_eq!(probe.frame_count, Some(120), "{label}");
+            // 120 frames over 120 units of a 30-unit-per-second base: 30 fps.
+            assert_eq!(probe.params.fps, Some(30.0), "{label}");
+        }
+    }
+
+    #[test]
+    fn an_empty_inner_box_before_the_track_does_not_end_the_walk() {
+        // The trailing-boundary case: an 8-byte inner box sits between `moov`'s children, so the
+        // walk has to step over a box whose payload is empty and keep going. With the bound moved by
+        // one the walk stops there and the track after it is never seen.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("padded.mp4");
+        let mut moov_payload = bx(b"free", &[]);
+        let track = video_moov(60, 30, 60, false);
+        // Reuse the track's own `trak` child rather than nesting a second `moov`.
+        moov_payload.extend_from_slice(&track[8..]);
+        std::fs::write(&path, bx(b"moov", &moov_payload)).unwrap();
+        let probe = probe_mp4(&path).expect("the track follows an empty box");
+        assert_eq!(probe.frame_count, Some(60));
+    }
+
+    #[test]
+    fn a_track_whose_time_base_is_zero_has_no_rate_rather_than_a_rate_of_zero() {
+        // `fps` is frames over elapsed media time, and both factors come from the file. A timescale
+        // or duration of zero is corrupt metadata, and the honest answer is "no rate" — a rate of
+        // zero is a measurement, and nothing measured it. The sweep found no test here, and the
+        // mutant that admitted a zero timescale reported every such file as playing at 0 fps, which
+        // `video.media-conformance` then compares against the manifest.
+        let dir = tempfile::tempdir().unwrap();
+        for (label, timescale, duration) in [("zero timescale", 0, 120), ("zero duration", 30, 0)] {
+            let path = dir.path().join(format!("{}.mp4", label.replace(' ', "-")));
+            std::fs::write(&path, video_moov(120, timescale, duration, false)).unwrap();
+            let probe = probe_mp4(&path).expect("the track is still a track");
+            assert_eq!(probe.frame_count, Some(120), "{label}");
+            assert_eq!(
+                probe.params.fps, None,
+                "{label}: no rate, rather than a rate nothing measured"
+            );
+        }
     }
 
     #[test]

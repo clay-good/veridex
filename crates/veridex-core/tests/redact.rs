@@ -442,3 +442,73 @@ fn the_redacted_dataset_id_does_not_depend_on_what_the_redactor_saw_first() {
         );
     }
 }
+
+#[test]
+fn an_identifier_exactly_at_the_floor_is_redacted_and_one_shorter_is_not() {
+    // The redactor leaves one- and two-character names alone: `x` or `q1` collides with ordinary
+    // text far more often than it hides anything, and over-substituting corrupts the measurements
+    // the report exists to convey. Three characters is the floor, and "at the floor" is redacted —
+    // the mutation sweep found that no test distinguished the floor from one past it, in any of the
+    // four places that apply it (stream names, the dataset id, attested values, unread paths).
+    let mut d = Dataset {
+        id: "ab".into(), // two characters: left alone
+        calibration: None,
+        metadata: vec![],
+        provenance: vec![],
+        episodes: vec![Episode {
+            index: 0,
+            start_ts: None,
+            end_ts: None,
+            streams: vec![stream("q1", &[0, 1]), stream("abc", &[0, 1])],
+            task: None,
+            labels: vec![],
+            ego_poses: None,
+            ego_frame: None,
+            declared_frame_count: None,
+        }],
+    };
+    d.canonicalize_order();
+    let mut redactor = Redactor::for_dataset(&d)
+        .and_attested(["xy".to_string(), "xyz".to_string()])
+        .and_unread_sources(["pq", "pqr"]);
+    let finding = Finding::new(
+        "test.check",
+        Category::Structural,
+        Severity::Warning,
+        Location::Dataset,
+        "STRUCTURAL.DUPLICATE_EPISODE",
+        "dataset ab holds q1 and abc, attested xy and xyz, unread pq and pqr".to_string(),
+    );
+    // Built the way the other tests here build one: an empty engine over the dataset, with the
+    // finding pushed on, so the verdict is a real one rather than a hand-filled struct.
+    let engine = veridex_core::Engine::builder().build();
+    let mut verdict = engine.run(&d, veridex_core::content_hash(&d), &RunConfig::default());
+    verdict.findings.push(finding);
+    let redacted = redactor.redact_verdict(&verdict);
+    // The redactor adds its own disclosure finding, so find the one this test wrote.
+    let message = &redacted
+        .findings
+        .iter()
+        .find(|f| f.code == "STRUCTURAL.DUPLICATE_EPISODE")
+        .expect("the finding under test survives redaction")
+        .message;
+    // Three characters: substituted, each in its own namespace.
+    for (identifier, placeholder) in [("abc", "stream#"), ("xyz", "attested#"), ("pqr", "unread#")]
+    {
+        assert!(
+            !message.contains(identifier),
+            "`{identifier}` is three characters and must be redacted: {message}"
+        );
+        assert!(
+            message.contains(placeholder),
+            "and replaced by a `{placeholder}` placeholder: {message}"
+        );
+    }
+    // Two characters: left alone, deliberately, and the disclosure says redaction is best-effort.
+    for identifier in ["ab", "q1", "xy", "pq"] {
+        assert!(
+            message.contains(identifier),
+            "`{identifier}` is below the floor and is left alone: {message}"
+        );
+    }
+}

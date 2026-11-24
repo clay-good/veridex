@@ -180,6 +180,10 @@ pub fn render_label(signed: &SignedCertificate, issuer_verified: bool) -> String
 /// First and last eight characters of a long hex string, so a label stays readable while still
 /// pinning enough of the value to compare by eye.
 fn abbreviate(hex: &str) -> String {
+    // Every value this is applied to is a 64-character SHA-256 or Ed25519 hex digest, so the
+    // boundary at 20 is never approached: the comparison decides nothing on any input a certificate
+    // can carry. A mutation sweep flagged it as untested, and a fixture that could see it would have
+    // to hand-write a certificate with a 20-character hash in it.
     if hex.len() <= 20 {
         return hex.to_string();
     }

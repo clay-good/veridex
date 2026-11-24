@@ -475,3 +475,36 @@ fn duplicate_stream_names_still_hash_order_independently() {
         "same-named streams must hash independently of Vec order"
     );
 }
+
+#[test]
+fn a_components_worst_level_ranks_stale_between_warn_and_error() {
+    // The ordering `diagnostic_aggregator` uses, and the reason this is not just `max`: the ROS
+    // constants number `STALE` 3, above `ERROR`'s 2, while a stale component is *less* severe than a
+    // failing one. So the ranking is written out by hand — and a mutation sweep found that no test
+    // distinguished the branches, because every fixture had an error in it. Each level is asserted
+    // from a component that reports only that level.
+    let health = |ok: u64, warn: u64, error: u64, stale: u64| veridex_core::cdm::ComponentHealth {
+        name: "lidar".into(),
+        hardware_id: None,
+        messages: ok + warn + error + stale,
+        error,
+        warn,
+        stale,
+        detail: None,
+    };
+    assert_eq!(health(10, 0, 0, 0).worst_level(), 0, "all OK is level 0");
+    assert_eq!(health(9, 1, 0, 0).worst_level(), 1, "one warning is WARN");
+    assert_eq!(
+        health(9, 0, 0, 1).worst_level(),
+        3,
+        "one stale status outranks a warning, as the aggregator ranks it"
+    );
+    assert_eq!(
+        health(8, 1, 1, 1).worst_level(),
+        2,
+        "and an error outranks both, even though its constant is the smaller number"
+    );
+    // The fraction beside it is a share of the component's own statuses, zero when it said nothing.
+    assert_eq!(health(0, 0, 0, 0).error_fraction(), 0.0);
+    assert_eq!(health(3, 0, 1, 0).error_fraction(), 0.25);
+}

@@ -1089,6 +1089,8 @@ fn attestation_findings(applied: &AppliedAttestation) -> Vec<Finding> {
 
 /// A short, comparable form of a public key for a message.
 fn short_key(key: &str) -> String {
+    // As with the label's `abbreviate`: the only keys reaching this are 64-character Ed25519 hex,
+    // so the 16-character boundary decides nothing on any real input.
     match key.len() > 16 {
         true => format!("{}…{}", &key[..8], &key[key.len() - 8..]),
         false => key.to_string(),

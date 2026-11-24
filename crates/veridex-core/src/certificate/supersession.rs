@@ -359,6 +359,40 @@ mod tests {
     }
 
     #[test]
+    fn the_last_valid_instant_of_a_day_parses_and_the_first_invalid_one_does_not() {
+        // The clock fields are bounded field by field, and the bounds are off-by-one-shaped: hours
+        // run to 23, minutes to 59, and seconds to **60** because a leap second is a real stamp
+        // (`23:59:60Z` is how UTC spells one). A mutation sweep found no test between the last
+        // accepted value and the first refused one, in any of the three fields — and getting this
+        // wrong either refuses a real certificate's timestamp or accepts a nonsense one as an
+        // orderable instant.
+        for accepted in [
+            "2026-03-01T23:59:59Z",
+            "2026-03-01T23:59:60Z", // a leap second
+            "2026-03-01T00:00:00Z",
+        ] {
+            assert!(
+                utc_instant(accepted).is_some(),
+                "`{accepted}` is a UTC instant"
+            );
+        }
+        for refused in [
+            "2026-03-01T24:00:00Z", // the hour past the last one
+            "2026-03-01T23:60:00Z", // the minute past the last one
+            "2026-03-01T23:59:61Z", // one past the leap second
+            "2026-13-01T10:00:00Z", // the month past the last one
+            "2026-00-01T10:00:00Z",
+            "2026-03-32T10:00:00Z", // the day past the last one
+            "2026-03-00T10:00:00Z",
+        ] {
+            assert!(
+                utc_instant(refused).is_none(),
+                "`{refused}` is not an instant and must not be ordered"
+            );
+        }
+    }
+
+    #[test]
     fn anything_not_a_utc_instant_is_refused_rather_than_guessed() {
         // Each of these could be ordered by guessing, and a guess here names the wrong certificate
         // as the current one.

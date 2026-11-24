@@ -446,6 +446,9 @@ pub(crate) fn tolerance_departures(t: &crate::Tolerances) -> Vec<ToleranceDepart
             if t.$field != d.$field {
                 out.push(ToleranceDeparture {
                     label: $label,
+                    // `>` or `>=` cannot differ here: this arm is only reached when the two values
+                    // are *not* equal, so equality never reaches the comparison. A mutation sweep
+                    // flagged it; it is untestable rather than untested.
                     loosened: t.$field > d.$field,
                 });
             }

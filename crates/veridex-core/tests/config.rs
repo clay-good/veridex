@@ -552,3 +552,64 @@ fn every_tolerance_reaches_the_printout_and_the_narrowing_disclosure() {
         );
     }
 }
+
+#[test]
+fn a_threshold_exactly_at_the_edge_of_its_range_is_accepted_or_refused_as_documented() {
+    // Each of these validators states a range in prose and in its error message, and the sweep found
+    // that no test checked the ends. A fraction of 1.0 means "every sample", which is a legitimate
+    // setting; 0.0 means the check can never fire, which is a configuration mistake rather than a
+    // threshold, so it is refused by name. The error message is the user's only account of the
+    // range, so it is asserted here too.
+    let parses = |toml: &str| CheckConfig::from_toml(toml);
+
+    // `saturation_fraction`: (0.0, 1.0] — the whole range is a fraction of samples.
+    assert!(
+        parses("[tolerances]\nsaturation_fraction = 1.0\n").is_ok(),
+        "a fraction of 1.0 is every sample, which is a real setting"
+    );
+    for bad in ["0.0", "1.000001", "-0.5"] {
+        let err = parses(&format!("[tolerances]\nsaturation_fraction = {bad}\n"))
+            .expect_err("outside the range");
+        assert!(
+            err.to_string().contains("saturation_fraction"),
+            "the refusal names the setting: {err}"
+        );
+    }
+
+    // `episode_duration_factor`: strictly greater than 1.0, because 1.0 flags every episode that is
+    // not exactly median-length (the check treats it as disabled; the config refuses it outright).
+    assert!(parses("[tolerances]\nepisode_duration_factor = 1.000001\n").is_ok());
+    for bad in ["1.0", "0.5"] {
+        assert!(
+            parses(&format!("[tolerances]\nepisode_duration_factor = {bad}\n")).is_err(),
+            "`{bad}` is not greater than 1.0"
+        );
+    }
+
+    // `gap_factor` and `ego_max_speed_mps`: finite and positive, so the smallest positive float is
+    // in and zero is out.
+    for setting in ["gap_factor", "ego_max_speed_mps"] {
+        assert!(
+            parses(&format!("[tolerances]\n{setting} = 0.000001\n")).is_ok(),
+            "{setting} just above zero is positive"
+        );
+        assert!(
+            parses(&format!("[tolerances]\n{setting} = 0.0\n")).is_err(),
+            "{setting} = 0 is not"
+        );
+    }
+
+    // `sequence_drop_fraction` and `gnss_unfixed_fraction`: [0.0, 1.0) — a *drop* fraction of zero
+    // is meaningful ("report any loss at all"), and 1.0 is not, because a stream cannot lose every
+    // message and still be a stream.
+    for setting in ["sequence_drop_fraction", "gnss_unfixed_fraction"] {
+        assert!(
+            parses(&format!("[tolerances]\n{setting} = 0.0\n")).is_ok(),
+            "{setting} = 0 reports any loss at all"
+        );
+        assert!(
+            parses(&format!("[tolerances]\n{setting} = 1.0\n")).is_err(),
+            "{setting} = 1 would never fire"
+        );
+    }
+}

@@ -10,6 +10,40 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Changed
 
+- **The same sweep over everything that is not a check, and the parser hole it found.** 82
+  comparison flips across the engine, the config, the certificate, the report, the redactor, the
+  media probe, the remote reader, the watcher and the simulation-reference parser — judged against
+  the whole `veridex-core` suite. The most interesting result was in `simref.rs`, whose attribute
+  walker is a hand-written byte scan over an ASAM header a dataset supplies: **five of its loops had
+  no test that reached the end of the buffer**, because every document tested closed its tag, so
+  every scan terminated on a `>` and the end-of-input branch was never taken. A header cut off
+  mid-element-name, mid-attribute-name, or in the whitespace before or after an `=` now has a test
+  each, and each one of those loops reads to the last byte and no further.
+
+  The rest of that pass pinned what a reader actually depends on. **Redaction's identifier floor**:
+  a three-character name is substituted and a two-character one is left alone, in all four places
+  that apply it (stream names, the dataset id, attested values, unread paths) — over-substituting
+  corrupts the measurements a report exists to convey, and under-substituting is a leak. **The
+  config's documented ranges**: a saturation fraction of exactly 1.0 is every sample and is
+  accepted, 0.0 is refused by name, an episode-duration factor of exactly 1.0 is refused, and a drop
+  fraction of 0.0 ("report any loss at all") is accepted while 1.0 is not. **The watcher's entry
+  ceiling**: a tree of exactly the ceiling is fingerprinted, because "more than" is what the refusal
+  says. **A certificate timestamp's field bounds**: `23:59:60Z` parses, because a leap second is a
+  real stamp, and `24:00:00Z`, `23:60:00Z` and `23:59:61Z` do not. **A component's worst level**:
+  stale ranks between warn and error, which is not `max` — the ROS constant for stale is the larger
+  number and the condition is the less severe one. And **the MP4 probe**: a box declaring exactly its
+  own 8-byte header is walked rather than refused, a track is found whether its boxes use 32-bit or
+  64-bit size headers, a track behind an empty box is still found, and a track whose timescale or
+  duration is zero has **no** rate rather than a rate of zero — a rate of zero is a measurement, and
+  nothing measured it.
+
+  Six more are provably untestable and now say so at their sites: the tolerance-departure direction
+  (only reached when the two values differ, so equality never reaches the comparison), the
+  profile's `stricter` tie (both branches return the same value), the two hex abbreviations (applied
+  only to 64-character digests, so a boundary at 16 or 20 characters decides nothing), and two bounds
+  in the MP4 box walk whose only disagreement is whether a *trailing empty* box joins a list that
+  every consumer searches by type and reads a payload from.
+
 - **The corrupted-input sweep now damages a KITTI drive.** The sweep's own doc comment listed the
   formats it covered and the tenth one was not among them — the newest adapter, and the one with the
   most hand-parsed arithmetic: a timestamp string split on `-`, `:` and `.`, a calibration matrix
