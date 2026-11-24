@@ -881,3 +881,53 @@ fn every_sarif_help_link_lands_on_a_heading_that_exists() {
             .count()
     );
 }
+
+/// No finding says "rig sensor stream" without saying which set it means.
+///
+/// Two sets sit behind the autonomy family and differ by exactly the cameras. `is_rig_sensor` is the
+/// five AV-native modalities the rig threshold counts; `is_sensor` is those plus cameras, the set
+/// `AUTONOMY.RIG_SYNC` compares. A four-camera KITTI drive is eight streams by the second measure
+/// and four by the first, so a report can truthfully print "8 rig sensor streams" beside "no episode
+/// reaches 3 rig-sensor streams" — two sentences that cannot both be about the same thing, and a
+/// reader has no way to tell which is which.
+///
+/// Both phrasings are fine when they say which set they mean, so this looks for the bare phrase
+/// rather than for either set's name. Checked in the source, because the collision is only visible
+/// when a person reads two findings side by side — no assertion on one message can see it.
+#[test]
+fn no_finding_calls_a_stream_a_rig_sensor_without_saying_which_set() {
+    let family = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/checks");
+    let mut offenders = Vec::new();
+    for entry in std::fs::read_dir(&family)
+        .expect("the check family directory is readable")
+        .flatten()
+    {
+        let path = entry.path();
+        if path.extension().is_some_and(|e| e == "rs") {
+            let text = std::fs::read_to_string(&path).expect("a check family is readable");
+            // Collapsed, because these messages are written across continued source lines.
+            let flowed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            for phrase in ["rig sensor stream", "rig sensor streams"] {
+                let mut from = 0;
+                while let Some(at) = flowed[from..].find(phrase) {
+                    let at = from + at;
+                    let window = &flowed[at.saturating_sub(120)..flowed.len().min(at + 120)];
+                    // A comment explaining the distinction is not a message; a finding is.
+                    let qualified = window.contains("AV-native")
+                        || window.contains("is_rig_sensor")
+                        || window.contains("is_sensor")
+                        || window.contains("cameras included");
+                    if !qualified {
+                        offenders.push(format!("{}: …{window}…", path.display()));
+                    }
+                    from = at + phrase.len();
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "say which set is meant — the AV-native five, or those plus cameras:\n{}",
+        offenders.join("\n")
+    );
+}

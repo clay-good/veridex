@@ -3215,9 +3215,9 @@ impl Check for SensorClock {
                     Location::Dataset,
                     "AUTONOMY.SENSOR_CLOCK_UNREAD",
                     format!(
-                        "{} rig sensor stream(s) record no capture time of their own, so the \
-                         sensor-clock rules had nothing to compare the recording's timeline \
-                         against ({listed})",
+                        "{} stream(s) on this rig that sample the world — cameras included — \
+                         record no capture time of their own, so the sensor-clock rules had \
+                         nothing to compare the recording's timeline against ({listed})",
                         names.len()
                     ),
                 )
@@ -3328,9 +3328,11 @@ fn calibration_unjudged(dataset: &Dataset) -> Option<Finding> {
             "AUTONOMY.CALIBRATION_UNCHECKED",
             format!(
                 "this dataset carries a calibration ({} transform(s), {} set(s) of camera \
-                 intrinsics) and no episode reaches {RIG_SENSOR_THRESHOLD} sensor streams across \
-                 two AV-native modalities — the widest is {streams} stream(s) across {modalities} \
-                 — so the completeness, plausibility and ambiguity rules had nothing to judge it on",
+                 intrinsics) and no episode reaches {RIG_SENSOR_THRESHOLD} AV-native rig-sensor \
+                 streams (point cloud, IMU, GNSS, CAN signal or ego-pose; a camera is none of \
+                 them) across two modalities — the widest is {streams} stream(s) across \
+                 {modalities} — so the completeness, plausibility and ambiguity rules had nothing \
+                 to judge it on",
                 calibration.transforms.len(),
                 calibration.intrinsics.len()
             ),

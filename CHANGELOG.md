@@ -64,6 +64,18 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Changed
 
+- **Two findings said "rig sensor stream" about two different sets; both now say which.** The
+  autonomy family counts streams two ways, differing by exactly the cameras: the five AV-native
+  modalities the rig threshold counts, and those plus cameras, which is the set `AUTONOMY.RIG_SYNC`
+  compares. On a four-camera KITTI drive the report could truthfully print "8 rig sensor streams"
+  beside "no episode reaches 3 rig-sensor streams" — two sentences that cannot both be about the
+  same thing, with nothing to tell a reader which is which. `AUTONOMY.SENSOR_CLOCK_UNREAD` now says
+  "streams on this rig that sample the world — cameras included", `AUTONOMY.CALIBRATION_UNCHECKED`
+  names the five modalities and says a camera is none of them, docs/checks.md defines both sets
+  once, and a source-walking guard fails on the bare phrase, because the collision is only visible
+  when a person reads two findings side by side and no assertion on one message can see it.
+
+
 - **Three boundaries the adapter mutation sweep found unpinned, and one calibration field read
   literally.** Each is a rule something depends on, and each had no test that would notice it
   moving by one:
