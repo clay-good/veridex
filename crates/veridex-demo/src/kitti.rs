@@ -56,7 +56,7 @@ use std::path::Path;
 
 use crate::DemoError;
 
-/// Every variant [`write`] accepts. `rig` is the default the docs show.
+/// Every variant [`write()`] accepts. `rig` is the default the docs show.
 pub const VARIANTS: &[&str] = &[
     "rig",
     "dead-lidar",
@@ -382,7 +382,7 @@ pub fn describe(variant: &str) -> Result<&'static str, DemoError> {
     })
 }
 
-/// The drive directory inside `dir` that [`write`] produces — the path a reader checks.
+/// The drive directory inside `dir` that [`write()`] produces — the path a reader checks.
 pub fn drive_path(dir: &Path) -> std::path::PathBuf {
     dir.join(DATE).join(DRIVE)
 }

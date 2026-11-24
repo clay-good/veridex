@@ -58,10 +58,16 @@ jobs:
       # naming one that had been renamed, and the public-only build was green over every one of
       # them. A gate that cannot see the modules the code lives in is not gating them.
       - name: Docs
-        run: cargo doc --no-deps --all-features --document-private-items -p veridex-core -p veridex-cli
+        run: cargo doc --no-deps --all-features --document-private-items -p veridex-core -p veridex-cli -p veridex-demo
         env:
           RUSTDOCFLAGS: -D warnings
 
+      # `veridex-demo` is in both: the README tells a reader to run its examples, so its
+      # documentation is a surface a user meets, and it was outside the gate — two ambiguous
+      # intra-doc links had been sitting in it. (`veridex-py` stays out: its lib target and the CLI's
+      # bin target share the name `veridex`, which is a cargo output-filename collision rather than
+      # anything a doc comment can fix.)
+      #
       # And again *without* `--document-private-items`, which is the build docs.rs actually runs.
       # The two are not the same gate. This one documents exactly what a crates.io reader gets, so a
       # link that resolves only because a private item happened to be documented fails here — and
@@ -69,7 +75,7 @@ jobs:
       # It is also the command the release checklist runs, which is the one a maintainer uses by
       # hand; keeping CI and the checklist on the same two commands is the point.
       - name: Docs (as docs.rs builds them)
-        run: cargo doc --no-deps --all-features -p veridex-core -p veridex-cli
+        run: cargo doc --no-deps --all-features -p veridex-core -p veridex-cli -p veridex-demo
         env:
           RUSTDOCFLAGS: -D warnings
 

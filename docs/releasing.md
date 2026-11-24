@@ -17,8 +17,8 @@ cargo fmt --all --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all --all-features
 cargo publish --dry-run -p veridex-core            # packages, then compiles the packaged copy
-RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p veridex-core -p veridex-cli
-RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features --document-private-items -p veridex-core -p veridex-cli
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p veridex-core -p veridex-cli -p veridex-demo
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features --document-private-items -p veridex-core -p veridex-cli -p veridex-demo
 ```
 
 CI runs all of these on every push, including the publish dry-run and **both** docs builds — a

@@ -179,6 +179,15 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Changed
 
+- **The docs gate now covers `veridex-demo`, which the README tells readers to run.** Two crates
+  were gated and the third was not, and it had two ambiguous intra-doc links sitting in it
+  (`[\`write\`]` resolves to both the function and the `write!` macro). Both builds — the private-items
+  one and the one docs.rs runs — now include it, in CI and in the release checklist, which are kept
+  on the same two commands. `veridex-py` stays out: its lib target and the CLI's bin target share
+  the name `veridex`, which is a cargo output-filename collision rather than anything a doc comment
+  can fix.
+
+
 - **The spec-coverage map is now harder to satisfy than to read.** Three guards already held it
   complete, current and honest about paths and test names. What they could not see was a *shared*
   test: two requirements naming one test both read as evidenced while that test may assert only one
