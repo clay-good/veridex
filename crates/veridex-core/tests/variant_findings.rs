@@ -436,6 +436,28 @@ fn check_generator(
     // exactly like the fixture having broken.
     extension: Option<&str>,
 ) {
+    check_generator_nested(label, module_rel, variants, write, extension, |p| {
+        p.to_path_buf()
+    });
+}
+
+/// As [`check_generator`], for a generator that writes a *tree* the dataset sits inside.
+///
+/// A KITTI drive is `<root>/<date>/<date>_drive_NNNN_sync`, so the path the generator is handed and
+/// the path Veridex is pointed at are not the same — which is why this format's variants were held
+/// to their documentation by nothing at all. That showed: reading the OXTS row's inertial records
+/// turned a KITTI drive into a rig episode, which moved the `unsynced` variant's finding from
+/// `TEMPORAL.CLOCK_SKEW` to `AUTONOMY.RIG_SYNC`, and the bullet that said otherwise — in so many
+/// words, "Not `AUTONOMY.RIG_SYNC`: rig mode needs three AV-native sensors and a KITTI drive has
+/// two" — stayed in the module doc with nothing to contradict it.
+fn check_generator_nested(
+    label: &str,
+    module_rel: &str,
+    variants: &[&str],
+    write: impl Fn(&Path, &str) -> Result<(), veridex_demo::DemoError>,
+    extension: Option<&str>,
+    dataset_of: impl Fn(&Path) -> std::path::PathBuf,
+) {
     let source = std::fs::read_to_string(format!("{DEMO_ROOT}/{module_rel}"))
         .unwrap_or_else(|e| panic!("{module_rel} is readable: {e}"));
     let claims = claims(&source);
@@ -458,7 +480,7 @@ fn check_generator(
         let _ = std::fs::remove_dir_all(&target);
         write(&target, variant).unwrap_or_else(|e| panic!("{label}/{variant} writes: {e:?}"));
 
-        let emitted = codes_for(&target);
+        let emitted = codes_for(&dataset_of(&target));
         if claim.refused {
             assert!(
                 emitted.is_none(),
@@ -567,6 +589,18 @@ fn every_rlds_variant_emits_what_its_documentation_claims() {
 
 /// Ingest `path` under a narrowing option and run the standard catalog, or `None` when the format
 /// refuses the request (a CAN log has no manifest to read).
+#[test]
+fn every_kitti_variant_emits_what_its_documentation_claims() {
+    check_generator_nested(
+        "kitti",
+        "src/kitti.rs",
+        veridex_demo::kitti::VARIANTS,
+        veridex_demo::kitti::write,
+        None,
+        |root| veridex_demo::kitti::drive_path(root),
+    );
+}
+
 fn narrowed_codes_for(path: &Path, options: IngestOptions) -> Option<BTreeSet<String>> {
     let registry = veridex_core::adapter::default_registry();
     let checked = veridex_core::pipeline::run_check(

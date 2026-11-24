@@ -894,7 +894,9 @@ cargo run -p veridex-demo --example make_demo_kitti -- /tmp/dead-lidar dead-lida
 Every fact comes out of the files. **Frames** are the lines of each sensor's own `timestamps.txt`, so
 each stream carries the times that sensor was sampled at and the cross-stream checks compare them —
 the `unsynced` variant is a LiDAR whose timestamps span two thirds of the others', and
-`TEMPORAL.CLOCK_SKEW` reports it on every pair the sensor is in. **Point counts** come from each
+`AUTONOMY.RIG_SYNC` reports it rig-wide — one finding about the rig rather than one per pair, which
+is what reading the OXTS unit's three records buys: the drive is over the rig threshold, so the
+rig-wide check answers instead of the pairwise `TEMPORAL.CLOCK_SKEW`. **Point counts** come from each
 sweep's own length: a KITTI `.bin` is `float32 [x, y, z, reflectance]` per point, so the count is the
 file size over sixteen, read from `stat` with no point payload decoded — which is what catches a
 drive whose LiDAR recorded nothing. **Calibration** is the real thing: the per-camera intrinsics and

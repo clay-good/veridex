@@ -16,10 +16,10 @@
 //!   well-formed file of zero points, on time, in the right frame, so the structural and temporal
 //!   families pass → `AUTONOMY.POINT_CLOUD_EMPTY`.
 //! - `unsynced` — the same drive whose LiDAR timestamps span only two thirds of the others', so the
-//!   sensors drift apart on one shared clock → `TEMPORAL.CLOCK_SKEW` on every pair it is in. (Not
-//!   `AUTONOMY.RIG_SYNC`: rig mode needs three AV-native sensors and a KITTI drive has two, the
-//!   LiDAR and the GPS/IMU, so the pairwise check is the one that answers — which is the same
-//!   measurement reported per pair rather than rig-wide.)
+//!   sensors drift apart on one shared clock → `AUTONOMY.RIG_SYNC`. Rig-wide rather than the
+//!   pairwise `TEMPORAL.CLOCK_SKEW`, because the OXTS unit's three records (position, pose and
+//!   inertial) plus the Velodyne put this drive over the rig threshold — one drifting sensor is
+//!   then one finding about the rig instead of one per pair it is in.
 //! - `null-island` — the same drive whose OXTS rows report latitude and longitude of exactly zero:
 //!   a receiver that never acquired a fix, reported the way an unconfigured one reports it →
 //!   `AUTONOMY.GNSS_UNSET`.
@@ -32,7 +32,7 @@
 //!   `timestamps.txt` states: a part-uploaded drive. The frames are the samples the manifest and the
 //!   directory agree on, and the difference is disclosed as `COVERAGE.SOURCE_UNREAD` — so the run
 //!   says which part it speaks for. That camera then genuinely ends before the others, which
-//!   `TEMPORAL.CLOCK_SKEW` reports too, and both facts are true.
+//!   `TEMPORAL.END_OFFSET` reports too, and both facts are true.
 //!
 //! Usage: `cargo run -p veridex-demo --example make_demo_kitti -- <output-dir> [rig|dead-lidar|unsynced|null-island|no-fix|missing-samples]`
 //!

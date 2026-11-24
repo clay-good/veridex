@@ -10,6 +10,18 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **KITTI's demo variants are now held to their own documentation, and one claim was already
+  wrong.** Five formats' variants were checked against the bullets that describe them; KITTI's were
+  checked by nothing, because this generator writes a *tree* (`<root>/<date>/<drive>`) and the
+  sweep pointed Veridex at the path it handed the generator. That mattered immediately: reading the
+  OXTS unit's inertial records turned a KITTI drive into a rig episode, which moved the `unsynced`
+  variant's finding from the pairwise `TEMPORAL.CLOCK_SKEW` to the rig-wide `AUTONOMY.RIG_SYNC` —
+  and the bullet saying otherwise, in so many words "Not `AUTONOMY.RIG_SYNC`: rig mode needs three
+  AV-native sensors and a KITTI drive has two", stayed in the module doc with nothing to contradict
+  it. The new guard caught it on its first run; the docs (module, `docs/formats.md`) now say what
+  the drive does.
+
+
 - **A count in a finding must agree with the list beside it, across the whole demo sweep.** Many
   findings are written as "*N* stream(s) … (`a`, `b`, `c` and 2 more)": two numbers for one fact,
   produced by different expressions — the count from one filter, the list from another, with a cap
