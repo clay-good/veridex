@@ -718,7 +718,13 @@ def test_cli_and_python_overlap_agree(tmp_path):
     assert py == json.loads(result.stdout), "Python and CLI overlap must agree"
     assert py["overlaps"] is True
     assert py["shares_anything"] is True
-    assert py["shared_episodes"] == 2
+    # The demo holds two episodes, so two copies of it share both: two groups of two members each,
+    # and `shared_episodes` counts members rather than groups — the pooled corpus holds four
+    # episodes and two recordings.
+    assert len(py["shared"]) == 2, py["shared"]
+    assert py["shared_episodes"] == 4
+    # Identical copies share whole episodes, so nothing is left for the re-export half to report.
+    assert py["near"] == []
 
     # One dataset is not a comparison, on either surface.
     try:
