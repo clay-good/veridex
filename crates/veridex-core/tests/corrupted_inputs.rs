@@ -14,10 +14,12 @@
 //! fixture the adapter silently declines survives every mutation and proves nothing.
 //!
 //! **What is covered, and where.** Here: HDF5 files, an MCAP, Zarr stores, rosbag2 bags under either
-//! storage plugin, a CAN+DBC dataset written on the spot, and a LeRobot dataset from
-//! `veridex-demo`. ASAM MF4 has a sweep of its own in `mdf4_adapter.rs`, broader than this one:
-//! nine block-graph shapes, every byte position, three mutations each, and the header-only path as
-//! well.
+//! storage plugin, a CAN+DBC dataset written on the spot, a LeRobot dataset from `veridex-demo`, and
+//! a KITTI raw drive — the last one damaged at one representative per parser rather than across its
+//! whole 130-file tree, which re-proved the same five parsers twenty times each. ASAM MF4 has a
+//! sweep of its own in `mdf4_adapter.rs`, broader than this one: nine block-graph shapes, every byte
+//! position, three mutations each, and the header-only path as well. ROS 1 bags have theirs in
+//! `rosbag1_adapter.rs`.
 //!
 //! RLDS/TFDS is swept in `rlds_adapter.rs` instead, and has to be: a TFRecord checksums both its
 //! length prefix and its payload, so a byte flipped here would be refused at the CRC and the
@@ -601,6 +603,99 @@ fn no_damaged_lerobot_dataset_takes_the_process_down() {
     assert!(
         failures.is_empty(),
         "{} of {checked} damaged datasets took the process down:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// KITTI raw, the tenth format — and the one this sweep had never damaged.
+///
+/// A KITTI drive is not one file but a directory per sensor: a `timestamps.txt` beside each, binary
+/// `.bin` sweeps, `oxts` text rows, and — one level *above* the drive, where a sweep pointed at the
+/// drive would never reach them — the `calib_*.txt` files. Every one of those is hand-parsed: a
+/// timestamp string split on `-`, `:` and `.`, a calibration matrix read as whitespace-separated
+/// floats, a point cloud sized by dividing a file length, a GNSS row indexed by column. All of it is
+/// arithmetic on numbers a file supplies, which is the shape every panic this sweep has found had.
+///
+/// Damaged **one representative per parser** rather than every file in the tree. The demo drive
+/// holds 130 files and all but nine of them are further samples of a shape already covered — the
+/// whole-tree sweep took five minutes to re-prove the same five parsers twenty times each, which is
+/// time taken from the rest of the suite rather than coverage. The representatives are listed
+/// explicitly, and a missing one fails the test rather than quietly shrinking it.
+#[test]
+fn no_damaged_kitti_drive_takes_the_process_down() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let root = dir.path().join("kitti");
+    veridex_demo::kitti::write(&root, "rig").expect("write the demo drive");
+    let drive = veridex_demo::kitti::drive_path(&root);
+    let relative_drive = drive
+        .strip_prefix(&root)
+        .expect("the drive is inside the tree")
+        .to_path_buf();
+    assert_reads(&drive, "kitti");
+
+    // One file per parser: the three calibration files above the drive, each sensor's timestamp
+    // list, a binary sweep, an `oxts` row, its format declaration, and an image.
+    let members: Vec<std::path::PathBuf> = [
+        "2011_09_26/calib_cam_to_cam.txt",
+        "2011_09_26/calib_velo_to_cam.txt",
+        "2011_09_26/calib_imu_to_velo.txt",
+    ]
+    .iter()
+    .map(std::path::PathBuf::from)
+    .chain(
+        [
+            "velodyne_points/timestamps.txt",
+            "velodyne_points/data/0000000000.bin",
+            "oxts/timestamps.txt",
+            "oxts/dataformat.txt",
+            "oxts/data/0000000000.txt",
+            "image_00/timestamps.txt",
+            "image_00/data/0000000000.png",
+        ]
+        .iter()
+        .map(|m| relative_drive.join(m)),
+    )
+    .collect();
+
+    let mut checked = 0usize;
+    let mut reach = Reach::default();
+    let mut failures: Vec<String> = Vec::new();
+    for member in &members {
+        let path = root.join(member);
+        let bytes = std::fs::read(&path).unwrap_or_else(|e| {
+            panic!(
+                "{} is one of this sweep's representatives and is missing: {e}",
+                member.display()
+            )
+        });
+        for (label, damaged) in mutations(&bytes) {
+            let store = dir.path().join("damaged-kitti");
+            let _ = std::fs::remove_dir_all(&store);
+            copy_tree(&root, &store);
+            std::fs::write(store.join(member), &damaged).expect("write damaged member");
+            let damaged_drive = veridex_demo::kitti::drive_path(&store);
+            checked += 1;
+            for forced in [None, Some("kitti")] {
+                for metadata_only in [false, true] {
+                    let outcome = outcome_of(&damaged_drive, forced, metadata_only);
+                    reach.record(&outcome);
+                    if let Outcome::Panicked(message) = outcome {
+                        failures.push(format!(
+                            "kitti {}: {label} → panic: {message}",
+                            member.display()
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(checked > 20, "the sweep must actually run: {checked}");
+    reach.assert_reached_the_reader("kitti");
+    assert!(
+        failures.is_empty(),
+        "{} of {checked} damaged drives took the process down:\n{}",
         failures.len(),
         failures.join("\n")
     );

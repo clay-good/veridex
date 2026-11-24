@@ -10,6 +10,19 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Changed
 
+- **The corrupted-input sweep now damages a KITTI drive.** The sweep's own doc comment listed the
+  formats it covered and the tenth one was not among them — the newest adapter, and the one with the
+  most hand-parsed arithmetic: a timestamp string split on `-`, `:` and `.`, a calibration matrix
+  read as whitespace-separated floats, a point cloud sized by dividing a file length, a GNSS row
+  indexed by column. Every panic this sweep has ever found had that shape. Nothing was found this
+  time, which is the result worth having after five audits of this reader.
+
+  Damaged at **one representative per parser** rather than across the whole tree: the demo drive
+  holds 130 files and all but nine are further samples of a shape already covered, so the whole-tree
+  version spent five minutes re-proving the same five parsers twenty times each — time taken from
+  the rest of the suite rather than coverage. It also reaches the three `calib_*.txt` files that sit
+  one level *above* the drive, which a sweep pointed at the drive directory never touched.
+
 - **A mutation sweep over the whole catalog, and the boundary pins it forced.** The previous sweep
   covered this release's new code. This one covered every comparison in all seven check families —
   194 sites, `>` ↔ `>=` and `<` ↔ `<=`, each run against the catalog's unit tests and then against
