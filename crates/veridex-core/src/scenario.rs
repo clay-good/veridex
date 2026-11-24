@@ -104,6 +104,9 @@ pub fn render_coverage(dataset: &Dataset) -> String {
             .values
             .iter()
             .map(|(v, n)| {
+                // The value is the dataset's own metadata text, on its way to a terminal: see
+                // [`crate::tty_safe`].
+                let v = crate::tty_safe(v);
                 // Flag a sparse cell only when there's a distribution to be sparse within.
                 let sparse = d.values.len() > 1 && *n * 10 < d.episodes_covered;
                 if sparse {

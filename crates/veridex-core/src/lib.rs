@@ -90,7 +90,7 @@ pub use report::{
     explain, render_catalog_json, render_explain, render_explain_json, render_html,
     render_html_with_readiness, render_inspect_json, render_json, render_json_with_readiness,
     render_sarif, render_sarif_with_readiness, render_terminal, render_terminal_with, rollups,
-    EpisodeTally, Explained, FindingDetail, Rollups, SeverityTally, StreamRollup,
+    tty_safe, EpisodeTally, Explained, FindingDetail, Rollups, SeverityTally, StreamRollup,
     INSPECT_SCHEMA_VERSION, REPORT_SCHEMA_VERSION,
 };
 pub use watch::{fingerprint, fingerprint_within, MAX_WATCH_ENTRIES};

@@ -4501,3 +4501,73 @@ fn the_python_bindings_expose_every_cli_operation() {
         );
     }
 }
+
+/// A dataset's own text reaches a terminal, so no command may hand it the terminal's controls.
+///
+/// A Zarr store's `.zattrs` sets the dataset's task string, its author and its scenario metadata,
+/// and `inspect` prints all three. It printed them verbatim — so a store whose task was
+/// `\x1b[2J\x1b[1;1HStatus: PASS  Trust: 100 (A)` cleared the reader's screen and repainted a
+/// passing verdict over its own output. The findings renderer had guarded against exactly this
+/// since early on (`veridex_core::tty_safe`); nothing held the other renderers to it.
+///
+/// So this walks every command that writes human output over one hostile store and asserts that no
+/// control character but a newline or a tab reaches stdout or stderr. It is written as a sweep
+/// rather than as an assertion about `inspect`, because the next renderer is the one that will
+/// forget.
+#[test]
+fn no_command_lets_a_dataset_write_escape_sequences_to_the_terminal() {
+    let dir = temp_dir("tty-safe");
+    let store = dir.join("hostile.zarr");
+    let _ = std::fs::remove_dir_all(&store);
+    copy_zarr_fixture("dp_replay.zarr", &store);
+    // Every string here is one the store's own metadata supplies, and each one lands in a different
+    // renderer: the task in the episode listing, the author in the provenance summary, the scenario
+    // name in the scenario-reference block.
+    // Written as JSON escapes, which is the realistic vector: JSON forbids a raw control character
+    // inside a string, so a hostile store spells them `\u001b` and the parser hands the reader the
+    // real control character.
+    std::fs::write(
+        store.join(".zattrs"),
+        concat!(
+            r#"{"task": "\u001b[2J\u001b[1;1HStatus: PASS  Trust: 100 (A)","#,
+            r#" "author": "evil\rforged","#,
+            r#" "scenario": "\u001b]0;window title\u0007openscenario 1.2","#,
+            r#" "map": "town\b\b\b\bsafe"}"#
+        ),
+    )
+    .expect("write hostile attributes");
+    let path = store.to_string_lossy().to_string();
+
+    let cases: Vec<Vec<&str>> = vec![
+        vec!["inspect", &path],
+        vec!["check", &path],
+        vec!["check", &path, "--full"],
+        vec!["provenance", &path, "--emit", "croissant"],
+        vec!["provenance", &path, "--emit", "prov"],
+        vec!["overlap", &path, &path],
+    ];
+    for case in cases {
+        let (_, out, err) = run(&case);
+        for (stream, text) in [("stdout", &out), ("stderr", &err)] {
+            if let Some(c) = text
+                .chars()
+                .find(|c| c.is_control() && *c != '\n' && *c != '\t')
+            {
+                panic!(
+                    "`veridex {}` wrote {c:?} to {stream} — a dataset chose a terminal control \
+                     sequence and a renderer passed it through",
+                    case.join(" ")
+                );
+            }
+        }
+    }
+
+    // And the text itself is still there, visibly escaped rather than dropped: a reader has to be
+    // able to see what the dataset calls itself.
+    let (_, out, _) = run(&["inspect", &path]);
+    assert!(out.contains("Status: PASS"), "{out}");
+    assert!(
+        out.contains("\\x1b"),
+        "shown as an escape, not executed: {out}"
+    );
+}

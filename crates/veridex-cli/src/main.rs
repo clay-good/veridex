@@ -1677,7 +1677,10 @@ fn cmd_inspect(rest: &[String]) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    println!("Dataset: {}", d.id);
+    // Every name below can come from the dataset's own files — a Zarr `.zattrs` sets the task, the
+    // stream names and the clock id — and this is a terminal that interprets escape sequences. See
+    // `veridex_core::tty_safe`.
+    println!("Dataset: {}", veridex_core::tty_safe(&d.id));
     println!("  format:   {}", ingested.report.format_id);
     println!("  CDM hash: {}", veridex_core::content_hash(d));
     // A remote read is the one source that can change under the reader: `hf://org/name` is a
@@ -1714,7 +1717,7 @@ fn cmd_inspect(rest: &[String]) -> ExitCode {
             None => String::new(),
         };
         let task = match &ep.task {
-            Some(t) => format!("  task: \"{t}\""),
+            Some(t) => format!("  task: \"{}\"", veridex_core::tty_safe(t)),
             None => String::new(),
         };
         println!(
@@ -1737,10 +1740,10 @@ fn cmd_inspect(rest: &[String]) -> ExitCode {
             };
             println!(
                 "      {} [{}] — {} frame(s), clock `{}`{}{}",
-                s.name,
+                veridex_core::tty_safe(&s.name),
                 s.modality.tag(),
                 s.frames.len(),
-                s.clock_id,
+                veridex_core::tty_safe(&s.clock_id),
                 latched,
                 describe_schema(&s.dtype, &s.shape),
             );
@@ -1756,13 +1759,21 @@ fn cmd_inspect(rest: &[String]) -> ExitCode {
         // which costs the reader nothing. They shared one label until a dataset with half its
         // shards unread was found to produce a verdict identical to the intact one.
         for u in &ingested.report.unread_sources {
-            println!("      UNREAD:   {} ({})", u.source_path, u.note);
+            println!(
+                "      UNREAD:   {} ({})",
+                veridex_core::tty_safe(&u.source_path),
+                veridex_core::tty_safe(&u.note)
+            );
         }
         for u in &ingested.report.unmapped_fields {
-            println!("      unmapped: {} ({})", u.source_path, u.note);
+            println!(
+                "      unmapped: {} ({})",
+                veridex_core::tty_safe(&u.source_path),
+                veridex_core::tty_safe(&u.note)
+            );
         }
         for o in &ingested.report.omitted_fields {
-            println!("      omitted:  {o}");
+            println!("      omitted:  {}", veridex_core::tty_safe(o));
         }
     }
     print!("{}", provenance_summary(d));
@@ -1893,10 +1904,12 @@ fn provenance_summary(d: &veridex_core::cdm::Dataset) -> String {
             .find(|(_, e)| class_rank(e.class) == strongest)
             .map(|(_, e)| e.class.tag())
             .unwrap_or_default();
+        // The values are the dataset's own text — a license string, a sensor name out of a
+        // manifest — on their way to a terminal.
         let shown = values
             .iter()
             .take(MAX_LISTED_VALUES)
-            .copied()
+            .map(|v| veridex_core::tty_safe(v))
             .collect::<Vec<_>>()
             .join(", ");
         let rest = values.len().saturating_sub(MAX_LISTED_VALUES);

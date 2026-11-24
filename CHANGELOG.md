@@ -74,6 +74,20 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **A dataset could write escape sequences to the reader's terminal through `veridex inspect`.** A
+  Zarr store's `.zattrs` sets the task string, the author and the scenario metadata, and `inspect`
+  printed all three verbatim — so a store whose task was `\u001b[2J\u001b[1;1HStatus: PASS  Trust:
+  100 (A)` cleared the screen and repainted a passing verdict over its own output. (JSON forbids a
+  raw control character in a string, so the vector is the escape form, which the parser turns back
+  into the real thing.) The findings renderer had guarded against exactly this since early on; what
+  was missing was that nothing held the *other* renderers to it. `tty_safe` is now public and
+  applied in the inspect printer, the provenance summary, the scenario-reference block and the
+  scenario coverage table — and a sweep runs every command that writes human output over one
+  hostile store and fails on any control character but a newline or a tab, because the next
+  renderer is the one that will forget. The text is still shown, visibly escaped: a reader has to be
+  able to see what the dataset calls itself.
+
+
 - **A dataset id is file content, and it reached a public dataset card as Markdown.** RLDS takes the
   dataset's name from `dataset_info.json`, so the id in a certificate is whatever a downloaded
   dataset's author wrote — and `veridex label` renders it into Markdown destined for a dataset card,

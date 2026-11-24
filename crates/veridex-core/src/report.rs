@@ -318,7 +318,15 @@ fn severity_label(sev: Severity) -> &'static str {
 /// So control characters are rendered as visible `\xNN` / `\u{..}` escapes rather than executed. The
 /// text stays readable and is obviously not doing anything. Printable characters, including every
 /// non-ASCII one, pass through untouched — this is not an ASCII filter.
-fn tty_safe(s: &str) -> String {
+///
+/// Public because the findings report is not the only place dataset text reaches a terminal:
+/// `veridex inspect` prints stream names, clock ids and an episode's task string, and a Zarr
+/// store's `.zattrs` sets all three. It printed a raw `\x1b[2J\x1b[1;1H` from a fixture's own task
+/// field, which clears the screen and repaints whatever the dataset chose. Any renderer that writes
+/// dataset-derived text to a terminal has to call this, and
+/// `cli::no_command_lets_a_dataset_write_escape_sequences_to_the_terminal` is what holds them to
+/// it.
+pub fn tty_safe(s: &str) -> String {
     if !s.contains(|c: char| c.is_control()) {
         return s.to_string();
     }

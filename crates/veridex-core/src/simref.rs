@@ -350,12 +350,20 @@ pub fn render_references(dataset: &Dataset) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "  scenario & map references:");
     for r in &refs {
+        // The value is a scenario or map name out of the dataset's own metadata, on its way to a
+        // terminal: see [`crate::tty_safe`].
+        let value = crate::tty_safe(&r.value);
         match &r.version {
             Some(v) => {
-                let _ = writeln!(out, "      {}: {} (version {v})", r.kind.label(), r.value);
+                let _ = writeln!(
+                    out,
+                    "      {}: {value} (version {})",
+                    r.kind.label(),
+                    crate::tty_safe(v)
+                );
             }
             None => {
-                let _ = writeln!(out, "      {}: {}", r.kind.label(), r.value);
+                let _ = writeln!(out, "      {}: {value}", r.kind.label());
             }
         }
     }
