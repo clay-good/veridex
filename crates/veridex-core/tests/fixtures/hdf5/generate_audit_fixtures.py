@@ -194,5 +194,26 @@ with h5py.File("robomimic_env_args.h5", "w") as f:
         g.create_dataset("actions", data=rng.random((3, 7)).astype(np.float32))
         g.create_dataset("obs/robot0_eef_pos", data=rng.random((3, 3)).astype(np.float32))
 
+# A merged collection: demos pooled from two sessions into one file, each group stating in its own
+# attributes where that episode came from and under what terms. Every provenance element used to be
+# read from the root, so a file that recorded a different license per demo was summarized as though
+# one applied to all of them — and the licensing check never saw the conflict it exists for.
+rng = np.random.default_rng(101)
+with h5py.File("merged_sources.h5", "w") as f:
+    data = f.create_group("data")
+    data.attrs["total"] = 6
+    sources = [
+        ("apache-2.0", "lab-a", "sessions/2026-03-01"),
+        ("cc-by-nc-4.0", "lab-b", "partner-corpus/run-7"),
+    ]
+    for demo, (license_id, operator, derived_from) in enumerate(sources):
+        g = data.create_group(f"demo_{demo}")
+        g.attrs["num_samples"] = 3
+        g.attrs["license"] = license_id
+        g.attrs["operator"] = operator
+        g.attrs["derived_from"] = derived_from
+        g.create_dataset("actions", data=rng.random((3, 7)).astype(np.float32))
+        g.create_dataset("obs/robot0_eef_pos", data=rng.random((3, 3)).astype(np.float32))
+
 for name in sorted(n for n in os.listdir(".") if n.endswith(".h5")):
     print(name, os.path.getsize(name))

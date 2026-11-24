@@ -325,6 +325,9 @@ impl Adapter for ZarrAdapter {
 
         let mut episodes: Vec<Episode> = Vec::new();
         let mut provenance: Vec<Provenance> = Vec::new();
+        // Whether any episode group carried provenance of its own, so the report claims the
+        // mapping only where there was something to read.
+        let mut group_provenance_read = false;
         for slice in &slices {
             if !selected.contains(&slice.index) {
                 continue;
@@ -390,13 +393,39 @@ impl Adapter for ZarrAdapter {
                     }
                 }
             };
-            provenance.push(Provenance {
-                scope: ProvenanceScope::Episode(slice.index),
-                elements: vec![ProvenanceElement {
+            // What this episode's own group says about where *it* came from. A merged store — demos
+            // pooled from several sessions, sites or labs into one tree — records that in each
+            // group's `.zattrs`, and nothing read it: every provenance element came from the root,
+            // so a store stating a different license or operator per episode was summarized as
+            // though one applied to all of them. Resolved through the same curated table as every
+            // other source. Only a group-per-episode layout has such a group; a replay buffer's
+            // episodes are row ranges of shared arrays and have no attributes of their own.
+            let mut elements: Vec<ProvenanceElement> = Vec::new();
+            if let Some(prefix) = &slice.prefix {
+                for (name, value) in read_attrs(&data_dir.join(prefix))? {
+                    if let Some(key) = crate::adapter::provenance_key_for(&name) {
+                        elements.push(ProvenanceElement {
+                            key: key.into(),
+                            value: Some(render_attr(&value)),
+                            class: ProvenanceClass::Known,
+                        });
+                    }
+                }
+            }
+            group_provenance_read |= !elements.is_empty();
+            // Where the group states its own lineage, that is the answer; the group's path inside
+            // this store is only a pointer at itself, and recording both would list `upstream`
+            // twice for one episode with the weaker value beside the real one.
+            if !elements.iter().any(|e| e.key == "upstream") {
+                elements.push(ProvenanceElement {
                     key: "upstream".into(),
                     value: Some(slice.source.clone()),
                     class: ProvenanceClass::Known,
-                }],
+                });
+            }
+            provenance.push(Provenance {
+                scope: ProvenanceScope::Episode(slice.index),
+                elements,
             });
             episodes.push(Episode {
                 index: slice.index,
@@ -484,6 +513,11 @@ impl Adapter for ZarrAdapter {
             ".zarray shape after the first dimension -> stream.shape".into(),
             ".zattrs -> dataset metadata".into(),
         ];
+        // Claimed only where a group actually carried provenance of its own: a mapped field is a
+        // statement that this run read something.
+        if group_provenance_read {
+            mapped_fields.push("episode group .zattrs -> episode provenance".into());
+        }
         if options.metadata_only {
             mapped_fields
                 .push(".zarray shape[0] + meta/episode_ends -> declared episode lengths".into());

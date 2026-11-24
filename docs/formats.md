@@ -184,6 +184,15 @@ trajectories were recorded on — which is exactly what `provenance.sensor` asks
 (the short `env_name`-only form) has nothing extracted and nothing claimed: the report does not list
 the mapping either, because a mapped field is a statement that the run read something.
 
+A merged collection is read as one. Demos pooled from several sessions, sites or labs into one file
+state per group where that episode came from and under what terms, and each group's own attributes
+resolve through the same curated key table as the root's — so a file recording `apache-2.0` for one
+demo and `cc-by-nc-4.0` for the next is reported as two sources rather than as one, and
+`provenance.license-compatibility` says that the non-commercial one governs the pool. Where a group
+names what it was derived from, that is its `upstream`; the group's path inside the file stands in
+only where it names nothing. A Zarr store laid out as one group per episode is read the same way,
+from each group's own `.zattrs`.
+
 An HDF5 file is usually more than its episodes, and the report says so. `robomimic` writes a `/mask`
 group of filter keys beside `/data`; collectors park reward tables and raw logs at the root the same
 way. None of that sits under an episode group, so none of it is read — and anything there holding

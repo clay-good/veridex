@@ -1180,3 +1180,101 @@ fn arrays_disagreeing_on_an_episodes_length_are_flagged_end_to_end() {
         f.message
     );
 }
+
+/// Copy a committed fixture into a temporary directory, so a test can add the files a real store
+/// would carry without rewriting the fixture itself.
+fn copy_fixture(name: &str, into: &std::path::Path) {
+    fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
+        std::fs::create_dir_all(to).expect("mkdir");
+        for entry in std::fs::read_dir(from).expect("read_dir") {
+            let entry = entry.expect("entry");
+            let target = to.join(entry.file_name());
+            if entry.file_type().expect("file_type").is_dir() {
+                copy_dir(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), &target).expect("copy");
+            }
+        }
+    }
+    copy_dir(&fixture(name), into);
+}
+
+#[test]
+fn each_episode_group_carries_the_provenance_it_declares_itself() {
+    // A merged store: two episodes pooled from two sessions, each group stating in its own
+    // `.zattrs` where that episode came from and under what terms. Nothing read it — every
+    // provenance element came from the root — so a store that said `cc-by-nc-4.0` for one of its
+    // episodes was summarized as though the root's terms applied to all of them.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = dir.path().join("merged.zarr");
+    copy_fixture("group_layout.zarr", &store);
+    std::fs::write(
+        store.join("ep_0/.zattrs"),
+        br#"{"license": "apache-2.0", "operator": "lab-a", "derived_from": "sessions/2026-03-01"}"#,
+    )
+    .expect("write ep_0 .zattrs");
+    std::fs::write(
+        store.join("ep_1/.zattrs"),
+        br#"{"license": "cc-by-nc-4.0", "operator": "lab-b"}"#,
+    )
+    .expect("write ep_1 .zattrs");
+
+    let ingested = default_registry()
+        .ingest(&Source::Local(store), &IngestOptions::default())
+        .expect("the merged store ingests");
+    let d = &ingested.dataset;
+    let at = |episode: u64, key: &str| -> Option<String> {
+        d.provenance
+            .iter()
+            .filter(|p| {
+                matches!(p.scope, veridex_core::cdm::ProvenanceScope::Episode(i) if i == episode)
+            })
+            .flat_map(|p| p.elements.iter())
+            .find(|e| e.key == key)
+            .and_then(|e| e.value.clone())
+    };
+    assert_eq!(at(0, "license").as_deref(), Some("apache-2.0"));
+    assert_eq!(at(1, "license").as_deref(), Some("cc-by-nc-4.0"));
+    assert_eq!(at(0, "annotator").as_deref(), Some("lab-a"));
+    // The group's own statement of where it came from replaces the path inside this store, which
+    // is only a pointer at itself.
+    assert_eq!(
+        at(0, "upstream").as_deref(),
+        Some("sessions/2026-03-01"),
+        "a group that names its source is not labelled with its own address"
+    );
+    assert_eq!(
+        at(1, "upstream").as_deref(),
+        Some("ep_1"),
+        "and a group that names none still records where in the store it sits"
+    );
+    assert!(
+        ingested
+            .report
+            .mapped_fields
+            .iter()
+            .any(|f| f.contains("episode group .zattrs")),
+        "the report claims the mapping it performed: {:?}",
+        ingested.report.mapped_fields
+    );
+
+    // And the verdict reads them. This is the pooled-lineage case `provenance.license-compatibility`
+    // exists for, and the first dataset shape that reaches it end to end: one non-commercial source
+    // governs the whole pool, which the users of the permissive one beside it will not expect.
+    let engine = veridex_core::checks::default_engine().expect("the standard catalog");
+    let hash = veridex_core::content_hash(d);
+    let codes: Vec<String> = engine
+        .run(d, hash, &veridex_core::RunConfig::default())
+        .findings
+        .into_iter()
+        .map(|f| f.code)
+        .collect();
+    assert!(
+        codes.contains(&"PROVENANCE.LICENSE_CONFLICT".to_string()),
+        "{codes:?}"
+    );
+    assert!(
+        codes.contains(&"PROVENANCE.LICENSE_NONCOMMERCIAL".to_string()),
+        "{codes:?}"
+    );
+}

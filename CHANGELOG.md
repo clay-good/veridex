@@ -10,6 +10,23 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A merged collection's per-episode provenance is read, not summarized away.** HDF5 and Zarr both
+  record an episode as a group, and a pooled collection — demos gathered from several sessions, sites
+  or labs into one file or store — states per group where that episode came from and under what
+  terms. Veridex read provenance only from the root, so a file that recorded a different license,
+  operator and lineage for each demo was reported as though one of them applied to all of them, and
+  the licensing rules never saw the conflict they exist for.
+
+  Each episode group's own attributes (HDF5) and `.zattrs` (Zarr) now resolve through the same
+  curated key table as every other source, so `sensor` means the same thing in a group attribute as
+  in an MCAP `Metadata` record. Where a group states its own lineage, that is the `upstream` value;
+  the group's path inside the file is only a pointer at itself, and is kept only where the group says
+  nothing. The ingest report claims the mapping only where a group actually carried something.
+
+  This is also the first dataset shape that reaches `PROVENANCE.LICENSE_CONFLICT` end to end:
+  `merged_sources.h5` is two demos pooled under `apache-2.0` and `cc-by-nc-4.0`, and the verdict now
+  says that one non-commercial source governs the whole pool.
+
 - **What a dataset's license permits is now read, not just counted.** `provenance.completeness` asks
   only whether a license is *recorded*. So a `cc-by-nc-4.0` dataset — the shape of a great many real
   LeRobot datasets on the Hub — and an `apache-2.0` one produced the same report and the same

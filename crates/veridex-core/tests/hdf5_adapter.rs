@@ -1849,3 +1849,63 @@ fn the_well_known_table_covers_every_expected_provenance_key() {
     assert_eq!(provenance_key_for("timestamp"), None);
     assert_eq!(provenance_key_for("fps"), None);
 }
+
+#[test]
+fn each_episode_group_carries_the_provenance_it_declares_itself() {
+    // A merged collection: two demos pooled from different sessions into one file, each group
+    // stating in its own attributes where that episode came from and under what terms. Every
+    // provenance element used to be read from the root, so a file recording a different license per
+    // demo was summarized as though one applied to all of them — and the licensing rules never saw
+    // the conflict they exist for.
+    let ingested = ingest("merged_sources.h5", IngestOptions::default());
+    let d = &ingested.dataset;
+    let at = |episode: u64, key: &str| -> Option<String> {
+        d.provenance
+            .iter()
+            .filter(|p| {
+                matches!(p.scope, veridex_core::cdm::ProvenanceScope::Episode(i) if i == episode)
+            })
+            .flat_map(|p| p.elements.iter())
+            .find(|e| e.key == key)
+            .and_then(|e| e.value.clone())
+    };
+    assert_eq!(at(0, "license").as_deref(), Some("apache-2.0"));
+    assert_eq!(at(1, "license").as_deref(), Some("cc-by-nc-4.0"));
+    assert_eq!(at(0, "annotator").as_deref(), Some("lab-a"));
+    assert_eq!(at(1, "annotator").as_deref(), Some("lab-b"));
+    // The group's own statement of where it came from replaces the path inside this file, which is
+    // only a pointer at itself.
+    assert_eq!(
+        at(0, "upstream").as_deref(),
+        Some("sessions/2026-03-01"),
+        "a group that names its source is not labelled with its own address"
+    );
+    assert!(
+        ingested
+            .report
+            .mapped_fields
+            .iter()
+            .any(|f| f.contains("episode group attributes")),
+        "the report claims the mapping it performed: {:?}",
+        ingested.report.mapped_fields
+    );
+
+    // And the verdict reads them: one non-commercial source governs the whole pool, which the users
+    // of the permissively licensed demo beside it will not expect.
+    let engine = veridex_core::checks::default_engine().expect("the standard catalog");
+    let hash = veridex_core::content_hash(d);
+    let codes: Vec<String> = engine
+        .run(d, hash, &veridex_core::RunConfig::default())
+        .findings
+        .into_iter()
+        .map(|f| f.code)
+        .collect();
+    assert!(
+        codes.contains(&"PROVENANCE.LICENSE_CONFLICT".to_string()),
+        "{codes:?}"
+    );
+    assert!(
+        codes.contains(&"PROVENANCE.LICENSE_NONCOMMERCIAL".to_string()),
+        "{codes:?}"
+    );
+}

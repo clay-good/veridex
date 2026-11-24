@@ -321,11 +321,14 @@ impl Adapter for Hdf5Adapter {
             .unwrap_or(FORMAT_ID)
             .to_string();
 
+        // Whether any episode group carried provenance of its own, so the report claims the
+        // mapping only where there was something to read.
+        let mut group_provenance_read = false;
         for (group, index) in groups.iter().zip(indices.iter().copied()) {
             if !selected.contains(&index) {
                 continue;
             }
-            let episode = build_episode(
+            let (episode, mut elements) = build_episode(
                 &mut file,
                 group,
                 index,
@@ -334,13 +337,20 @@ impl Adapter for Hdf5Adapter {
                 &mut budget,
                 &mut notes,
             )?;
-            provenance.push(Provenance {
-                scope: ProvenanceScope::Episode(index),
-                elements: vec![ProvenanceElement {
+            group_provenance_read |= !elements.is_empty();
+            // Where the group states its own lineage, that is the answer; the path inside this file
+            // is only a pointer at itself, and recording both would list `upstream` twice for one
+            // episode with the weaker value beside the real one.
+            if !elements.iter().any(|e| e.key == "upstream") {
+                elements.push(ProvenanceElement {
                     key: "upstream".into(),
                     value: Some(format!("{file_uri}:{}", group.path)),
                     class: ProvenanceClass::Known,
-                }],
+                });
+            }
+            provenance.push(Provenance {
+                scope: ProvenanceScope::Episode(index),
+                elements,
             });
             episodes.push(episode);
         }
@@ -502,6 +512,9 @@ impl Adapter for Hdf5Adapter {
         // this run read something.
         if robots_read {
             mapped_fields.push("env_args env_kwargs.robots -> provenance.sensor".into());
+        }
+        if group_provenance_read {
+            mapped_fields.push("episode group attributes -> episode provenance".into());
         }
         let mut omitted_fields = vec![
             "image/point payload decoding (frames are fingerprints, not pixels)".into(),
@@ -1065,7 +1078,10 @@ fn build_episode(
     metadata_only: bool,
     budget: &mut FrameBudget,
     notes: &mut Notes,
-) -> Result<Episode, IngestError> {
+) -> Result<(Episode, Vec<ProvenanceElement>), IngestError> {
+    // What this episode's own group states about itself, returned beside the episode: a group is
+    // where a merged collection records the session, operator and terms of each demo.
+    let mut provenance: Vec<ProvenanceElement> = Vec::new();
     let mut arrays = Vec::new();
     let mut visited = BTreeSet::new();
     collect_arrays(file, group.addr, "", 0, &mut visited, &mut arrays, notes)?;
@@ -1094,6 +1110,24 @@ fn build_episode(
             }
             _ => None,
         });
+    // What this episode's own group says about where *it* came from. A merged collection — demos
+    // pooled from several sessions, sites or labs into one file — records that per group, and
+    // nothing read it: every provenance element came from the root, so a file that stated a
+    // different license or operator for each demo was summarized as though one applied to all of
+    // them. Resolved through the same curated table as every other source, so a key called `sensor`
+    // means the same thing in a group attribute as in an MCAP `Metadata` record.
+    for (name, value) in &attrs {
+        if let Some(key) = crate::adapter::provenance_key_for(name) {
+            if let AttrValue::Text(text) = value {
+                provenance.push(ProvenanceElement {
+                    key: key.into(),
+                    value: Some(text.clone()),
+                    class: ProvenanceClass::Known,
+                });
+            }
+        }
+    }
+
     let task = attrs
         .iter()
         .find(|(name, _)| TASK_ATTRS.iter().any(|t| t.eq_ignore_ascii_case(name)))
@@ -1197,18 +1231,21 @@ fn build_episode(
         });
     }
 
-    Ok(Episode {
-        index,
-        start_ts,
-        end_ts,
-        streams,
-        task,
-        labels,
-        // An HDF5 manipulation dataset records no ego trajectory.
-        ego_poses: None,
-        ego_frame: None,
-        declared_frame_count: declared_frame_count.filter(|_| !ragged),
-    })
+    Ok((
+        Episode {
+            index,
+            start_ts,
+            end_ts,
+            streams,
+            task,
+            labels,
+            // An HDF5 manipulation dataset records no ego trajectory.
+            ego_poses: None,
+            ego_frame: None,
+            declared_frame_count: declared_frame_count.filter(|_| !ragged),
+        },
+        provenance,
+    ))
 }
 
 /// Why an array could not become a stream.

@@ -44,6 +44,7 @@ Regenerating changes the row hashes pinned in the tests (the arrays are drawn fr
 | `partial_fill.h5` | Chunked arrays that are only *partly* written, with non-zero, negative, and NaN fill values — the regions no chunk covers are defined by HDF5 to be the fill value, including rows covered by no chunk at all |
 | `attr_dims_overflow.h5` | A (2, 2) attribute's dataspace rewritten to (2^63, 2), so its element count overflows — a debug-build panic, and in release it wrapped to 0, was clamped to 1, and a 2^64-element attribute was read as a single scalar |
 | `gcol_size_overflow.h5` | A global-heap object size of `u64::MAX`, which overflows inside the `next_multiple_of(8)` rounding before the surrounding `checked_add` sees it |
+| `merged_sources.h5` | A merged collection: two `/data/demo_N` groups pooled from different sessions, each carrying its own `license`, `operator` and `derived_from` attributes — the per-episode provenance a root-only read summarized away |
 
 
 `huge_timeline.h5` and `partial_fill.h5` are written by:
