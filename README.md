@@ -381,7 +381,10 @@ cargo clippy --all-targets
 ## Status
 
 **Early implementation, runs end-to-end.** Against a full [OpenSpec](openspec/) design, this is what
-is in and tested:
+is in and tested. Every requirement in those specs is now either built or recorded as a decision
+with its reasoning — the two that are not built say so in the spec beside them (a privacy check
+would mean decoding pixels, which this tool's design refuses; incremental validation cannot be both
+cheap and identical to a full run) rather than reading as pending work.
 
 | Piece | What is in |
 |---|---|

@@ -27,9 +27,10 @@ block fails verification rather than being read back.
 
 A certificate names its findings **by code**, not only by severity and family. That distinction is
 the whole point: `statistical: 1` beside "46 checks run, no families skipped" is what a
-single-episode dataset whose streams hold no summarizable values used to sign as — while all five
-statistical checks had nothing to measure and seven cross-episode checks had nothing to compare.
-Twelve of the forty-six presented as clean executed checks.
+single-episode dataset whose streams hold no summarizable values used to sign as, on the
+forty-six-check catalog of the day — while all five statistical checks had nothing to measure and
+seven cross-episode checks had nothing to compare. Twelve of those forty-six presented as clean
+executed checks, and the catalog has only grown since.
 
 Veridex emits an informational finding whenever a check had no evidence to work on
 (`STATISTICAL.UNMEASURED_VALUES`, `STRUCTURAL.UNCOMPARED_EPISODES`, `TEMPORAL.UNMEASURED_CLOCK`, and
