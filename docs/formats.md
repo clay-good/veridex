@@ -23,7 +23,7 @@ one (its second episode carries an out-of-order timestamp) and check it the same
 
 ```sh
 # generate a demo LeRobot v3 dataset; append `clean`, `truncated`, `boundary`, `jitter`, `wrong-fps`,
-# `short-episode`, `frozen-episode`, `duplicate`, `near-duplicate`, `saturated`, `spike`, `nan`,
+# `invalid-fps`, `short-episode`, `frozen-episode`, `duplicate`, `near-duplicate`, `saturated`, `spike`, `nan`,
 # `stale-stats`, `corrupt-stats`, `confusable-keys`, `multi-joint`, `video`, `video-desync`, `video-missing`, `video-reencoded`, or
 # `noncommercial-card`
 cargo run -p veridex-demo --example make_demo_lerobot -- /tmp/demo-lerobot

@@ -37,6 +37,12 @@
 //!   captured at, and everything that normalizes or resamples by `fps` is off by a quarter →
 //!   `TEMPORAL.RATE`.
 //!
+//! - `invalid-fps` — the same two well-formed episodes, with `meta/info.json` declaring `fps: 0`.
+//!   Every frame carries a real recorded timestamp, so the timeline is sound and the rate and gap
+//!   rules — which both guard `rate > 0` — simply skip the stream. What the manifest *says* about
+//!   itself is corrupt, and until the reader stopped discarding a non-positive `fps` there was no
+//!   dataset in which `TEMPORAL.INVALID_RATE` could fire at all →
+//!   `TEMPORAL.INVALID_RATE`.
 //! - `confusable-keys` — a well-formed two-episode dataset carrying both `observation.state` and
 //!   `observation.State`: two features whose names differ only by letter case, the shape of a merge
 //!   between datasets that spelled the same signal two ways. Every key is unique, so nothing is a
@@ -80,7 +86,7 @@
 //!   dataset's — while a policy trained on it may not be used commercially, and nothing said so →
 //!   `PROVENANCE.LICENSE_NONCOMMERCIAL`.
 //!
-//! Usage: `cargo run -p veridex-demo --example make_demo_lerobot -- <output-dir> [non-monotonic|clean|truncated|boundary|jitter|wrong-fps|short-episode|frozen-episode|duplicate|near-duplicate|saturated|spike|nan|stale-stats|corrupt-stats|confusable-keys|multi-joint|video|video-desync|video-missing|video-reencoded|noncommercial-card]`
+//! Usage: `cargo run -p veridex-demo --example make_demo_lerobot -- <output-dir> [non-monotonic|clean|truncated|boundary|jitter|wrong-fps|invalid-fps|short-episode|frozen-episode|duplicate|near-duplicate|saturated|spike|nan|stale-stats|corrupt-stats|confusable-keys|multi-joint|video|video-desync|video-missing|video-reencoded|noncommercial-card]`
 //!
 //! Then: `veridex check <output-dir>`.
 
@@ -97,6 +103,7 @@ pub const VARIANTS: &[&str] = &[
     "boundary",
     "jitter",
     "wrong-fps",
+    "invalid-fps",
     "short-episode",
     "frozen-episode",
     "duplicate",
@@ -130,6 +137,7 @@ enum Mode {
     Boundary,
     Jitter,
     WrongFps,
+    InvalidFps,
     ShortEpisode,
     FrozenEpisode,
     Duplicate,
@@ -193,6 +201,7 @@ fn mode_of(variant: &str) -> Result<Mode, DemoError> {
         "boundary" => Mode::Boundary,
         "jitter" => Mode::Jitter,
         "wrong-fps" => Mode::WrongFps,
+        "invalid-fps" => Mode::InvalidFps,
         "short-episode" => Mode::ShortEpisode,
         "frozen-episode" => Mode::FrozenEpisode,
         "duplicate" => Mode::Duplicate,
@@ -245,6 +254,9 @@ pub fn describe(variant: &str) -> Result<&'static str, DemoError> {
         }
         Mode::WrongFps => {
             "wrong-fps (captured at 24 Hz while info.json declares 30 → TEMPORAL.RATE)"
+        }
+        Mode::InvalidFps => {
+            "invalid-fps (info.json declares fps 0, which is not a rate → TEMPORAL.INVALID_RATE)"
         }
         Mode::ShortEpisode => {
             "short-episode (episode 4 was cut short right after it began → TEMPORAL.EPISODE_DURATION_OUTLIER)"
@@ -302,6 +314,10 @@ fn write_dataset(dir: &Path, mode: Mode, license: &str) {
     fs::create_dir_all(dir.join("data/chunk-000")).expect("create data/");
 
     let fps = 30.0;
+    // What the manifest *declares*. `invalid-fps` states a rate that is not one: the frames still
+    // carry real timestamps, so the timeline is sound and every rate rule skips the stream — the
+    // fault is in what the dataset says about itself.
+    let declared_fps = if mode == Mode::InvalidFps { 0.0 } else { fps };
     // The multi-DoF variants have their own info/parquet shape (a FixedSizeList feature).
     if mode == Mode::FrozenEpisode {
         write_frozen_episode_dataset(dir, fps, license);
@@ -347,7 +363,7 @@ fn write_dataset(dir: &Path, mode: Mode, license: &str) {
     }
     let info = serde_json::json!({
         "codebase_version": "v3.0",
-        "fps": fps,
+        "fps": declared_fps,
         "robot_type": "so100",
         "total_episodes": declared_episodes,
         "total_frames": declared_frames,

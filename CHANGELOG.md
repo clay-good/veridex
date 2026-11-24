@@ -277,6 +277,19 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   `security` spec's "Tamper evidence and audit" requirement, which until now had no implementation
   and no decision beside it. `veridex.audit(log_text, expect_head=None)` returns the same JSON.
 
+- **A check with nowhere in the world to fire.** `temporal.rate-validity` reports a declared
+  sampling rate that is not a positive, finite number — the value both the rate and gap rules skip
+  over, so without it a nonsensical `fps` passes in silence. It was exempt from the demo sweep as
+  "structurally unreachable", and it was: the LeRobot reader mapped a non-positive `fps` to *no
+  declared rate at all*, so a manifest stating `fps: 0` was indistinguishable from one stating
+  nothing, and no dataset any reader could produce could reach the check.
+
+  The reader now carries the rate the manifest **states**. Its own `frame_index / fps` timestamp
+  fallback still requires a usable one — that has not changed, and the timeline is sound either way
+  — so what this adds is a finding about what the dataset says about itself. The `invalid-fps` demo
+  variant is that dataset, the sweep's exemption list is one entry shorter, and
+  [docs/checks.md](docs/checks.md) says why the code is reachable at all.
+
 - **Two point-cloud fields reading the same bytes, said precisely.** A `PointCloud2` is a flat byte
   blob plus a record, and each field's `offset` is the only thing that says where a consumer reads it
   from. The reader parsed those offsets to check them against the stride and then **threw them

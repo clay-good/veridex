@@ -10,7 +10,11 @@
 //! - the per-row `timestamp` (seconds) → each frame's timestamp; rows are grouped by
 //!   `episode_index` into [`Episode`]s. All features are frame-aligned, so within an episode every
 //!   stream shares the same frame timestamps and the single LeRobot clock (`clock_id = "lerobot"`);
-//! - `fps` → each stream's declared rate.
+//! - `fps` → each stream's declared rate, **as stated**: a non-positive value is carried into the
+//!   CDM rather than dropped, because a manifest declaring `fps: 0` is corrupt metadata and
+//!   dropping it made that indistinguishable from a manifest declaring nothing
+//!   (`TEMPORAL.INVALID_RATE`). The reader's own `frame_index / fps` timestamp fallback still
+//!   requires a usable rate.
 //!
 //! Veridex reads timestamps and structure and **fingerprints** feature payloads — it hashes each
 //! feature cell's raw value bytes into `frame.value_ref.content_hash` (a SHA-256, never an
@@ -1111,7 +1115,7 @@ fn ingest_metadata_only(
     dir: &Path,
     info: &InfoJson,
     features: &[FeatureSpec],
-    fps: f64,
+    declared_fps: Option<f64>,
     declared_lengths: &BTreeMap<u64, DeclaredEpisode>,
     options: &IngestOptions,
 ) -> Result<Ingested, IngestError> {
@@ -1177,7 +1181,7 @@ fn ingest_metadata_only(
                 .map(|(name, modality, dtype, shape, dim_names)| Stream {
                     name: name.clone(),
                     modality: *modality,
-                    declared_rate_hz: if fps > 0.0 { Some(fps) } else { None },
+                    declared_rate_hz: declared_fps,
                     clock_id: CLOCK_ID.to_string(),
                     // The clock is still the measured LeRobot clock; this run simply did not read
                     // it. `ClockKind::Measured` describes the source, not the ingest, and the
@@ -1636,7 +1640,15 @@ impl Adapter for LeRobotAdapter {
             }
         }
 
+        // Two different facts, and conflating them cost a check its only route into a real
+        // dataset. `fps` is the rate this reader can *use* — for the `frame_index / fps` timestamp
+        // fallback — and zero stands for "none usable". `info.fps` is what the manifest **states**,
+        // which is what belongs in the CDM: a manifest declaring `fps: 0` or `fps: -30` is corrupt
+        // metadata, and mapping it to "declares nothing" made it indistinguishable from a manifest
+        // that declares nothing. `temporal.rate-validity` exists for exactly that value and could
+        // not be reached from any reader until now.
         let fps = info.fps.unwrap_or(0.0);
+        let declared_fps = info.fps;
 
         // Data features become streams; bookkeeping columns do not. Each carries its declared dtype
         // and shape from info.json so the structural checks can verify cross-episode consistency.
@@ -1684,7 +1696,14 @@ impl Adapter for LeRobotAdapter {
         // A metadata-only ingest answers a different question — "does the manifest hold together?" —
         // and answers it without opening a single Parquet or video file. It returns here.
         if options.metadata_only {
-            return ingest_metadata_only(dir, &info, &features, fps, &declared_lengths, options);
+            return ingest_metadata_only(
+                dir,
+                &info,
+                &features,
+                declared_fps,
+                &declared_lengths,
+                options,
+            );
         }
 
         // Resolve a sampling request into the concrete episode indices to keep, *before* reading any
@@ -1909,7 +1928,7 @@ impl Adapter for LeRobotAdapter {
                     .map(|(name, modality, dtype, shape, dim_names)| Stream {
                         name: name.clone(),
                         modality: *modality,
-                        declared_rate_hz: if fps > 0.0 { Some(fps) } else { None },
+                        declared_rate_hz: declared_fps,
                         clock_id: CLOCK_ID.to_string(),
                         // Real recorded timestamps: every temporal check applies.
                         clock_kind: ClockKind::Measured,

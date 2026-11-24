@@ -1047,18 +1047,11 @@ fn the_sweep_reaches_every_adapter() {
 /// fixture the check had been waiting for. What is left is the two that **cannot** arise from any
 /// reader this repo has — so an entry here is now a statement about the *adapters*, and a reader
 /// that starts declaring a nominal rate should expect this test to tell it so.
-const NOT_REACHED_BY_THE_SWEEP: &[(&str, &str)] = &[
-    (
-        "temporal.rate-consistency",
-        "structurally unreachable from today's readers, not merely unfixtured: it compares the \
+const NOT_REACHED_BY_THE_SWEEP: &[(&str, &str)] = &[(
+    "temporal.rate-consistency",
+    "structurally unreachable from today's readers, not merely unfixtured: it compares the \
          rates two episodes declare, and LeRobot's `fps` is one number for the whole dataset",
-    ),
-    (
-        "temporal.rate-validity",
-        "structurally unreachable in the same way: a corrupt `fps` becomes `None` in the LeRobot \
-         adapter rather than a bad `Some`, and no other reader declares a rate to corrupt",
-    ),
-];
+)];
 
 #[test]
 fn the_sweep_exercises_the_checks_it_is_pinned_to() {
