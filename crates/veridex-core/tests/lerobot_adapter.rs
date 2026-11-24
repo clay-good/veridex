@@ -442,6 +442,54 @@ fn a_null_timestamp_cell_falls_back_to_frame_index_not_a_fabricated_zero() {
 }
 
 #[test]
+fn a_declared_fps_of_zero_cannot_stand_in_for_a_missing_timestamp_column() {
+    // A manifest stating `fps: 0` is carried as stated — a rate that is not positive and finite is
+    // what `temporal.rate-validity` exists to report, and mapping it to "unset" would make corrupt
+    // metadata indistinguishable from absent metadata. It still cannot be *used*: with no
+    // `timestamp` column the only timeline left is `frame_index / fps`, and dividing by zero gives
+    // an infinite time that `seconds_to_ns` turns into a number. A whole dataset's timeline would
+    // then be fabricated from a field the manifest filled in wrong.
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("episode_index", DataType::Int64, false),
+        Field::new("frame_index", DataType::Int64, false),
+        Field::new("observation.state", DataType::Float64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int64Array::from(vec![0i64, 0, 0])),
+            Arc::new(Int64Array::from(vec![0i64, 1, 2])),
+            Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0])),
+        ],
+    )
+    .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    write_lerobot(
+        dir.path(),
+        &[("observation.state", "float32")],
+        0.0,
+        &[(0, 0.0)],
+    );
+    let path = dir.path().join("data/chunk-000/file-000.parquet");
+    let file = fs::File::create(&path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+
+    let err = LeRobotAdapter
+        .ingest(
+            &Source::Local(dir.path().to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect_err("a zero rate cannot derive a timeline");
+    let text = err.to_string();
+    assert!(
+        text.contains("fps"),
+        "the refusal names the field it cannot use: {text}"
+    );
+}
+
+#[test]
 fn frames_are_aggregated_across_multiple_parquet_shards() {
     // Real LeRobot datasets spread episodes across many shards in separate chunk dirs. The adapter
     // must recurse into every chunk (find_parquet) and collect all episodes, not just the first

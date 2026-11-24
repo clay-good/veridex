@@ -10,6 +10,25 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **The adapter mutation sweep, completed and triaged, with its result written down.** 338
+  comparisons across every adapter and decoder, each mutant judged by its file's own format tests
+  plus the crate's unit tests: 110 killed, 220 survived, 7 did not compile, 1 timed out. A survivor
+  is a question, not a defect, and [docs/mutation-sweep.md](docs/mutation-sweep.md) records the three
+  answers worth telling apart — a real rule, a cost ceiling whose exact value is not a promise, and
+  one another invariant makes unreachable — with the worked argument for three representative
+  equivalents and the seven that were real. Two harness lessons are in there too, because both cost
+  a day: a repeated source line is **two** sites (`cdr.rs` has two copies of the same stamp guard,
+  one covered since the beginning and one that nothing touched), and a targeted run under-kills, so
+  a survivor is re-applied by hand before it is believed. A guard holds the ledger's seven test
+  names to tests that exist.
+- **Three more boundaries pinned from that sweep.** An unconfigured ROS `CameraInfo` of all zeros
+  declares no image size, which is the ROS-side twin of the KITTI fix above. A ROS 1 sequence
+  counter is believed only behind a normalized stamp — the second copy of that rule, in
+  `decode_header_seq`, which nothing covered. And a LeRobot manifest stating `fps: 0` is carried as
+  stated but refused as a divisor: with no `timestamp` column the fallback is `frame_index / fps`,
+  and dividing by zero would fabricate a whole dataset's timeline from a field filled in wrong.
+
+
 - **KITTI's OXTS rows are read as all three records they hold, which makes a drive a rig.** The unit
   is an RT3003 — a GNSS receiver, an IMU and an inertial navigation solution in one box — and
   `dataformat.txt` lays all three out in the same thirty fields. The reader took the position and

@@ -2488,6 +2488,85 @@ mod tests {
     }
 
     #[test]
+    fn a_ros1_sequence_behind_an_unnormalized_stamp_is_not_believed() {
+        // The sequence counter is only believed when the header around it is a real one, and
+        // `nanosec` under a full second is the test of that: 1_000_000_000 is `sec + 1` written
+        // wrong, and a payload that begins with any `u32` would otherwise report a sequence.
+        // `decode_header_stamp` applies the same rule and its own boundary is pinned above; this
+        // is the ROS 1 sequence path's copy of it, which nothing covered.
+        let body = |nanosec: u32| {
+            let mut w = R1 { buf: Vec::new() };
+            w.u32(7); // seq
+            w.u32(1_700_000_000); // stamp.sec
+            w.u32(nanosec);
+            w.string("base_link");
+            w.buf
+        };
+        assert_eq!(
+            decode_header_seq(&body(1_000_000_000), Encoding::Ros1),
+            None
+        );
+        assert_eq!(
+            decode_header_seq(&body(999_999_999), Encoding::Ros1),
+            Some(7)
+        );
+    }
+
+    #[test]
+    fn an_unconfigured_camera_info_declares_no_image_size() {
+        // An uncalibrated ROS camera driver publishes a `CameraInfo` of all zeros. A zero `width`
+        // is the driver saying nothing about its image, not a zero-pixel image, and the difference
+        // is a finding: `autonomy.calibration-plausibility` judges a principal point against the
+        // size the calibration declares, so `Some(0)` would put every unconfigured camera outside
+        // its own image. The KITTI reader maps `S_0N: 0.0 0.0` the same way for the same reason.
+        let mut w = W::new();
+        w.header("cam");
+        w.u32(0); // height
+        w.u32(0); // width
+        w.string("");
+        w.u32(0); // d: no coefficients
+        for v in [600.0, 0.0, 320.0, 0.0, 600.0, 240.0, 0.0, 0.0, 1.0] {
+            w.f64(v);
+        }
+        let ci = decode_camera_info(&w.buf, Encoding::Cdr, "/cam/info").expect("decode");
+        assert_eq!(ci.width, None);
+        assert_eq!(ci.height, None);
+        // The intrinsics beside it are still read: they are what the presence rules grade.
+        assert_eq!(ci.cx, 320.0);
+
+        // One pixel is a declared size, however implausible: only zero is silence.
+        let mut w = W::new();
+        w.header("cam");
+        w.u32(1);
+        w.u32(1);
+        w.string("");
+        w.u32(0);
+        for v in [600.0, 0.0, 320.0, 0.0, 600.0, 240.0, 0.0, 0.0, 1.0] {
+            w.f64(v);
+        }
+        let ci = decode_camera_info(&w.buf, Encoding::Cdr, "/cam/info").expect("decode");
+        assert_eq!((ci.width, ci.height), (Some(1), Some(1)));
+    }
+
+    #[test]
+    fn a_stamp_of_exactly_one_second_of_nanoseconds_is_not_a_normalized_stamp() {
+        // `builtin_interfaces/Time` keeps `nanosec` under a full second: 1_000_000_000 is `sec + 1`
+        // written wrong, and reading it as a capture time would put a stamp a second early into
+        // every timing comparison. The boundary is the one value that distinguishes "normalized"
+        // from "nearly" — 999_999_999 is a legitimate stamp.
+        let stamp = |nanosec: u32| {
+            let mut w = W::new();
+            // A ROS 2 `std_msgs/Header`: `{ int32 sec, uint32 nanosec }` then `string frame_id`.
+            w.i32(1_700_000_000);
+            w.u32(nanosec);
+            w.string("cam");
+            decode_header_stamp(&w.buf, Encoding::Cdr)
+        };
+        assert!(stamp(1_000_000_000).is_none());
+        assert!(stamp(999_999_999).is_some());
+    }
+
+    #[test]
     fn decodes_odometry_pose() {
         let mut w = W::new();
         w.header("odom");

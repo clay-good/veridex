@@ -309,3 +309,53 @@ fn the_readme_names_every_source_that_shares_the_provenance_key_table() {
          sentence about it does not name them: {missing:?}"
     );
 }
+
+/// Every test the mutation-sweep ledger names must exist, under the module it names it in.
+///
+/// The ledger's table of real findings is a claim that seven boundaries are now held in place, and
+/// a reader checks it by opening those tests. A renamed or deleted test turns that table into seven
+/// assertions a reader cannot verify — which is the failure mode of every "see the test" sentence
+/// written in prose instead of checked. The spec-coverage map is held to the same rule
+/// (`spec_coverage::every_mapped_implementation_and_test_exists`).
+#[test]
+fn the_mutation_sweep_ledger_names_tests_that_exist() {
+    let page = std::fs::read_to_string(root().join("docs/mutation-sweep.md"))
+        .expect("the sweep ledger is readable");
+    // `path::or::module::test_name` as the table writes it, in backticks.
+    let mut checked = 0usize;
+    for cell in page.split('`') {
+        let Some((module, test)) = cell.rsplit_once("::") else {
+            continue;
+        };
+        if !test
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c == '_' || c.is_ascii_digit())
+            || !test.contains('_')
+        {
+            continue;
+        }
+        // `cdr::tests::x` is a unit test in `src/adapter/cdr.rs`; anything else is an integration
+        // test file under `tests/`.
+        let file = match module.strip_suffix("::tests") {
+            Some(unit) => root().join(format!("crates/veridex-core/src/adapter/{unit}.rs")),
+            None => root().join(format!(
+                "crates/veridex-core/tests/{}.rs",
+                module.rsplit("::").next().unwrap_or(module)
+            )),
+        };
+        let source = std::fs::read_to_string(&file).unwrap_or_else(|e| {
+            panic!("{cell} names {}, which is unreadable: {e}", file.display())
+        });
+        assert!(
+            source.contains(&format!("fn {test}(")),
+            "{cell}: {} holds no `fn {test}`",
+            file.display()
+        );
+        checked += 1;
+    }
+    // The table of real findings has seven rows, and each names one test.
+    assert!(
+        checked >= 7,
+        "only {checked} test reference(s) found in the ledger — has the table changed shape?"
+    );
+}

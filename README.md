@@ -330,6 +330,7 @@ verdict, and unknown keys, check ids, or invalid tolerances are rejected, not si
 | Know exactly what each check looks for | [docs/checks.md](docs/checks.md) |
 | Judge a rig against a policy profile | [docs/profiles.md](docs/profiles.md) |
 | Understand the 0–100 score | [docs/rubric-v1.md](docs/rubric-v1.md) |
+| See how the thresholds are held in place (and where that reach ends) | [docs/mutation-sweep.md](docs/mutation-sweep.md) |
 | Configure it | [docs/veridex.toml.example](docs/veridex.toml.example) |
 
 ## Python
