@@ -577,6 +577,50 @@ fn verify(
     ))
 }
 
+/// `veridex.supersedes(earlier_certificate_json, later_certificate_json, public_key_hex=None,
+/// allow_any_issuer=False) -> str`
+///
+/// Relate two certificates for one dataset and return the machine-readable summary
+/// (`{relation, supersedes, reason, earlier, later, score_delta}`) as a JSON string, byte-identical
+/// to `veridex supersedes --json`. Inputs are the certificate JSON strings, not file paths.
+///
+/// Both documents are verified first, under the same trust rule the CLI applies: a relation computed
+/// from a document nobody verified is worth nothing, because the whole question is which signed
+/// statement to trust. Raises `ValueError` when either does not verify, when no issuer is named and
+/// `allow_any_issuer` is not set, or when either input is not a certificate.
+#[pyfunction]
+#[pyo3(signature = (earlier_certificate_json, later_certificate_json, public_key_hex=None, allow_any_issuer=false))]
+fn supersedes(
+    earlier_certificate_json: &str,
+    later_certificate_json: &str,
+    public_key_hex: Option<&str>,
+    allow_any_issuer: bool,
+) -> PyResult<String> {
+    if public_key_hex.is_none() && !allow_any_issuer {
+        return Err(PyValueError::new_err(
+            "supersedes needs a trusted issuer: pass public_key_hex, or allow_any_issuer=True to \
+             relate the two documents on whatever keys signed them",
+        ));
+    }
+    let earlier: veridex_core::SignedCertificate =
+        serde_json::from_str(earlier_certificate_json).map_err(to_py_err)?;
+    let later: veridex_core::SignedCertificate =
+        serde_json::from_str(later_certificate_json).map_err(to_py_err)?;
+    for (label, signed) in [("earlier", &earlier), ("later", &later)] {
+        veridex_core::verify(signed, None, public_key_hex).map_err(|e| {
+            PyValueError::new_err(format!("the {label} certificate does not verify: {e}"))
+        })?;
+    }
+    Ok(veridex_core::certificate::render_supersession_json(
+        &veridex_core::certificate::relate(
+            &earlier.certificate,
+            &earlier.public_key,
+            &later.certificate,
+            &later.public_key,
+        ),
+    ))
+}
+
 /// `veridex.diff(old_report_json, new_report_json) -> str`
 ///
 /// Diff two `veridex check --json` reports and return the machine-readable summary
@@ -836,6 +880,7 @@ fn veridex(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(keygen, m)?)?;
     m.add_function(wrap_pyfunction!(certify, m)?)?;
     m.add_function(wrap_pyfunction!(verify, m)?)?;
+    m.add_function(wrap_pyfunction!(supersedes, m)?)?;
     m.add_function(wrap_pyfunction!(version, m)?)?;
     Ok(())
 }

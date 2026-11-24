@@ -54,6 +54,13 @@ readiness = json.loads(
 )["readiness"]
 print(readiness["ready"], [c["check_id"] for c in readiness["criteria"]])
 
+# Re-certified after a re-record? `supersedes` says which of two certificates describes the dataset
+# now (same as `veridex supersedes`). Both are verified first; a supersession is not a revocation.
+relation = json.loads(
+    veridex.supersedes(earlier_cert, later_cert, public_key_hex=issuer_pub)
+)
+print(relation["relation"], relation["supersedes"], relation["score_delta"])
+
 # The veridex-core version behind these bindings.
 print(veridex.version())
 ```

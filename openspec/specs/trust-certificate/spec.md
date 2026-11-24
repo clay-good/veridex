@@ -96,6 +96,12 @@ major version so that older certificates remain parseable and verifiable by newe
 - **THEN** verification succeeds and all recorded fields are readable
 - **AND** the schema version is reported
 
+<!-- Implemented in v0.1: `veridex supersedes <earlier> <later>` relates two certificates from the
+     key each signature verified against, the dataset identity, the bound content hash and the
+     issuance timestamp — no schema change was needed, the identity was already signed. A
+     supersession is explicitly not a revocation: nothing offline can be withdrawn. See
+     crates/veridex-core/src/certificate/supersession.rs and docs/trust-chain.md. -->
+
 ### Requirement: Revocation and supersession identity
 A certificate SHALL carry stable identity (issuer, dataset lineage, content hash, issuance metadata)
 sufficient to be matched against later revocation or supersession, so that a certificate can be

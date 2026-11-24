@@ -12,6 +12,7 @@ pub mod label;
 pub mod render;
 pub mod score;
 pub mod signing;
+pub mod supersession;
 
 pub use attestation::{
     conflicts, sign_attestation, verify_attestation, AttestError, Attestation, AttestationConflict,
@@ -29,4 +30,7 @@ pub use render::{
 pub use score::{score, Grade, TrustScore, RUBRIC_VERSION};
 pub use signing::{
     sign, verify, CertError, SignedCertificate, SigningKeypair, Verified, Zeroizing,
+};
+pub use supersession::{
+    relate, render_supersession, render_supersession_json, Relation, Supersession,
 };

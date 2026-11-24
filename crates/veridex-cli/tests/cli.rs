@@ -3520,3 +3520,169 @@ fn a_commands_help_names_only_the_exit_codes_it_can_return() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// `veridex supersedes` — which of two certificates describes the dataset now.
+// ---------------------------------------------------------------------------
+
+/// Two certificates over the same dataset identity, differing in the bytes they are bound to and in
+/// when they were issued — a dataset re-recorded after the first certificate reported a fault.
+///
+/// Built by certifying two different demo datasets written to the **same path**, because the
+/// dataset identity a certificate carries is the path's final component: that is what makes these
+/// two statements about one dataset rather than about two.
+fn two_generations(tag: &str) -> (std::path::PathBuf, String) {
+    let dir = temp_dir(tag);
+    let key = dir.join("issuer");
+    let (code, _, stderr) = run(&["keygen", key.to_str().expect("path"), "--force"]);
+    assert_eq!(code, 0, "keygen: {stderr}");
+    let dataset = dir.join("ds.mcap");
+    for (variant, out, ts) in [
+        ("skew", "earlier.json", "2026-03-01T10:00:00Z"),
+        ("clean", "later.json", "2026-04-02T09:30:00Z"),
+    ] {
+        veridex_demo::mcap::write(&dataset, variant).expect("write the demo recording");
+        // `certify` exits with the verdict's own code — the skewed recording fails — and writes the
+        // certificate either way, which is the document under test.
+        let (_, _, stderr) = run(&[
+            "certify",
+            dataset.to_str().expect("path"),
+            "--key",
+            key.to_str().expect("path"),
+            "--timestamp",
+            ts,
+            "--out",
+            dir.join(out).to_str().expect("path"),
+        ]);
+        assert!(
+            dir.join(out).is_file(),
+            "certify must write {out}: {stderr}"
+        );
+    }
+    let public = std::fs::read_to_string(dir.join("issuer.pub")).expect("read public key");
+    (dir, public.trim().to_string())
+}
+
+#[test]
+fn a_later_certificate_supersedes_an_earlier_one_for_the_same_dataset() {
+    // The question a team holding two valid certificates has to answer, and which nothing answered:
+    // both verify offline forever — that is what signing them is for — so neither says which
+    // describes the dataset now.
+    let (dir, public) = two_generations("supersedes");
+    let (code, stdout, stderr) = run(&[
+        "supersedes",
+        dir.join("earlier.json").to_str().expect("path"),
+        dir.join("later.json").to_str().expect("path"),
+        "--key",
+        &public,
+    ]);
+    assert_eq!(code, 0, "a supersession exits 0: {stdout}{stderr}");
+    assert!(stdout.contains("SUPERSEDES"), "{stdout}");
+    assert!(stdout.contains("Relation: supersedes"), "{stdout}");
+    // The movement, so a reader learns whether the dataset improved — the skewed generation fails,
+    // the clean one passes.
+    assert!(stdout.contains("status fail -> pass"), "{stdout}");
+    // And the one thing a supersession must not be mistaken for.
+    assert!(stdout.contains("not revoked"), "{stdout}");
+
+    // The same answer in machine form, for a release gate.
+    let (code, stdout, _) = run(&[
+        "supersedes",
+        dir.join("earlier.json").to_str().expect("path"),
+        dir.join("later.json").to_str().expect("path"),
+        "--key",
+        &public,
+        "--json",
+    ]);
+    assert_eq!(code, 0);
+    let doc: serde_json::Value = serde_json::from_str(&stdout).expect("json");
+    assert_eq!(doc["relation"], "supersedes");
+    assert_eq!(doc["supersedes"], true);
+    assert_eq!(doc["earlier"]["dataset_id"], doc["later"]["dataset_id"]);
+    assert_ne!(
+        doc["earlier"]["cdm_content_hash"],
+        doc["later"]["cdm_content_hash"]
+    );
+}
+
+#[test]
+fn the_arguments_the_other_way_round_is_not_a_supersession() {
+    // Ordering is the whole claim, so getting it backwards must not read as one — and the answer
+    // has to say what to do about it rather than just "no".
+    let (dir, public) = two_generations("supersedes-order");
+    let (code, stdout, _) = run(&[
+        "supersedes",
+        dir.join("later.json").to_str().expect("path"),
+        dir.join("earlier.json").to_str().expect("path"),
+        "--key",
+        &public,
+    ]);
+    assert_eq!(code, 20, "{stdout}");
+    assert!(stdout.contains("DOES NOT SUPERSEDE"), "{stdout}");
+    assert!(stdout.contains("out-of-order"), "{stdout}");
+    assert!(stdout.contains("the other way round"), "{stdout}");
+}
+
+#[test]
+fn one_certificate_against_itself_is_a_reissue_rather_than_a_supersession() {
+    // Same bytes, same issuer: nothing about the dataset changed, so nothing supersedes anything.
+    // A tool that answered "yes" here would let a re-certification pass as a new generation.
+    let (dir, public) = two_generations("supersedes-reissue");
+    let later = dir.join("later.json");
+    let (code, stdout, _) = run(&[
+        "supersedes",
+        later.to_str().expect("path"),
+        later.to_str().expect("path"),
+        "--key",
+        &public,
+    ]);
+    assert_eq!(code, 20, "{stdout}");
+    assert!(stdout.contains("reissue"), "{stdout}");
+    assert!(stdout.contains("same content hash"), "{stdout}");
+}
+
+#[test]
+fn supersedes_demands_a_trust_decision_and_refuses_an_unverifiable_document() {
+    let (dir, public) = two_generations("supersedes-trust");
+    let earlier = dir.join("earlier.json");
+    let later = dir.join("later.json");
+
+    // The same rule `verify` applies: "the later of two certificates anyone could mint" is not an
+    // answer, so an issuer has to be named or explicitly waived.
+    let (code, _, stderr) = run(&[
+        "supersedes",
+        earlier.to_str().expect("path"),
+        later.to_str().expect("path"),
+    ]);
+    assert_eq!(code, 2, "{stderr}");
+    assert!(stderr.contains("trusted issuer"), "{stderr}");
+
+    // A certificate signed by someone else is not relatable under this issuer: the command refuses
+    // rather than reporting a relation it could not establish.
+    let (code, _, stderr) = run(&[
+        "supersedes",
+        earlier.to_str().expect("path"),
+        later.to_str().expect("path"),
+        "--key",
+        &"00".repeat(32),
+    ]);
+    assert_eq!(code, 2, "{stderr}");
+    assert!(stderr.contains("does not verify"), "{stderr}");
+
+    // A tampered document never reaches the comparison.
+    let tampered = dir.join("tampered.json");
+    let text = std::fs::read_to_string(&later).expect("read");
+    std::fs::write(
+        &tampered,
+        text.replace("\"score\":", "\"score\": 100, \"ignored\":"),
+    )
+    .expect("write");
+    let (code, _, stderr) = run(&[
+        "supersedes",
+        earlier.to_str().expect("path"),
+        tampered.to_str().expect("path"),
+        "--key",
+        &public,
+    ]);
+    assert_eq!(code, 2, "{stderr}");
+}

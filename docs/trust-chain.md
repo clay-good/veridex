@@ -8,6 +8,7 @@ veridex keygen issuer                                        # an Ed25519 issuer
 veridex certify my-dataset/ --key issuer --out c.json        # sign the verdict
 veridex verify  my-dataset/ --certificate c.json --key issuer.pub
 veridex label   --certificate c.json --key issuer.pub        # Markdown for a dataset card
+veridex supersedes earlier.json later.json --key issuer.pub   # which one describes it now
 ```
 
 The certificate binds to the dataset's CDM content hash and is Ed25519-signed: `verify` succeeds
@@ -107,6 +108,41 @@ CDM content hash, so it cannot be moved to other data. Three rules keep it hones
 
 A key may repeat only where more than one value is a fact rather than a contradiction — `upstream`,
 for a merge. Two licenses in one document is refused at signing time.
+
+## Which certificate is current
+
+A certificate binds a content hash, so re-recording a dataset, fixing the fault a certificate
+reported, or re-exporting a shard produces a different dataset by the only identity a verifier has.
+Both certificates then stay valid offline forever — that is what signing them is for — and a reader
+is left holding two true documents about "the same dataset" with nothing to say which describes it
+now.
+
+```sh
+veridex supersedes earlier.json later.json --key issuer.pub
+```
+
+It verifies both documents first (a relation computed from a document nobody verified is worth
+nothing — the whole question is which signed statement to trust), then relates them from what they
+already carry: the key each signature verified against, the dataset identity, the content hash each
+is bound to, and the issuance timestamp each records. It exits **0** when the later certificate
+supersedes the earlier one and **20** when it does not, so a release gate can ask the question
+directly, and `--json` prints the same answer for a script.
+
+| Relation | What it means |
+|---|---|
+| `supersedes` | Same issuer, same dataset, different bytes, issued afterwards |
+| `reissue` | Both bound to the **same** content hash: the dataset was certified twice, and what differs is what the two runs claimed rather than the data |
+| `out-of-order` | The document given as the later one was issued first — pass them the other way round |
+| `unordered` | An issuance timestamp is not an RFC 3339 UTC instant, so the two cannot be ordered. Veridex does not guess at a local offset: an ordering guessed wrong names the wrong certificate as current |
+| `different-issuer` | Different signing keys. A supersession is an issuer restating what it certified, and no issuer speaks for another's documents |
+| `unrelated` | Different datasets |
+
+The answer also carries the trust-score and status movement between the two, so the reader learns
+whether the dataset got better or worse rather than only which document is newer.
+
+**A supersession is not a revocation.** The superseded certificate remains a true statement about
+the bytes it was issued over, and it keeps verifying: nothing offline can be withdrawn, and Veridex
+does not pretend otherwise. What a supersession says is which document describes the dataset now.
 
 ## What a certificate is not
 

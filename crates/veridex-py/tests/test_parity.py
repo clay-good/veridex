@@ -371,14 +371,6 @@ def test_diff_refuses_a_file_that_is_not_a_report():
     assert json.loads(veridex.diff(full, full))["unchanged_count"] == 1
 
 
-if __name__ == "__main__":
-    # Minimal runner when pytest is unavailable. Defined last, so every test above it exists.
-    import tempfile
-    from pathlib import Path
-
-    with tempfile.TemporaryDirectory() as d:
-        test_cli_and_python_agree(Path(d))
-    print("parity OK")
     sys.exit(0)
 
 
@@ -636,3 +628,74 @@ def test_cli_and_python_attested_emits_agree(tmp_path):
     # The bound hash is the dataset's own, with or without the attestation.
     plain = json.loads(veridex.provenance(str(dataset), "croissant"))
     assert croissant["distribution"][0]["sha256"] == plain["distribution"][0]["sha256"]
+
+
+def test_cli_and_python_supersedes_agree(tmp_path):
+    """Relating two certificates must give the same answer on both surfaces.
+
+    The dataset identity a certificate carries is the path's final component, so both generations
+    are written to the same path: that is what makes these two statements about one dataset. The
+    timestamps are RFC 3339 UTC instants rather than the epoch seconds the other tests sign with —
+    an issuance timestamp has to be an instant for either surface to order it, and both say so
+    rather than guessing.
+    """
+    binary = os.environ.get("VERIDEX_BIN", "target/debug/veridex")
+    secret = "01" * 32
+    dataset = tmp_path / "ds.mcap"
+    certs = {}
+    for variant, name, ts in [
+        ("skew", "earlier", "2026-03-01T10:00:00Z"),
+        ("clean", "later", "2026-04-02T09:30:00Z"),
+    ]:
+        subprocess.run(
+            [
+                "cargo", "run", "-q", "-p", "veridex-demo", "--example", "make_demo_mcap",
+                "--", str(dataset), variant,
+            ],
+            check=True,
+        )
+        certs[name] = veridex.certify(str(dataset), secret, ts)
+        (tmp_path / f"{name}.json").write_text(certs[name])
+
+    public = json.loads(certs["later"])["public_key"]
+    py = json.loads(veridex.supersedes(certs["earlier"], certs["later"], public))
+    result = subprocess.run(
+        [
+            binary, "supersedes", str(tmp_path / "earlier.json"), str(tmp_path / "later.json"),
+            "--key", public, "--json",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"a supersession exits 0: {result.stderr}"
+    cli = json.loads(result.stdout)
+    assert py == cli, "Python and CLI supersedes must agree"
+    assert py["relation"] == "supersedes"
+    assert py["supersedes"] is True
+
+    # Without a trusted issuer and without opting out, it refuses rather than relating documents
+    # nobody vouched for.
+    try:
+        veridex.supersedes(certs["earlier"], certs["later"])
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("supersedes must demand a trust decision about the issuer")
+
+    # And a document that does not verify under the named key is refused, not related.
+    try:
+        veridex.supersedes(certs["earlier"], certs["later"], "00" * 32)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("supersedes must refuse a certificate that does not verify")
+
+
+if __name__ == "__main__":
+    # Minimal runner when pytest is unavailable. Defined last, so every test above it exists.
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as d:
+        test_cli_and_python_agree(Path(d))
+    print("parity OK")

@@ -65,6 +65,10 @@ const COMMANDS: &[(&str, &str)] = &[
         "label",
         "render a certificate as a Markdown trust label for a dataset card (--certificate <c.json>)",
     ),
+    (
+        "supersedes",
+        "relate two certificates for one dataset: does the later one supersede the earlier (--key <pub>; --json)",
+    ),
     ("checks", "list the built-in check catalog"),
 ];
 
@@ -241,6 +245,11 @@ const COMMAND_FLAGS: &[(&str, &[&[&str]], &str)] = &[
         "label",
         &[&["--certificate", "--key", "--allow-any-issuer", "--out"]],
         "--certificate <cert.json> --key <public>",
+    ),
+    (
+        "supersedes",
+        &[&["--json", "--key", "--allow-any-issuer"]],
+        "<earlier.json> <later.json> --key <public>",
     ),
     (
         "attest",
@@ -525,6 +534,7 @@ fn main() -> ExitCode {
         Some("checks") => cmd_checks(&args[1..]),
         Some("certify") => cmd_certify(&args[1..]),
         Some("verify") => cmd_verify(&args[1..]),
+        Some("supersedes") => cmd_supersedes(&args[1..]),
         Some("keygen") => cmd_keygen(&args[1..]),
         Some("diff") => cmd_diff(&args[1..]),
         Some("watch") => cmd_watch(&args[1..]),
@@ -3066,6 +3076,7 @@ fn exit_codes_for(command: &str) -> &'static str {
     match command {
         "check" | "certify" | "watch" => "0 pass · 10 pass-with-warnings · 20 fail · 2 tool-error",
         "diff" => "0 no regression · 20 regression (with --fail-on-regression) · 2 tool-error",
+        "supersedes" => "0 supersedes · 20 does not supersede · 2 tool-error",
         // Everything else does its own job or cannot: rendering a label, reading a manifest, writing
         // a keypair. The dataset's verdict is not this command's answer.
         _ => "0 success · 2 tool-error",
@@ -3107,6 +3118,99 @@ fn print_command_help(command: &str) {
 /// The bare flag at the head of a documented signature (`--out <file>` -> `--out`).
 fn first_flag(flags: &str) -> &str {
     flags.split_whitespace().next().unwrap_or(flags)
+}
+
+/// `veridex supersedes <earlier.json> <later.json>` — which of two certificates describes the
+/// dataset now.
+///
+/// Both documents are verified first. A relation computed from a document nobody verified is worth
+/// nothing: the whole question is which signed statement to trust, and an unverified file is not a
+/// statement by anybody. Exits 0 when the later certificate supersedes the earlier one and
+/// `EXIT_FAIL` when it does not, so a release gate can ask the question directly; a tool error
+/// (unreadable file, wrong key, a signature that does not verify) is `EXIT_TOOL_ERROR`, because
+/// "this did not verify" is not an answer to "does this supersede".
+fn cmd_supersedes(rest: &[String]) -> ExitCode {
+    let args = match parse_args_or_exit(rest) {
+        Ok(a) => a,
+        Err(code) => return code,
+    };
+    if let Err(code) = reject_flags_except("supersedes", &args) {
+        return code;
+    }
+    let paths: Vec<&String> = args.positionals.iter().collect();
+    let [earlier_path, later_path] = paths.as_slice() else {
+        eprintln!(
+            "veridex: supersedes requires two certificates: veridex supersedes <earlier.json> \
+             <later.json> --key <public>"
+        );
+        return ExitCode::from(EXIT_TOOL_ERROR);
+    };
+
+    // The same trust decision `verify` demands, for the same reason: a signature proves a document
+    // came from *some* key, and "the later of two certificates anyone could mint" is not an answer.
+    if args.key.is_none() && !args.allow_any_issuer {
+        eprintln!(
+            "veridex: supersedes needs a trusted issuer: pass --key <public-key|file>, or \
+             --allow-any-issuer to relate the two documents on whatever keys signed them"
+        );
+        return ExitCode::from(EXIT_TOOL_ERROR);
+    }
+    let expected_issuer = match &args.key {
+        Some(k) => match resolve_public_key(k) {
+            Ok(key) => Some(key),
+            Err(e) => {
+                eprintln!("veridex: {e}");
+                return ExitCode::from(EXIT_TOOL_ERROR);
+            }
+        },
+        None => None,
+    };
+
+    let load = |path: &str| -> Result<SignedCertificate, ExitCode> {
+        let text = std::fs::read_to_string(path).map_err(|e| {
+            eprintln!("veridex: cannot read {path}: {e}");
+            ExitCode::from(EXIT_TOOL_ERROR)
+        })?;
+        serde_json::from_str(&text).map_err(|e| {
+            eprintln!("veridex: {path} is not a valid certificate: {e}");
+            ExitCode::from(EXIT_TOOL_ERROR)
+        })
+    };
+    let (earlier, later) = match (load(earlier_path), load(later_path)) {
+        (Ok(a), Ok(b)) => (a, b),
+        (Err(c), _) | (_, Err(c)) => return c,
+    };
+    // No presented dataset hash: this command asks how two documents relate, not whether either is
+    // bound to bytes on this disk. `verify` is what answers that.
+    for (path, signed) in [(earlier_path, &earlier), (later_path, &later)] {
+        if let Err(e) = verify(signed, None, expected_issuer.as_deref()) {
+            eprintln!("veridex: {path} does not verify: {e}");
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
+    }
+
+    let relation = veridex_core::certificate::relate(
+        &earlier.certificate,
+        &earlier.public_key,
+        &later.certificate,
+        &later.public_key,
+    );
+    if args.json {
+        println!(
+            "{}",
+            veridex_core::certificate::render_supersession_json(&relation)
+        );
+    } else {
+        print!(
+            "{}",
+            veridex_core::certificate::render_supersession(&relation)
+        );
+    }
+    if relation.relation.is_supersession() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(EXIT_FAIL)
+    }
 }
 
 #[cfg(test)]

@@ -10,6 +10,29 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **Two valid certificates for one dataset can now be told apart.** A certificate binds a content
+  hash, so re-recording a dataset — or fixing the fault the certificate reported — produces a
+  different dataset by the only identity a verifier has. Both certificates then stay valid offline
+  forever, which is what signing them is for, and that is exactly what left a reader holding two true
+  documents about "the same dataset" with nothing to say which described it now.
+
+  `veridex supersedes earlier.json later.json --key issuer.pub` verifies both documents, then
+  relates them from what they already carry: the key each signature verified against (not the
+  self-asserted `issuance.key_id`, which a document is free to choose), the dataset identity, the
+  content hash each is bound to, and the issuance timestamp each records. It answers `supersedes`,
+  `reissue` (same bytes certified twice), `out-of-order`, `unordered` (a timestamp that is not an
+  RFC 3339 UTC instant — Veridex refuses to guess at a local offset, because an ordering guessed
+  wrong names the wrong certificate as current), `different-issuer` or `unrelated`, with the
+  trust-score and status movement between the two. Exit 0 when it supersedes and 20 when it does
+  not, so a release gate can ask directly; `--json` and `veridex.supersedes(...)` give the same
+  answer, byte for byte.
+
+  **A supersession is not a revocation**: the superseded certificate remains a true statement about
+  the bytes it was issued over, and keeps verifying. Nothing offline can be withdrawn, and Veridex
+  does not pretend otherwise. No certificate schema change — the identity this needs was already in
+  the document and already signed — so every existing certificate relates without re-issuing.
+  Closes the `trust-certificate` spec's *Revocation and supersession identity* requirement.
+
 - **A merged collection's per-episode provenance is read, not summarized away.** HDF5 and Zarr both
   record an episode as a group, and a pooled collection — demos gathered from several sessions, sites
   or labs into one file or store — states per group where that episode came from and under what

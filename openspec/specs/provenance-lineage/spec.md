@@ -65,6 +65,13 @@ offline against the producer's public key.
 - **THEN** the attestation is bound to the dataset's content hash and the producer's key
 - **AND** any party can verify offline that this producer made that assertion about that dataset
 
+<!-- Implemented in v0.1: `provenance.license-compatibility` reads the term out of each recorded
+     license identifier (`-nc` / `-nd` / `-sa`, plus the known permissive and copyleft families) and
+     relates them across every provenance scope; `PROVENANCE.LICENSE_CONFLICT` reports terms that
+     cannot all be satisfied by one derived dataset, and an identifier the vocabulary does not cover
+     is reported unevaluated rather than assumed permissive. The term codes are informational, and
+     the finding states that it is not legal advice. See docs/checks.md. -->
+
 ### Requirement: License compatibility for derived datasets
 When a dataset is derived from multiple upstreams with recorded licenses, Veridex SHALL evaluate
 license compatibility across the lineage and surface conflicts (e.g. combining incompatibly
