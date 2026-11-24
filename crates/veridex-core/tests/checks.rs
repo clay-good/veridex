@@ -8343,3 +8343,64 @@ fn a_diagnostics_stream_nobody_could_read_is_disclosed_and_a_dataset_without_one
     );
     assert!(withheld.is_empty(), "{withheld:?}");
 }
+
+#[test]
+fn every_finding_code_is_named_by_some_test() {
+    // The guard one level finer than the catalog's doc guard, and the one this suite's own argument
+    // demands. `docs/checks.md` must name every code, so a code cannot ship undocumented; nothing
+    // said a code had to be *exercised*. A check is reached as soon as any one of its codes fires,
+    // so a new code could ship inside a well-tested check with no test naming it anywhere — which
+    // is the state in which "the suite is green" says nothing at all about it.
+    //
+    // Deliberately a search of the test sources rather than a runtime census: several codes are
+    // reachable only from a hand-built CDM, several only through one adapter's fixture, and a few
+    // only from a narrowed run — so where a code is proven varies, and requiring it to be proven in
+    // one particular place would push tests into the wrong file. What this fails on is a code no
+    // test mentions at all.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut sources = String::new();
+    let mut files = 0usize;
+    let mut stack = vec![root.join("crates")];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if path.is_dir() {
+                // `target/` holds build output, including copies of these very sources.
+                if name != "target" {
+                    stack.push(path);
+                }
+            } else if (name.ends_with(".rs") || name.ends_with(".py"))
+                && path.components().any(|c| c.as_os_str() == "tests")
+            {
+                if let Ok(text) = std::fs::read_to_string(&path) {
+                    sources.push_str(&text);
+                    files += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        files > 20,
+        "the test sources were not found ({files} file(s) read), so this guard would pass \
+         vacuously"
+    );
+
+    let engine = veridex_core::checks::default_engine().expect("standard checks have unique ids");
+    let unexercised: Vec<&str> = engine
+        .catalog()
+        .iter()
+        .flat_map(|c| c.finding_codes.iter().copied())
+        .filter(|code| !sources.contains(*code))
+        .collect();
+    assert!(
+        unexercised.is_empty(),
+        "no test names {unexercised:?}. A code with no test is a code the suite says nothing \
+         about: write the case that produces it — a unit test on a hand-built CDM where that is \
+         all it can arise from, an adapter fixture where it is reachable end to end."
+    );
+}

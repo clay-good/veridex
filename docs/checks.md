@@ -387,6 +387,10 @@ and one criteria met respectively:
 | `provenance.license-compatibility` | `PROVENANCE.LICENSE_UNRECOGNIZED` |
 | `autonomy.reported-health` | `AUTONOMY.HARDWARE_UNREPORTED` |
 
+Every code on this page is also **exercised**: a guard in the suite walks every check's declared
+codes and fails on any that no test names, because a code a check can emit and no case produces is
+one the suite says nothing about — and "the check is tested" cannot distinguish the two.
+
 Every abstention code is **declared** by its check (`Check::abstention_codes`, listed by
 `veridex checks` with a `†` and by `veridex checks --json` as a field), so anything summarizing a run
 can tell "I could not measure this" from "I measured this and it is wrong". The trust label's
