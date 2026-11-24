@@ -277,6 +277,21 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   `security` spec's "Tamper evidence and audit" requirement, which until now had no implementation
   and no decision beside it. `veridex.audit(log_text, expect_head=None)` returns the same JSON.
 
+- **The one timing claim a CAN database makes.** A `.dbc` is almost all layout — bit positions,
+  widths, scaling, ranges — and one attribute is about time: `BA_ "GenMsgCycleTime" BO_ <id> <ms>`,
+  how often an ECU is *specified* to send a message. Veridex now reads it as the stream's declared
+  rate, which is what every other format states in its manifest.
+
+  What that changes is what a bus log can be graded against. Before, it could only be graded against
+  itself: the cadence was whatever the log contained, so a node transmitting at the wrong rate, two
+  nodes answering one id, or a gateway that stopped forwarding produced no finding at all —
+  `TEMPORAL.RATE` and `TEMPORAL.GAP` both need a declared rate and there was none. A message
+  specified at 20 ms and arriving every 10 ms is now a finding, which is the `off-cycle` demo
+  variant. An attribute this reader cannot use is not a statement about the bus and becomes no
+  declared rate: a different attribute name, a cycle of zero or less, a value that is not a number,
+  or an id the database does not define — none of them becomes a *bad* rate either, which would be
+  `TEMPORAL.INVALID_RATE` accusing a database that said nothing wrong.
+
 - **A check with nowhere in the world to fire.** `temporal.rate-validity` reports a declared
   sampling rate that is not a positive, finite number — the value both the rate and gap rules skip
   over, so without it a nonsensical `fps` passes in silence. It was exempt from the demo sweep as

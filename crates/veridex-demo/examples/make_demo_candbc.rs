@@ -1,14 +1,14 @@
 //! Write the demo CAN+DBC drive, recorded as a Vector BLF. See [`veridex_demo::candbc`] for what
 //! each variant holds.
 //!
-//! Usage: `cargo run -p veridex-demo --example make_demo_candbc -- <output-dir> [drive|railed-wheel]`
+//! Usage: `cargo run -p veridex-demo --example make_demo_candbc -- <output-dir> [drive|railed-wheel|off-cycle]`
 
 use std::path::Path;
 
 fn main() {
     let Some(out) = std::env::args().nth(1) else {
         eprintln!(
-            "usage: make_demo_candbc <output-dir> [drive|railed-wheel]\n\
+            "usage: make_demo_candbc <output-dir> [drive|railed-wheel|off-cycle]\n\
              then: veridex check <output-dir>"
         );
         std::process::exit(2);

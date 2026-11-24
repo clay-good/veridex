@@ -560,6 +560,17 @@ out of the database, not claimed by whoever handed the log over. Only nodes that
 transmitted: a message the database declares but that never appears on the wire attributes nothing,
 and `Vector__XXX`, the DBC's way of writing "no node specified", names nobody.
 
+**The one timing claim a database makes.** A `.dbc` describes a bus's signals, and almost all of
+that is layout — bit positions, widths, scaling, ranges. One attribute is a statement about *time*:
+`BA_ "GenMsgCycleTime" BO_ <id> <ms>` is how often an ECU is specified to send a message. Veridex
+reads it as the stream's declared rate, which is what every other format states in its manifest, so a
+message specified at 20 ms and arriving every 10 ms is `TEMPORAL.RATE` and one that stops arriving
+is `TEMPORAL.GAP`. Without it a bus log could only be graded against itself: the cadence was whatever
+the log happened to contain, and a node transmitting at the wrong rate — or two nodes answering one
+id — produced no finding at all. An attribute this reader cannot use is not a statement about the
+bus and becomes no declared rate: a different attribute name, a cycle of zero or less, a value that
+is not a number, or an id the database does not define.
+
 **One log, more than one bus.** A vehicle has several CAN buses and `candump -l can0 can1` writes
 them all to one file — and a CAN id is per-bus: id `0x100` is one message on the powertrain bus and
 something else entirely on the chassis bus. Decoded by id alone, two buses' frames land in the same
@@ -652,7 +663,9 @@ A demo drive is a command away, recorded the way a vehicle actually logs one:
 # a demo CAN drive as a Vector BLF: 10 s at 100 Hz on channel 1, CAN-FD frames 24 bytes wide in
 # zlib containers, with a `.dbc` beside it. Append `railed-wheel` for a front-left wheel-speed
 # sensor pinned at its rail for seven frames in ten — a signal that lives past byte eight, so it
-# is a finding only a reader that read the whole FD payload can produce.
+# is a finding only a reader that read the whole FD payload can produce. Append `off-cycle` for a
+# database that specifies a 20 ms cycle while the bus sends every 10 ms — a timing claim the drive
+# does not meet, which is a finding only because the `.dbc`'s own `GenMsgCycleTime` is read.
 cargo run -p veridex-demo --example make_demo_candbc -- /tmp/can-drive
 veridex check /tmp/can-drive
 ```

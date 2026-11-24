@@ -108,6 +108,16 @@ enum Mux {
 #[derive(Debug, Clone, Default)]
 struct DbcMessage {
     name: String,
+    /// The cycle time the database specifies for this message, in milliseconds, from a
+    /// `BA_ "GenMsgCycleTime" BO_ <id> <ms>;` attribute.
+    ///
+    /// A DBC is a *claim* about the bus, and this is the one timing claim it makes: how often an ECU
+    /// is specified to send a message. It is the declared rate every other format states in its
+    /// manifest — so with it read, `TEMPORAL.RATE` and `TEMPORAL.GAP` can say that a message
+    /// specified at 100 ms is arriving every 500 ms, which is a real bus fault (a node that stopped
+    /// transmitting on schedule, a gateway dropping frames) and was previously invisible: the log
+    /// was graded only against itself.
+    cycle_time_ms: Option<f64>,
     /// The `BO_` line's transmitter: the ECU that puts this message on the bus. `None` when the
     /// database omits it or writes the `Vector__XXX` placeholder, which names no node.
     transmitter: Option<String>,
@@ -141,6 +151,7 @@ fn parse_dbc(text: &str) -> BTreeMap<u32, DbcMessage> {
                 messages.entry(id).or_insert_with(|| DbcMessage {
                     name,
                     transmitter,
+                    cycle_time_ms: None,
                     signals: Vec::new(),
                 });
                 current = Some(id);
@@ -153,11 +164,44 @@ fn parse_dbc(text: &str) -> BTreeMap<u32, DbcMessage> {
                     m.signals.push(sig);
                 }
             }
+        } else if let Some(rest) = line.strip_prefix("BA_ ") {
+            // `BA_ "GenMsgCycleTime" BO_ <id> <value>;` — the attribute block sits after every
+            // message, so this is matched independently of `current` rather than inside a block.
+            // Only the cycle time is read: the rest of a DBC's attribute space is free-form and
+            // nothing in the CDM has a shape for it.
+            if let Some((id, ms)) = parse_cycle_time(rest) {
+                if let Some(m) = messages.get_mut(&id) {
+                    m.cycle_time_ms = Some(ms);
+                }
+            }
         } else if line.is_empty() {
             // A blank line ends a message block in some DBCs; keep `current` for tolerant parsing.
         }
     }
     messages
+}
+
+/// Parse a `BA_ "GenMsgCycleTime" BO_ <id> <value>;` body, returning the message id and the cycle
+/// time in milliseconds.
+///
+/// Returns `None` for any other attribute, and for a value that is not a usable cycle time: zero,
+/// negative or non-finite. A rate derived from such a value would be a fabrication, and the one the
+/// database *meant* cannot be recovered from it — `temporal.rate-validity` reports a bad declared
+/// rate where a manifest states one, and a DBC attribute this parser cannot read is not a statement
+/// about the bus at all.
+fn parse_cycle_time(rest: &str) -> Option<(u32, f64)> {
+    let rest = rest.trim();
+    let after_name = rest.strip_prefix("\"GenMsgCycleTime\"")?.trim();
+    let mut it = after_name.split_whitespace();
+    if it.next()? != "BO_" {
+        return None;
+    }
+    let id: u32 = it.next()?.parse().ok()?;
+    let value: f64 = it.next()?.trim_end_matches(';').parse().ok()?;
+    if !value.is_finite() || value <= 0.0 {
+        return None;
+    }
+    Some((id & 0x1FFF_FFFF, value))
 }
 
 /// Parse a `SG_` body: `<Name> : <start>|<len>@<order><sign> (<factor>,<offset>) [min|max] "unit" recv`.
@@ -619,6 +663,8 @@ impl Adapter for CanDbcAdapter {
         // which produces plausible numbers, wrong in every stream at once, and otherwise
         // indistinguishable from a good read.
         let mut signal_ranges: BTreeMap<String, (f64, f64)> = BTreeMap::new();
+        // Stream name → the rate its message is specified at, from the database cycle time.
+        let mut signal_rates: BTreeMap<String, f64> = BTreeMap::new();
         let mut unknown_ids: BTreeMap<u32, u64> = BTreeMap::new();
         // Per non-multiplexed signal: how many frames of its message went past, and how many of
         // them it actually decoded from. A signal defined past the end of the frames the bus really
@@ -702,6 +748,13 @@ impl Adapter for CanDbcAdapter {
                 if let Some(range) = sig.range {
                     signal_ranges.insert(stream_name.clone(), range);
                 }
+                // The database's own timing claim about the message this signal rides on, as a
+                // rate. Every other format states one in its manifest; a DBC states it here, and
+                // reading it is what lets the rate and gap rules compare a bus against its
+                // specification rather than only against itself.
+                if let Some(ms) = message.cycle_time_ms {
+                    signal_rates.insert(stream_name.clone(), 1_000.0 / ms);
+                }
                 signal_frames.entry(stream_name).or_default().push(Frame {
                     ts: frame.ts_ns,
                     value_ref: ValueRef {
@@ -722,10 +775,11 @@ impl Adapter for CanDbcAdapter {
                     min: *min,
                     max: *max,
                 });
+                let declared_rate_hz = signal_rates.get(&name).copied();
                 Stream {
                     name,
                     modality: Modality::CanSignal,
-                    declared_rate_hz: None,
+                    declared_rate_hz,
                     declared_range,
                     clock_id: CLOCK_ID.to_string(),
                     // Real recorded timestamps: every temporal check applies.

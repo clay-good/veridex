@@ -24,7 +24,14 @@
 //!   `WheelSpeedFL` starts at bit 96 — so the finding appears at all only if the reader read past
 //!   byte eight → `STATISTICAL.SATURATED`.
 //!
-//! Usage: `cargo run -p veridex-demo --example make_demo_candbc -- <output-dir> [drive|railed-wheel]`
+//! - `off-cycle` — the same healthy drive, specified in the database at a 20 ms cycle
+//!   (`BA_ "GenMsgCycleTime" BO_ 291 20;`) and arriving every 10 ms. A DBC's cycle time is the one
+//!   timing *claim* a database makes, and it is the declared rate every other format states in its
+//!   manifest — so with it read, a message arriving at twice its specified rate is a finding
+//!   (`TEMPORAL.RATE`), where before the log was graded only against itself. It is the shape of two
+//!   nodes answering one id, or a gateway echoing what it forwards.
+//!
+//! Usage: `cargo run -p veridex-demo --example make_demo_candbc -- <output-dir> [drive|railed-wheel|off-cycle]`
 
 use std::io::Write;
 use std::path::Path;
@@ -32,7 +39,7 @@ use std::path::Path;
 use crate::{check_variant, fresh_dir, DemoError};
 
 /// Every variant [`write()`] accepts. `drive` is the default the docs show.
-pub const VARIANTS: &[&str] = &["drive", "railed-wheel"];
+pub const VARIANTS: &[&str] = &["drive", "railed-wheel", "off-cycle"];
 
 /// The measurement start the BLF header declares: 2026-01-01T00:00:00Z.
 ///
@@ -63,7 +70,14 @@ BO_ 291 PowertrainData: 24 ECU\n\
 pub fn write(dir: &Path, variant: &str) -> Result<(), DemoError> {
     check_variant(variant, VARIANTS)?;
     fresh_dir(dir)?;
-    std::fs::write(dir.join("vehicle.dbc"), DBC)?;
+    // `off-cycle` is the only variant whose *database* differs: it states the cycle time the bus is
+    // specified at, which the drive then does not meet.
+    let dbc = if variant == "off-cycle" {
+        format!("{DBC}\nBA_DEF_ BO_ \"GenMsgCycleTime\" INT 0 65535;\nBA_ \"GenMsgCycleTime\" BO_ 291 20;\n")
+    } else {
+        DBC.to_string()
+    };
+    std::fs::write(dir.join("vehicle.dbc"), dbc)?;
     std::fs::write(dir.join("drive.blf"), blf(variant))?;
     Ok(())
 }

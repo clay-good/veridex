@@ -1798,3 +1798,74 @@ fn a_gzipped_candump_log_reads_as_the_log_it_was_made_from() {
     };
     assert_eq!(hash(&plain), hash(&compressed));
 }
+
+/// The database's own timing claim, and what the drive then does about it.
+#[test]
+fn a_database_cycle_time_becomes_the_declared_rate() {
+    // A DBC states one timing fact: `GenMsgCycleTime`, how often an ECU is specified to send a
+    // message. Nothing read it, so a bus was graded only against itself — a message specified at
+    // 10 ms and arriving every 100 ms produced no finding at all, because the rate and gap rules
+    // need a declared rate and there was none.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let dbc = |attrs: &str| {
+        format!(
+            "VERSION \"\"\n\nBO_ 291 EngineData: 8 ECU\n \
+             SG_ EngineRPM : 0|16@1+ (0.25,0) [0|16383.75] \"rpm\" Vector__XXX\n{attrs}"
+        )
+    };
+    // Four frames 100 ms apart: an observed 10 Hz.
+    let log = "(1709294400.000000) can0 123#7017B80B00000000\n\
+               (1709294400.100000) can0 123#7A17BC0B00000000\n\
+               (1709294400.200000) can0 123#8D17C40B00000000\n\
+               (1709294400.300000) can0 123#9017C80B00000000\n";
+    let read = |attrs: &str| -> veridex_core::cdm::Dataset {
+        let d = dir.path().join(format!("bus{}", attrs.len()));
+        fs::create_dir_all(&d).expect("dir");
+        fs::write(d.join("vehicle.dbc"), dbc(attrs)).expect("dbc");
+        fs::write(d.join("drive.log"), log).expect("log");
+        CanDbcAdapter
+            .ingest(&Source::Local(d), &IngestOptions::default())
+            .expect("ingest")
+            .dataset
+    };
+    let rate = |d: &veridex_core::cdm::Dataset| -> Option<f64> {
+        d.episodes[0].streams[0].declared_rate_hz
+    };
+
+    // 10 ms is 100 Hz.
+    let declared = read("BA_ \"GenMsgCycleTime\" BO_ 291 10;\n");
+    assert_eq!(rate(&declared), Some(100.0));
+    // And the drive is arriving at a tenth of that, which is now a finding.
+    use veridex_core::check::Check;
+    let findings = veridex_core::checks::temporal::RateConformance {
+        relative_tolerance: 0.10,
+    }
+    .run(&declared);
+    assert_eq!(
+        findings.iter().map(|f| f.code.as_str()).collect::<Vec<_>>(),
+        ["TEMPORAL.RATE"],
+        "{findings:?}"
+    );
+
+    // No attribute: no declared rate, and the bus is graded against itself as before.
+    assert_eq!(rate(&read("")), None);
+    // An attribute this parser does not read is not a statement about the bus: a different name, a
+    // zero or negative cycle, a value that is not a number, a message id that is not in the
+    // database. None of them becomes a rate — and none becomes a *bad* rate either, which would be
+    // `TEMPORAL.INVALID_RATE` reporting a fault in a database that stated nothing wrong.
+    for attrs in [
+        "BA_ \"GenSigSendType\" BO_ 291 1;\n",
+        "BA_ \"GenMsgCycleTime\" BO_ 291 0;\n",
+        "BA_ \"GenMsgCycleTime\" BO_ 291 -5;\n",
+        "BA_ \"GenMsgCycleTime\" BO_ 291 soon;\n",
+        "BA_ \"GenMsgCycleTime\" SG_ 291 EngineRPM 10;\n",
+        "BA_ \"GenMsgCycleTime\" BO_ 999 10;\n",
+    ] {
+        assert_eq!(
+            rate(&read(attrs)),
+            None,
+            "`{}` is not a cycle time this reader can use",
+            attrs.trim()
+        );
+    }
+}
