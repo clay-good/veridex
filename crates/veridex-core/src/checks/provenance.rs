@@ -323,3 +323,338 @@ impl ProvenanceCompleteness {
         findings
     }
 }
+
+/// What a license permits a derived dataset to do — the only question Veridex asks of a license
+/// string, and it asks it mechanically.
+///
+/// Training data is a derived work: a pooled corpus, a filtered subset, a re-encoded shard. The
+/// three classes below are the terms that make that derivation conditional or impossible, and they
+/// are what an SPDX identifier or a dataset card's license slug states plainly enough to read
+/// without interpretation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LicenseTerms {
+    /// Derivation and redistribution permitted with attribution at most (MIT, Apache-2.0, BSD,
+    /// CC-BY, CC0, ODC-BY).
+    Permissive,
+    /// Derivation permitted only under the same terms (CC-BY-SA, the GPL family, ODbL, MPL, EPL).
+    ShareAlike,
+    /// Commercial use not permitted (any `-nc`).
+    NonCommercial,
+    /// Derivative works not permitted at all (any `-nd`).
+    NoDerivatives,
+}
+
+impl LicenseTerms {
+    /// How restrictive this is, so a pool's governing terms are the maximum over its sources.
+    fn rank(self) -> u8 {
+        match self {
+            LicenseTerms::Permissive => 0,
+            LicenseTerms::ShareAlike => 1,
+            LicenseTerms::NonCommercial => 2,
+            LicenseTerms::NoDerivatives => 3,
+        }
+    }
+}
+
+/// Read a license identifier's terms, or `None` for a string this table does not recognize.
+///
+/// Matched on the normalized identifier rather than on a fixed list of versions, because the
+/// condition lives in the identifier by construction: SPDX and the Hugging Face card vocabulary
+/// both spell non-commercial `-nc`, no-derivatives `-nd` and share-alike `-sa`, and a version suffix
+/// never changes which of those applies. A string that states no such term and is not one of the
+/// known permissive or copyleft families is returned unrecognized rather than guessed — a license
+/// Veridex read as permissive when it is not would be the one mistake this check must never make.
+fn license_terms(value: &str) -> Option<LicenseTerms> {
+    let norm = value.trim().to_ascii_lowercase().replace([' ', '_'], "-");
+    // The conditions, most restrictive first. `-nd` and `-nc` are matched as whole segments so a
+    // name that merely contains those letters cannot trip them.
+    let has_segment = |needle: &str| {
+        norm.split('-').any(|seg| seg == needle)
+            || norm.starts_with(&format!("{needle}-"))
+            || norm.ends_with(&format!("-{needle}"))
+    };
+    if has_segment("nd") || norm.contains("noderiv") {
+        return Some(LicenseTerms::NoDerivatives);
+    }
+    if has_segment("nc") || norm.contains("noncommercial") || norm.contains("non-commercial") {
+        return Some(LicenseTerms::NonCommercial);
+    }
+    if has_segment("sa") || norm.contains("sharealike") {
+        return Some(LicenseTerms::ShareAlike);
+    }
+    const COPYLEFT: &[&str] = &["gpl", "agpl", "lgpl", "odbl", "mpl", "epl", "cddl", "osl"];
+    const PERMISSIVE: &[&str] = &[
+        "mit",
+        "apache",
+        "bsd",
+        "cc0",
+        "cc-by",
+        "ccby",
+        "odc-by",
+        "pddl",
+        "isc",
+        "unlicense",
+        "zlib",
+        "wtfpl",
+        "public-domain",
+    ];
+    // Prefix-anchored, so `gpl-3.0` and `lgpl-2.1` resolve and a string that merely mentions a
+    // family in prose does not.
+    if COPYLEFT
+        .iter()
+        .any(|f| norm == *f || norm.starts_with(&format!("{f}-")))
+    {
+        return Some(LicenseTerms::ShareAlike);
+    }
+    if PERMISSIVE
+        .iter()
+        .any(|f| norm == *f || norm.starts_with(&format!("{f}-")))
+    {
+        return Some(LicenseTerms::Permissive);
+    }
+    None
+}
+
+/// **License compatibility across a dataset's lineage.** What the recorded licenses permit a derived
+/// dataset to do, and whether they can all be satisfied at once.
+///
+/// `provenance.completeness` asks only whether a license is *recorded*. So a `cc-by-nc-4.0` dataset
+/// and an `apache-2.0` one scored identically — one sixth of provenance coverage each — and nothing
+/// in the report said that training a commercial policy on the first is not permitted. Pooling makes
+/// it worse: training data is a derived work, so one non-commercial source governs the whole pool,
+/// and the obligation is invisible in every other output.
+///
+/// `PROVENANCE.LICENSE_NONCOMMERCIAL`, `PROVENANCE.LICENSE_NO_DERIVATIVES` and
+/// `PROVENANCE.LICENSE_SHARE_ALIKE` name the term and the license that carries it.
+/// `PROVENANCE.LICENSE_CONFLICT` fires where two or more recorded licenses cannot all be satisfied
+/// by one derived dataset — a no-derivatives source in a pool at all, a non-commercial source beside
+/// a permissive one (the pool is non-commercial, which the permissive source's users will not
+/// expect), or two different share-alike families, which require the derived work to carry two
+/// incompatible licenses at once.
+///
+/// Read from every provenance scope, so a dataset whose episodes came from different sources is
+/// judged on all of them rather than on the dataset-level record alone.
+///
+/// The three term codes are **informational**, deliberately. A license is a fact about the data, not
+/// a defect in it: a `cc-by-nc-4.0` recording is a perfectly sound dataset, and whether its terms
+/// permit the use someone has in mind is a question about that use, which Veridex does not know. A
+/// warning there would accuse an honest dataset and would move its trust score for something that is
+/// not a data-quality fault. `PROVENANCE.LICENSE_CONFLICT` *is* a warning, because terms that cannot
+/// all be satisfied at once are unsatisfiable whatever the intended use — that is a fault in how the
+/// dataset was assembled.
+///
+/// **Informational, and not legal advice.** The classification is mechanical: it reads the term out
+/// of an SPDX identifier or a dataset card's license slug and says what that term is. A license
+/// string it does not recognize is reported as unevaluated (`PROVENANCE.LICENSE_UNRECOGNIZED`)
+/// rather than assumed permissive, which is the one mistake this check must never make. Silent where
+/// no license is recorded at all: `PROVENANCE.MISSING_LICENSE` already reports that absence as a
+/// warning, so the report cannot be read as "the licensing is fine".
+pub struct LicenseCompatibility;
+
+impl Check for LicenseCompatibility {
+    fn id(&self) -> &'static str {
+        "provenance.license-compatibility"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &[
+            "PROVENANCE.LICENSE_CONFLICT",
+            "PROVENANCE.LICENSE_NONCOMMERCIAL",
+            "PROVENANCE.LICENSE_NO_DERIVATIVES",
+            "PROVENANCE.LICENSE_SHARE_ALIKE",
+            "PROVENANCE.LICENSE_UNRECOGNIZED",
+        ]
+    }
+    fn abstention_codes(&self) -> &'static [&'static str] {
+        &["PROVENANCE.LICENSE_UNRECOGNIZED"]
+    }
+    fn title(&self) -> &'static str {
+        "License compatibility"
+    }
+    fn category(&self) -> Category {
+        Category::Provenance
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Warning
+    }
+    fn scope(&self) -> Scope {
+        Scope::Dataset
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        // Every license the dataset records, in canonical order, deduplicated on the identifier as
+        // written. A pooled dataset records one per source; most datasets record one in all.
+        let mut licenses: BTreeSet<&str> = BTreeSet::new();
+        for record in &dataset.provenance {
+            for el in &record.elements {
+                if el.key == "license"
+                    && el.class != ProvenanceClass::Unknown
+                    && el.has_real_value()
+                {
+                    if let Some(v) = el.value.as_deref() {
+                        licenses.insert(v.trim());
+                    }
+                }
+            }
+        }
+        if licenses.is_empty() {
+            return Vec::new();
+        }
+
+        let mut findings = Vec::new();
+        let mut read: Vec<(&str, LicenseTerms)> = Vec::new();
+        let mut unrecognized: Vec<&str> = Vec::new();
+        for value in &licenses {
+            match license_terms(value) {
+                Some(terms) => read.push((value, terms)),
+                None => unrecognized.push(value),
+            }
+        }
+
+        // The terms themselves, one finding per license that carries a condition.
+        for (value, terms) in &read {
+            let (code, severity, what, risk) = match terms {
+                LicenseTerms::Permissive => continue,
+                LicenseTerms::ShareAlike => (
+                    "PROVENANCE.LICENSE_SHARE_ALIKE",
+                    Severity::Info,
+                    "requires a derived work to carry the same license",
+                    "A model or dataset derived from this data inherits the obligation. Teams \
+                     routinely discover it after publishing, when the derived artifact is already \
+                     out under different terms.",
+                ),
+                LicenseTerms::NonCommercial => (
+                    "PROVENANCE.LICENSE_NONCOMMERCIAL",
+                    Severity::Info,
+                    "does not permit commercial use",
+                    "Training data is a derived work, so this term reaches the policy trained on \
+                     it. Nothing else in a Veridex report distinguishes this from a permissively \
+                     licensed dataset: both record a license, and both score the same provenance \
+                     coverage.",
+                ),
+                LicenseTerms::NoDerivatives => (
+                    "PROVENANCE.LICENSE_NO_DERIVATIVES",
+                    Severity::Info,
+                    "does not permit derivative works",
+                    "A pooled corpus, a filtered subset and a re-encoded shard are all derivative \
+                     works, so this data cannot lawfully enter one at all — and a Veridex pass over \
+                     it says nothing about that today.",
+                ),
+            };
+            findings.push(
+                Finding::new(
+                    self.id(),
+                    Category::Provenance,
+                    severity,
+                    Location::Dataset,
+                    code,
+                    format!("recorded license `{value}` {what}"),
+                )
+                .with_risk(risk)
+                .with_remedy(
+                    "Confirm the intended use against the license itself before training or \
+                     redistributing. Veridex reads the term out of the identifier and reports it; \
+                     this is information, not legal advice.",
+                ),
+            );
+        }
+
+        // Whether they can all be satisfied at once. Only a dataset that records more than one
+        // license has a compatibility question to answer.
+        if read.len() > 1 {
+            let worst = read.iter().map(|(_, t)| *t).max_by_key(|t| t.rank());
+            let share_alike: Vec<&str> = read
+                .iter()
+                .filter(|(_, t)| *t == LicenseTerms::ShareAlike)
+                .map(|(v, _)| *v)
+                .collect();
+            let reason = if read.iter().any(|(_, t)| *t == LicenseTerms::NoDerivatives) {
+                Some(
+                    "a no-derivatives source cannot enter a derived dataset at all, so no terms \
+                     exist under which the pool as a whole may be used"
+                        .to_string(),
+                )
+            } else if share_alike.len() > 1 {
+                Some(format!(
+                    "`{}` each require the derived work to carry their own license, and it cannot \
+                     carry both",
+                    share_alike.join("` and `")
+                ))
+            } else if worst == Some(LicenseTerms::NonCommercial) {
+                Some(
+                    "a non-commercial source governs the whole pool, which the users of the \
+                     permissively licensed sources beside it will not expect"
+                        .to_string(),
+                )
+            } else if worst == Some(LicenseTerms::ShareAlike) {
+                Some(format!(
+                    "`{}` requires the derived work to carry its own license, which the \
+                     permissively licensed sources beside it do not state",
+                    share_alike.join("`, `")
+                ))
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                let all: Vec<&str> = read.iter().map(|(v, _)| *v).collect();
+                findings.push(
+                    Finding::new(
+                        self.id(),
+                        Category::Provenance,
+                        Severity::Warning,
+                        Location::Dataset,
+                        "PROVENANCE.LICENSE_CONFLICT",
+                        format!(
+                            "this dataset records {} different licenses (`{}`) whose terms cannot \
+                             all be satisfied by one derived dataset: {reason}",
+                            read.len(),
+                            all.join("`, `")
+                        ),
+                    )
+                    .with_risk(
+                        "A pooled dataset is a derived work of every source in it, so the strictest \
+                         source's terms govern the pool — and nothing else in a report says which \
+                         sources those were. This is how a corpus assembled from several public \
+                         datasets becomes unusable for the purpose it was assembled for.",
+                    )
+                    .with_remedy(
+                        "Separate the sources whose terms disagree, or use the pool only under the \
+                         strictest of them. Veridex reports the terms it read from the identifiers; \
+                         this is information, not legal advice.",
+                    ),
+                );
+            }
+        }
+
+        // And what was not evaluated. A license string this table does not recognize must not read
+        // as a permissive one: the silence of this check is otherwise indistinguishable from a pass.
+        if !unrecognized.is_empty() {
+            findings.push(
+                Finding::new(
+                    self.id(),
+                    Category::Provenance,
+                    Severity::Info,
+                    Location::Dataset,
+                    "PROVENANCE.LICENSE_UNRECOGNIZED",
+                    format!(
+                        "{} recorded license identifier(s) state no term this check recognizes, so \
+                         what they permit a derived dataset to do was not evaluated (`{}`)",
+                        unrecognized.len(),
+                        unrecognized.join("`, `")
+                    ),
+                )
+                .with_risk(
+                    "A clean licensing result over these is the absence of a reading, not a \
+                     judgement that the terms are permissive — which is the assumption the silence \
+                     would otherwise invite.",
+                )
+                .with_remedy(
+                    "Record the license as an SPDX identifier (`apache-2.0`, `cc-by-nc-4.0`) where \
+                     one applies, and read the terms yourself where none does.",
+                ),
+            );
+        }
+        findings
+    }
+}

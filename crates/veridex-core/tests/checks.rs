@@ -1691,7 +1691,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 49);
+    assert_eq!(verdict.executed_checks.len(), 50);
 }
 
 #[test]
@@ -7625,6 +7625,9 @@ fn every_abstention_code_in_the_catalog_is_declared_as_one() {
         "UNREAD",
         "UNFINGERPRINTED",
         "UNDECLARED",
+        // "the value was read and this check cannot classify it", which is an abstention for the
+        // same reason the rest are: the question was never answered.
+        "UNRECOGNIZED",
         // A code whose *local part begins* `NO_` says the question had nothing to be asked about:
         // `SEMANTIC.NO_TASKS`, `SEMANTIC.NO_ANNOTATIONS`, `STATISTICAL.NO_STORED_STATS`. The dot
         // matters — a bare `NO_` would also match `AUTONOMY.GNSS_NO_FIX`, which is the opposite
@@ -8012,5 +8015,162 @@ fn a_case_one_check_defers_is_reported_by_the_check_it_defers_to() {
     assert!(
         codes.iter().any(|c| c.contains("NON_FINITE")),
         "a non-finite stored bound is deferred to the non-finite rules: {codes:?}"
+    );
+}
+
+/// A dataset recording each of `licenses` as a `license` provenance element — the first at dataset
+/// scope, any further ones at episode scope, which is the shape a pooled dataset has.
+fn dataset_licensed(licenses: &[&str]) -> Dataset {
+    let mut d = dataset(
+        (0..licenses.len() as u64)
+            .map(|i| episode(i, vec![stream("s", "c", None, &[0, 1])]))
+            .collect(),
+    );
+    d.provenance = licenses
+        .iter()
+        .enumerate()
+        .map(|(i, l)| Provenance {
+            scope: if i == 0 {
+                ProvenanceScope::Dataset
+            } else {
+                ProvenanceScope::Episode(i as u64)
+            },
+            elements: vec![el("license", Some(l), ProvenanceClass::Known)],
+        })
+        .collect();
+    d
+}
+
+fn license_codes(licenses: &[&str]) -> Vec<String> {
+    use veridex_core::check::Check;
+    let d = dataset_licensed(licenses);
+    let mut codes: Vec<String> = provenance::LicenseCompatibility
+        .run(&d)
+        .into_iter()
+        .map(|f| f.code)
+        .collect();
+    codes.sort();
+    codes
+}
+
+#[test]
+fn a_permissive_license_is_silent() {
+    // The common case must stay quiet, or the finding means nothing. One permissive license, one
+    // dataset, nothing to say — and `provenance.completeness` has already counted it as covered.
+    for l in [
+        "apache-2.0",
+        "MIT",
+        "bsd-3-clause",
+        "cc0-1.0",
+        "cc-by-4.0",
+        "odc-by-1.0",
+    ] {
+        assert!(
+            license_codes(&[l]).is_empty(),
+            "`{l}` is permissive and must produce no finding"
+        );
+    }
+}
+
+#[test]
+fn a_noncommercial_license_is_reported_where_nothing_reported_it_before() {
+    // The defect this check exists for: `provenance.completeness` asks only whether a license is
+    // recorded, so this dataset and an `apache-2.0` one produced identical reports and identical
+    // provenance coverage — while a policy trained on this one may not be used commercially.
+    for l in ["cc-by-nc-4.0", "CC-BY-NC-SA-4.0", "noncommercial"] {
+        assert_eq!(
+            license_codes(&[l]),
+            ["PROVENANCE.LICENSE_NONCOMMERCIAL"],
+            "`{l}`"
+        );
+    }
+}
+
+#[test]
+fn a_no_derivatives_license_is_reported() {
+    // Training data is a derived work, so this one cannot enter a pooled corpus at all.
+    assert_eq!(
+        license_codes(&["cc-by-nd-4.0"]),
+        ["PROVENANCE.LICENSE_NO_DERIVATIVES"]
+    );
+}
+
+#[test]
+fn a_share_alike_license_is_reported_as_an_inherited_obligation() {
+    for l in ["cc-by-sa-4.0", "gpl-3.0", "odbl-1.0", "mpl-2.0"] {
+        assert_eq!(
+            license_codes(&[l]),
+            ["PROVENANCE.LICENSE_SHARE_ALIKE"],
+            "`{l}`"
+        );
+    }
+}
+
+#[test]
+fn a_license_this_check_cannot_read_is_not_assumed_permissive() {
+    // The one mistake this check must never make. A string outside the vocabulary is reported
+    // unevaluated, because its silence would otherwise be indistinguishable from a pass.
+    let codes = license_codes(&["proprietary-internal-v3"]);
+    assert_eq!(codes, ["PROVENANCE.LICENSE_UNRECOGNIZED"]);
+}
+
+#[test]
+fn no_license_at_all_is_left_to_the_completeness_check() {
+    // Silent rather than abstaining: `PROVENANCE.MISSING_LICENSE` already reports the absence, at
+    // warning severity, so the report cannot be read as "the licensing is fine".
+    assert!(license_codes(&[]).is_empty());
+    let d = dataset_licensed(&[]);
+    assert!(provenance_findings_after_full_read(&d)
+        .iter()
+        .any(|f| f.code == "PROVENANCE.MISSING_LICENSE"));
+}
+
+#[test]
+fn a_noncommercial_source_pooled_with_a_permissive_one_is_a_conflict() {
+    // The requirement this closes: a pool is a derived work of every source in it, so one
+    // non-commercial source governs all of it — and the users of the permissive source beside it
+    // will not expect that.
+    let codes = license_codes(&["apache-2.0", "cc-by-nc-4.0"]);
+    assert_eq!(
+        codes,
+        [
+            "PROVENANCE.LICENSE_CONFLICT",
+            "PROVENANCE.LICENSE_NONCOMMERCIAL"
+        ]
+    );
+}
+
+#[test]
+fn two_share_alike_families_cannot_both_be_satisfied() {
+    // The derived work would have to carry two different licenses at once.
+    let codes = license_codes(&["gpl-3.0", "cc-by-sa-4.0"]);
+    assert!(
+        codes.contains(&"PROVENANCE.LICENSE_CONFLICT".to_string()),
+        "{codes:?}"
+    );
+}
+
+#[test]
+fn two_permissive_licenses_are_not_a_conflict() {
+    // Both can be satisfied at once, so pooling them is not a finding. A check that flagged every
+    // multi-licensed dataset would be noise on the ordinary case.
+    assert!(license_codes(&["apache-2.0", "mit"]).is_empty());
+}
+
+#[test]
+fn a_conflict_is_judged_across_every_provenance_scope() {
+    // A dataset whose episodes came from different sources records one license per episode, and
+    // nothing at dataset scope. The conflict is in the lineage, not in the dataset-level record.
+    use veridex_core::check::Check;
+    let mut d = dataset_licensed(&["apache-2.0", "cc-by-nc-4.0"]);
+    d.provenance[0].scope = ProvenanceScope::Episode(0);
+    let codes: Vec<String> = provenance::LicenseCompatibility
+        .run(&d)
+        .into_iter()
+        .map(|f| f.code)
+        .collect();
+    assert!(
+        codes.contains(&"PROVENANCE.LICENSE_CONFLICT".to_string()),
+        "{codes:?}"
     );
 }

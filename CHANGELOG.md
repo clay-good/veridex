@@ -10,6 +10,32 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **What a dataset's license permits is now read, not just counted.** `provenance.completeness` asks
+  only whether a license is *recorded*. So a `cc-by-nc-4.0` dataset — the shape of a great many real
+  LeRobot datasets on the Hub — and an `apache-2.0` one produced the same report and the same
+  provenance coverage, and nothing anywhere said that a policy trained on the first may not be used
+  commercially. Training data is a derived work, so the term reaches the model.
+
+  `provenance.license-compatibility` reads the term out of the identifier.
+  `PROVENANCE.LICENSE_NONCOMMERCIAL`, `PROVENANCE.LICENSE_NO_DERIVATIVES` and
+  `PROVENANCE.LICENSE_SHARE_ALIKE` name the condition and the license that carries it, and
+  `PROVENANCE.LICENSE_CONFLICT` reports two or more recorded licenses whose terms cannot all be
+  satisfied by one derived dataset — a no-derivatives source in a pool at all, two different
+  share-alike families, or a non-commercial source beside a permissive one, which makes the whole
+  pool non-commercial. Read from every provenance scope, so a dataset whose episodes came from
+  different sources is judged on all of them.
+
+  The three term codes are **informational**, deliberately: a license is a fact about the data rather
+  than a defect in it, so a warning would accuse an honest dataset and move its trust score for
+  something that is not a data-quality fault. A string the vocabulary does not cover is reported
+  unevaluated (`PROVENANCE.LICENSE_UNRECOGNIZED`) rather than assumed permissive, which is the one
+  mistake this check must never make. Where no license is recorded at all it stays silent:
+  `PROVENANCE.MISSING_LICENSE` already reports that, as a warning. None of it is legal advice.
+
+  Closes the `provenance-lineage` spec's *License compatibility for derived datasets* requirement.
+  Proven on a new demo variant, `noncommercial-card`, whose report differs from the permissively
+  licensed one by exactly this one finding.
+
 - **A point cloud no loader can read as geometry is now caught.** A `PointCloud2` is a flat byte
   blob plus a declared per-point record, and that record — the `fields` list — is the only thing
   that says where in each point a coordinate sits and how wide it is. Veridex has carried that

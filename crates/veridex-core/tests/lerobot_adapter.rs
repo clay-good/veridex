@@ -609,7 +609,7 @@ fn lerobot_dataset_flows_through_the_full_check_pipeline() {
     let verdict = engine.run(&d, hash, &veridex_core::RunConfig::default());
 
     // Every standard check ran, none errored, and clean data yields no failing findings.
-    assert_eq!(verdict.executed_checks.len(), 49);
+    assert_eq!(verdict.executed_checks.len(), 50);
     assert!(
         verdict.errored_checks.is_empty(),
         "no check should error on a well-formed dataset"
@@ -2405,4 +2405,64 @@ fn a_video_feature_is_not_a_feature_missing_from_the_parquet() {
         .find(|s| s.name == "observation.images.top")
         .expect("the camera is still a stream");
     assert_eq!(cam.frames.len(), 3);
+}
+
+#[test]
+fn a_noncommercial_card_moves_nothing_but_the_license_reading() {
+    // The demo dataset twice, as the Hub ships both shapes: once under `apache-2.0` and once under
+    // `cc-by-nc-4.0`. The data is byte-identical.
+    //
+    // The assertion is the whole claim. Before this check, the two reports were the same report:
+    // `provenance.completeness` asks only whether a license is *recorded*, and both record one, so
+    // both scored four sixths of provenance coverage with no licensing finding at all — while a
+    // policy trained on the second may not be used commercially. Nothing else moves, because the
+    // license is the only difference between the two datasets.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let codes = |variant: &str| -> Vec<String> {
+        let root = dir.path().join(variant);
+        veridex_demo::lerobot::write(&root, variant).expect("write the demo dataset");
+        let d = veridex_core::adapter::lerobot::LeRobotAdapter
+            .ingest(
+                &veridex_core::adapter::Source::Local(root),
+                &veridex_core::adapter::IngestOptions::default(),
+            )
+            .expect("ingest")
+            .dataset;
+        let engine = veridex_core::checks::default_engine().expect("the standard catalog");
+        let hash = veridex_core::content_hash(&d);
+        let mut codes: Vec<String> = engine
+            .run(&d, hash, &veridex_core::RunConfig::default())
+            .findings
+            .into_iter()
+            .map(|f| f.code)
+            .collect();
+        codes.sort();
+        codes
+    };
+
+    let permissive = codes("clean");
+    let noncommercial = codes("noncommercial-card");
+    let added: Vec<&String> = noncommercial
+        .iter()
+        .filter(|c| !permissive.contains(c))
+        .collect();
+    let removed: Vec<&String> = permissive
+        .iter()
+        .filter(|c| !noncommercial.contains(c))
+        .collect();
+    assert_eq!(
+        added,
+        ["PROVENANCE.LICENSE_NONCOMMERCIAL"]
+            .iter()
+            .collect::<Vec<_>>(),
+        "a non-commercial card must add exactly the finding that reads its terms"
+    );
+    assert!(
+        removed.is_empty(),
+        "and must not silence anything else: {removed:?}"
+    );
+    assert!(
+        !permissive.contains(&"PROVENANCE.LICENSE_NONCOMMERCIAL".to_string()),
+        "the permissively licensed dataset must not be flagged"
+    );
 }

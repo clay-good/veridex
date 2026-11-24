@@ -109,6 +109,7 @@ pub fn standard_checks_with(t: &Tolerances) -> Vec<Box<dyn Check>> {
             fps_tolerance: t.rate_deviation,
         }),
         Box::new(provenance::ProvenanceCompleteness),
+        Box::new(provenance::LicenseCompatibility),
     ]
 }
 

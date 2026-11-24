@@ -74,7 +74,13 @@
 //! - `video-reencoded` — the videos were re-encoded at 320x240 while the manifest still declares
 //!   640x480 → `VIDEO.RESOLUTION_MISMATCH`, charged once for the stream rather than once per episode.
 //!
-//! Usage: `cargo run -p veridex-demo --example make_demo_lerobot -- <output-dir> [non-monotonic|clean|truncated|boundary|jitter|wrong-fps|short-episode|frozen-episode|duplicate|near-duplicate|saturated|spike|nan|stale-stats|corrupt-stats|confusable-keys|multi-joint|video|video-desync|video-missing|video-reencoded]`
+//! - `noncommercial-card` — the `clean` dataset under a `cc-by-nc-4.0` dataset card, which is the
+//!   shape of a great many real LeRobot datasets on the Hub. The data is well-formed and the license
+//!   is recorded, so every check passed and the provenance coverage was a permissively licensed
+//!   dataset's — while a policy trained on it may not be used commercially, and nothing said so →
+//!   `PROVENANCE.LICENSE_NONCOMMERCIAL`.
+//!
+//! Usage: `cargo run -p veridex-demo --example make_demo_lerobot -- <output-dir> [non-monotonic|clean|truncated|boundary|jitter|wrong-fps|short-episode|frozen-episode|duplicate|near-duplicate|saturated|spike|nan|stale-stats|corrupt-stats|confusable-keys|multi-joint|video|video-desync|video-missing|video-reencoded|noncommercial-card]`
 //!
 //! Then: `veridex check <output-dir>`.
 
@@ -106,6 +112,7 @@ pub const VARIANTS: &[&str] = &[
     "video-desync",
     "video-missing",
     "video-reencoded",
+    "noncommercial-card",
 ];
 use std::sync::Arc;
 
@@ -157,14 +164,30 @@ pub fn write(dir: &Path, variant: &str) -> Result<(), DemoError> {
     // would go green against data it never meant to check.
     let mode = mode_of(variant)?;
     crate::fresh_dir(dir)?;
-    write_dataset(dir, mode);
+    write_dataset(dir, mode, card_license(variant));
     Ok(())
+}
+
+/// The license the dataset card declares, which is a property of the variant rather than of the
+/// data it writes.
+///
+/// `noncommercial-card` is the shape of a great many real LeRobot datasets on the Hub: well-formed
+/// data under a `cc-by-nc-4.0` card. Veridex scored it exactly as it scored a permissive one — a
+/// license was recorded, which is all `provenance.completeness` asks — so nothing in the report said
+/// that the policy trained on it may not be used commercially.
+fn card_license(variant: &str) -> &'static str {
+    match variant {
+        "noncommercial-card" => "cc-by-nc-4.0",
+        _ => "apache-2.0",
+    }
 }
 
 /// What each variant name selects.
 fn mode_of(variant: &str) -> Result<Mode, DemoError> {
     Ok(match variant {
         "clean" => Mode::Clean,
+        // The same clean data; only the card's license differs (see `card_license`).
+        "noncommercial-card" => Mode::Clean,
         "non-monotonic" => Mode::NonMonotonic,
         "truncated" => Mode::Truncated,
         "boundary" => Mode::Boundary,
@@ -198,6 +221,14 @@ fn mode_of(variant: &str) -> Result<Mode, DemoError> {
 /// that wants to report it.
 pub fn describe(variant: &str) -> Result<&'static str, DemoError> {
     let mode = mode_of(variant)?;
+    // A variant that differs only in what the dataset *card* declares describes itself: the data it
+    // writes is the clean one, and `mode` cannot tell the two apart.
+    if variant == "noncommercial-card" {
+        return Ok(
+            "noncommercial-card (clean data under a cc-by-nc-4.0 dataset card → \
+             PROVENANCE.LICENSE_NONCOMMERCIAL)",
+        );
+    }
     let what = match mode {
         Mode::Clean => "clean (well-formed)",
         Mode::NonMonotonic => {
@@ -266,18 +297,18 @@ pub fn describe(variant: &str) -> Result<&'static str, DemoError> {
     Ok(what)
 }
 
-fn write_dataset(dir: &Path, mode: Mode) {
+fn write_dataset(dir: &Path, mode: Mode, license: &str) {
     fs::create_dir_all(dir.join("meta")).expect("create meta/");
     fs::create_dir_all(dir.join("data/chunk-000")).expect("create data/");
 
     let fps = 30.0;
     // The multi-DoF variants have their own info/parquet shape (a FixedSizeList feature).
     if mode == Mode::FrozenEpisode {
-        write_frozen_episode_dataset(dir, fps);
+        write_frozen_episode_dataset(dir, fps, license);
         return;
     }
     if mode == Mode::MultiJoint {
-        write_multijoint_dataset(dir, fps);
+        write_multijoint_dataset(dir, fps, license);
         return;
     }
     // Build the per-frame rows and the manifest's declared counts for this mode.
@@ -328,7 +359,7 @@ fn write_dataset(dir: &Path, mode: Mode) {
     )
     .expect("write info.json");
 
-    write_shared_meta(dir);
+    write_shared_meta(dir, license);
     // A real export ships its summary statistics. `stale-stats` ships one that no longer bounds the
     // data — computed before a re-record, and never refreshed.
     write_stats(
@@ -413,7 +444,7 @@ fn write_stats(dir: &Path, rows: &[DemoRow], widen: f32, invert: bool) {
 
 /// The tasks table (so the CLI resolves task strings) and a Hugging Face-style dataset card (so the
 /// adapter extracts a real license into provenance) — shared by every variant.
-fn write_shared_meta(dir: &Path) {
+fn write_shared_meta(dir: &Path, license: &str) {
     fs::write(
         dir.join("meta/tasks.jsonl"),
         serde_json::json!({ "task_index": 0, "task": "pick up the red cube" }).to_string(),
@@ -421,8 +452,10 @@ fn write_shared_meta(dir: &Path) {
     .expect("write tasks.jsonl");
     fs::write(
         dir.join("README.md"),
-        "---\nlicense: apache-2.0\ntags:\n- robotics\n- lerobot\n---\n\n# Demo dataset\n\nSynthetic \
-         LeRobot v3 data generated by `make_demo_lerobot`.\n",
+        format!(
+            "---\nlicense: {license}\ntags:\n- robotics\n- lerobot\n---\n\n# Demo dataset\n\nSynthetic \
+             LeRobot v3 data generated by `make_demo_lerobot`.\n"
+        ),
     )
     .expect("write README.md");
 }
@@ -438,7 +471,7 @@ fn write_shared_meta(dir: &Path) {
 /// is a joint at rest, and a whole arm that never moved is a recording of nothing. The other four
 /// episodes sweep values of their own, so the frozen one is a minority and no two episodes are
 /// duplicates.
-fn write_frozen_episode_dataset(dir: &Path, fps: f64) {
+fn write_frozen_episode_dataset(dir: &Path, fps: f64, license: &str) {
     const EPISODES: usize = 5;
     const FRAMES: usize = 10;
     const FROZEN: usize = 2;
@@ -456,7 +489,7 @@ fn write_frozen_episode_dataset(dir: &Path, fps: f64) {
         serde_json::to_string_pretty(&info).expect("serialize info.json"),
     )
     .expect("write info.json");
-    write_shared_meta(dir);
+    write_shared_meta(dir, license);
 
     let mut episodes: Vec<i64> = Vec::with_capacity(total);
     let mut values: Vec<f32> = Vec::with_capacity(total * 3);
@@ -513,7 +546,7 @@ fn write_frozen_episode_dataset(dir: &Path, fps: f64) {
 /// 3>`): the arm joints (dimensions 0 and 1) sweep freely while the gripper (dimension 2) sits pinned
 /// exactly at its maximum for 24 of 30 frames — a clamped actuator. `veridex check` flags
 /// `STATISTICAL.SATURATED` and names the offending dimension, which an element-0-only scan would miss.
-fn write_multijoint_dataset(dir: &Path, fps: f64) {
+fn write_multijoint_dataset(dir: &Path, fps: f64, license: &str) {
     let n = 30usize;
     let info = serde_json::json!({
         "codebase_version": "v3.0",
@@ -528,7 +561,7 @@ fn write_multijoint_dataset(dir: &Path, fps: f64) {
         serde_json::to_string_pretty(&info).expect("serialize info.json"),
     )
     .expect("write info.json");
-    write_shared_meta(dir);
+    write_shared_meta(dir, license);
 
     // Flattened 3-per-row values: [arm0, arm1, gripper]. The gripper pins at 1.0 for the first 24
     // frames, then relaxes so the stream isn't merely constant.
