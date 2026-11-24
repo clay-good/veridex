@@ -688,6 +688,46 @@ def test_cli_and_python_supersedes_agree(tmp_path):
         raise AssertionError("supersedes must refuse a certificate that does not verify")
 
 
+def test_cli_and_python_overlap_agree(tmp_path):
+    """The pooling question must give the same answer on both surfaces.
+
+    The same dataset written twice is what a corpus assembled from two sources that both
+    republished one recording looks like: each one's own report is clean, and the pool is half the
+    dataset its episode count says.
+    """
+    binary = os.environ.get("VERIDEX_BIN", "target/debug/veridex")
+    paths = []
+    for name in ("a", "b"):
+        root = tmp_path / name
+        subprocess.run(
+            [
+                "cargo", "run", "-q", "-p", "veridex-demo", "--example", "make_demo_lerobot",
+                "--", str(root), "clean",
+            ],
+            check=True,
+        )
+        paths.append(str(root))
+
+    py = json.loads(veridex.overlap(paths))
+    result = subprocess.run(
+        [binary, "overlap", *paths, "--json"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 20, f"shared episodes exit 20: {result.stderr}"
+    assert py == json.loads(result.stdout), "Python and CLI overlap must agree"
+    assert py["overlaps"] is True
+    assert py["shared_episodes"] == 2
+
+    # One dataset is not a comparison, on either surface.
+    try:
+        veridex.overlap(paths[:1])
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("overlap must refuse fewer than two datasets")
+
+
 if __name__ == "__main__":
     # Minimal runner when pytest is unavailable. Defined last, so every test above it exists.
     import tempfile

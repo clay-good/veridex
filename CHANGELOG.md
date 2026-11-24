@@ -10,6 +10,32 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **The episodes two datasets both contain.** Every check in the catalog looks inside one dataset. A
+  corpus is assembled from several, and the failure that costs a training run is not inside any of
+  them: the same recording, exported twice, arrives through two sources and is trained on twice.
+  Nothing in either dataset is wrong — each report is clean, each certificate verifies — and the
+  pooled corpus is a smaller dataset than its episode count says, weighted toward whatever was
+  duplicated. That is the redundancy the README's opening claim is about, and no per-dataset verdict
+  could see it.
+
+  `veridex overlap a/ b/ c/` reports it, from the content signature `structural.duplicate-episode`
+  already uses — the same one, so the within-dataset check and this agree by construction. It exits
+  0 when nothing is shared and 20 when something is, so a pipeline can gate a new source against the
+  corpus it is about to join in one line; `--json` and `veridex.overlap([paths])` give the same
+  document byte for byte.
+
+  What it will and will not claim is stated in the output, not left to be assumed. **Exact matches
+  only**: a re-export that recomputed its statistics or re-encoded its video is the same recording
+  and is not reported, because the signature covers those fields.
+  **An episode nobody can fingerprint is excluded, counted and named** — two episodes nobody can
+  fingerprint are not thereby the same recording, which is the finding this comparison would
+  otherwise invent on every format that stores its pixels out of band. **Duplication inside one
+  dataset is not pooling**, since every `veridex check` already answers that; where a group does span
+  two datasets every member is listed, including any in the same one. And `--metadata-only` and the
+  sampling flags are refused by name rather than answered misleadingly: a fingerprint comes from a
+  frame, and a sampled read would report the episodes two samples happened to share.
+  [docs/pooling.md](docs/pooling.md) is the page.
+
 - **A recording made in a simulator now says so.** A ROS node started with `use_sim_time` takes its
   clock from a `rosgraph_msgs/Clock` publisher instead of the system clock, and every other node in
   that graph does the same — so a recording carrying a clock channel was made on a simulator's clock.

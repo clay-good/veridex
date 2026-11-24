@@ -3686,3 +3686,81 @@ fn supersedes_demands_a_trust_decision_and_refuses_an_unverifiable_document() {
     ]);
     assert_eq!(code, 2, "{stderr}");
 }
+
+// ---------------------------------------------------------------------------
+// `veridex overlap` — episodes two datasets both contain.
+// ---------------------------------------------------------------------------
+
+/// Write the LeRobot demo `variant` into `dir`, and return its path as a string.
+fn lerobot_demo(dir: &std::path::Path, variant: &str) -> String {
+    let root = dir.join(variant);
+    veridex_demo::lerobot::write(&root, variant).expect("write the demo dataset");
+    root.to_str().expect("path").to_string()
+}
+
+#[test]
+fn overlap_reports_the_episodes_two_datasets_both_contain() {
+    // The same dataset exported twice, which is what a corpus assembled from two sources that both
+    // republished one recording looks like. Each one's own `check` is clean — nothing inside either
+    // is wrong — and the pooled corpus is half the dataset its episode count says.
+    let dir = temp_dir("overlap");
+    let a = lerobot_demo(&dir, "clean");
+    let b = {
+        let root = dir.join("clean-copy");
+        veridex_demo::lerobot::write(&root, "clean").expect("write the demo dataset");
+        root.to_str().expect("path").to_string()
+    };
+
+    let (code, stdout, stderr) = run(&["overlap", &a, &b]);
+    assert_eq!(code, 20, "shared episodes exit 20: {stdout}{stderr}");
+    assert!(stdout.contains("SHARED EPISODES"), "{stdout}");
+    assert!(
+        stdout.contains("2 episode(s) in 1 group(s)") || stdout.contains("group(s)"),
+        "{stdout}"
+    );
+    // Each side is named by the path the caller gave, and each member by its own episode index.
+    assert!(stdout.contains("episode 0 = "), "{stdout}");
+    // The limit is stated rather than left for the reader to assume.
+    assert!(stdout.contains("Exact matches only"), "{stdout}");
+
+    let (code, stdout, _) = run(&["overlap", &a, &b, "--json"]);
+    assert_eq!(code, 20);
+    let doc: serde_json::Value = serde_json::from_str(&stdout).expect("json");
+    assert_eq!(doc["schema"], "veridex.overlap/1");
+    assert_eq!(doc["overlaps"], true);
+    assert_eq!(doc["shared"][0]["members"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn overlap_is_silent_and_exits_zero_on_datasets_that_share_nothing() {
+    // The gate a pipeline actually runs: this new source is not already in the corpus.
+    let dir = temp_dir("overlap-clean");
+    let a = lerobot_demo(&dir, "clean");
+    let b = lerobot_demo(&dir, "saturated");
+    let (code, stdout, stderr) = run(&["overlap", &a, &b]);
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    assert!(stdout.contains("NO SHARED EPISODES"), "{stdout}");
+}
+
+#[test]
+fn overlap_refuses_the_requests_it_cannot_honestly_answer() {
+    let dir = temp_dir("overlap-refuse");
+    let a = lerobot_demo(&dir, "clean");
+
+    // One dataset is not a comparison.
+    let (code, _, stderr) = run(&["overlap", &a]);
+    assert_eq!(code, 2, "{stderr}");
+    assert!(stderr.contains("two or more datasets"), "{stderr}");
+
+    // A content fingerprint comes from a frame, so a metadata-only run has nothing to compare —
+    // and would report every episode as uncomparable, which reads as an answer. The flag is not in
+    // this command's table, so it is refused by name rather than honoured into a useless report.
+    let (code, _, stderr) = run(&["overlap", &a, &a, "--metadata-only"]);
+    assert_eq!(code, 2, "{stderr}");
+    assert!(stderr.contains("--metadata-only"), "{stderr}");
+
+    // A sampled read would report the episodes two samples happen to share, for the same reason.
+    let (code, _, stderr) = run(&["overlap", &a, &a, "--sample-episodes", "1"]);
+    assert_eq!(code, 2, "{stderr}");
+    assert!(stderr.contains("--sample-episodes"), "{stderr}");
+}

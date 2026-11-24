@@ -54,6 +54,11 @@ readiness = json.loads(
 )["readiness"]
 print(readiness["ready"], [c["check_id"] for c in readiness["criteria"]])
 
+# Pooling two sources? `overlap` reports the episodes they both contain — the question `check`
+# cannot answer, because every check looks inside one dataset (same as `veridex overlap`).
+pool = json.loads(veridex.overlap(["source-a", "source-b"]))
+print(pool["overlaps"], pool["shared_episodes"])
+
 # Re-certified after a re-record? `supersedes` says which of two certificates describes the dataset
 # now (same as `veridex supersedes`). Both are verified first; a supersession is not a revocation.
 relation = json.loads(

@@ -621,6 +621,49 @@ fn supersedes(
     ))
 }
 
+/// `veridex.overlap(paths, format=None) -> str`
+///
+/// Compare two or more datasets and return the machine-readable summary
+/// (`{schema, overlaps, shared_episodes, uncomparable_episodes, datasets, shared}`) as a JSON
+/// string, byte-identical to `veridex overlap --json`. Inputs are dataset paths, as `check` takes.
+///
+/// The question `check` cannot answer, because every check looks inside one dataset: the same
+/// recording, exported twice, arrives through two sources and is trained on twice. Exact matches
+/// only — a re-export that recomputed its statistics is the same recording and is not reported.
+///
+/// Raises `ValueError` for fewer than two paths, or when any of them cannot be ingested.
+#[pyfunction]
+#[pyo3(signature = (paths, format=None))]
+fn overlap(paths: Vec<String>, format: Option<&str>) -> PyResult<String> {
+    if paths.len() < 2 {
+        return Err(PyValueError::new_err(
+            "overlap compares two or more datasets: pass at least two paths",
+        ));
+    }
+    let registry = veridex_core::default_registry();
+    let opts = IngestOptions::default();
+    let mut ingested = Vec::with_capacity(paths.len());
+    for path in &paths {
+        let source = source_for(path);
+        let one = match format {
+            Some(fmt) => registry.ingest_as(fmt, &source, &opts),
+            None => registry.ingest(&source, &opts),
+        }
+        .map_err(to_py_err)?;
+        ingested.push((path.clone(), one));
+    }
+    let sources: Vec<veridex_core::overlap::Source<'_>> = ingested
+        .iter()
+        .map(|(name, i)| veridex_core::overlap::Source {
+            name: name.clone(),
+            dataset: &i.dataset,
+        })
+        .collect();
+    Ok(veridex_core::overlap::render_overlap_json(
+        &veridex_core::overlap::overlap(&sources),
+    ))
+}
+
 /// `veridex.diff(old_report_json, new_report_json) -> str`
 ///
 /// Diff two `veridex check --json` reports and return the machine-readable summary
@@ -881,6 +924,7 @@ fn veridex(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(certify, m)?)?;
     m.add_function(wrap_pyfunction!(verify, m)?)?;
     m.add_function(wrap_pyfunction!(supersedes, m)?)?;
+    m.add_function(wrap_pyfunction!(overlap, m)?)?;
     m.add_function(wrap_pyfunction!(version, m)?)?;
     Ok(())
 }

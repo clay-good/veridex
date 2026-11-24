@@ -46,6 +46,10 @@ const COMMANDS: &[(&str, &str)] = &[
         "compare two check reports (--json for machine output)",
     ),
     (
+        "overlap",
+        "find episodes two or more datasets both contain, before pooling them (--json; reads frames, so no --metadata-only and no sampling)",
+    ),
+    (
         "provenance",
         "emit extracted provenance (--emit croissant|prov)",
     ),
@@ -73,6 +77,7 @@ const COMMANDS: &[(&str, &str)] = &[
 ];
 
 /// Parsed command line for the data-consuming commands.
+#[derive(Clone)]
 struct Args {
     path: Option<String>,
     format: Option<String>,
@@ -250,6 +255,11 @@ const COMMAND_FLAGS: &[(&str, &[&[&str]], &str)] = &[
         "supersedes",
         &[&["--json", "--key", "--allow-any-issuer"]],
         "<earlier.json> <later.json> --key <public>",
+    ),
+    (
+        "overlap",
+        &[&["--json", "--format"], INGEST_FLAGS],
+        "<dataset-a> <dataset-b> [<dataset-c> …]",
     ),
     (
         "attest",
@@ -535,6 +545,7 @@ fn main() -> ExitCode {
         Some("certify") => cmd_certify(&args[1..]),
         Some("verify") => cmd_verify(&args[1..]),
         Some("supersedes") => cmd_supersedes(&args[1..]),
+        Some("overlap") => cmd_overlap(&args[1..]),
         Some("keygen") => cmd_keygen(&args[1..]),
         Some("diff") => cmd_diff(&args[1..]),
         Some("watch") => cmd_watch(&args[1..]),
@@ -3077,6 +3088,7 @@ fn exit_codes_for(command: &str) -> &'static str {
         "check" | "certify" | "watch" => "0 pass · 10 pass-with-warnings · 20 fail · 2 tool-error",
         "diff" => "0 no regression · 20 regression (with --fail-on-regression) · 2 tool-error",
         "supersedes" => "0 supersedes · 20 does not supersede · 2 tool-error",
+        "overlap" => "0 no shared episodes · 20 shared episodes · 2 tool-error",
         // Everything else does its own job or cannot: rendering a label, reading a manifest, writing
         // a keypair. The dataset's verdict is not this command's answer.
         _ => "0 success · 2 tool-error",
@@ -3210,6 +3222,65 @@ fn cmd_supersedes(rest: &[String]) -> ExitCode {
         ExitCode::SUCCESS
     } else {
         ExitCode::from(EXIT_FAIL)
+    }
+}
+
+/// `veridex overlap <a> <b> [<c> …]` — episodes two or more datasets both contain.
+///
+/// The question every `check` leaves unanswered, because every check looks inside one dataset: the
+/// same recording, exported twice, arrives through two sources and is trained on twice. Each
+/// dataset's own report is clean, each certificate verifies, and the pooled corpus is a smaller
+/// dataset than its episode count says. Exits `EXIT_FAIL` when any episode is shared, so a pipeline
+/// can gate a new source against the corpus it is about to join.
+fn cmd_overlap(rest: &[String]) -> ExitCode {
+    let args = match parse_args_or_exit(rest) {
+        Ok(a) => a,
+        Err(code) => return code,
+    };
+    if let Err(code) = reject_flags_except("overlap", &args) {
+        return code;
+    }
+    if args.positionals.len() < 2 {
+        eprintln!(
+            "veridex: overlap compares two or more datasets: veridex overlap <dataset-a> \
+             <dataset-b> [<dataset-c> …]"
+        );
+        return ExitCode::from(EXIT_TOOL_ERROR);
+    }
+    // `--metadata-only` and the sampling flags are not in this command's flag table, so the shared
+    // validator above has already refused them by name. Both would be answerable-looking and wrong:
+    // a content fingerprint comes from a frame, so a run that opened no payload would report every
+    // episode as uncomparable, and a sampled read would report the episodes two samples happen to
+    // share.
+
+    // Ingest each dataset in turn, under the name the caller gave it.
+    let mut ingested: Vec<(String, veridex_core::Ingested)> = Vec::new();
+    for path in &args.positionals {
+        let mut one = args.clone();
+        one.path = Some(path.clone());
+        one.positionals = vec![path.clone()];
+        match ingest(&one) {
+            Ok(i) => ingested.push((path.clone(), i)),
+            Err(code) => return code,
+        }
+    }
+    let sources: Vec<veridex_core::overlap::Source<'_>> = ingested
+        .iter()
+        .map(|(name, i)| veridex_core::overlap::Source {
+            name: name.clone(),
+            dataset: &i.dataset,
+        })
+        .collect();
+    let report = veridex_core::overlap::overlap(&sources);
+    if args.json {
+        println!("{}", veridex_core::overlap::render_overlap_json(&report));
+    } else {
+        print!("{}", veridex_core::overlap::render_overlap(&report));
+    }
+    if report.overlaps() {
+        ExitCode::from(EXIT_FAIL)
+    } else {
+        ExitCode::SUCCESS
     }
 }
 

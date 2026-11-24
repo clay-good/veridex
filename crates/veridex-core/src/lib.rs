@@ -39,6 +39,7 @@ pub mod effective;
 pub mod emit;
 pub mod engine;
 pub mod media;
+pub mod overlap;
 pub mod pipeline;
 pub mod profile;
 pub mod redact;
