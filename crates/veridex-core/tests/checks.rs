@@ -1691,7 +1691,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 48);
+    assert_eq!(verdict.executed_checks.len(), 49);
 }
 
 #[test]

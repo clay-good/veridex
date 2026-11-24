@@ -772,26 +772,164 @@ fn build_mcap_one_shot(channels: &[(&str, &str, Vec<u8>)]) -> Vec<u8> {
 /// as a real count, so a fixture that stops after the fields is not a `PointCloud2` and must not be
 /// used to prove anything about counts.
 fn point_cloud2(height: u32, width: u32) -> Vec<u8> {
-    const POINT_STEP: u32 = 16; // x, y, z, intensity as float32
+    point_cloud2_record(
+        height,
+        width,
+        &[("x", 7), ("y", 7), ("z", 7), ("intensity", 7)],
+    )
+}
+
+/// The same `PointCloud2`, with the per-point record spelled out: `(name, datatype)` per field, each
+/// four bytes wide and laid out in order. Lets a test write the layouts a real publisher gets wrong
+/// — the coordinates under another spelling, a datatype outside the eight the message defines, one
+/// name used twice — without touching anything else about the message.
+fn point_cloud2_record(height: u32, width: u32, fields: &[(&str, u8)]) -> Vec<u8> {
+    let point_step: u32 = 4 * fields.len() as u32;
     let mut pc = Cdr::new();
     pc.header("lidar");
     pc.u32(height);
     pc.u32(width);
-    pc.u32(4);
-    for (i, name) in ["x", "y", "z", "intensity"].iter().enumerate() {
+    pc.u32(fields.len() as u32);
+    for (i, (name, datatype)) in fields.iter().enumerate() {
         pc.string(name);
         pc.u32(i as u32 * 4);
-        pc.u8(7); // FLOAT32
+        pc.u8(*datatype);
         pc.u32(1);
     }
     pc.u8(0); // is_bigendian
-    pc.u32(POINT_STEP);
-    let row_step = POINT_STEP * width;
+    pc.u32(point_step);
+    let row_step = point_step * width;
     pc.u32(row_step);
     let data_len = row_step * height;
     pc.u32(data_len);
     pc.buf.resize(pc.buf.len() + data_len as usize, 0);
     pc.buf
+}
+
+/// Runs the standard catalog over an MCAP holding `n` copies of one `PointCloud2` body, and returns
+/// the findings. Every layout test needs the same four lines, and the point of each is the real
+/// adapter plus the real engine: the claim is that everything *else* passes on these clouds.
+fn layout_findings(body: Vec<u8>, copies: usize) -> Vec<veridex_core::check::Finding> {
+    let messages: Vec<_> = (0..copies)
+        .map(|_| ("sensor_msgs/msg/PointCloud2", "/lidar/points", body.clone()))
+        .collect();
+    let bytes = build_mcap_one_shot(&messages);
+    let path = write_temp_mcap(&bytes);
+    let d = McapAdapter
+        .ingest(
+            &Source::Local(path.to_path_buf()),
+            &IngestOptions::default(),
+        )
+        .expect("ingest")
+        .dataset;
+    let engine = veridex_core::checks::default_engine().expect("the standard catalog");
+    let hash = veridex_core::content_hash(&d);
+    engine
+        .run(&d, hash, &veridex_core::RunConfig::default())
+        .findings
+}
+
+#[test]
+fn a_cloud_whose_coordinates_are_not_named_x_y_z_is_caught_end_to_end() {
+    // A publisher that spelled the coordinate fields `X`, `Y`, `Z`. The cloud is well-formed in
+    // every other respect — the stride covers the record, the payload is the length it declares,
+    // every sweep carries its thousand points at the sensor's cadence — so the density check, the
+    // decode check and both timing families pass, and before this check nothing in the report
+    // mentioned that no loader can find the geometry.
+    let findings = layout_findings(
+        point_cloud2_record(1, 1000, &[("X", 7), ("Y", 7), ("Z", 7), ("intensity", 7)]),
+        2,
+    );
+    let geom: Vec<_> = findings
+        .iter()
+        .filter(|f| f.code == "AUTONOMY.POINT_CLOUD_NO_GEOMETRY")
+        .collect();
+    assert_eq!(geom.len(), 1, "{findings:?}");
+    let msg = &geom[0].message;
+    assert!(msg.contains("/lidar/points"), "{msg}");
+    // The cause, named: the data is there under another spelling, which is a republish rather than
+    // a re-record.
+    assert!(msg.contains("`X`, `Y`, `Z`"), "{msg}");
+    // And the point of the check: the clouds themselves are healthy, so nothing else says anything.
+    assert!(
+        !findings
+            .iter()
+            .any(|f| f.code.starts_with("AUTONOMY.POINT_CLOUD_EMPTY")
+                || f.code == "AUTONOMY.POINT_CLOUD_UNMEASURED"),
+        "{findings:?}"
+    );
+}
+
+#[test]
+fn a_cloud_field_with_a_datatype_nothing_can_size_is_caught_end_to_end() {
+    // `PointField.datatype` of 9 — outside the eight the message defines. The coordinates are named
+    // correctly and the payload is present; what is unreadable is the record's own width, so the
+    // bytes cannot be split into points at all. The point-count decoder already declined such a
+    // body (it cannot compute the stride either), which left the density family abstaining with no
+    // stated cause; this is the finding that states it.
+    let findings = layout_findings(
+        point_cloud2_record(1, 1000, &[("x", 7), ("y", 7), ("z", 9)]),
+        2,
+    );
+    let untyped: Vec<_> = findings
+        .iter()
+        .filter(|f| f.code == "AUTONOMY.POINT_CLOUD_FIELD_UNTYPED")
+        .collect();
+    assert_eq!(untyped.len(), 1, "{findings:?}");
+    assert!(untyped[0].message.contains("`z`"), "{}", untyped[0].message);
+    // The geometry is named, so the record is not accused of missing it.
+    assert!(
+        !findings
+            .iter()
+            .any(|f| f.code == "AUTONOMY.POINT_CLOUD_NO_GEOMETRY"),
+        "{findings:?}"
+    );
+}
+
+#[test]
+fn a_cloud_that_declares_one_field_twice_is_caught_end_to_end() {
+    // Two `intensity` fields in one record. Both are inside the stride and neither overlaps the
+    // other, so the message satisfies every invariant the point-count decoder checks and the cloud
+    // reads as healthy — while a consumer resolving `intensity` by name reaches one of the two
+    // columns and cannot address the other, and which one is up to the library.
+    let findings = layout_findings(
+        point_cloud2_record(
+            1,
+            1000,
+            &[
+                ("x", 7),
+                ("y", 7),
+                ("z", 7),
+                ("intensity", 7),
+                ("intensity", 7),
+            ],
+        ),
+        2,
+    );
+    let dup: Vec<_> = findings
+        .iter()
+        .filter(|f| f.code == "AUTONOMY.POINT_CLOUD_DUPLICATE_FIELD")
+        .collect();
+    assert_eq!(dup.len(), 1, "{findings:?}");
+    assert!(dup[0].message.contains("`intensity`"), "{}", dup[0].message);
+    assert_eq!(dup[0].severity, veridex_core::check::Severity::Warning);
+}
+
+#[test]
+fn a_cloud_that_declares_no_point_record_at_all_is_caught_end_to_end() {
+    // `fields` of length zero: a publisher that filled in the dimensions and the payload and never
+    // described what a point is. The bytes are there and nothing can be read out of them.
+    let findings = layout_findings(point_cloud2_record(1, 0, &[]), 2);
+    let geom: Vec<_> = findings
+        .iter()
+        .filter(|f| f.code == "AUTONOMY.POINT_CLOUD_NO_GEOMETRY")
+        .collect();
+    assert_eq!(geom.len(), 1, "{findings:?}");
+    assert!(
+        geom[0].message.contains("declares no fields at all"),
+        "{}",
+        geom[0].message
+    );
 }
 
 #[test]
@@ -3581,6 +3719,66 @@ fn a_receiver_that_lost_the_sky_moves_nothing_but_its_own_status() {
     );
     assert!(
         !healthy.contains(&"AUTONOMY.GNSS_NO_FIX".to_string()),
+        "the healthy rig must not be flagged"
+    );
+}
+
+#[test]
+fn a_cloud_that_names_its_coordinates_wrong_moves_nothing_but_the_layout() {
+    // The demo rig twice: as recorded, and with a LiDAR publisher that spelled the coordinate
+    // fields `X`, `Y`, `Z`.
+    //
+    // The assertion is the whole claim. The two reports differ by exactly one finding, because the
+    // mislabelled record leaves no trace anywhere else: every sweep is well-formed and full of its
+    // thousand points, so the density rules count a healthy sensor, every body decodes, the stride
+    // and the payload are a healthy sweep's, the messages arrive on the sensor's cadence so rate,
+    // gap, jitter, rig sync and the start/end offsets all pass, and the transform tree places the
+    // LiDAR exactly where it was. Before this check, a rig whose point clouds no loader can read as
+    // geometry was, in a report, identical to one whose clouds it can — and certified
+    // `world-model-ready` on them.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let codes = |variant: &str| -> Vec<String> {
+        let path = dir.path().join(format!("{variant}.mcap"));
+        veridex_demo::mcap::write(&path, variant).expect("write the demo rig");
+        let d = McapAdapter
+            .ingest(&Source::Local(path), &IngestOptions::default())
+            .expect("ingest")
+            .dataset;
+        let engine = veridex_core::checks::default_engine().expect("the standard catalog");
+        let hash = veridex_core::content_hash(&d);
+        let mut codes: Vec<String> = engine
+            .run(&d, hash, &veridex_core::RunConfig::default())
+            .findings
+            .into_iter()
+            .map(|f| f.code)
+            .collect();
+        codes.sort();
+        codes
+    };
+
+    let healthy = codes("av");
+    let mislabelled = codes("av-mislabelled-cloud");
+    let added: Vec<&String> = mislabelled
+        .iter()
+        .filter(|c| !healthy.contains(c))
+        .collect();
+    let removed: Vec<&String> = healthy
+        .iter()
+        .filter(|c| !mislabelled.contains(c))
+        .collect();
+    assert_eq!(
+        added,
+        ["AUTONOMY.POINT_CLOUD_NO_GEOMETRY"]
+            .iter()
+            .collect::<Vec<_>>(),
+        "a record that does not name the coordinates must add exactly the finding that says so"
+    );
+    assert!(
+        removed.is_empty(),
+        "and must not silence anything else: {removed:?}"
+    );
+    assert!(
+        !healthy.contains(&"AUTONOMY.POINT_CLOUD_NO_GEOMETRY".to_string()),
         "the healthy rig must not be flagged"
     );
 }

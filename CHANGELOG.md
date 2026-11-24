@@ -10,6 +10,30 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A point cloud no loader can read as geometry is now caught.** A `PointCloud2` is a flat byte
+  blob plus a declared per-point record, and that record — the `fields` list — is the only thing
+  that says where in each point a coordinate sits and how wide it is. Veridex has carried that
+  layout in the CDM since the first autonomy slice, and in the content hash, and no check read it.
+  So every way a layout can be wrong passed: the sweeps arrive on the sensor's cadence, each one
+  carries its full thousand points, every body decodes, the transform tree places the sensor, and
+  the rig certifies as `world-model-ready` on clouds nothing can turn into geometry.
+
+  `autonomy.point-cloud-layout` grades the record itself.
+  `AUTONOMY.POINT_CLOUD_NO_GEOMETRY` reports a record that does not carry all of `x`, `y` and `z` —
+  the names every consumer resolves the coordinates by (`pcl::fromROSMsg`, `ros_numpy`, `open3d`) —
+  and where the coordinates are present under another case it names that spelling, because the
+  remedy is then a republish rather than a re-record. `AUTONOMY.POINT_CLOUD_FIELD_UNTYPED` reports a
+  datatype outside the eight the message defines: one such field makes the whole record unreadable
+  rather than one column of it, since every field's extent is computed from a datatype width. And
+  `AUTONOMY.POINT_CLOUD_DUPLICATE_FIELD` reports one name used twice, where a consumer resolving the
+  field by name reaches one of the two columns and which one is implementation-defined — so two
+  tools reading the same cloud can read different columns and neither reports a problem.
+
+  A twelfth `world-model-ready` criterion, because a cloud whose record does not name the
+  coordinates satisfies every one of the other eleven. Proven on a new demo variant,
+  `av-mislabelled-cloud`: the same five-sensor rig with its LiDAR's fields spelled `X`, `Y`, `Z`,
+  whose report differs from the healthy rig's by exactly this one finding.
+
 - **One video feature no longer disables duplicate detection across a whole dataset.**
   `structural.duplicate-episode` proves duplication from per-frame content hashes, and it required
   *every* frame of *every* stream of an episode to carry one. A LeRobot video feature's pixels live

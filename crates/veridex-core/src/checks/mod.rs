@@ -81,6 +81,7 @@ pub fn standard_checks_with(t: &Tolerances) -> Vec<Box<dyn Check>> {
         Box::new(autonomy::CalibrationCompleteness),
         Box::new(autonomy::SensorFrameResolution),
         Box::new(autonomy::PointCloudDensity),
+        Box::new(autonomy::PointCloudLayout),
         Box::new(autonomy::ImageIntegrity),
         Box::new(autonomy::MessageBodyDecode),
         Box::new(autonomy::SensorClock {

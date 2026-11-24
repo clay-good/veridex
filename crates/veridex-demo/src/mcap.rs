@@ -112,7 +112,15 @@
 //!   coordinates — `autonomy.gnss-plausibility` passes on them. Only the status byte says four
 //!   fifths of the trajectory is not measured → `AUTONOMY.GNSS_NO_FIX`.
 //!
-//! Usage: `cargo run -p veridex-demo --example make_demo_mcap -- <output.mcap> [skew|clean|stuck|late-start|av|av-miscalibrated|av-ambiguous-tf|av-dead-lidar|av-dead-camera|av-ego-jump|av-null-island|av-truncated-lidar|av-corrupt-bodies|av-split-rig|av-unstamped|av-uncalibrated-camera|av-lossy-camera|av-no-fix]`
+//! - `av-mislabelled-cloud` — the same rig whose LiDAR publisher named the coordinate fields `X`,
+//!   `Y`, `Z`. Every sweep is well-formed, full of its thousand points, on time and in the right
+//!   frame; the record layout is the only thing that changed, and it is the only thing that says
+//!   where in a point the coordinates sit. Every consumer resolves them by the lower-case names, so
+//!   nothing can read the geometry — while the density check counts a healthy sensor, the decode
+//!   check reads every body, and the frame checks place the LiDAR in the tree →
+//!   `AUTONOMY.POINT_CLOUD_NO_GEOMETRY` is the only thing that reports it.
+//!
+//! Usage: `cargo run -p veridex-demo --example make_demo_mcap -- <output.mcap> [skew|clean|stuck|late-start|av|av-miscalibrated|av-ambiguous-tf|av-dead-lidar|av-dead-camera|av-ego-jump|av-null-island|av-truncated-lidar|av-corrupt-bodies|av-split-rig|av-unstamped|av-uncalibrated-camera|av-lossy-camera|av-no-fix|av-mislabelled-cloud]`
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
@@ -140,6 +148,7 @@ pub const VARIANTS: &[&str] = &[
     "av-uncalibrated-camera",
     "av-lossy-camera",
     "av-no-fix",
+    "av-mislabelled-cloud",
 ];
 
 /// Write the demo MCAP recording to `path`, replacing anything already there.
@@ -194,6 +203,10 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
     // `av-no-fix` is the same rig with a receiver that lost the sky partway through and stamped every
     // message after it `STATUS_NO_FIX`, while still publishing the last position it had.
     let no_fix = variant == "av-no-fix";
+    // `av-mislabelled-cloud` is the same rig whose LiDAR publisher spelled the coordinate fields
+    // `X`, `Y`, `Z`. The clouds are full and on time; only the record layout — the one thing that
+    // says where a coordinate sits in a point — names them something no consumer looks up.
+    let mislabelled_cloud = variant == "av-mislabelled-cloud";
     let av = variant == "av"
         || miscalibrated
         || ambiguous_tf
@@ -207,7 +220,8 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
         || unstamped_lidar
         || uncalibrated_camera
         || lossy_camera
-        || no_fix;
+        || no_fix
+        || mislabelled_cloud;
 
     let mut buf = Vec::new();
     {
@@ -230,6 +244,7 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
                     uncalibrated_camera,
                     lossy_camera,
                     no_fix,
+                    mislabelled_cloud,
                 },
             );
         } else {
@@ -444,6 +459,7 @@ struct RigFaults {
     uncalibrated_camera: bool,
     lossy_camera: bool,
     no_fix: bool,
+    mislabelled_cloud: bool,
 }
 
 /// sensor spans ~1.0 s from a shared start except the IMU, whose span is deliberately cut to ~0.70 s
@@ -464,6 +480,7 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(w: &mut mcap::Writer<W>, faul
         uncalibrated_camera,
         lossy_camera,
         no_fix,
+        mislabelled_cloud,
     } = faults;
     // (schema, topic, message count, inter-message interval ns, coordinate frame). The IMU runs the
     // same 100 msg count as a healthy 100 Hz sensor but at a compressed 7 ms interval, so it finishes
@@ -687,7 +704,8 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(w: &mut mcap::Writer<W>, faul
                 // The `av-unstamped` fault: a driver that publishes the epoch instead of the time it
                 // sampled. Nothing else about the message changes, which is the point.
                 let cloud_stamp = if unstamped_lidar { 0 } else { stamp };
-                let mut body = point_cloud2_body(frame_id, points, i as u32, cloud_stamp);
+                let mut body =
+                    point_cloud2_body(frame_id, points, i as u32, cloud_stamp, mislabelled_cloud);
                 // The `av-truncated-lidar` fault: the body is cut short of the payload its own
                 // header declares, which is what a recording that lost bytes leaves behind. One
                 // sweep in five survives, so the stream still yields counts — the case where a
@@ -980,7 +998,13 @@ fn camera_info_body(frame_id: &str, stamp_ns: u64, uncalibrated: bool) -> Vec<u8
 ///
 /// A `width` of 0 is an organized-cloud-shaped message holding nothing, which is what a driver that
 /// lost its sensor publishes: it keeps the schema, the rate and the frame of a working LiDAR.
-fn point_cloud2_body(frame_id: &str, width: u32, seed: u32, stamp_ns: u64) -> Vec<u8> {
+fn point_cloud2_body(
+    frame_id: &str,
+    width: u32,
+    seed: u32,
+    stamp_ns: u64,
+    mislabelled: bool,
+) -> Vec<u8> {
     const POINT_STEP: u32 = 16; // x, y, z, intensity as float32
     let mut buf: Vec<u8> = vec![0x00, 0x01, 0x00, 0x00]; // encapsulation: CDR_LE
     let align = |buf: &mut Vec<u8>, n: usize| {
@@ -1004,7 +1028,15 @@ fn point_cloud2_body(frame_id: &str, width: u32, seed: u32, stamp_ns: u64) -> Ve
     u32v(&mut buf, 1); // height — an unorganized sweep is one row
     u32v(&mut buf, width);
     u32v(&mut buf, 4); // fields
-    for (i, name) in ["x", "y", "z", "intensity"].iter().enumerate() {
+                       // The `av-mislabelled-cloud` fault: the same record, with the coordinates spelled in upper
+                       // case. Nothing else about the message changes — the stride, the payload and the point count are
+                       // a healthy sweep's — and no consumer resolving `x`/`y`/`z` by name finds anything.
+    let names: [&str; 4] = if mislabelled {
+        ["X", "Y", "Z", "intensity"]
+    } else {
+        ["x", "y", "z", "intensity"]
+    };
+    for (i, name) in names.iter().enumerate() {
         strv(&mut buf, name);
         u32v(&mut buf, i as u32 * 4); // offset
         buf.push(7); // datatype: FLOAT32

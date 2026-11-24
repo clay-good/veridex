@@ -2329,6 +2329,238 @@ impl Check for PointCloudDensity {
     }
 }
 
+/// **Point-cloud record layout.** Whether a cloud's points can be read at all.
+///
+/// A `PointCloud2` is a flat byte blob plus a declared record layout: the `fields` list is the only
+/// thing that says where in each point the coordinates sit and how wide they are. Veridex has
+/// recorded that layout in the CDM since the first autonomy slice — it is in
+/// [`Stream::point_fields`](crate::cdm::Stream::point_fields) and in the content hash — and no check
+/// read it, so every way a layout can be wrong passed.
+///
+/// All three faults below leave a stream that is healthy by every other measure: the sweeps arrive
+/// on the sensor's cadence, each one carries points, the bodies decode, the transform tree places
+/// the sensor, and the rig certifies as world-model-ready on a cloud no loader can turn into
+/// geometry.
+///
+/// - `AUTONOMY.POINT_CLOUD_NO_GEOMETRY` — the record does not carry all of `x`, `y` and `z`. Every
+///   consumer resolves the coordinates by those exact names (`pcl::fromROSMsg`, `ros_numpy`,
+///   `open3d`), so a record naming them `X`, `Y`, `Z` or carrying only `intensity` has no geometry
+///   to read, however many points it holds. The finding names the case-variant spelling where it is
+///   the cause, because that is a republish rather than a re-record.
+/// - `AUTONOMY.POINT_CLOUD_FIELD_UNTYPED` — a field whose `datatype` is outside the eight
+///   `PointField` types. One such field makes the whole record unreadable rather than one column of
+///   it: every field's extent is computed from a datatype width, so a width nothing can compute
+///   leaves the stride unverifiable.
+/// - `AUTONOMY.POINT_CLOUD_DUPLICATE_FIELD` — one name twice in one record. A consumer resolving a
+///   field by name takes one of the two and cannot reach the other, and which one it takes is
+///   implementation-defined, so two tools reading the same cloud can read different columns and
+///   neither reports anything.
+///
+/// Silent for a stream that declares no per-point record, which is not the same as one that
+/// declares a bad record: a planar scanner (`LaserScan`) has no per-point layout by design, and a
+/// format that fingerprints bodies without decoding them records none. The layout question exists
+/// only where a layout does, so this check raises no abstention — `AUTONOMY.POINT_CLOUD_UNMEASURED`
+/// is what reports a cloud stream whose bodies this run did not read.
+pub struct PointCloudLayout;
+
+/// The three coordinate fields every point-cloud consumer resolves by name.
+const GEOMETRY_FIELDS: [&str; 3] = ["x", "y", "z"];
+
+/// `["x"]` as `` `x` ``, `["x", "y", "z"]` as `` `x`, `y` or `z` `` — so the finding reads as a
+/// sentence whether one axis is missing or all three.
+fn or_list(names: &[&str]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => format!("`{one}`"),
+        [rest @ .., last] => format!("`{}` or `{last}`", rest.join("`, `")),
+    }
+}
+
+impl Check for PointCloudLayout {
+    fn id(&self) -> &'static str {
+        "autonomy.point-cloud-layout"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &[
+            "AUTONOMY.POINT_CLOUD_NO_GEOMETRY",
+            "AUTONOMY.POINT_CLOUD_FIELD_UNTYPED",
+            "AUTONOMY.POINT_CLOUD_DUPLICATE_FIELD",
+        ]
+    }
+    fn title(&self) -> &'static str {
+        "Point-cloud record layout"
+    }
+    fn category(&self) -> Category {
+        Category::Autonomy
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Error
+    }
+    fn scope(&self) -> Scope {
+        Scope::Stream
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        for ep in &dataset.episodes {
+            for stream in &ep.streams {
+                let Some(fields) = &stream.point_fields else {
+                    continue;
+                };
+                let at = || Location::Stream {
+                    episode: ep.index,
+                    stream: stream.name.clone(),
+                };
+                let names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+
+                // 1. Geometry. An empty record is the same answer as a record without `x`: there is
+                // nothing a consumer can read coordinates out of.
+                let missing: Vec<&str> = GEOMETRY_FIELDS
+                    .iter()
+                    .copied()
+                    .filter(|axis| !names.contains(axis))
+                    .collect();
+                if !missing.is_empty() {
+                    // A field that is the axis in another case is the whole cause, and names a
+                    // different remedy: the data is there and the publisher spelled it wrong.
+                    let variants: Vec<&str> = missing
+                        .iter()
+                        .filter_map(|axis| {
+                            names.iter().find(|n| n.eq_ignore_ascii_case(axis)).copied()
+                        })
+                        .collect();
+                    let declared = if names.is_empty() {
+                        "it declares no fields at all".to_string()
+                    } else {
+                        format!("it declares `{}`", names.join("`, `"))
+                    };
+                    let cause = if variants.len() == missing.len() {
+                        format!(
+                            " — the coordinates are there under `{}`, and every consumer resolves \
+                             them by their exact lower-case names",
+                            variants.join("`, `")
+                        )
+                    } else {
+                        String::new()
+                    };
+                    findings.push(
+                        Finding::new(
+                            self.id(),
+                            Category::Autonomy,
+                            Severity::Error,
+                            at(),
+                            "AUTONOMY.POINT_CLOUD_NO_GEOMETRY",
+                            format!(
+                                "episode {}: stream `{}` declares a point record with no {} \
+                                 field, so its points carry no coordinates a consumer can read \
+                                 ({declared}){cause}",
+                                ep.index,
+                                stream.name,
+                                or_list(&missing)
+                            ),
+                        )
+                        .with_risk(
+                            "Nothing else reports this. The sweeps arrive on the sensor's cadence, \
+                             each one carries points, and the transform tree places the sensor — so \
+                             the stream grades clean and the rig certifies as ready to build a \
+                             world model from a cloud no loader can turn into geometry. A reader \
+                             resolving `x`/`y`/`z` by name gets nothing; one reading the record by \
+                             byte offset gets whatever happens to sit there.",
+                        )
+                        .with_remedy(
+                            "Publish the cloud with its coordinate fields named `x`, `y` and `z` — \
+                             a rename where the fields differ only in case, a driver or publisher \
+                             fix where the coordinates were never in the record. Veridex never \
+                             edits the data.",
+                        ),
+                    );
+                }
+
+                // 2. A datatype no consumer can size. The adapters write `unknown` for a
+                // `PointField.datatype` outside 1..=8; a CDM built by hand can leave it unstated.
+                let untyped: Vec<&str> = fields
+                    .iter()
+                    .filter(|f| f.dtype.as_deref().unwrap_or("unknown") == "unknown")
+                    .map(|f| f.name.as_str())
+                    .collect();
+                if !untyped.is_empty() {
+                    findings.push(
+                        Finding::new(
+                            self.id(),
+                            Category::Autonomy,
+                            Severity::Error,
+                            at(),
+                            "AUTONOMY.POINT_CLOUD_FIELD_UNTYPED",
+                            format!(
+                                "episode {}: stream `{}` declares field(s) `{}` with no element \
+                                 type this reader recognizes, so the width of a point in this \
+                                 cloud cannot be computed",
+                                ep.index,
+                                stream.name,
+                                untyped.join("`, `")
+                            ),
+                        )
+                        .with_risk(
+                            "One unreadable datatype makes the whole record unreadable rather than \
+                             one column of it: every field's extent is computed from a datatype \
+                             width, so nothing can verify the stride the points were written at. \
+                             The stream keeps its frames, its cadence and its coordinate frame, so \
+                             no other check fails.",
+                        )
+                        .with_remedy(
+                            "Fix the publisher's `PointField.datatype` — one of the eight the \
+                             message defines, `INT8` (1) through `FLOAT64` (8) — and re-record. The \
+                             points already written cannot be interpreted without it.",
+                        ),
+                    );
+                }
+
+                // 3. One name twice. Proved from the list, not from the payload.
+                let mut seen: BTreeSet<&str> = BTreeSet::new();
+                let mut repeated: BTreeSet<&str> = BTreeSet::new();
+                for name in &names {
+                    if !seen.insert(name) {
+                        repeated.insert(name);
+                    }
+                }
+                if !repeated.is_empty() {
+                    let shown: Vec<&str> = repeated.iter().copied().collect();
+                    findings.push(
+                        Finding::new(
+                            self.id(),
+                            Category::Autonomy,
+                            Severity::Warning,
+                            at(),
+                            "AUTONOMY.POINT_CLOUD_DUPLICATE_FIELD",
+                            format!(
+                                "episode {}: stream `{}` declares `{}` more than once in one point \
+                                 record, so a consumer resolving that field by name reaches one of \
+                                 them and not the other",
+                                ep.index,
+                                stream.name,
+                                shown.join("`, `")
+                            ),
+                        )
+                        .with_risk(
+                            "Which of the two a reader takes is implementation-defined, so two \
+                             tools reading the same cloud can read different columns of it and \
+                             neither reports a problem — including the tool that recorded the data \
+                             and the one that trains on it.",
+                        )
+                        .with_remedy(
+                            "Give every field in the point record a distinct name and re-record; \
+                             the duplicate column in the recorded points cannot be addressed.",
+                        ),
+                    );
+                }
+            }
+        }
+        findings
+    }
+}
+
 /// **Message-body decode.** How much of a stream's data actually survived the recording.
 ///
 /// Every typed decoder in the ROS readers is strict on purpose: it yields a reading only once the

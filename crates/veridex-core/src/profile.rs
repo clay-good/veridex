@@ -161,6 +161,10 @@ const WORLD_MODEL_READY_CRITERIA: &[(&str, &str)] = &[
         "every point-cloud sensor actually recorded points",
     ),
     (
+        "autonomy.point-cloud-layout",
+        "every point cloud's record names the coordinates a consumer reads it by",
+    ),
+    (
         "autonomy.image-integrity",
         "every camera actually recorded pixels, at one resolution throughout",
     ),
@@ -181,7 +185,9 @@ const WORLD_MODEL_READY_CRITERIA: &[(&str, &str)] = &[
 /// world model built from more than one of them requires — GNSS fix availability, because a
 /// receiver that reported no fix for most of a drive leaves a trajectory that every timing check
 /// still reads as continuous — point-cloud density, because a LiDAR
-/// that published nothing but empty sweeps satisfies every one of the others, and image integrity,
+/// that published nothing but empty sweeps satisfies every one of the others, point-cloud layout,
+/// because a cloud whose record does not name `x`, `y` and `z` satisfies them too and no loader can
+/// read its geometry, and image integrity,
 /// which is the same fault on the modality a policy is usually trained on: a camera whose driver
 /// lost its sensor publishes well-formed zero-sized frames at the right rate, and a camera that
 /// changed resolution part-way through shifts the training distribution without failing anything,
