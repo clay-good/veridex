@@ -184,6 +184,10 @@ const WORLD_MODEL_READY_CRITERIA: &[(&str, &str)] = &[
         "autonomy.message-decode",
         "every rig sensor's message bodies survived the recording, so the results above are about the whole stream",
     ),
+    (
+        "autonomy.declared-byte-order",
+        "no sensor declaring a payload byte order a loader will read the wrong way round",
+    ),
 ];
 
 /// The `world-model-ready` profile: tightens cross-sensor sync to 20 ms and bundles the autonomy

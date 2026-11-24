@@ -29,12 +29,12 @@ fn the_canonical_encoding_has_not_changed_without_a_version_bump() {
     let d: Dataset = serde_json::from_str(GOLDEN).expect("the golden fixture parses");
 
     assert_eq!(
-        CANONICAL_VERSION, 21,
+        CANONICAL_VERSION, 22,
         "the encoding version changed; re-pin the hash below in the same commit"
     );
     assert_eq!(
         content_hash(&d).to_hex(),
-        "f6cbb64f86eba3797df43211554b5b22eb37726f9e169bb40295ec8584405ceb",
+        "aa2ba3275136064e6719cf558517001c6093c13bd3b8d6774f5a96aa8ff13a44",
         "the canonical encoding changed. If that was deliberate, bump CANONICAL_VERSION and \
          re-pin this vector in the same commit — a hash change without a version bump means two \
          builds disagree about byte-identical data while both claiming the same encoding, and \
@@ -88,6 +88,13 @@ fn the_golden_fixture_still_covers_what_it_claims_to() {
             .filter_map(|s| s.media.as_ref())
             .any(|m| m.longest_frame_gap_ns.is_some()),
         "measured frame gap — the vector must reach the encoding with a value, not the absent marker"
+    );
+    assert!(
+        streams
+            .iter()
+            .any(|s| s.observed_byte_order.is_some_and(|b| b.big_endian > 0)),
+        "declared byte order — the vector must reach the encoding with a value, and with a \
+         big-endian count, or the arm is pinned at zero"
     );
     assert!(
         streams.iter().any(|s| s.declared_range.is_some()),

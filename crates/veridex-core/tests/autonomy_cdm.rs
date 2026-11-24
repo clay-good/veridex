@@ -45,6 +45,7 @@ fn cloud_stream(fields: &[&str]) -> Stream {
         observed_point_counts: None,
         observed_image_dims: None,
         observed_body_decodes: None,
+        observed_byte_order: None,
         observed_header_stamps: None,
         observed_sequence: None,
         observed_fix_availability: None,
@@ -286,6 +287,7 @@ fn permuting_every_canonicalized_collection_changes_neither_the_hash_nor_the_ver
         observed_point_counts: None,
         observed_image_dims: None,
         observed_body_decodes: None,
+        observed_byte_order: None,
         observed_header_stamps: None,
         observed_sequence: None,
         observed_fix_availability: None,
@@ -507,4 +509,123 @@ fn a_components_worst_level_ranks_stale_between_warn_and_error() {
     // The fraction beside it is a share of the component's own statuses, zero when it said nothing.
     assert_eq!(health(0, 0, 0, 0).error_fraction(), 0.0);
     assert_eq!(health(3, 0, 1, 0).error_fraction(), 0.25);
+}
+
+// ---------------------------------------------------------------------------
+// `autonomy.declared-byte-order` — what a sensor said about its own payload
+// ---------------------------------------------------------------------------
+
+/// A rig whose LiDAR declared `big_endian` of `message_count` messages big-endian.
+fn rig_declaring(message_count: u64, big_endian: u64) -> Dataset {
+    let mut d = rig_dataset();
+    let mut lidar = stream("lidar", Modality::PointCloud, &[0, 50_000_000, 100_000_000]);
+    lidar.observed_byte_order = Some(veridex_core::cdm::ByteOrderCounts {
+        message_count,
+        big_endian,
+    });
+    d.episodes[0].streams = vec![
+        lidar,
+        stream("gnss", Modality::Gnss, &[0, 100_000_000]),
+        stream("imu", Modality::Imu, &[0, 50_000_000, 100_000_000]),
+    ];
+    d.canonicalize_order();
+    d
+}
+
+fn byte_order_codes(d: &Dataset) -> Vec<String> {
+    use veridex_core::check::Check;
+    veridex_core::checks::autonomy::DeclaredByteOrder
+        .run(d)
+        .into_iter()
+        .map(|f| f.code)
+        .collect()
+}
+
+#[test]
+fn a_stream_that_declared_little_endian_is_silent() {
+    // The common case, and the one a finding must never fire on: a ROS driver on an ordinary
+    // machine publishes little-endian, and a check that reported it would fire on every honest
+    // dataset.
+    assert!(byte_order_codes(&rig_declaring(500, 0)).is_empty());
+    // And a stream whose bodies were never read says nothing either — `autonomy.message-decode`
+    // discloses that, and this check does not speak for a stream it could not read.
+    let mut d = rig_declaring(500, 0);
+    for ep in &mut d.episodes {
+        for s in &mut ep.streams {
+            s.observed_byte_order = None;
+        }
+    }
+    assert!(byte_order_codes(&d).is_empty());
+}
+
+#[test]
+fn a_stream_that_declared_big_endian_throughout_is_reported() {
+    use veridex_core::check::Check;
+    let d = rig_declaring(500, 500);
+    let findings = veridex_core::checks::autonomy::DeclaredByteOrder.run(&d);
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert_eq!(findings[0].code, "AUTONOMY.BIG_ENDIAN_PAYLOAD");
+    assert_eq!(findings[0].severity, veridex_core::check::Severity::Warning);
+    assert_eq!(
+        findings[0].location,
+        veridex_core::check::Location::Stream {
+            episode: 0,
+            stream: "lidar".into()
+        }
+    );
+    // The risk has to say what Veridex cannot know, because it never opens the payload.
+    assert!(
+        findings[0].remedy.contains("never the payload"),
+        "{}",
+        findings[0].remedy
+    );
+}
+
+#[test]
+fn a_stream_whose_messages_disagree_is_the_worse_fault() {
+    // Two byte orders in one stream: a consumer that honors the flag reads it all correctly and one
+    // that ignores it reads *part* of it correctly, so the same loader yields a mixture of correct
+    // and byte-swapped values from frames that are otherwise indistinguishable.
+    use veridex_core::check::Check;
+    let findings = veridex_core::checks::autonomy::DeclaredByteOrder.run(&rig_declaring(500, 7));
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert_eq!(findings[0].code, "AUTONOMY.MIXED_BYTE_ORDER");
+    assert_eq!(
+        findings[0].severity,
+        veridex_core::check::Severity::Error,
+        "no single rule reads this stream correctly"
+    );
+    assert!(
+        findings[0].message.contains("7 of"),
+        "{}",
+        findings[0].message
+    );
+    // One message either side of the boundary is still mixed, and the counts are stated.
+    assert_eq!(
+        byte_order_codes(&rig_declaring(500, 499)),
+        ["AUTONOMY.MIXED_BYTE_ORDER"]
+    );
+    assert_eq!(
+        byte_order_codes(&rig_declaring(500, 1)),
+        ["AUTONOMY.MIXED_BYTE_ORDER"]
+    );
+    // All of them, or none, is not mixed.
+    assert_eq!(
+        byte_order_codes(&rig_declaring(500, 500)),
+        ["AUTONOMY.BIG_ENDIAN_PAYLOAD"]
+    );
+    assert!(byte_order_codes(&rig_declaring(500, 0)).is_empty());
+}
+
+#[test]
+fn the_declaration_is_bound_into_the_content_hash() {
+    // The rule the encoder's own doc comment states: a field a check can fail on is a field the hash
+    // binds. Two recordings that differ only in this flag are different datasets — everything else
+    // about them is identical, which is the whole reason the check exists.
+    let little = content_hash(&rig_declaring(500, 0));
+    let big = content_hash(&rig_declaring(500, 500));
+    let mixed = content_hash(&rig_declaring(500, 7));
+    assert_ne!(little, big);
+    assert_ne!(big, mixed);
+    assert_ne!(little, mixed);
 }

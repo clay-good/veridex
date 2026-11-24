@@ -27,6 +27,9 @@ pub(crate) struct BodyTargets<'a> {
     /// What the rig's components said about their own health, from a `DiagnosticArray`.
     pub diagnostics: &'a mut super::cdr::DiagnosticAccum,
     pub image_dims: &'a mut super::cdr::ImageDimAccum,
+    /// What the stream's messages declared about the byte order of their own payload — the `Image`
+    /// and `PointCloud2` `is_bigendian` flag, which says how the bulk blob must be read.
+    pub byte_order: &'a mut super::cdr::ByteOrderAccum,
     pub fix_availability: &'a mut super::cdr::FixAvailabilityAccum,
     pub values: &'a mut super::stats::StreamValues,
     pub ego_poses: &'a mut Vec<EgoPose>,
@@ -76,8 +79,9 @@ pub(crate) fn decode_body(
         // first message settles it, while whether a sweep held any points is a property of each
         // message and only the messages can settle it.
         match super::cdr::decode_point_cloud2_point_count(data, enc) {
-            Some(n) => {
-                t.point_counts.observe(n);
+            Some(body) => {
+                t.point_counts.observe(body.points);
+                t.byte_order.observe(body.big_endian);
                 Some(true)
             }
             None => Some(false),
@@ -174,8 +178,12 @@ pub(crate) fn decode_body(
         // pixels in them. Read from the message's own `height`/`width`; the pixel blob is never
         // opened.
         match super::cdr::decode_image_dimensions(data, enc) {
-            Some((w, h)) => {
-                t.image_dims.observe(w, h);
+            Some(body) => {
+                t.image_dims.observe(body.width, body.height);
+                // What the frame said about its own pixel byte order. Counted here rather than in
+                // the dimension accumulator because it is a different kind of fact: the sizes are
+                // what the frame holds, the flag is how a consumer must read it.
+                t.byte_order.observe(body.big_endian);
                 Some(true)
             }
             None => Some(false),
@@ -360,6 +368,7 @@ mod tests {
         diagnostics: super::super::cdr::DiagnosticAccum,
         point_counts: super::super::cdr::PointCountAccum,
         image_dims: super::super::cdr::ImageDimAccum,
+        byte_order: super::super::cdr::ByteOrderAccum,
         fix_availability: super::super::cdr::FixAvailabilityAccum,
         values: super::super::stats::StreamValues,
         ego_poses: Vec<EgoPose>,
@@ -377,6 +386,7 @@ mod tests {
                     diagnostics: &mut self.diagnostics,
                     point_counts: &mut self.point_counts,
                     image_dims: &mut self.image_dims,
+                    byte_order: &mut self.byte_order,
                     fix_availability: &mut self.fix_availability,
                     values: &mut self.values,
                     ego_poses: &mut self.ego_poses,

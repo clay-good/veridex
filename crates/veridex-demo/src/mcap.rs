@@ -133,7 +133,14 @@
 //!   rig's score → `PROVENANCE.SIMULATED_CLOCK` is the only thing that says the timeline, and in all
 //!   likelihood the data, did not come from hardware.
 //!
-//! Usage: `cargo run -p veridex-demo --example make_demo_mcap -- <output.mcap> [skew|clean|stuck|late-start|av|av-miscalibrated|av-ambiguous-tf|av-dead-lidar|av-dead-camera|av-ego-jump|av-null-island|av-truncated-lidar|av-corrupt-bodies|av-split-rig|av-unstamped|av-uncalibrated-camera|av-lossy-camera|av-no-fix|av-mislabelled-cloud|av-sick-lidar|av-simulated]`
+//! - `av-big-endian` — the same rig whose LiDAR declares **big-endian** point records. Every length
+//!   invariant in the message holds, the cloud is full, the cadence is the sensor's and the record
+//!   names `x`, `y`, `z` and `intensity` — so every other check, including the layout and density
+//!   rules, passes on a sweep whose coordinates a loader will read byte-swapped →
+//!   `AUTONOMY.BIG_ENDIAN_PAYLOAD` is the only thing that reports the one field saying how the blob
+//!   must be read.
+//!
+//! Usage: `cargo run -p veridex-demo --example make_demo_mcap -- <output.mcap> [skew|clean|stuck|late-start|av|av-miscalibrated|av-ambiguous-tf|av-dead-lidar|av-dead-camera|av-ego-jump|av-null-island|av-truncated-lidar|av-corrupt-bodies|av-split-rig|av-unstamped|av-uncalibrated-camera|av-lossy-camera|av-no-fix|av-mislabelled-cloud|av-sick-lidar|av-simulated|av-big-endian]`
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
@@ -164,6 +171,7 @@ pub const VARIANTS: &[&str] = &[
     "av-mislabelled-cloud",
     "av-sick-lidar",
     "av-simulated",
+    "av-big-endian",
 ];
 
 /// Write the demo MCAP recording to `path`, replacing anything already there.
@@ -228,6 +236,9 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
     // `av-simulated` is the same rig recorded in a simulator: a `/clock` topic, which is what every
     // node in a graph running with `use_sim_time` takes its time from.
     let simulated = variant == "av-simulated";
+    // `av-big-endian` is the same rig whose LiDAR declares big-endian point records: the one field
+    // that says how the packed blob must be read, which almost nothing reads.
+    let big_endian = variant == "av-big-endian";
     let av = variant == "av"
         || miscalibrated
         || ambiguous_tf
@@ -244,7 +255,8 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
         || no_fix
         || mislabelled_cloud
         || sick_lidar
-        || simulated;
+        || simulated
+        || big_endian;
 
     let mut buf = Vec::new();
     {
@@ -270,6 +282,7 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
                     mislabelled_cloud,
                     sick_lidar,
                     simulated,
+                    big_endian,
                 },
             );
         } else {
@@ -487,6 +500,7 @@ struct RigFaults {
     mislabelled_cloud: bool,
     sick_lidar: bool,
     simulated: bool,
+    big_endian: bool,
 }
 
 /// sensor spans ~1.0 s from a shared start except the IMU, whose span is deliberately cut to ~0.70 s
@@ -510,6 +524,7 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(w: &mut mcap::Writer<W>, faul
         mislabelled_cloud,
         sick_lidar,
         simulated,
+        big_endian,
     } = faults;
     // (schema, topic, message count, inter-message interval ns, coordinate frame). The IMU runs the
     // same 100 msg count as a healthy 100 Hz sensor but at a compressed 7 ms interval, so it finishes
@@ -786,8 +801,14 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(w: &mut mcap::Writer<W>, faul
                 // The `av-unstamped` fault: a driver that publishes the epoch instead of the time it
                 // sampled. Nothing else about the message changes, which is the point.
                 let cloud_stamp = if unstamped_lidar { 0 } else { stamp };
-                let mut body =
-                    point_cloud2_body(frame_id, points, i as u32, cloud_stamp, mislabelled_cloud);
+                let mut body = point_cloud2_body(
+                    frame_id,
+                    points,
+                    i as u32,
+                    cloud_stamp,
+                    mislabelled_cloud,
+                    big_endian,
+                );
                 // The `av-truncated-lidar` fault: the body is cut short of the payload its own
                 // header declares, which is what a recording that lost bytes leaves behind. One
                 // sweep in five survives, so the stream still yields counts — the case where a
@@ -1120,12 +1141,14 @@ fn camera_info_body(frame_id: &str, stamp_ns: u64, uncalibrated: bool) -> Vec<u8
 ///
 /// A `width` of 0 is an organized-cloud-shaped message holding nothing, which is what a driver that
 /// lost its sensor publishes: it keeps the schema, the rate and the frame of a working LiDAR.
+#[allow(clippy::too_many_arguments)]
 fn point_cloud2_body(
     frame_id: &str,
     width: u32,
     seed: u32,
     stamp_ns: u64,
     mislabelled: bool,
+    big_endian: bool,
 ) -> Vec<u8> {
     const POINT_STEP: u32 = 16; // x, y, z, intensity as float32
     let mut buf: Vec<u8> = vec![0x00, 0x01, 0x00, 0x00]; // encapsulation: CDR_LE
@@ -1164,7 +1187,10 @@ fn point_cloud2_body(
         buf.push(7); // datatype: FLOAT32
         u32v(&mut buf, 1); // count
     }
-    buf.push(0); // is_bigendian
+    // The one field that says how the packed blob must be read. `av-big-endian` declares the
+    // records big-endian while every length invariant still holds, which is the fault: a loader that
+    // reinterprets the bytes in the host's order gets byte-swapped coordinates.
+    buf.push(u8::from(big_endian)); // is_bigendian
     u32v(&mut buf, POINT_STEP);
     let row_step = POINT_STEP * width;
     u32v(&mut buf, row_step);

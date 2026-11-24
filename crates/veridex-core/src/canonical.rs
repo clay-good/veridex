@@ -122,7 +122,14 @@ use crate::cdm::{
 /// that froze for two seconds in the middle of a minute divides out to exactly its declared rate. A
 /// recording with a hole in it and one without carry the same codec, the same resolution, the same
 /// frame count and the same fps. Same rule again.
-pub const CANONICAL_VERSION: u32 = 21;
+/// v22 binds each stream's `observed_byte_order` — what its messages declared about the byte order
+/// of their own payload. `AUTONOMY.BIG_ENDIAN_PAYLOAD` fails a stream on it, and the declaration is
+/// the one field in an `Image` or a `PointCloud2` that says how the bulk blob must be read: a
+/// big-endian frame and a little-endian one of the same size agree on schema, dimensions, cadence
+/// and byte count, and a consumer that ignores the flag — which `numpy.frombuffer`, most Python bag
+/// tooling and PCL's default readers do — decodes one of them into byte-swapped values. Same rule
+/// again: a field a check can fail on is a field the hash binds.
+pub const CANONICAL_VERSION: u32 = 22;
 
 const DOMAIN: &[u8] = b"veridex.cdm.v1\0";
 
@@ -478,6 +485,15 @@ impl Stream {
         e.opt(&self.observed_body_decodes, |e, b| {
             e.u64(b.attempted);
             e.u64(b.failed);
+        });
+        // What the messages declared about their own payload byte order. Bound because
+        // `autonomy.declared-byte-order` fails a stream on it, and because the declaration is
+        // invisible to every other field here: a big-endian frame and a little-endian one of the
+        // same size carry the same schema, the same dimensions, the same cadence and the same byte
+        // count — and a consumer that ignores the flag reads one of them as byte-swapped values.
+        e.opt(&self.observed_byte_order, |e, b| {
+            e.u64(b.message_count);
+            e.u64(b.big_endian);
         });
         // What the messages said about their own sampling time. Bound because `autonomy.sensor-clock`
         // fails a stream on it: the frame timestamps are the recorder's clock either way, so a rig

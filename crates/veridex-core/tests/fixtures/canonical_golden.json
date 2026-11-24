@@ -447,7 +447,11 @@
               "stale": 0,
               "detail": null
             }
-          ]
+          ],
+          "observed_byte_order": {
+            "message_count": 90,
+            "big_endian": 90
+          }
         }
       ],
       "task": "pick up the block",

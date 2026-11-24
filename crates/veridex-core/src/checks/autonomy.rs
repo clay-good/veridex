@@ -3678,3 +3678,131 @@ fn render_frame_list(frames: &BTreeSet<&str>) -> String {
         frames.len() - MAX_NAMED
     )
 }
+
+/// **What a sensor said about its own byte order.** A `sensor_msgs/Image` and a
+/// `sensor_msgs/PointCloud2` each carry an `is_bigendian` flag, and it is the one field in the
+/// message that says how the bulk blob behind it must be read.
+///
+/// Almost nothing reads it. `numpy.frombuffer`, most Python bag tooling and PCL's default readers
+/// reinterpret the payload in the host's order, which on every machine anyone trains on is
+/// little-endian. A big-endian payload decoded that way does not fail: it produces values that are
+/// wrong by byte-swapping — a 16-bit depth frame reading 0x0102 where the sensor wrote 0x0201, a
+/// point cloud whose coordinates are off by orders of magnitude in a pattern that looks like noise.
+/// Nothing else in the dataset differs. The schema, the dimensions, the frame count, the cadence and
+/// the byte count are identical to a little-endian recording of the same scene, which is why this
+/// has to be read from the declaration rather than inferred from anything else.
+///
+/// Veridex never opens the blob, so it reports **what the dataset said**, not what the bytes are:
+/// `AUTONOMY.BIG_ENDIAN_PAYLOAD` names a stream whose messages all declared big-endian, and
+/// `AUTONOMY.MIXED_BYTE_ORDER` names one whose messages disagree with each other — which is the
+/// worse fault, because no single rule reads such a stream correctly and a consumer that honors the
+/// flag and one that ignores it will each get part of it right.
+///
+/// Silent on the common case, which is every message declaring little-endian: that is what a ROS
+/// driver on any ordinary machine publishes, and a finding there would fire on every honest dataset.
+/// Silent too for every schema that carries no such flag, and for a run that did not open the
+/// bodies — `autonomy.message-decode` discloses that, and this check says nothing about a stream it
+/// could not read.
+pub struct DeclaredByteOrder;
+
+impl Check for DeclaredByteOrder {
+    fn id(&self) -> &'static str {
+        "autonomy.declared-byte-order"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["AUTONOMY.BIG_ENDIAN_PAYLOAD", "AUTONOMY.MIXED_BYTE_ORDER"]
+    }
+    fn title(&self) -> &'static str {
+        "Declared payload byte order"
+    }
+    fn category(&self) -> Category {
+        Category::Autonomy
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Warning
+    }
+    fn scope(&self) -> Scope {
+        Scope::Stream
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        for ep in &dataset.episodes {
+            for stream in &ep.streams {
+                let Some(order) = stream.observed_byte_order else {
+                    continue;
+                };
+                let at = || Location::Stream {
+                    episode: ep.index,
+                    stream: stream.name.clone(),
+                };
+                if order.mixed() {
+                    findings.push(
+                        Finding::new(
+                            self.id(),
+                            Category::Autonomy,
+                            Severity::Error,
+                            at(),
+                            "AUTONOMY.MIXED_BYTE_ORDER",
+                            format!(
+                                "episode {}: stream `{}` declares big-endian payload bytes in {} of \
+                                 its {} message(s) and little-endian in the rest — the same stream, \
+                                 two byte orders",
+                                ep.index, stream.name, order.big_endian, order.message_count
+                            ),
+                        )
+                        .with_risk(
+                            "No single rule reads this stream correctly. A consumer that honors the \
+                             flag decodes every message right and one that ignores it decodes the \
+                             little-endian ones right — so the same loader produces a mixture of \
+                             correct values and byte-swapped ones, from frames that are otherwise \
+                             indistinguishable. It is usually two producers merged into one topic, \
+                             or a publisher that set the field from uninitialized memory.",
+                        )
+                        .with_remedy(
+                            "Find where the messages come from: a merged recording needs the two \
+                             sources separated, and a publisher that varies the flag per message is \
+                             not setting it deliberately. Re-export the stream with one declared \
+                             byte order.",
+                        ),
+                    );
+                } else if order.all_big_endian() {
+                    findings.push(
+                        Finding::new(
+                            self.id(),
+                            Category::Autonomy,
+                            Severity::Warning,
+                            at(),
+                            "AUTONOMY.BIG_ENDIAN_PAYLOAD",
+                            format!(
+                                "episode {}: stream `{}` declares big-endian payload bytes in all \
+                                 {} of its message(s)",
+                                ep.index, stream.name, order.message_count
+                            ),
+                        )
+                        .with_risk(
+                            "The flag is the only field that says how the payload must be read, and \
+                             almost nothing reads it: `numpy.frombuffer`, most Python bag tooling \
+                             and PCL's default readers reinterpret the bytes in the host's order, \
+                             which is little-endian on every machine anyone trains on. A big-endian \
+                             payload decoded that way does not fail — it yields byte-swapped values, \
+                             and the schema, dimensions, frame count and cadence are identical to a \
+                             little-endian recording of the same scene.",
+                        )
+                        .with_remedy(
+                            "Check what wrote this stream. A big-endian declaration from a \
+                             little-endian host is a publisher bug and the payload is really \
+                             little-endian; a genuinely big-endian payload needs either a byte swap \
+                             at export or a loader that honors the flag. Veridex reads the \
+                             declaration and never the payload, so it cannot tell you which of the \
+                             two you have.",
+                        ),
+                    );
+                }
+            }
+        }
+        findings
+    }
+}

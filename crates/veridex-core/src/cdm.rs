@@ -521,6 +521,15 @@ pub struct Stream {
     /// summaries describe the stream or a sample of it that the file chose.
     #[serde(default)]
     pub observed_body_decodes: Option<BodyDecodes>,
+    /// What this stream's messages declared about the byte order of their own payload — `None` for
+    /// every schema that carries no such flag, and for a run that did not open the message bodies.
+    /// Extension for `autonomy-sensor-data`.
+    ///
+    /// The flag says how the bulk blob must be read, and Veridex never reads that blob — which is
+    /// exactly why the declaration is worth recording: a consumer that ignores it decodes a
+    /// big-endian payload into byte-swapped values, and nothing else in the CDM differs.
+    #[serde(default)]
+    pub observed_byte_order: Option<ByteOrderCounts>,
     /// What this stream's messages said about **their own** sampling time, against the times the
     /// recorder wrote them — `None` for every source that carries no such stamp, and for a run that
     /// did not open the message bodies. Extension for `autonomy-sensor-data`.
@@ -671,6 +680,40 @@ pub struct BodyDecodes {
     pub attempted: u64,
     /// How many of those did not decode — the body is present and its own invariants do not hold.
     pub failed: u64,
+}
+
+/// What a stream's messages declared about the **byte order of their own payload**, summarized over
+/// the episode.
+///
+/// `sensor_msgs/Image` and `sensor_msgs/PointCloud2` each carry an `is_bigendian` flag, and it is a
+/// statement about the bulk blob behind it: the pixels, or the packed point records. Veridex never
+/// opens that blob — but the flag is the one field that says how a consumer must read it, and almost
+/// nothing reads it. A loader that reinterprets the bytes as a little-endian array, which is what
+/// `numpy.frombuffer`, most Python bag tooling and PCL's default readers do, turns a big-endian
+/// payload into values that are wrong by byte-swapping rather than absent — a corruption that
+/// changes no frame count, no cadence and no schema.
+///
+/// So this counts the declaration rather than interpreting it, and the check reading it reports what
+/// the dataset said. A stream whose messages disagree with each other is worse than one that is
+/// consistently big-endian: no single rule reads it correctly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ByteOrderCounts {
+    /// Messages whose byte-order flag this reader read (the denominator).
+    pub message_count: u64,
+    /// How many of those declared **big-endian** payload bytes.
+    pub big_endian: u64,
+}
+
+impl ByteOrderCounts {
+    /// Whether every message this reader read declared big-endian bytes.
+    pub fn all_big_endian(&self) -> bool {
+        self.message_count > 0 && self.big_endian == self.message_count
+    }
+
+    /// Whether the stream's messages disagree with each other about their own byte order.
+    pub fn mixed(&self) -> bool {
+        self.big_endian > 0 && self.big_endian < self.message_count
+    }
 }
 
 /// What a stream's messages said about their own sampling time, against the times they were recorded

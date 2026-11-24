@@ -216,6 +216,7 @@ certified av — fail, grade C (76), bound to <the CDM content hash>
     ✓ autonomy.sensor-clock — every rig sensor stamped its own capture time, on a clock that agrees with the recorder's
     ✓ autonomy.reported-health — no rig component reporting itself in error
     ✓ autonomy.message-decode — every rig sensor's message bodies survived the recording, so the results above are about the whole stream
+    ✓ autonomy.declared-byte-order — no sensor declaring a payload byte order a loader will read the wrong way round
 ```
 
 A certificate is issued for a failing dataset too — it records what is true, and what is true here is

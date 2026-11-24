@@ -143,6 +143,7 @@ fn sensor_in_frame(name: &str, modality: Modality, ts: &[i64], frame_id: Option<
                 missing: 0,
                 non_increasing: 0,
             }),
+        observed_byte_order: None,
         media: None,
         frame_id,
     }
@@ -249,7 +250,7 @@ fn a_healthy_rig_is_world_model_ready() {
     let r = ReadinessReport::evaluate(&p, &v, &d);
     assert!(r.applicable, "a rig is applicable");
     assert!(r.ready, "a healthy rig should be ready: {:?}", r.criteria);
-    assert_eq!(r.criteria.len(), 13);
+    assert_eq!(r.criteria.len(), 14);
     assert!(r.criteria.iter().all(|c| c.passed));
 }
 
@@ -348,7 +349,7 @@ fn a_readiness_certificate_verifies_offline_and_reports_every_criterion() {
     assert_eq!(doc["verified"], true);
     assert_eq!(doc["readiness"]["ready"], true);
     assert_eq!(doc["readiness"]["profile"], "world-model-ready");
-    assert_eq!(doc["readiness"]["criteria"].as_array().unwrap().len(), 13);
+    assert_eq!(doc["readiness"]["criteria"].as_array().unwrap().len(), 14);
     assert_eq!(doc["cdm_content_hash"], signed.certificate.cdm_content_hash);
 }
 

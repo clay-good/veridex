@@ -17,8 +17,8 @@
 use std::collections::BTreeMap;
 
 use crate::cdm::{
-    CameraIntrinsics, ComponentHealth, HeaderStamps, ImageDims, PointCounts, PointField, Pose,
-    Transform,
+    ByteOrderCounts, CameraIntrinsics, ComponentHealth, HeaderStamps, ImageDims, PointCounts,
+    PointField, Pose, Transform,
 };
 
 /// Ceiling on any name this reader will return (coordinate frames, point-field names, distortion
@@ -427,6 +427,35 @@ impl ImageDimAccum {
     }
 }
 
+/// Accumulates what a stream's messages declared about their own payload byte order.
+///
+/// Counted rather than interpreted: Veridex never opens the blob the flag describes, and the
+/// declaration is the only thing in the message that says how a consumer must read it.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ByteOrderAccum {
+    messages: u64,
+    big: u64,
+}
+
+impl ByteOrderAccum {
+    /// Fold in one message's declaration.
+    pub fn observe(&mut self, big_endian: bool) {
+        self.messages += 1;
+        if big_endian {
+            self.big += 1;
+        }
+    }
+
+    /// The summary, or `None` when no message declared one — "this schema carries no such flag" and
+    /// "every message said little-endian" are different facts and must not render the same.
+    pub fn finish(self) -> Option<ByteOrderCounts> {
+        (self.messages > 0).then_some(ByteOrderCounts {
+            message_count: self.messages,
+            big_endian: self.big,
+        })
+    }
+}
+
 /// Accumulates the point counts of a stream's `PointCloud2` messages into a [`PointCounts`].
 ///
 /// Kept as a running summary rather than a `Vec` of counts: the number of messages on a topic is
@@ -719,7 +748,22 @@ const MAX_IMAGE_BYTES_PER_PIXEL: u64 = 32;
 /// pixel and no more than [`MAX_IMAGE_BYTES_PER_PIXEL`], `data` is exactly `step × height` bytes,
 /// and those bytes are there. A fabricated resolution is worse than silence: it is a finding about
 /// honest data.
-pub fn decode_image_dimensions(data: &[u8], enc: Encoding) -> Option<(u32, u32)> {
+/// What one `sensor_msgs/Image` body said about itself: its size, and the byte order it declared for
+/// its own pixels.
+///
+/// A struct rather than a tuple because the third field is a different kind of fact from the first
+/// two — the sizes are what the frame holds, and the flag is how it must be read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImageBody {
+    /// Declared frame width in pixels.
+    pub width: u32,
+    /// Declared frame height in pixels.
+    pub height: u32,
+    /// Whether the body declared big-endian pixel bytes.
+    pub big_endian: bool,
+}
+
+pub fn decode_image_dimensions(data: &[u8], enc: Encoding) -> Option<ImageBody> {
     let mut r = Reader::new(data, enc)?;
     r.header()?;
     let height = r.u32()?;
@@ -730,7 +774,10 @@ pub fn decode_image_dimensions(data: &[u8], enc: Encoding) -> Option<(u32, u32)>
     if encoding.is_empty() {
         return None;
     }
-    let _is_bigendian = r.u8()?;
+    // Kept, rather than skipped: the flag says how the pixel blob must be read, and a consumer that
+    // ignores it decodes a big-endian frame into byte-swapped values. Veridex never opens the blob,
+    // which is exactly why the declaration is the only thing it can report.
+    let is_bigendian = r.u8()? != 0;
     let step = r.u32()? as u64;
     let data_len = r.u32()? as u64;
     // A row covers its own pixels: at least one byte each, and no more than the widest encoding a
@@ -747,7 +794,11 @@ pub fn decode_image_dimensions(data: &[u8], enc: Encoding) -> Option<(u32, u32)>
         return None;
     }
     r.take(usize::try_from(data_len).ok()?)?;
-    Some((width, height))
+    Some(ImageBody {
+        width,
+        height,
+        big_endian: is_bigendian,
+    })
 }
 
 /// Decode a `sensor_msgs/msg/PointCloud2` body far enough to recover its **point count** — `height ×
@@ -767,7 +818,17 @@ pub fn decode_image_dimensions(data: &[u8], enc: Encoding) -> Option<(u32, u32)>
 /// and the first message settles it, while whether a sweep held any points is a property of each
 /// message. Nothing here reads the point payload — `data`'s length is its `uint32` prefix, and the
 /// bytes are only bounds-checked.
-pub fn decode_point_cloud2_point_count(data: &[u8], enc: Encoding) -> Option<u64> {
+/// What one `sensor_msgs/PointCloud2` body said about itself: how many points it holds, and the byte
+/// order it declared for their packed records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PointCloudBody {
+    /// `height × width` — the points the cloud declares.
+    pub points: u64,
+    /// Whether the body declared big-endian record bytes.
+    pub big_endian: bool,
+}
+
+pub fn decode_point_cloud2_point_count(data: &[u8], enc: Encoding) -> Option<PointCloudBody> {
     let mut r = Reader::new(data, enc)?;
     r.header()?;
     let height = r.u32()? as u64;
@@ -795,7 +856,9 @@ pub fn decode_point_cloud2_point_count(data: &[u8], enc: Encoding) -> Option<u64
         }
         extents.push((offset, offset.saturating_add(width.saturating_mul(count))));
     }
-    let _is_bigendian = r.u8()?;
+    // Kept for the same reason the image decoder keeps it: the flag says how the packed point
+    // records must be read, and Veridex never opens them.
+    let is_bigendian = r.u8()? != 0;
     let point_step = r.u32()? as u64;
     let row_step = r.u32()? as u64;
     let data_len = r.u32()? as u64;
@@ -827,7 +890,10 @@ pub fn decode_point_cloud2_point_count(data: &[u8], enc: Encoding) -> Option<u64
     // ...and the bytes are actually there. A stub body claiming a full cloud fails here even if its
     // numbers are self-consistent.
     r.take(usize::try_from(data_len).ok()?)?;
-    Some(height.saturating_mul(width))
+    Some(PointCloudBody {
+        points: height.saturating_mul(width),
+        big_endian: is_bigendian,
+    })
 }
 
 /// Decode a `sensor_msgs/msg/CameraInfo` body far enough to recover intrinsics for `stream`: `Header`,
@@ -2194,11 +2260,22 @@ mod tests {
         let w = image("camera_front", 720, 1280, "mono8", 1280, 1280 * 720);
         assert_eq!(
             decode_image_dimensions(&w.buf, Encoding::Cdr),
-            Some((1280, 720))
+            Some(ImageBody {
+                width: 1280,
+                height: 720,
+                big_endian: false
+            })
         );
         // Three bytes a pixel is an ordinary `rgb8` frame, not a suspicious stride.
         let w = image("camera_front", 4, 8, "rgb8", 24, 96);
-        assert_eq!(decode_image_dimensions(&w.buf, Encoding::Cdr), Some((8, 4)));
+        assert_eq!(
+            decode_image_dimensions(&w.buf, Encoding::Cdr),
+            Some(ImageBody {
+                width: 8,
+                height: 4,
+                big_endian: false
+            })
+        );
     }
 
     #[test]
@@ -2207,7 +2284,14 @@ mod tests {
         // well-formed frame declaring no pixels, and that has to be distinguishable from a body
         // whose size was never read.
         let w = image("camera_front", 0, 0, "mono8", 0, 0);
-        assert_eq!(decode_image_dimensions(&w.buf, Encoding::Cdr), Some((0, 0)));
+        assert_eq!(
+            decode_image_dimensions(&w.buf, Encoding::Cdr),
+            Some(ImageBody {
+                width: 0,
+                height: 0,
+                big_endian: false
+            })
+        );
     }
 
     #[test]
@@ -2829,11 +2913,17 @@ mod tests {
         // check exists for, so it must survive every rule above.
         assert_eq!(
             decode_point_cloud2_point_count(&cloud(1, 100, 1600), Encoding::Cdr),
-            Some(100)
+            Some(PointCloudBody {
+                points: 100,
+                big_endian: false
+            })
         );
         assert_eq!(
             decode_point_cloud2_point_count(&cloud(1, 0, 0), Encoding::Cdr),
-            Some(0)
+            Some(PointCloudBody {
+                points: 0,
+                big_endian: false
+            })
         );
 
         // The stub body a demo recorder writes: a header and a payload that is not a cloud. Read as
@@ -2878,7 +2968,10 @@ mod tests {
         // Three float32s in twelve bytes is exactly right.
         assert_eq!(
             decode_point_cloud2_point_count(&layout(&[(0, 7), (4, 7), (8, 7)], 12), Encoding::Cdr),
-            Some(1)
+            Some(PointCloudBody {
+                points: 1,
+                big_endian: false
+            })
         );
         // A fourth that runs past the stride is not.
         assert!(decode_point_cloud2_point_count(

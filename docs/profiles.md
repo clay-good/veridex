@@ -114,6 +114,7 @@ Three rules keep that honest:
 | Sensor clock | `autonomy.sensor-clock` | every rig sensor stamped its own capture time, on a clock that agrees with the recorder's — the 20 ms sync above is measured from the recorder's clock, and a sensor that never stamped its data has no second clock for that result to be about |
 | Reported health | `autonomy.reported-health` | no rig component reporting itself in error — a driver that reports `ERROR` keeps publishing well-formed data on cadence, so every criterion above it passes while the recording's own account of itself says the hardware had failed |
 | Message decode | `autonomy.message-decode` | every rig sensor's message bodies survived the recording, so the results above are about the whole stream — each criterion here that reads a body (sequence, ego pose, GNSS, point-cloud density, sensor clock) is computed from the bodies that decoded, so a stream whose bodies mostly did not survive satisfies all of them on the share that did |
+| Declared byte order | `autonomy.declared-byte-order` | no sensor declaring a payload byte order a loader will read the wrong way round — an `Image` and a `PointCloud2` each declare `is_bigendian`, almost nothing reads it, and a big-endian payload decoded in the host's order yields byte-swapped values while every criterion above it passes on a stream that is identical in schema, size, count and cadence |
 
 The `readiness` block on the certificate records the profile name, whether it was `applicable`, the
 overall `ready` flag, and each criterion's `check_id`, `threshold`, `passed`, and finding count — plus
@@ -157,6 +158,7 @@ Real output, over the `av-lossy-camera` rig the demo generator writes
     ✓ autonomy.sensor-clock — every rig sensor stamped its own capture time, on a clock that agrees with the recorder's
     ✓ autonomy.reported-health — no rig component reporting itself in error
     ✓ autonomy.message-decode — every rig sensor's message bodies survived the recording, so the results above are about the whole stream
+    ✓ autonomy.declared-byte-order — no sensor declaring a payload byte order a loader will read the wrong way round
 ```
 
 The `findings:` line names every finding code and its count, which is how an abstention survives into

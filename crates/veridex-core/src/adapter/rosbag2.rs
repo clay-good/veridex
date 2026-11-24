@@ -418,6 +418,7 @@ struct StreamBuilder {
     diagnostics: super::cdr::DiagnosticAccum,
     point_counts: super::cdr::PointCountAccum,
     image_dims: super::cdr::ImageDimAccum,
+    byte_order: super::cdr::ByteOrderAccum,
     body_decodes: super::cdr::BodyDecodeAccum,
     /// What this topic's messages said about their own sampling time, against the log times they
     /// were recorded at. Empty for a topic whose bodies are not header-first.
@@ -754,6 +755,7 @@ fn read_shard(
             .or_insert_with(|| StreamBuilder {
                 point_counts: Default::default(),
                 image_dims: Default::default(),
+                byte_order: Default::default(),
                 body_decodes: Default::default(),
                 header_stamps: Default::default(),
                 sequence: Default::default(),
@@ -793,6 +795,7 @@ fn read_shard(
                 diagnostics: &mut builder.diagnostics,
                 point_counts: &mut builder.point_counts,
                 image_dims: &mut builder.image_dims,
+                byte_order: &mut builder.byte_order,
                 fix_availability: &mut builder.fix_availability,
                 values: &mut builder.values,
                 ego_poses: &mut contents.ego_poses,
@@ -879,6 +882,7 @@ fn read_mcap_shard(
             .or_insert_with(|| StreamBuilder {
                 point_counts: Default::default(),
                 image_dims: Default::default(),
+                byte_order: Default::default(),
                 body_decodes: Default::default(),
                 header_stamps: Default::default(),
                 sequence: Default::default(),
@@ -922,6 +926,7 @@ fn read_mcap_shard(
                 diagnostics: &mut builder.diagnostics,
                 point_counts: &mut builder.point_counts,
                 image_dims: &mut builder.image_dims,
+                byte_order: &mut builder.byte_order,
                 fix_availability: &mut builder.fix_availability,
                 values: &mut builder.values,
                 ego_poses: &mut contents.ego_poses,
@@ -1031,6 +1036,7 @@ fn ingest_metadata_only(
             observed_point_counts: None,
             observed_image_dims: None,
             observed_body_decodes: None,
+            observed_byte_order: None,
             observed_header_stamps: None,
             observed_sequence: None,
             observed_fix_availability: None,
@@ -1458,6 +1464,7 @@ impl Adapter for Rosbag2Adapter {
                     observed_diagnostics: b.diagnostics.finish(),
                     observed_point_counts: b.point_counts.finish(),
                     observed_image_dims: b.image_dims.finish(),
+                    observed_byte_order: b.byte_order.finish(),
                     observed_body_decodes: b.body_decodes.finish(),
                     observed_header_stamps: b.header_stamps.finish(),
                     observed_sequence: b.sequence.finish(),

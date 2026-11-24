@@ -240,6 +240,36 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   `security` spec's "Tamper evidence and audit" requirement, which until now had no implementation
   and no decision beside it. `veridex.audit(log_text, expect_head=None)` returns the same JSON.
 
+- **What a sensor said about its own byte order.** A `sensor_msgs/Image` and a
+  `sensor_msgs/PointCloud2` each carry an `is_bigendian` flag, and it is the one field in the message
+  that says how the bulk blob behind it must be read. Both decoders parsed it and threw it away —
+  `let _is_bigendian = r.u8()?` — so the CDM could not carry it and no check could read it.
+
+  Almost nothing reads it. `numpy.frombuffer`, most Python bag tooling and PCL's default readers
+  reinterpret the payload in the host's order, which is little-endian on every machine anyone trains
+  on. A big-endian payload decoded that way does not fail: it yields values wrong by byte-swapping —
+  a 16-bit depth frame reading `0x0102` where the sensor wrote `0x0201`, a cloud whose coordinates
+  are off by orders of magnitude in a pattern that looks like noise — while the schema, the
+  dimensions, the frame count, the cadence and the byte count are identical to a little-endian
+  recording of the same scene. Nothing else in the dataset differs, which is why it has to be read
+  from the declaration.
+
+  `autonomy.declared-byte-order` reports what the dataset said and never what the bytes are:
+  `AUTONOMY.BIG_ENDIAN_PAYLOAD` (warning) for a stream whose messages all declared big-endian, and
+  `AUTONOMY.MIXED_BYTE_ORDER` (**error**) for one whose messages disagree with each other — the worse
+  fault, because no single rule reads it correctly: a consumer that honors the flag gets every
+  message right and one that ignores it gets the little-endian ones right, so the same loader yields
+  a mixture of correct and byte-swapped values. Silent on the common case, which is every message
+  declaring little-endian, and silent for every schema that carries no such flag or a run that did
+  not open the bodies.
+
+  The declaration is bound into the content hash (**CDM encoding v22**, golden vector re-pinned) for
+  the reason every other read field is: a check can fail a stream on it, so two recordings differing
+  only in it are different datasets. It is a `world-model-ready` criterion, the catalog is now 54
+  checks and 127 finding codes, and `av-big-endian` is a demo variant — the same rig, every length
+  invariant holding, the record naming `x`, `y`, `z` and `intensity`, and one field saying the
+  coordinates must be read the other way round.
+
 - **What a dataset records about people, and what nobody can tell from the outside.** The catalog's
   privacy requirement had stood as a refusal: detecting a face means decoding pixels and running a
   model over them, which this tool's design is the opposite of. That refusal was right about pixels

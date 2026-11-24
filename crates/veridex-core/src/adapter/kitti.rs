@@ -758,6 +758,7 @@ fn ingest_drive(path: &Path, options: &IngestOptions) -> Result<Ingested, Ingest
             observed_point_counts: point_counts.finish(),
             observed_image_dims: None,
             observed_body_decodes: None,
+            observed_byte_order: None,
             observed_header_stamps: None,
             observed_sequence: None,
             observed_fix_availability: (fix.message_count > 0).then_some(fix),
