@@ -33,6 +33,9 @@ Thumbs.db
 # Claude Code / local-only tooling
 .claude/
 .codelicious/
+# OpenLore's local index and session ledger: generated per checkout, and a worktree's copy is not
+# the main checkout's.
+.openlore/
 
 # Secrets and signing keys (never commit)
 .env
