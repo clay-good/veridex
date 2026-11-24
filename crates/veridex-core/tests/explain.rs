@@ -76,14 +76,15 @@ fn the_engine_table_holds_exactly_the_codes_the_catalog_does_not() {
              different things about it"
         );
     }
-    // The engine's table is the complete set of codes outside the catalog, which the doc guard in
-    // `tests/checks.rs` enumerates independently. If that list grows and this one does not, a code
-    // reaches a report that `explain` cannot answer — so the two counts are pinned together.
+    // That the table is *complete* is asserted where the other list lives:
+    // `tests/checks.rs::docs_checks_md_lists_no_unknown_finding_codes` holds this table and its own
+    // independently written enumeration of the codes no check owns to the same set. The count here
+    // is a tripwire for a third list appearing somewhere.
     assert_eq!(
         ENGINE_EMITTED_CODES.len(),
         11,
-        "a code was added to or removed from the engine's own disclosures; update \
-         `tests/checks.rs`'s `engine_emitted` list and this count together"
+        "a code was added to or removed from the engine's own disclosures: check that \
+         `tests/checks.rs` knows about it too"
     );
 }
 

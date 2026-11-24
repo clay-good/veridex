@@ -2635,6 +2635,20 @@ fn docs_checks_md_lists_no_unknown_finding_codes() {
         );
     }
 
+    // The same set, held against the table `veridex explain` reads. Two hand-written lists of the
+    // codes no check owns is one too many: this one carries the reason each is outside the catalog,
+    // that one carries the sentence a reader gets — and a code in one and not the other is either a
+    // code the docs guard ignores or a code `explain` cannot answer.
+    let in_table: std::collections::BTreeSet<&str> = veridex_core::engine::ENGINE_EMITTED_CODES
+        .iter()
+        .map(|(code, _, _)| *code)
+        .collect();
+    assert_eq!(
+        engine_emitted, in_table,
+        "the engine-emitted codes this guard knows and the ones `explain` can answer must be the \
+         same set"
+    );
+
     // Backtick-delimited spans are the odd-indexed pieces when splitting on '`'.
     for token in doc.split('`').skip(1).step_by(2) {
         if is_finding_code(token) {
