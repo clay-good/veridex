@@ -1176,6 +1176,111 @@ fn the_measurement_start_time_puts_the_frames_on_the_wall_clock() {
     assert_eq!(start, BLF_START_SECS * 1_000_000_000 + 6_000_000);
 }
 
+/// The same header with a chosen measurement start, so a date other than the fixture's can be read.
+fn blf_header_starting(start: (u16, u16, u16, u16, u16, u16, u16, u16)) -> Vec<u8> {
+    let mut h = Vec::new();
+    h.extend_from_slice(b"LOGG");
+    h.extend_from_slice(&le32(144));
+    h.extend_from_slice(&[0u8; 8]);
+    h.extend_from_slice(&0u64.to_le_bytes());
+    h.extend_from_slice(&0u64.to_le_bytes());
+    h.extend_from_slice(&le32(0));
+    h.extend_from_slice(&le32(0));
+    let (y, mo, dow, d, hh, mm, ss, ms) = start;
+    for part in [y, mo, dow, d, hh, mm, ss, ms] {
+        h.extend_from_slice(&le16(part));
+    }
+    h.extend_from_slice(&[0u8; 16]);
+    h.resize(144, 0);
+    h
+}
+
+/// A `.blf` whose header declares `start`, with the fixture's frames behind it.
+fn blf_starting(start: (u16, u16, u16, u16, u16, u16, u16, u16)) -> Vec<u8> {
+    let mut out = blf_header_starting(start);
+    for o in blf_frame_objects() {
+        out.extend_from_slice(&o);
+    }
+    out
+}
+
+/// A recording made in **February** reads as February.
+///
+/// The civil-date conversion shifts the year for January and February — March is day zero of the
+/// algorithm's year — so those two months take a branch the other ten do not. The fixture above is
+/// recorded in January, which takes the same branch, so the *other* side of it had no test at all:
+/// a mutation sweep moved the condition from `m <= 2` to `m < 2` and nothing noticed. The identical
+/// arithmetic in the KITTI reader had a real defect of exactly this shape, found the same way.
+///
+/// Each expected instant is computed independently of the reader, from a published epoch value.
+#[test]
+fn a_recording_made_in_february_is_not_read_as_a_different_day() {
+    // 2026-02-03 04:05:06.007 UTC. 2026-02-01T00:00:00Z is 1769904000 (2026-01-01 is 1767225600,
+    // plus 31 days), so the instant is 1769904000 + 2*86400 + 4*3600 + 5*60 + 6 = 1770091506.
+    let out = ingest_blf(&blf_starting((2026, 2, 2, 3, 4, 5, 6, 7)));
+    let start = out.dataset.episodes[0].start_ts.expect("a start timestamp");
+    assert_eq!(
+        start,
+        1_770_091_506 * 1_000_000_000 + 7_000_000,
+        "a February recording sits where February is"
+    );
+    // And a leap day, which is the other case the branch decides: 2024-02-29T00:00:00Z is
+    // 1709164800 (2024-01-01 is 1704067200, plus 59 days).
+    let out = ingest_blf(&blf_starting((2024, 2, 4, 29, 0, 0, 0, 0)));
+    let start = out.dataset.episodes[0].start_ts.expect("a start timestamp");
+    assert_eq!(start, 1_709_164_800 * 1_000_000_000);
+    // A month on the other side of the branch, to hold both sides at once: 2026-03-01T00:00:00Z is
+    // 1772323200 — 2026-01-01 (1767225600) plus 59 days, January's 31 and February's 28, because
+    // 2026 is not a leap year.
+    let out = ingest_blf(&blf_starting((2026, 3, 0, 1, 0, 0, 0, 0)));
+    let start = out.dataset.episodes[0].start_ts.expect("a start timestamp");
+    assert_eq!(start, 1_772_323_200 * 1_000_000_000);
+}
+
+/// A header whose clock fields cannot be a time is no time base, not a wrong one.
+///
+/// Each bound is off-by-one-shaped and none had a test at its edge: seconds run to **60** because a
+/// leap second is a real stamp, milliseconds to 999, and a month of 13 or a day of 32 is not a date.
+/// A header this reader cannot read leaves the frames on the file's own relative clock rather than
+/// on a fabricated wall clock.
+#[test]
+fn a_header_whose_clock_fields_are_impossible_yields_no_wall_clock() {
+    let relative = ingest_blf(&blf_starting((2026, 13, 0, 1, 0, 0, 0, 0)))
+        .dataset
+        .episodes[0]
+        .start_ts
+        .expect("a start timestamp");
+    for impossible in [
+        (2026, 13, 0, 1, 0, 0, 0, 0), // the month past the last one
+        (2026, 0, 0, 1, 0, 0, 0, 0),
+        (2026, 1, 0, 32, 0, 0, 0, 0), // the day past the last one
+        (2026, 1, 0, 0, 0, 0, 0, 0),
+        (2026, 1, 0, 1, 24, 0, 0, 0),   // the hour past the last one
+        (2026, 1, 0, 1, 0, 60, 0, 0),   // the minute past the last one
+        (2026, 1, 0, 1, 0, 0, 61, 0),   // one past the leap second
+        (2026, 1, 0, 1, 0, 0, 0, 1000), // the millisecond past the last one
+    ] {
+        let out = ingest_blf(&blf_starting(impossible));
+        assert_eq!(
+            out.dataset.episodes[0].start_ts.expect("a start timestamp"),
+            relative,
+            "{impossible:?} is not a time, so it is no time base"
+        );
+    }
+    // The last *accepted* values on the other side of each bound, which must shift the clock.
+    for accepted in [
+        (2026, 12, 0, 31, 23, 59, 60, 999),
+        (2026, 1, 0, 1, 0, 0, 0, 0),
+    ] {
+        let out = ingest_blf(&blf_starting(accepted));
+        assert_ne!(
+            out.dataset.episodes[0].start_ts.expect("a start timestamp"),
+            relative,
+            "{accepted:?} is a time and must be read as one"
+        );
+    }
+}
+
 /// A remote frame requests data and carries none. Its eight payload bytes are not a payload, and
 /// decoding signals out of them puts a run of fabricated zeros into the streams the checks grade.
 #[test]

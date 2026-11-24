@@ -1495,6 +1495,9 @@ pub fn decode_diagnostic_array(data: &[u8], enc: Encoding) -> Option<Vec<Diagnos
 /// `text` cut to [`MAX_DIAGNOSTIC_TEXT`] bytes at a character boundary, so a driver's long message
 /// cannot grow a finding or the content hash without bound.
 fn truncate_text(text: &str) -> String {
+    // `<=` or `<` cannot differ: at exactly the limit the fall-through truncates to the same
+    // length, which is the whole string. A mutation sweep flagged it; the early return is here for
+    // the common case, not for correctness.
     if text.len() <= MAX_DIAGNOSTIC_TEXT {
         return text.to_string();
     }
@@ -2966,6 +2969,87 @@ mod tests {
         w.header("base_link");
         w.u32(u32::MAX);
         assert!(decode_diagnostic_array(&w.buf, Encoding::Cdr).is_none());
+    }
+
+    #[test]
+    fn a_stale_status_is_the_last_level_the_message_defines() {
+        // The four levels are OK, WARN, ERROR and STALE, and STALE is 3 — the one a
+        // `diagnostic_aggregator` publishes when a component stopped reporting, which is a different
+        // fact from the component reporting a fault. A test already declined level 4; nothing had
+        // ever decoded a 3, so the mutant that narrowed the guard to `>= 3` dropped every stale
+        // status in the corpus and no test noticed.
+        let got = decode_diagnostic_array(
+            &diagnostic_body(&[(3, "velodyne: Hardware", "no updates for 5s", "HDL-64E")]),
+            Encoding::Cdr,
+        )
+        .expect("a stale status is a status");
+        assert_eq!(got[0].level, 3);
+        assert_eq!(got[0].message, "no updates for 5s");
+    }
+
+    #[test]
+    fn a_status_message_of_exactly_the_text_limit_is_kept_whole() {
+        // The cap exists so a hostile or chatty driver cannot write a megabyte of its own prose into
+        // every report and certificate. A message exactly at it is *not* over it, and the mutant
+        // that moved the line truncated a message at its own length — losing nothing visible, which
+        // is exactly why no test caught it.
+        let at = "x".repeat(MAX_DIAGNOSTIC_TEXT);
+        let past = "y".repeat(MAX_DIAGNOSTIC_TEXT + 1);
+        let got = decode_diagnostic_array(
+            &diagnostic_body(&[(2, "velodyne", &at, ""), (2, "camera", &past, "")]),
+            Encoding::Cdr,
+        )
+        .expect("decodes");
+        assert_eq!(
+            got[0].message.len(),
+            MAX_DIAGNOSTIC_TEXT,
+            "a message at the limit is kept whole"
+        );
+        assert_eq!(
+            got[1].message.len(),
+            MAX_DIAGNOSTIC_TEXT,
+            "and one past it is cut to the limit rather than dropped"
+        );
+        assert!(got[1].message.ends_with('y'));
+        // A *name* at the limit is read; one past it declines the body, because a name is the
+        // component the statement is about rather than free-form text to trim.
+        assert!(decode_diagnostic_array(
+            &diagnostic_body(&[(2, &at, "broken", "")]),
+            Encoding::Cdr
+        )
+        .is_some());
+        assert!(decode_diagnostic_array(
+            &diagnostic_body(&[(2, &past, "broken", "")]),
+            Encoding::Cdr
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn a_capture_stamp_one_nanosecond_short_of_a_second_is_a_stamp() {
+        // `builtin_interfaces/Time` normalizes `nanosec` below a full second, and that invariant is
+        // one of the two that make eight plausible bytes believable as a clock reading. The last
+        // valid value is 999_999_999 and the first invalid one is 1_000_000_000 — and the mutant
+        // that moved the line rejected the last nanosecond of every second, which is a stamp a real
+        // publisher emits roughly once a second.
+        let stamped = |nanosec: u32| -> Option<i64> {
+            let mut w = W::new();
+            // CDR carries no `seq`; the stamp is the first field.
+            w.i32(1_767_225_600); // 2026-01-01T00:00:00Z
+            w.u32(nanosec);
+            w.string("base_link");
+            decode_header_stamp(&w.buf, Encoding::Cdr)
+        };
+        assert_eq!(
+            stamped(999_999_999),
+            Some(1_767_225_600 * 1_000_000_000 + 999_999_999)
+        );
+        assert_eq!(
+            stamped(1_000_000_000),
+            None,
+            "a nanosecond field holding a whole second is not a normalized stamp"
+        );
+        assert_eq!(stamped(0), Some(1_767_225_600 * 1_000_000_000));
     }
 
     #[test]

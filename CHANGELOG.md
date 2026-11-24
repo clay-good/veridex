@@ -10,6 +10,24 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Changed
 
+- **And over the adapters, where the same date bug was waiting.** The civil-date conversion in the
+  Vector BLF reader is the arithmetic that had a real defect in the KITTI reader — the year shifts
+  for January and February, because March is day zero of the algorithm's year. The BLF fixture is
+  recorded in January, which takes the same branch, so the *other* side of it had no test at all:
+  flipping `m <= 2` to `m < 2` changed nothing any test could see. A **February** recording, a **leap
+  day** and a **March** recording now each have an independently computed epoch, and the header's
+  clock fields are pinned at both ends — seconds run to 60 because a leap second is a real stamp,
+  milliseconds to 999, and a month of 13 or a day of 32 leaves the frames on the file's own relative
+  clock rather than on a fabricated wall clock.
+
+  Three more in the CDR decoders, where a body is bytes a publisher chose: a **stale** diagnostic
+  status (level 3, what an aggregator publishes when a component stopped reporting) decodes, where
+  only level 4 had ever been declined; a status **name** at exactly the text limit is read and one
+  past it declines the body, because a name is the component the statement is about rather than
+  prose to trim; and a capture stamp whose `nanosec` is 999_999_999 is a stamp while 1_000_000_000
+  is not — a publisher emits the former about once a second, and the mutant that moved that line
+  rejected all of them.
+
 - **The same sweep over everything that is not a check, and the parser hole it found.** 82
   comparison flips across the engine, the config, the certificate, the report, the redactor, the
   media probe, the remote reader, the watcher and the simulation-reference parser — judged against
