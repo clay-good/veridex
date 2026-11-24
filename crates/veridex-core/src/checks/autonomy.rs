@@ -2577,8 +2577,10 @@ impl Check for PointCloudLayout {
                         continue;
                     };
                     // A field with no stated element count holds one element, which is what every
-                    // coordinate is.
-                    let elements = u64::from(f.elements.unwrap_or(1)).max(1);
+                    // coordinate is. One that states *zero* occupies nothing, which is the stance
+                    // the reader takes too — it declines such a body outright — so it contributes no
+                    // extent here rather than a contrived one-element extent nothing would read.
+                    let elements = u64::from(f.elements.unwrap_or(1));
                     let start = u64::from(offset);
                     extents.push((
                         start,

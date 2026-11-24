@@ -776,28 +776,52 @@ fn looks_like_email(text: &str) -> bool {
     })
 }
 
-/// A telephone number as a person writes one: an international prefix or a grouped run of digits
-/// with separators — never a bare run, which is every counter, id and checksum in a dataset.
+/// A telephone number as a person writes one: a grouped run of digits, or an international prefix.
+///
+/// Scanned as **maximal spans** of the characters a number is written with, rather than as words or
+/// sliding windows of words. The window version matched any long digit string, because a sixteen-
+/// digit serial written in groups contains a nine-digit window — so a device id read as a telephone
+/// number, which is the one mistake this check must not make.
+///
+/// Two conditions, and both are the difference between a number and a count. The span holds between
+/// nine and fifteen digits, which is what the E.164 plan allows. And the digits are either
+/// internationally prefixed (`+…`) or **grouped** — a separator with a digit either side of it,
+/// which is how a person writes a number and not how a counter, an id or a checksum is written.
 fn looks_like_phone(text: &str) -> bool {
-    let digits = |s: &str| s.chars().filter(|c| c.is_ascii_digit()).count();
-    text.split_whitespace()
-        .collect::<Vec<_>>()
-        .windows(3)
-        .map(|w| w.join(" "))
-        .chain(text.split_whitespace().map(str::to_string))
-        .any(|candidate| {
-            let separated = candidate.contains('-') || candidate.contains(' ');
-            let prefixed = candidate.trim_start().starts_with('+');
-            if !(separated || prefixed) {
-                return false;
-            }
-            // Only digits and the punctuation a phone number is written with, and a count in the
-            // range the E.164 plan allows.
-            let shaped = candidate
-                .chars()
-                .all(|c| c.is_ascii_digit() || "+-() ".contains(c));
-            shaped && (9..=15).contains(&digits(&candidate))
-        })
+    const PUNCT: &str = "+-() ";
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if !(chars[i].is_ascii_digit() || PUNCT.contains(chars[i])) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() && (chars[i].is_ascii_digit() || PUNCT.contains(chars[i])) {
+            i += 1;
+        }
+        let span: Vec<char> = chars[start..i]
+            .iter()
+            .copied()
+            .skip_while(|c| !c.is_ascii_digit() && *c != '+')
+            .collect();
+        let digits = span.iter().filter(|c| c.is_ascii_digit()).count();
+        if !(9..=15).contains(&digits) {
+            continue;
+        }
+        if span.first() == Some(&'+') {
+            return true;
+        }
+        // A separator between two digits: `7700 900123`, `555-0123`. A span that is one run of
+        // digits with spaces around it is a count, not a number.
+        let grouped = span
+            .windows(3)
+            .any(|w| w[0].is_ascii_digit() && PUNCT.contains(w[1]) && w[2].is_ascii_digit());
+        if grouped {
+            return true;
+        }
+    }
+    false
 }
 
 /// `/home/<user>/`, `/Users/<user>/`, `C:\Users\<user>\` — a path that names the person who ran the

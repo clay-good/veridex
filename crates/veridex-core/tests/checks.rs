@@ -8374,6 +8374,59 @@ fn the_finding_never_quotes_the_value_it_warns_about() {
 }
 
 #[test]
+fn the_shapes_this_check_matches_are_bounded_at_both_ends() {
+    // The patterns are deliberately narrow, and "narrow" is a pair of boundaries each: a host
+    // suffix of one character is not a top-level domain, one of twenty-four is (`.cancerresearch`
+    // is the longest in the root zone, at fourteen; the ceiling is slack, not a guess), and a run of
+    // digits is a telephone number only inside the length the numbering plan allows. Both ends of
+    // both, because a check that fires on honest data teaches its reader to ignore it and one that
+    // misses the real thing is worse than absent.
+    assert!(
+        personal_codes("mail a@b.co").contains(&"PROVENANCE.PERSONAL_DATA".to_string()),
+        "two characters is a top-level domain"
+    );
+    assert!(
+        personal_codes("mail a@b.c").is_empty(),
+        "one is not — and `a@b.c` is the shape a sensor id takes"
+    );
+    let long = "x".repeat(24);
+    assert!(personal_codes(&format!("mail a@b.{long}"))
+        .contains(&"PROVENANCE.PERSONAL_DATA".to_string()));
+    assert!(
+        personal_codes(&format!("mail a@b.{}", "x".repeat(25))).is_empty(),
+        "past the ceiling it is not a host name"
+    );
+
+    // E.164 allows up to fifteen digits and nothing short of nine is a dialable number.
+    assert!(
+        personal_codes("+1 234 56 78").is_empty(),
+        "eight digits is not a telephone number"
+    );
+    assert!(
+        personal_codes("+1 234 567 89").contains(&"PROVENANCE.PERSONAL_DATA".to_string()),
+        "nine is"
+    );
+    assert!(
+        personal_codes("+123 456 789 012 345").contains(&"PROVENANCE.PERSONAL_DATA".to_string()),
+        "and so is fifteen"
+    );
+    assert!(
+        personal_codes("+1234 456 789 012 345").is_empty(),
+        "sixteen is not: at that length it is a serial number or an id"
+    );
+    // Grouping, not length alone: a run of digits with nothing but spaces around it is a count.
+    assert!(
+        personal_codes("odometer 827312071234 at shutdown").is_empty(),
+        "twelve digits in a sentence is a reading, not a number"
+    );
+    assert!(
+        personal_codes("call 0044 7700 900123 for the operator")
+            .contains(&"PROVENANCE.PERSONAL_DATA".to_string()),
+        "the same count of digits, grouped the way a person writes a number, is one"
+    );
+}
+
+#[test]
 fn the_ordinary_strings_a_dataset_is_full_of_are_silent() {
     // A check that fires on honest data teaches its reader to ignore it. Every one of these is a
     // shape a real dataset carries in the fields this check reads.

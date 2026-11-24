@@ -631,3 +631,86 @@ fn the_declaration_is_bound_into_the_content_hash() {
     assert_ne!(big, mixed);
     assert_ne!(little, mixed);
 }
+
+#[test]
+fn point_fields_that_sit_next_to_each_other_do_not_overlap() {
+    // The boundary the overlap rule lives or dies on: a field starting exactly where the one before
+    // it ends is the ordinary packed record, which is how every correct cloud is written. Reporting
+    // it would fire on every dataset; missing the one-byte intersection beside it would report none.
+    use veridex_core::check::Check;
+    let layout = |offsets: &[(&str, u32, &str)]| -> Dataset {
+        let mut d = rig_dataset();
+        let mut lidar = stream("lidar", Modality::PointCloud, &[0, 50_000_000]);
+        lidar.point_fields = Some(
+            offsets
+                .iter()
+                .map(|(name, offset, dtype)| veridex_core::cdm::PointField {
+                    name: (*name).into(),
+                    dtype: Some((*dtype).into()),
+                    offset: Some(*offset),
+                    elements: Some(1),
+                })
+                .collect(),
+        );
+        d.episodes[0].streams = vec![lidar];
+        d.canonicalize_order();
+        d
+    };
+    let codes = |d: &Dataset| -> Vec<String> {
+        veridex_core::checks::autonomy::PointCloudLayout
+            .run(d)
+            .into_iter()
+            .filter(|f| f.code == "AUTONOMY.POINT_FIELDS_OVERLAP")
+            .map(|f| f.code)
+            .collect()
+    };
+
+    // Packed, adjacent, float32: 0, 4, 8. Nothing overlaps.
+    let packed = layout(&[
+        ("x", 0, "float32"),
+        ("y", 4, "float32"),
+        ("z", 8, "float32"),
+    ]);
+    assert!(codes(&packed).is_empty(), "adjacency is not overlap");
+
+    // One byte in: `z` now starts inside `y`.
+    let one_in = layout(&[
+        ("x", 0, "float32"),
+        ("y", 4, "float32"),
+        ("z", 7, "float32"),
+    ]);
+    assert_eq!(codes(&one_in), ["AUTONOMY.POINT_FIELDS_OVERLAP"]);
+
+    // A width the reader does not know has no extent, so it is left out rather than guessed at —
+    // `AUTONOMY.POINT_CLOUD_FIELD_UNTYPED` is what reports that field.
+    let untyped = layout(&[
+        ("x", 0, "float32"),
+        ("y", 2, "something-else"),
+        ("z", 8, "float32"),
+    ]);
+    assert!(
+        codes(&untyped).is_empty(),
+        "a field with no known width contributes no extent"
+    );
+
+    // A field declaring *zero* elements occupies nothing — the stance the reader takes too, which
+    // declines such a body outright — so it adds no extent of its own. It is still *inside* the
+    // field before it here, and that is what the finding is about: `x` covers bytes 0 to 4 and `y`
+    // claims to start at byte 2.
+    let mut zero = layout(&[("x", 0, "float32"), ("y", 2, "float32")]);
+    for s in &mut zero.episodes[0].streams {
+        if let Some(fields) = &mut s.point_fields {
+            fields[1].elements = Some(0);
+        }
+    }
+    assert_eq!(codes(&zero), ["AUTONOMY.POINT_FIELDS_OVERLAP"]);
+    // And a zero-element field clear of everything else is silent, rather than reported on an
+    // extent nothing would read.
+    let mut clear = layout(&[("x", 0, "float32"), ("y", 8, "float32")]);
+    for s in &mut clear.episodes[0].streams {
+        if let Some(fields) = &mut s.point_fields {
+            fields[1].elements = Some(0);
+        }
+    }
+    assert!(codes(&clear).is_empty());
+}
