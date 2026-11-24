@@ -201,7 +201,7 @@ cargo build
 # `av`, `av-miscalibrated`, `av-ambiguous-tf`, `av-dead-lidar`, `av-dead-camera`, `av-ego-jump`, `av-null-island`,
 # `av-truncated-lidar`,
 # `av-corrupt-bodies`, `av-split-rig`, `av-unstamped`, `av-uncalibrated-camera`, `av-lossy-camera`,
-# `av-no-fix`, `av-mislabelled-cloud`, `av-sick-lidar`. An unknown variant is refused, never silently
+# `av-no-fix`, `av-mislabelled-cloud`, `av-sick-lidar`, `av-simulated`. An unknown variant is refused, never silently
 # substituted, and the refusal names the ones it knows.
 cargo run -p veridex-demo --example make_demo_mcap -- /tmp/demo.mcap
 

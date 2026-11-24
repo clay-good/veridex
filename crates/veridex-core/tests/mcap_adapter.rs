@@ -3861,3 +3861,76 @@ fn a_rig_whose_driver_reported_itself_broken_is_caught_end_to_end() {
         "adding the rig's own account of itself must add exactly the finding that reads it"
     );
 }
+
+#[test]
+fn a_recording_made_on_simulated_time_says_so_end_to_end() {
+    // The same five-sensor rig, recorded in a simulator: the only difference is the
+    // `rosgraph_msgs/msg/Clock` topic every node in a graph running with `use_sim_time` takes its
+    // time from. Nothing else about such a recording reads as synthetic — the topics are a rig's
+    // topics, the cadences a rig's cadences, the transform tree a rig's tree — so a simulated drive
+    // and a real one graded identically, and a corpus pooling both could not tell them apart.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let read = |variant: &str| -> veridex_core::cdm::Dataset {
+        let path = dir.path().join(format!("{variant}.mcap"));
+        veridex_demo::mcap::write(&path, variant).expect("write the demo rig");
+        McapAdapter
+            .ingest(&Source::Local(path), &IngestOptions::default())
+            .expect("ingest")
+            .dataset
+    };
+    let codes = |d: &veridex_core::cdm::Dataset| -> Vec<String> {
+        let engine = veridex_core::checks::default_engine().expect("the standard catalog");
+        let hash = veridex_core::content_hash(d);
+        let mut codes: Vec<String> = engine
+            .run(d, hash, &veridex_core::RunConfig::default())
+            .findings
+            .into_iter()
+            .map(|f| f.code)
+            .collect();
+        codes.sort();
+        codes.dedup();
+        codes
+    };
+
+    let sim = read("av-simulated");
+    // The recording's own inventory is where this comes from, not an inference from the data.
+    assert!(
+        sim.metadata
+            .iter()
+            .any(|(k, v)| k == veridex_core::cdm::META_ROS_TIME_SOURCE
+                && v == veridex_core::cdm::ROS_TIME_SOURCE_SIMULATED),
+        "{:?}",
+        sim.metadata
+    );
+    // And it answers the `clock` provenance question, which every other bag leaves unanswered.
+    let clock = sim
+        .provenance
+        .iter()
+        .flat_map(|p| p.elements.iter())
+        .find(|e| e.key == "clock")
+        .expect("a simulated recording states its clock");
+    assert_eq!(clock.class, veridex_core::cdm::ProvenanceClass::Known);
+
+    let real = codes(&read("av"));
+    let simulated = codes(&sim);
+    let added: Vec<String> = simulated
+        .iter()
+        .filter(|c| !real.contains(c))
+        .cloned()
+        .collect();
+    let gone: Vec<String> = real
+        .iter()
+        .filter(|c| !simulated.contains(c))
+        .cloned()
+        .collect();
+    assert_eq!(
+        added,
+        ["PROVENANCE.SIMULATED_CLOCK"],
+        "a simulated recording must add exactly the finding that says so"
+    );
+    assert_eq!(
+        gone,
+        ["PROVENANCE.MISSING_CLOCK"],
+        "…and stop reporting the clock as unknown, because the recording does say"
+    );
+}

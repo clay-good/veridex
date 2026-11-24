@@ -10,6 +10,29 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A recording made in a simulator now says so.** A ROS node started with `use_sim_time` takes its
+  clock from a `rosgraph_msgs/Clock` publisher instead of the system clock, and every other node in
+  that graph does the same — so a recording carrying a clock channel was made on a simulator's clock.
+  Nothing else about it reads as synthetic: the topics are a rig's topics, the cadences a rig's
+  cadences, the transform tree a rig's tree, and the trust score a rig's score. A simulated drive and
+  a real one graded identically, and a corpus pooling both could not tell them apart.
+
+  `PROVENANCE.SIMULATED_CLOCK` reports it, read from the recording's own topic inventory (MCAP,
+  ROS 2 rosbag2 and ROS 1 rosbag) and in the positive direction only: a recording *without* a clock
+  channel says nothing about where its time came from, and `provenance.time-source` says nothing
+  about it either. It also answers the `clock` provenance element, which every other bag leaves
+  unknown — the question that element asks is which clock the timestamps were measured against, and
+  this is a recording that states it.
+
+  Two things follow that the report did not say. Every temporal result — rate, gap, jitter, span,
+  cross-sensor sync — is about the simulator's clock rather than about hardware, so "synchronized to
+  2 ms" is a statement about a simulation loop. And the data is in all likelihood not from physical
+  sensors, so pooling it with real recordings puts the sim-to-real gap inside the training set. A
+  warning rather than a judgement about the data: simulated data is legitimate training data, and
+  world models are routinely built from it. A corpus that cannot tell which of its recordings were
+  simulated is the problem. Proven on a new demo variant, `av-simulated`, which adds exactly this
+  finding and stops reporting the clock as unknown.
+
 - **What the rig said about itself is now read.** A ROS driver written with `diagnostic_updater`
   publishes its own state, and the `diagnostic_aggregator` beside it republishes the whole rig's — so
   a recording made while a sensor was failing very often *contains the driver's own statement that it

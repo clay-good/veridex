@@ -198,6 +198,34 @@ pub(crate) fn schema_is(schema_name: &str, ty: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// The `clock` provenance element a recording made on simulated time supplies about itself.
+///
+/// The `clock` element asks which clock a recording's timestamps were measured against, and a
+/// recording that carries a `rosgraph_msgs/Clock` channel answers it: a simulator's. Extracted from
+/// the inventory like every other element here, never claimed — and it leaves
+/// `PROVENANCE.MISSING_CLOCK` correctly silent for the one case where the recording does say.
+pub(crate) fn simulated_clock_element() -> ProvenanceElement {
+    ProvenanceElement {
+        key: "clock".into(),
+        value: Some("ROS simulated time (a clock channel is recorded)".into()),
+        class: ProvenanceClass::Known,
+    }
+}
+
+/// Whether a ROS recording's topic inventory says its timeline is **simulated time**.
+///
+/// A node started with `use_sim_time` takes its clock from a `rosgraph_msgs/Clock` publisher
+/// instead of the system clock, and every other node in that graph does the same — so a recording
+/// that carries such a channel was made on a simulator's clock, and every rate, span, gap and
+/// cross-sensor result in the report is about that clock rather than about a rig. It is also the
+/// strongest thing a bag says about whether its data came from hardware at all.
+///
+/// Read from the inventory, in the positive direction only: a recording *without* a clock channel
+/// says nothing about where its time came from, and nothing is recorded for it.
+pub(crate) fn declares_simulated_time<'a>(schemas: impl IntoIterator<Item = &'a str>) -> bool {
+    schemas.into_iter().any(|s| schema_is(s, "Clock"))
+}
+
 /// Honest provenance records read from an MCAP file: the header, any Metadata records (a name plus a
 /// key/value map the producer wrote), and a summary of any Attachments (name + media type). All are
 /// read as-is and never fabricated.
@@ -523,6 +551,8 @@ impl Adapter for McapAdapter {
 
         // Accumulate streams by topic (BTreeMap keeps a deterministic order before canonicalization).
         let mut streams: BTreeMap<String, StreamBuilder> = BTreeMap::new();
+        // Whether this recording carries a ROS clock channel — see `declares_simulated_time`.
+        let mut simulated_time = false;
         let mut min_ts: Option<i64> = None;
         let mut max_ts: Option<i64> = None;
 
@@ -566,6 +596,11 @@ impl Adapter for McapAdapter {
             min_ts = Some(min_ts.map_or(ts, |m| m.min(ts)));
             max_ts = Some(max_ts.map_or(ts, |m| m.max(ts)));
 
+            // The recording's own statement about where its time came from: a `/clock` channel means
+            // the graph ran on simulated time.
+            if schema_is(schema_name, "Clock") {
+                simulated_time = true;
+            }
             let builder = streams
                 .entry(topic.clone())
                 .or_insert_with(|| StreamBuilder {
@@ -727,11 +762,21 @@ impl Adapter for McapAdapter {
 
         // Dataset metadata and provenance: the format plus whatever the header honestly records.
         let mut metadata = vec![("source_format".into(), "mcap".into())];
+        if simulated_time {
+            metadata.push((
+                crate::cdm::META_ROS_TIME_SOURCE.into(),
+                crate::cdm::ROS_TIME_SOURCE_SIMULATED.into(),
+            ));
+        }
+        let simulated_clock = simulated_time;
         let mut elements = vec![ProvenanceElement {
             key: "source_format".into(),
             value: Some("mcap".into()),
             class: ProvenanceClass::Known,
         }];
+        if simulated_clock {
+            elements.push(super::mcap::simulated_clock_element());
+        }
         if let Some(h) = &header {
             // The writing library (e.g. "mcap-rs 0.25") is recorded provenance about who produced
             // the file. Empty strings are treated as absent, never fabricated.
@@ -1086,11 +1131,30 @@ fn ingest_summary_only(path: &Path, summary: McapSummary) -> Result<Ingested, In
         .collect();
 
     let mut metadata = vec![("source_format".into(), "mcap".to_string())];
+    if declares_simulated_time(
+        summary
+            .channels
+            .iter()
+            .filter_map(|c| c.schema_name.as_deref()),
+    ) {
+        metadata.push((
+            crate::cdm::META_ROS_TIME_SOURCE.into(),
+            crate::cdm::ROS_TIME_SOURCE_SIMULATED.into(),
+        ));
+    }
     let mut elements = vec![ProvenanceElement {
         key: "source_format".into(),
         value: Some("mcap".to_string()),
         class: ProvenanceClass::Known,
     }];
+    if declares_simulated_time(
+        summary
+            .channels
+            .iter()
+            .filter_map(|c| c.schema_name.as_deref()),
+    ) {
+        elements.push(super::mcap::simulated_clock_element());
+    }
     // The Metadata records the summary's index pointed at. This is where a producer writes the
     // licence, the sensor and the clock source, and reading them is what keeps a summary-only run
     // from reporting `provenance 0%` on a file that states its provenance perfectly well — a claim

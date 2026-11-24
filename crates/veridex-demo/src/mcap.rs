@@ -126,7 +126,14 @@
 //!   check passes, and the one place that says the sensor was broken is the rig's own account of
 //!   itself, which nothing read → `AUTONOMY.HARDWARE_ERROR`.
 //!
-//! Usage: `cargo run -p veridex-demo --example make_demo_mcap -- <output.mcap> [skew|clean|stuck|late-start|av|av-miscalibrated|av-ambiguous-tf|av-dead-lidar|av-dead-camera|av-ego-jump|av-null-island|av-truncated-lidar|av-corrupt-bodies|av-split-rig|av-unstamped|av-uncalibrated-camera|av-lossy-camera|av-no-fix|av-mislabelled-cloud|av-sick-lidar]`
+//! - `av-simulated` — the same rig, recorded in a simulator: the recording carries the
+//!   `rosgraph_msgs/msg/Clock` topic every node in a graph running with `use_sim_time` takes its
+//!   time from. Nothing else about it reads as synthetic — the topics are a rig's topics, the
+//!   cadences are a rig's cadences, the transform tree is a rig's tree, and the trust score is a
+//!   rig's score → `PROVENANCE.SIMULATED_CLOCK` is the only thing that says the timeline, and in all
+//!   likelihood the data, did not come from hardware.
+//!
+//! Usage: `cargo run -p veridex-demo --example make_demo_mcap -- <output.mcap> [skew|clean|stuck|late-start|av|av-miscalibrated|av-ambiguous-tf|av-dead-lidar|av-dead-camera|av-ego-jump|av-null-island|av-truncated-lidar|av-corrupt-bodies|av-split-rig|av-unstamped|av-uncalibrated-camera|av-lossy-camera|av-no-fix|av-mislabelled-cloud|av-sick-lidar|av-simulated]`
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
@@ -156,6 +163,7 @@ pub const VARIANTS: &[&str] = &[
     "av-no-fix",
     "av-mislabelled-cloud",
     "av-sick-lidar",
+    "av-simulated",
 ];
 
 /// Write the demo MCAP recording to `path`, replacing anything already there.
@@ -217,6 +225,9 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
     // `av-sick-lidar` is the same rig with a `/diagnostics` topic, on which the LiDAR's own driver
     // reports `ERROR` for most of the drive while publishing full, well-formed, on-time sweeps.
     let sick_lidar = variant == "av-sick-lidar";
+    // `av-simulated` is the same rig recorded in a simulator: a `/clock` topic, which is what every
+    // node in a graph running with `use_sim_time` takes its time from.
+    let simulated = variant == "av-simulated";
     let av = variant == "av"
         || miscalibrated
         || ambiguous_tf
@@ -232,7 +243,8 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
         || lossy_camera
         || no_fix
         || mislabelled_cloud
-        || sick_lidar;
+        || sick_lidar
+        || simulated;
 
     let mut buf = Vec::new();
     {
@@ -257,6 +269,7 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
                     no_fix,
                     mislabelled_cloud,
                     sick_lidar,
+                    simulated,
                 },
             );
         } else {
@@ -473,6 +486,7 @@ struct RigFaults {
     no_fix: bool,
     mislabelled_cloud: bool,
     sick_lidar: bool,
+    simulated: bool,
 }
 
 /// sensor spans ~1.0 s from a shared start except the IMU, whose span is deliberately cut to ~0.70 s
@@ -495,6 +509,7 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(w: &mut mcap::Writer<W>, faul
         no_fix,
         mislabelled_cloud,
         sick_lidar,
+        simulated,
     } = faults;
     // (schema, topic, message count, inter-message interval ns, coordinate frame). The IMU runs the
     // same 100 msg count as a healthy 100 Hz sensor but at a compressed 7 ms interval, so it finishes
@@ -521,6 +536,11 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(w: &mut mcap::Writer<W>, faul
     // default (`diagnostic_updater` in each driver, `diagnostic_aggregator` beside them); it reports
     // on the rig rather than measuring the world, which is why it is typed `Diagnostics` and left
     // out of every cross-sensor comparison.
+    // The simulator's clock, present only in `av-simulated`. Every node in a graph running with
+    // `use_sim_time` times itself by this topic, so its presence in a recording is the recording
+    // saying its timeline is not a clock on a rig.
+    let sim_clock: &[(&str, &str, u64, u64, &str)] =
+        &[("rosgraph_msgs/msg/Clock", "/clock", 101, 10_000_000, "")];
     let diagnostics: &[(&str, &str, u64, u64, &str)] = &[(
         "diagnostic_msgs/msg/DiagnosticArray",
         "/diagnostics",
@@ -624,6 +644,7 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(w: &mut mcap::Writer<W>, faul
         .iter()
         .chain(if split_rig { rear_camera } else { &[] })
         .chain(if sick_lidar { diagnostics } else { &[] })
+        .chain(if simulated { sim_clock } else { &[] })
         .collect();
     for (seq_base, (schema, topic, count, interval, frame_id)) in
         all_sensors.iter().copied().enumerate()
@@ -697,6 +718,13 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(w: &mut mcap::Writer<W>, faul
                 if corrupt_bodies && i % 5 != 0 {
                     body.truncate(body.len() / 3);
                 }
+                write_msg(w, channel, i as u32, t, &body);
+            } else if *schema == "rosgraph_msgs/msg/Clock" {
+                // `builtin_interfaces/msg/Time { int32 sec, uint32 nanosec }` and nothing else: the
+                // whole message is the simulator's current time.
+                let mut body: Vec<u8> = vec![0x00, 0x01, 0x00, 0x00];
+                body.extend_from_slice(&((stamp / 1_000_000_000) as u32).to_le_bytes());
+                body.extend_from_slice(&((stamp % 1_000_000_000) as u32).to_le_bytes());
                 write_msg(w, channel, i as u32, t, &body);
             } else if *schema == "diagnostic_msgs/msg/DiagnosticArray" {
                 // What the rig said about itself. Two components, as an aggregator publishes them:

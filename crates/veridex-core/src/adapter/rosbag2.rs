@@ -1040,11 +1040,21 @@ fn ingest_metadata_only(
         .collect();
 
     let mut metadata = vec![("source_format".into(), FORMAT.to_string())];
+    // The recording's own statement about where its time came from.
+    if super::mcap::declares_simulated_time(manifest.topics.iter().map(|t| t.ros_type.as_str())) {
+        metadata.push((
+            crate::cdm::META_ROS_TIME_SOURCE.into(),
+            crate::cdm::ROS_TIME_SOURCE_SIMULATED.into(),
+        ));
+    }
     let mut elements = vec![ProvenanceElement {
         key: "source_format".into(),
         value: Some(FORMAT.to_string()),
         class: ProvenanceClass::Known,
     }];
+    if super::mcap::declares_simulated_time(manifest.topics.iter().map(|t| t.ros_type.as_str())) {
+        elements.push(super::mcap::simulated_clock_element());
+    }
     if let Some(v) = &manifest.version {
         metadata.push(("rosbag2_version".into(), v.clone()));
     }
@@ -1513,11 +1523,23 @@ impl Adapter for Rosbag2Adapter {
         };
 
         let mut metadata = vec![("source_format".into(), FORMAT.to_string())];
+        // The recording's own statement about where its time came from.
+        if super::mcap::declares_simulated_time(manifest.topics.iter().map(|t| t.ros_type.as_str()))
+        {
+            metadata.push((
+                crate::cdm::META_ROS_TIME_SOURCE.into(),
+                crate::cdm::ROS_TIME_SOURCE_SIMULATED.into(),
+            ));
+        }
         let mut elements = vec![ProvenanceElement {
             key: "source_format".into(),
             value: Some(FORMAT.to_string()),
             class: ProvenanceClass::Known,
         }];
+        if super::mcap::declares_simulated_time(manifest.topics.iter().map(|t| t.ros_type.as_str()))
+        {
+            elements.push(super::mcap::simulated_clock_element());
+        }
         if let Some(v) = &manifest.version {
             metadata.push(("rosbag2_version".into(), v.clone()));
         }

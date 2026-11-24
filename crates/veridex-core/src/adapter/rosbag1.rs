@@ -307,6 +307,16 @@ impl Adapter for Rosbag1Adapter {
                 if let Some(recorder) = &walk.recorder {
                     m.push(("recorder".into(), recorder.clone()));
                 }
+                // The recording's own statement about where its time came from: a `/clock` topic
+                // means the graph ran on simulated time.
+                if super::mcap::declares_simulated_time(
+                    walk.messages.values().map(|a| a.ros_type.as_str()),
+                ) {
+                    m.push((
+                        crate::cdm::META_ROS_TIME_SOURCE.into(),
+                        crate::cdm::ROS_TIME_SOURCE_SIMULATED.into(),
+                    ));
+                }
                 m
             },
             provenance: vec![Provenance {
@@ -317,6 +327,11 @@ impl Adapter for Rosbag1Adapter {
                         value: Some(FORMAT_ID.to_string()),
                         class: ProvenanceClass::Known,
                     }];
+                    if super::mcap::declares_simulated_time(
+                        walk.messages.values().map(|a| a.ros_type.as_str()),
+                    ) {
+                        elements.push(super::mcap::simulated_clock_element());
+                    }
                     // Only where the bag named one: a mapped field is a statement that this run read
                     // something, and most bags carry no `callerid` on their connections.
                     if let Some(recorder) = &walk.recorder {
@@ -1030,6 +1045,12 @@ fn ingest_metadata_only(
             if let Some(r) = &recorder {
                 m.push(("recorder".into(), r.clone()));
             }
+            if super::mcap::declares_simulated_time(topics.values().map(|(ty, _)| ty.as_str())) {
+                m.push((
+                    crate::cdm::META_ROS_TIME_SOURCE.into(),
+                    crate::cdm::ROS_TIME_SOURCE_SIMULATED.into(),
+                ));
+            }
             m
         },
         provenance: vec![Provenance {
@@ -1040,6 +1061,10 @@ fn ingest_metadata_only(
                     value: Some(FORMAT_ID.to_string()),
                     class: ProvenanceClass::Known,
                 }];
+                if super::mcap::declares_simulated_time(topics.values().map(|(ty, _)| ty.as_str()))
+                {
+                    elements.push(super::mcap::simulated_clock_element());
+                }
                 if let Some(r) = &recorder {
                     elements.push(ProvenanceElement {
                         key: "recorder".into(),

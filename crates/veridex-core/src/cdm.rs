@@ -30,6 +30,19 @@ pub const META_DECLARED_EPISODES: &str = "declared_total_episodes";
 /// `meta/info.json` `total_frames`), so a check can compare it against the frames actually ingested.
 pub const META_DECLARED_FRAMES: &str = "declared_total_frames";
 
+/// Metadata key under which an adapter records that the recording's timeline is **simulated time**
+/// rather than a clock on a rig — set to `simulated` when a ROS recording carries a
+/// `rosgraph_msgs/Clock` channel, which is what a node running with `use_sim_time` publishes and
+/// what every other node in that graph then times itself by.
+///
+/// Read from the recording's own topic inventory rather than inferred from the data, and only in the
+/// positive direction: a recording *with* a clock channel was made on simulated time, while one
+/// without it says nothing about where its time came from, so it records nothing here.
+pub const META_ROS_TIME_SOURCE: &str = "ros_time_source";
+
+/// The value [`META_ROS_TIME_SOURCE`] takes for a recording made on simulated time.
+pub const ROS_TIME_SOURCE_SIMULATED: &str = "simulated";
+
 /// A dataset: the top of the CDM tree.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Dataset {

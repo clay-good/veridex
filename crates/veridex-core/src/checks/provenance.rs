@@ -658,3 +658,81 @@ impl Check for LicenseCompatibility {
         findings
     }
 }
+
+/// **Simulated time.** A recording whose timeline came from a simulator, which nothing said.
+///
+/// A ROS node started with `use_sim_time` takes its clock from a `rosgraph_msgs/Clock` publisher
+/// instead of the system clock, and every other node in that graph does the same. So a recording
+/// that carries a clock channel was made on a simulator's clock — and it looks, in every other
+/// respect, exactly like a drive: the topics are a rig's topics, the cadences are a rig's cadences,
+/// the transform tree is a rig's tree, and the trust score is a rig's score.
+///
+/// Two things follow, and the report said neither. Every temporal result — rate, gap, jitter, span,
+/// cross-sensor sync — is about the simulator's clock rather than about hardware, so "this rig is
+/// synchronized to 2 ms" is a statement about a simulation loop. And the data itself is, in all
+/// likelihood, not from physical sensors: pooling it with real recordings puts the sim-to-real gap
+/// inside the training set, where no verdict in this tool would show it.
+///
+/// A warning rather than an error, and deliberately not a judgement about the data: simulated data
+/// is legitimate training data, and world models are routinely built from it. What is not legitimate
+/// is a corpus that cannot tell which of its recordings were simulated.
+///
+/// Read from the recording's own topic inventory (`META_ROS_TIME_SOURCE`), in the positive direction
+/// only: a recording without a clock channel says nothing about where its time came from, and this
+/// check says nothing about it either. No other format carries the question.
+pub struct TimeSource;
+
+impl Check for TimeSource {
+    fn id(&self) -> &'static str {
+        "provenance.time-source"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &["PROVENANCE.SIMULATED_CLOCK"]
+    }
+    fn title(&self) -> &'static str {
+        "Recording time source"
+    }
+    fn category(&self) -> Category {
+        Category::Provenance
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Warning
+    }
+    fn scope(&self) -> Scope {
+        Scope::Dataset
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        let simulated = dataset.metadata.iter().any(|(k, v)| {
+            k == crate::cdm::META_ROS_TIME_SOURCE && v == crate::cdm::ROS_TIME_SOURCE_SIMULATED
+        });
+        if !simulated {
+            return Vec::new();
+        }
+        vec![Finding::new(
+            self.id(),
+            Category::Provenance,
+            Severity::Warning,
+            Location::Dataset,
+            "PROVENANCE.SIMULATED_CLOCK",
+            "this recording carries a ROS clock channel, so the graph that produced it ran on \
+             simulated time rather than on a clock on a rig"
+                .to_string(),
+        )
+        .with_risk(
+            "Every temporal result in this report — rate, gap, jitter, span, cross-sensor sync — is \
+             about the simulator's clock rather than about hardware, and the data itself is in all \
+             likelihood not from physical sensors. Nothing else here distinguishes this recording \
+             from a drive: the topics, the cadences, the transform tree and the trust score are a \
+             rig's. Pooled with real recordings, it puts the sim-to-real gap inside the training \
+             set where no verdict would show it.",
+        )
+        .with_remedy(
+            "Keep simulated recordings labelled as such wherever this dataset is pooled or \
+             published. Simulated data is legitimate training data — a corpus that cannot tell \
+             which of its recordings were simulated is the problem.",
+        )]
+    }
+}
