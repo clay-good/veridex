@@ -493,6 +493,40 @@ fn a_camera_re_encoded_half_way_through_a_drive_is_caught_end_to_end() {
 }
 
 #[test]
+fn intrinsics_computed_for_another_image_size_are_caught_end_to_end() {
+    // The second silent way a calibration goes wrong, and the one nothing could see before the
+    // readers measured image sizes. `image_02` is recorded at half size throughout while
+    // `calib_cam_to_cam.txt` still states the full `S_02`: the stream is consistent with itself so
+    // `AUTONOMY.IMAGE_RESIZED` is silent, the tree is connected and the numbers finite so
+    // `AUTONOMY.CALIBRATION_INCOMPLETE` and `_IMPLAUSIBLE` are silent, and `cx = 690` sits well
+    // inside the 1392-wide image the calibration declares so the principal-point rule is satisfied.
+    let (_dir, got) = ingest("wrong-resolution");
+    let codes = codes_for(&got);
+    assert!(
+        codes.contains(&"AUTONOMY.CALIBRATION_RESOLUTION".to_string()),
+        "{codes:?}"
+    );
+    // And the rules that cannot see it stay quiet, so the finding is not one of several about the
+    // same thing.
+    for quiet in [
+        "AUTONOMY.IMAGE_RESIZED",
+        "AUTONOMY.CALIBRATION_IMPLAUSIBLE",
+        "AUTONOMY.CALIBRATION_INCOMPLETE",
+        "AUTONOMY.CALIBRATION_UNCHECKED",
+    ] {
+        assert!(!codes.contains(&quiet.to_string()), "{quiet}: {codes:?}");
+    }
+
+    // The clean drive, where the two sizes agree, reports none of it — which is what makes the
+    // finding above a measurement rather than a rule that fires on every KITTI drive.
+    let (_dir, clean) = ingest("rig");
+    assert!(
+        !codes_for(&clean).contains(&"AUTONOMY.CALIBRATION_RESOLUTION".to_string()),
+        "the demo calibration states the size its samples declare"
+    );
+}
+
+#[test]
 fn every_one_of_the_thirty_oxts_fields_is_either_mapped_or_disclosed() {
     // `dataformat.txt` defines thirty fields and the report accounts for them by number: the mapped
     // list says where each one went, the unmapped note says which were not read. A field in neither

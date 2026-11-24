@@ -1228,6 +1228,7 @@ impl Check for CalibrationCompleteness {
             "AUTONOMY.CALIBRATION_IMPLAUSIBLE",
             "AUTONOMY.CALIBRATION_AMBIGUOUS",
             "AUTONOMY.CALIBRATION_UNCHECKED",
+            "AUTONOMY.CALIBRATION_RESOLUTION",
         ]
     }
     fn abstention_codes(&self) -> &'static [&'static str] {
@@ -1442,6 +1443,33 @@ impl Check for CalibrationCompleteness {
             // them while the transform between two sensors has more than one answer.
             for reason in ambiguous_calibration(dataset) {
                 findings.push(ambiguous(reason));
+            }
+            // Present, coherent, unambiguous — and computed for a different image than the one
+            // recorded, which no rule above can see: the tree is fine and the numbers are finite.
+            for reason in calibration_resolution_mismatch(dataset) {
+                findings.push(
+                    Finding::new(
+                        "autonomy.calibration-completeness",
+                        Category::Autonomy,
+                        Severity::Error,
+                        Location::Dataset,
+                        "AUTONOMY.CALIBRATION_RESOLUTION",
+                        reason,
+                    )
+                    .with_risk(
+                        "Every projection between this camera and the rest of the rig is wrong by \
+                         the ratio between the two image sizes. Nothing else reports it: the \
+                         transform tree is connected, the intrinsics are finite, and the principal \
+                         point can sit well inside the image the calibration declares while being \
+                         wrong for the image recorded.",
+                    )
+                    .with_remedy(
+                        "Re-calibrate at the resolution the rig records, or scale the intrinsics to \
+                         it — `fx`, `fy`, `cx` and `cy` all scale with the image. Recording at a \
+                         different size than the calibration was computed for is not something a \
+                         consumer can correct after the fact without knowing which was intended.",
+                    ),
+                );
             }
         } else if let Some(note) = calibration_unjudged(dataset) {
             findings.push(note);
@@ -3274,6 +3302,83 @@ const ROTATION_NORM_TOLERANCE: f64 = 1e-2;
 /// is a report size the input file chooses. The overflow is counted and reported, never dropped
 /// silently: a bound that stops a check mid-judgement has to reach the verdict.
 const MAX_UNUSABLE_REPORTED: usize = 8;
+
+/// Cameras whose intrinsics were computed for an image size the recording is not, as sentences.
+///
+/// The second of the two silent ways a calibration goes wrong, and until the readers measured image
+/// sizes it could only be caught *obliquely*: a principal point outside the declared image is the
+/// symptom this leaves when the mismatch is large enough and the optical centre near enough the
+/// edge. A 1392x512 calibration applied to a 696x256 recording leaves `cx = 690` comfortably inside
+/// the declared image and wrong by a factor of two, so nothing reported it. Both numbers are now in
+/// the model — the size the calibration states and the size the frames carry — and the comparison
+/// is arithmetic rather than inference.
+///
+/// Only where the calibration and the stream can be matched **by name**, which is the honest limit:
+/// KITTI's intrinsics are keyed by the sensor directory, so `image_02` is `image_02`, while a ROS
+/// rig publishes `CameraInfo` on `/camera/front/camera_info` and the image on
+/// `/camera/front/image_raw` — pairing those means guessing a namespace convention and accusing
+/// whichever camera the guess missed. An unmatched camera is left to
+/// `AUTONOMY.CALIBRATION_IMPLAUSIBLE`'s principal-point rule, exactly as before.
+///
+/// A stream whose own size changed mid-recording is `AUTONOMY.IMAGE_RESIZED`'s to report, and this
+/// rule stays quiet when either of the sizes it carried matches the calibration: the defect there is
+/// the change, and reporting both would bill one fault twice.
+fn calibration_resolution_mismatch(dataset: &Dataset) -> Vec<String> {
+    let Some(calibration) = &dataset.calibration else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for k in &calibration.intrinsics {
+        // Both dimensions, or no comparison: a calibration that states one of them says nothing
+        // about the other, and half a comparison is a guess at the rest.
+        let (Some(width), Some(height)) = (k.width, k.height) else {
+            continue;
+        };
+        if width == 0 || height == 0 {
+            continue;
+        }
+        for ep in &dataset.episodes {
+            let Some(stream) = ep.streams.iter().find(|s| s.name == k.stream) else {
+                continue;
+            };
+            let Some(dims) = &stream.observed_image_dims else {
+                continue;
+            };
+            // Nothing was measured, or every frame was empty: that is the image family's finding,
+            // not a statement about the calibration.
+            if dims.message_count == 0 || dims.empty == dims.message_count {
+                continue;
+            }
+            let width = width as u32;
+            let height = height as u32;
+            let matches = |w: u32, h: u32| w == width && h == height;
+            if matches(dims.min_width, dims.min_height) || matches(dims.max_width, dims.max_height)
+            {
+                continue;
+            }
+            let recorded = if dims.min_width == dims.max_width && dims.min_height == dims.max_height
+            {
+                format!("{}×{}", dims.max_width, dims.max_height)
+            } else {
+                format!(
+                    "{}×{} to {}×{}",
+                    dims.min_width, dims.min_height, dims.max_width, dims.max_height
+                )
+            };
+            if seen.insert(k.stream.clone()) {
+                out.push(format!(
+                    "camera `{}` carries intrinsics computed for a {width}×{height} image and \
+                     recorded {recorded} — the focal lengths and the principal point are pixel \
+                     quantities, so every projection through them is off by the ratio between the \
+                     two",
+                    k.stream
+                ));
+            }
+        }
+    }
+    out
+}
 
 /// The abstention for a dataset that carries a calibration while falling under the rig threshold.
 ///

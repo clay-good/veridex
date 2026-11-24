@@ -40,7 +40,14 @@
 //!   presence, cadence and frame-count rules all pass while the intrinsics are wrong for half the
 //!   recording → `AUTONOMY.IMAGE_RESIZED`.
 //!
-//! Usage: `cargo run -p veridex-demo --example make_demo_kitti -- <output-dir> [rig|dead-lidar|unsynced|null-island|no-fix|missing-samples|shrinking-camera]`
+//! - `wrong-resolution` — the same drive whose `image_02` is recorded at half size throughout,
+//!   while `calib_cam_to_cam.txt` still states the full `S_02`. The stream is consistent with
+//!   itself, so nothing about it changed; the calibration is present, connected and finite, so
+//!   nothing about it is unusable; and `cx = 690` sits well inside the 1392-wide image the
+//!   calibration declares, so the principal-point rule is satisfied. Only the two sizes compared
+//!   against each other show it → `AUTONOMY.CALIBRATION_RESOLUTION`.
+//!
+//! Usage: `cargo run -p veridex-demo --example make_demo_kitti -- <output-dir> [rig|dead-lidar|unsynced|null-island|no-fix|missing-samples|shrinking-camera|wrong-resolution]`
 //!
 //! Then: `veridex check <output-dir>/2011_09_26/2011_09_26_drive_0005_sync`.
 
@@ -58,6 +65,7 @@ pub const VARIANTS: &[&str] = &[
     "no-fix",
     "missing-samples",
     "shrinking-camera",
+    "wrong-resolution",
 ];
 
 /// The date directory a drive sits under, and the drive's own name — the shape KITTI publishes.
@@ -100,6 +108,7 @@ pub fn write(dir: &Path, variant: &str) -> Result<(), DemoError> {
     let no_fix = variant == "no-fix";
     let missing_samples = variant == "missing-samples";
     let shrinking_camera = variant == "shrinking-camera";
+    let wrong_resolution = variant == "wrong-resolution";
 
     crate::fresh_dir(dir)?;
     let date_dir = dir.join(DATE);
@@ -154,6 +163,10 @@ pub fn write(dir: &Path, variant: &str) -> Result<(), DemoError> {
             // resolution that changed part-way through one recording, which every presence,
             // cadence and frame-count test passes.
             let (w, h) = if shrinking_camera && sensor == "image_02" && i * 2 >= SAMPLES {
+                (IMAGE_WIDTH / 2, IMAGE_HEIGHT / 2)
+            } else if wrong_resolution && sensor == "image_02" {
+                // Every sample at half size, while the calibration still states the full one: a rig
+                // recording downscaled against intrinsics nobody re-computed.
                 (IMAGE_WIDTH / 2, IMAGE_HEIGHT / 2)
             } else {
                 (IMAGE_WIDTH, IMAGE_HEIGHT)

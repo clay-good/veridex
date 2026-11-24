@@ -10,6 +10,21 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **`AUTONOMY.CALIBRATION_RESOLUTION`: intrinsics computed for an image size the recording is not.**
+  The second of the two silent ways a calibration goes wrong, and until the readers measured image
+  sizes it could only be caught obliquely — a principal point outside the *declared* image is the
+  symptom this leaves when the mismatch is large and the optical centre near the edge, so 1392×512
+  intrinsics over a 696×256 recording left `cx = 690` comfortably inside the declared image and
+  wrong by a factor of two, with nothing to report it. Both numbers are now in the model, so the
+  comparison is arithmetic rather than inference. Compared only where the calibration and the stream
+  can be matched by name, which is the honest limit: KITTI keys its intrinsics by the sensor
+  directory, while a ROS rig publishes `CameraInfo` on one topic and the image on another and
+  pairing them means guessing a namespace convention. A stream whose own size changed mid-recording
+  stays `AUTONOMY.IMAGE_RESIZED`'s to report. The `wrong-resolution` demo variant is the defect
+  itself: every presence, tree and principal-point rule passes on it, and only the two sizes
+  compared against each other show it.
+
+
 - **KITTI reads each camera sample's own image size, so the image rules answer instead of
   abstaining.** A PNG's `IHDR` sits at a fixed offset behind the signature, so the dimensions are a
   bounded prefix read with no pixel decoded (JPEG too, for a drive re-encoded that way). Without it

@@ -902,7 +902,10 @@ prefix whatever the file's size. Without it the four cameras of every drive carr
 all and the image rules abstained, which made the dead-camera fault — a stream of well-formed
 zero-sized frames at the right cadence — unreportable on this format; the `shrinking-camera` variant
 is a camera re-encoded at half size half-way through a drive, which every presence, cadence and
-frame-count rule passes and `AUTONOMY.IMAGE_RESIZED` reports. **Point counts** come from each
+frame-count rule passes and `AUTONOMY.IMAGE_RESIZED` reports. With both sizes in the model — the one
+the calibration states and the one the frames carry — the `wrong-resolution` variant is the other
+case: `image_02` recorded at half size throughout while `S_02` still states the full one, which no
+presence, tree or principal-point rule can see and `AUTONOMY.CALIBRATION_RESOLUTION` reports. **Point counts** come from each
 sweep's own length: a KITTI `.bin` is `float32 [x, y, z, reflectance]` per point, so the count is the
 file size over sixteen, read from `stat` with no point payload decoded — which is what catches a
 drive whose LiDAR recorded nothing. **Calibration** is the real thing: the per-camera intrinsics and
