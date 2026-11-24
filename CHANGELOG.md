@@ -40,9 +40,17 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   Nothing is read whole into memory — every sample is an independently addressed file, so a frame's
   fingerprint is streamed through a fixed buffer. `--metadata-only` reads the per-sensor manifests
   for the inventory and the declared sample count and opens no sample. A drive is one episode, so
-  sampling is refused by name. The demo generator writes five variants (a clean drive, a dead LiDAR,
-  an unsynced one, a receiver that never fixed, and a part-uploaded one) and the whole sweep of
-  cross-run invariants now runs over them.
+  sampling is refused by name. The demo generator writes six variants (a clean drive, a dead LiDAR,
+  an unsynced one, a receiver that never fixed, one that lost the sky for four fifths of the drive,
+  and a part-uploaded one) and the whole sweep of cross-run invariants now runs over them.
+
+  `numsats` — the satellites each OXTS row says the receiver tracked — becomes the **fix
+  availability**, so `AUTONOMY.GNSS_NO_FIX` answers on a KITTI drive instead of abstaining. Zero
+  satellites is the row saying that position was not measured from the sky; the position itself is
+  still recorded, because unlike a `NavSatFix` whose `STATUS_NO_FIX` disclaims its own coordinates an
+  OXTS row reports a blended inertial position and disclaims nothing. The finding's wording now says
+  "not a satellite-measured position" rather than "no position", which is true of both sources — the
+  one claim the ROS case could make and this one cannot.
 
 - **The episodes two datasets both contain.** Every check in the catalog looks inside one dataset. A
   corpus is assembled from several, and the failure that costs a training run is not inside any of

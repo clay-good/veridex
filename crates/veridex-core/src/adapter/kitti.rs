@@ -25,7 +25,8 @@
 //! `imu -> velo` rigid transforms from the other two files, which gives a connected transform tree
 //! for the spatial checks to resolve sensors through. **GNSS values** are the first three fields of
 //! each `oxts` row — latitude, longitude, altitude — which is what lets the plausibility rules grade
-//! a drive.
+//! a drive, and `numsats` becomes the **fix availability**, so a drive that lost the sky is reported
+//! rather than abstained on.
 //!
 //! Three honesty notes, because each is a claim this reader deliberately does not make.
 //!
@@ -534,7 +535,7 @@ fn quaternion_from_matrix(r: &[f64]) -> [f64; 4] {
 /// A row has thirty fields and this reads the three the plausibility rules need. The rest (the
 /// velocities, the accelerations, the accuracy and mode flags) are disclosed as unmapped rather than
 /// silently dropped.
-fn oxts_position(text: &str) -> Option<[f64; 3]> {
+fn oxts_row(text: &str) -> Option<OxtsRow> {
     let fields: Vec<&str> = text.split_whitespace().collect();
     // Thirty fields exactly, as `dataformat.txt` defines them: a row of another width is not this
     // record, and reading its first three numbers anyway would report a position from a file that
@@ -545,7 +546,21 @@ fn oxts_position(text: &str) -> Option<[f64; 3]> {
     let lat = fields[0].parse().ok()?;
     let lon = fields[1].parse().ok()?;
     let alt = fields[2].parse().ok()?;
-    Some([lat, lon, alt])
+    Some(OxtsRow {
+        position: [lat, lon, alt],
+        // `numsats`, which `dataformat.txt` defines as the number of satellites the primary GPS
+        // receiver tracked: field 27 of the thirty. Unparseable stays `None` rather than becoming
+        // zero, because "the row does not say" and "it tracked none" are opposite facts.
+        satellites: fields[26].parse().ok(),
+    })
+}
+
+/// The part of one OXTS row this reader uses.
+struct OxtsRow {
+    /// Latitude, longitude and altitude, in that order.
+    position: [f64; 3],
+    /// How many satellites the receiver tracked, where the row states it.
+    satellites: Option<u64>,
 }
 
 /// The names of the three `oxts` fields this reader summarizes, in order.
@@ -633,6 +648,13 @@ fn ingest_drive(path: &Path, options: &IngestOptions) -> Result<Ingested, Ingest
         budget.take(FORMAT_ID, samples as u64)?;
 
         // What the samples themselves say, where this run reads them.
+        // What the receiver said about its own sky: `numsats` per row, counted the way a ROS
+        // receiver's own `STATUS_NO_FIX` is, so `autonomy.gnss-fix-availability` answers on a KITTI
+        // drive instead of abstaining.
+        let mut fix = crate::cdm::FixAvailability {
+            message_count: 0,
+            unfixed: 0,
+        };
         let mut point_counts = super::cdr::PointCountAccum::default();
         let mut values = super::stats::StreamValues::default();
         let mut frames: Vec<Frame> = Vec::with_capacity(samples);
@@ -665,11 +687,24 @@ fn ingest_drive(path: &Path, options: &IngestOptions) -> Result<Ingested, Ingest
                                 point_counts.observe(len / VELODYNE_POINT_BYTES);
                             }
                         }
-                        // The three fields the plausibility rules read, from the row itself.
+                        // The three fields the plausibility rules read, and what the receiver
+                        // said about its own sky, from the row itself.
                         Modality::Gnss => {
                             if let Some(text) = read_text(p)? {
-                                if let Some(position) = oxts_position(&text) {
-                                    values.push_fixed(&position.map(Some), &OXTS_DIM_NAMES);
+                                if let Some(row) = oxts_row(&text) {
+                                    // The position is recorded as a measurement even where no
+                                    // satellite was tracked, and deliberately: unlike a `NavSatFix`
+                                    // whose `STATUS_NO_FIX` disclaims the coordinates beside it, an
+                                    // OXTS row disclaims nothing — it reports a blended INS
+                                    // position and, separately, how many satellites went into it.
+                                    // Dropping it would be this reader deciding the row was lying.
+                                    values.push_fixed(&row.position.map(Some), &OXTS_DIM_NAMES);
+                                    if let Some(satellites) = row.satellites {
+                                        fix.message_count += 1;
+                                        if satellites == 0 {
+                                            fix.unfixed += 1;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -718,7 +753,7 @@ fn ingest_drive(path: &Path, options: &IngestOptions) -> Result<Ingested, Ingest
             observed_body_decodes: None,
             observed_header_stamps: None,
             observed_sequence: None,
-            observed_fix_availability: None,
+            observed_fix_availability: (fix.message_count > 0).then_some(fix),
             media: None,
             // The sensor directory is the coordinate frame the calibration relates, so a sensor's
             // own name is the frame the spatial checks resolve it through.
@@ -815,16 +850,16 @@ fn ingest_drive(path: &Path, options: &IngestOptions) -> Result<Ingested, Ingest
 
     unmapped.push(UnmappedField {
         source_path: "oxts/data/*.txt".into(),
-        note:
-            "fields 4-30 (orientation, velocities, accelerations, accuracies and the mode flags) \
+        note: "fields 4-26 and 28-30 (orientation, velocities, accelerations, accuracies and the \
                are recorded per sample and the CDM holds the position; the three position fields \
                are summarized"
-                .into(),
+            .into(),
     });
     if !options.metadata_only {
         mapped.push("sample bytes -> frame.value_ref.content_hash (SHA-256)".into());
         mapped.push("velodyne_points/data/*.bin length -> observed point counts".into());
         mapped.push("oxts/data/*.txt fields 1-3 -> measured latitude/longitude/altitude".into());
+        mapped.push("oxts/data/*.txt field 27 (numsats) -> satellite fix availability".into());
     } else {
         omitted.push(
             "frames and sample contents (metadata-only: each sensor's `timestamps.txt` states its \

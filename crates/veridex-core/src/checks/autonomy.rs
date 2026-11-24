@@ -237,6 +237,12 @@ impl RigSync {
 /// A satellite receiver that told you it had no fix, for a share of the recording nothing else can
 /// see.
 ///
+/// Two sources state it, in their own words. A `sensor_msgs/msg/NavSatFix` carries the receiver's
+/// verdict in `NavSatStatus.status`; a KITTI OXTS row carries the number of satellites it tracked,
+/// and zero of them is the same fact — the position beside it was not measured from the sky. The
+/// paragraphs below are the ROS case, which is the stronger one: there the message disclaims its own
+/// coordinates, while an OXTS row still reports a blended inertial position.
+///
 /// `sensor_msgs/msg/NavSatFix` carries the receiver's own verdict in `NavSatStatus.status`, and
 /// `STATUS_NO_FIX` means the latitude and longitude beside it are whatever the driver left behind —
 /// the last known position, or zero. Veridex does not record those as measurements, which is right:
@@ -318,7 +324,7 @@ impl Check for GnssFixAvailability {
                         "AUTONOMY.GNSS_NO_FIX",
                         format!(
                             "episode {}: receiver `{}` reported no fix for {:.0}% of its messages \
-                             ({} of {}) — that share of the trajectory has a timestamp and no \
+                             ({} of {}) — that share of the trajectory is not a satellite-measured \
                              position",
                             ep.index,
                             stream.name,
@@ -333,8 +339,8 @@ impl Check for GnssFixAvailability {
                          its cadence and its span, and every timing check reads it as continuous. \
                          The fixes that did land are plausible, so the plausibility check passes on \
                          them. A world model or a map association built from this trajectory is \
-                         built from the fraction that exists, with the gaps interpolated over as \
-                         though they were measured.",
+                         built from the fraction that was measured, with the rest interpolated \
+                         over, or dead-reckoned, as though it were.",
                     )
                     .with_remedy(
                         "Check the antenna, its placement and the receiver's sky view for the \

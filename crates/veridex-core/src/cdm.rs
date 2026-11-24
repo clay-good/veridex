@@ -547,6 +547,11 @@ pub struct Stream {
     /// for every non-GNSS stream, for a source that carries no such status, and for a run that did
     /// not open the message bodies. Extension for `autonomy-sensor-data`.
     ///
+    /// Two sources state it. A `NavSatFix` carries `NavSatStatus.status`, and a KITTI OXTS row carries
+    /// `numsats` — the satellites the receiver tracked, where zero is the same fact in the row's own
+    /// terms. The difference is what each one then says about its coordinates, and it is why the ROS
+    /// case is the stronger one:
+    ///
     /// A `NavSatFix` whose `status` is `STATUS_NO_FIX` still carries latitude, longitude and
     /// altitude — whatever the driver last had, or zero — so those fields are not recorded as a
     /// position, and the message contributes no values. That leaves a frame with a timestamp and

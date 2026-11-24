@@ -23,13 +23,18 @@
 //! - `null-island` — the same drive whose OXTS rows report latitude and longitude of exactly zero:
 //!   a receiver that never acquired a fix, reported the way an unconfigured one reports it →
 //!   `AUTONOMY.GNSS_UNSET`.
+//! - `no-fix` — the same drive whose OXTS rows report **zero satellites tracked** for four fifths of
+//!   it: a receiver that lost the sky under a bridge or in a tunnel, which the row states in
+//!   `numsats` while still reporting a blended INS position. Every row arrives on time and the
+//!   positions are plausible, so the stream's frame count, cadence and span are a healthy
+//!   receiver's → `AUTONOMY.GNSS_NO_FIX`.
 //! - `missing-samples` — the same drive whose `image_00/data/` holds five fewer files than its
 //!   `timestamps.txt` states: a part-uploaded drive. The frames are the samples the manifest and the
 //!   directory agree on, and the difference is disclosed as `COVERAGE.SOURCE_UNREAD` — so the run
 //!   says which part it speaks for. That camera then genuinely ends before the others, which
 //!   `TEMPORAL.CLOCK_SKEW` reports too, and both facts are true.
 //!
-//! Usage: `cargo run -p veridex-demo --example make_demo_kitti -- <output-dir> [rig|dead-lidar|unsynced|null-island|missing-samples]`
+//! Usage: `cargo run -p veridex-demo --example make_demo_kitti -- <output-dir> [rig|dead-lidar|unsynced|null-island|no-fix|missing-samples]`
 //!
 //! Then: `veridex check <output-dir>/2011_09_26/2011_09_26_drive_0005_sync`.
 
@@ -44,6 +49,7 @@ pub const VARIANTS: &[&str] = &[
     "dead-lidar",
     "unsynced",
     "null-island",
+    "no-fix",
     "missing-samples",
 ];
 
@@ -66,6 +72,7 @@ pub fn write(dir: &Path, variant: &str) -> Result<(), DemoError> {
     let dead_lidar = variant == "dead-lidar";
     let unsynced = variant == "unsynced";
     let null_island = variant == "null-island";
+    let no_fix = variant == "no-fix";
     let missing_samples = variant == "missing-samples";
 
     crate::fresh_dir(dir)?;
@@ -188,8 +195,15 @@ pub fn write(dir: &Path, variant: &str) -> Result<(), DemoError> {
         for _ in 3..25 {
             fields.push("0.000000".into());
         }
-        // The five integer mode fields the format ends with.
-        for v in ["4", "11", "5", "5", "5"] {
+        // The five integer mode fields the format ends with: navstat, numsats, posmode, velmode,
+        // orimode. `no-fix` sets `numsats` to zero for four fifths of the drive — the receiver
+        // saying it tracked no satellite, while the row still reports a position.
+        let satellites = if no_fix && i * 5 >= SAMPLES {
+            "0"
+        } else {
+            "11"
+        };
+        for v in ["4", satellites, "5", "5", "5"] {
             fields.push(v.into());
         }
         fs::write(
@@ -263,6 +277,10 @@ pub fn describe(variant: &str) -> Result<&'static str, DemoError> {
             "unsynced (the LiDAR spans two thirds of the other sensors → TEMPORAL.CLOCK_SKEW)"
         }
         "null-island" => "null-island (every OXTS fix is exactly (0, 0) → AUTONOMY.GNSS_UNSET)",
+        "no-fix" => {
+            "no-fix (the receiver tracked no satellite for four fifths of the drive → \
+             AUTONOMY.GNSS_NO_FIX)"
+        }
         "missing-samples" => {
             "missing-samples (image_00 holds five fewer files than its timestamps state → \
              COVERAGE.SOURCE_UNREAD, and that camera ends early → TEMPORAL.CLOCK_SKEW)"

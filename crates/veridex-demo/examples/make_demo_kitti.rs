@@ -1,6 +1,6 @@
 //! Write the demo KITTI raw drive. See [`veridex_demo::kitti`] for what each variant holds.
 //!
-//! Usage: `cargo run -p veridex-demo --example make_demo_kitti -- <output-dir> [rig|dead-lidar|unsynced|null-island|missing-samples]`
+//! Usage: `cargo run -p veridex-demo --example make_demo_kitti -- <output-dir> [rig|dead-lidar|unsynced|null-island|no-fix|missing-samples]`
 
 use std::path::Path;
 

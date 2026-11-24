@@ -879,7 +879,12 @@ calibration rules can check it. The three cameras hang off camera 0 by the rotat
 the calibration records between them, which puts every sensor in one tree for the spatial checks to
 resolve through. **GNSS values** are the first three fields of each OXTS row — latitude, longitude,
 altitude — summarized per dimension and named by what they are, which is what lets the plausibility
-rules grade a drive.
+rules grade a drive. And `numsats`, the satellites the receiver tracked, becomes the **fix
+availability**: zero of them is the row saying this position was not measured from the sky, so a
+drive that lost it under a bridge is reported (`AUTONOMY.GNSS_NO_FIX`) rather than abstained on. The
+position is still recorded — unlike a `NavSatFix` whose `STATUS_NO_FIX` disclaims its own
+coordinates, an OXTS row reports a blended inertial position and disclaims nothing, and dropping it
+would be the reader deciding the row was lying.
 
 Three things this reader deliberately does not claim.
 

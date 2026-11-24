@@ -370,6 +370,69 @@ fn a_receiver_that_never_acquired_a_fix_is_caught_end_to_end() {
 }
 
 #[test]
+fn what_the_receiver_said_about_its_own_sky_is_read_from_numsats() {
+    // The one field in an OXTS row that says whether the position beside it was measured from
+    // satellites at all. Without it this format abstained on fix availability — and the fault that
+    // check exists for is invisible to every other one, because a row with no satellites still
+    // arrives on time with a plausible-looking position in it.
+    let (_dir, got) = ingest("rig");
+    let fix = got.dataset.episodes[0]
+        .streams
+        .iter()
+        .find(|s| s.name == "oxts")
+        .and_then(|s| s.observed_fix_availability)
+        .expect("the satellite count is read");
+    assert_eq!(fix.message_count, 20);
+    assert_eq!(fix.unfixed, 0);
+
+    // A drive that lost the sky for four fifths of itself says so in `numsats`, and the position is
+    // still recorded: unlike a `NavSatFix` whose `STATUS_NO_FIX` disclaims its own coordinates, an
+    // OXTS row reports a blended inertial position and disclaims nothing.
+    let (_dir2, lost) = ingest("no-fix");
+    let oxts = lost.dataset.episodes[0]
+        .streams
+        .iter()
+        .find(|s| s.name == "oxts")
+        .expect("the GPS/IMU");
+    let fix = oxts.observed_fix_availability.expect("counted");
+    assert_eq!(fix.message_count, 20);
+    assert_eq!(fix.unfixed, 16);
+    assert!(
+        oxts.observed_stats.is_some(),
+        "the positions are still summarized: the row does not disclaim them"
+    );
+
+    let engine = veridex_core::checks::default_engine().expect("the standard catalog");
+    let hash = veridex_core::content_hash(&lost.dataset);
+    let codes: Vec<String> = engine
+        .run(&lost.dataset, hash, &veridex_core::RunConfig::default())
+        .findings
+        .into_iter()
+        .map(|f| f.code)
+        .collect();
+    assert!(
+        codes.contains(&"AUTONOMY.GNSS_NO_FIX".to_string()),
+        "{codes:?}"
+    );
+    // And the clean drive no longer abstains on the question, because the count is there to read.
+    let (_dir3, clean) = ingest("rig");
+    let clean_codes: Vec<String> = engine
+        .run(
+            &clean.dataset,
+            veridex_core::content_hash(&clean.dataset),
+            &veridex_core::RunConfig::default(),
+        )
+        .findings
+        .into_iter()
+        .map(|f| f.code)
+        .collect();
+    assert!(
+        !clean_codes.contains(&"AUTONOMY.GNSS_STATUS_UNREAD".to_string()),
+        "{clean_codes:?}"
+    );
+}
+
+#[test]
 fn re_ingesting_the_same_drive_yields_the_same_content_hash() {
     let (_dir, first) = ingest("rig");
     let (_dir2, second) = ingest("rig");
