@@ -554,6 +554,28 @@ fn every_tolerance_reaches_the_printout_and_the_narrowing_disclosure() {
 }
 
 #[test]
+fn a_tolerance_of_zero_is_accepted_and_a_negative_one_is_not() {
+    // The time offsets, the rate deviation and the jitter CV are *non-negative*, not positive: zero
+    // is a real setting — "allow no deviation at all" — and a negative one is a mistake that would
+    // silently disable the check that guards on it. The sweep found no test at zero.
+    for setting in [
+        "clock_skew_ms",
+        "start_offset_ms",
+        "end_offset_ms",
+        "rate_deviation",
+        "jitter_cv",
+    ] {
+        assert!(
+            CheckConfig::from_toml(&format!("[tolerances]\n{setting} = 0\n")).is_ok(),
+            "{setting} = 0 means tolerate nothing, which is a setting a strict rig wants"
+        );
+        let err = CheckConfig::from_toml(&format!("[tolerances]\n{setting} = -1\n"))
+            .expect_err("a negative tolerance is not a tolerance");
+        assert!(err.to_string().contains(setting), "{err}");
+    }
+}
+
+#[test]
 fn a_threshold_exactly_at_the_edge_of_its_range_is_accepted_or_refused_as_documented() {
     // Each of these validators states a range in prose and in its error message, and the sweep found
     // that no test checked the ends. A fraction of 1.0 means "every sample", which is a legitimate

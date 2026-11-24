@@ -1032,3 +1032,31 @@ fn the_label_discloses_what_the_run_could_not_measure() {
         "only abstentions belong in the row: {label}"
     );
 }
+
+#[test]
+fn an_attestation_may_repeat_only_the_keys_that_are_lists() {
+    // An attestation is a signed claim, and a key claimed twice with two values is a claim nobody
+    // can act on: which value did the producer mean? So it is refused at the point of building —
+    // except for the keys that are genuinely lists (`upstream`: a pooled dataset has several).
+    // The boundary is one value versus two, and the sweep found no test across it.
+    let build = |pairs: Vec<(&str, &str)>| {
+        veridex_core::Attestation::build(
+            "demo",
+            "0".repeat(64),
+            pairs
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v.to_string())),
+            "2026-08-07T00:00:00Z",
+        )
+    };
+    // One value per key: the ordinary case.
+    assert!(build(vec![("sensor", "ZED2i"), ("license", "CC-BY-4.0")]).is_ok());
+    // The same key twice, with two different values: refused, naming the key.
+    let err = build(vec![("sensor", "ZED2i"), ("sensor", "Ouster OS1")])
+        .expect_err("two values for one key is not a claim");
+    assert!(err.contains("sensor"), "{err}");
+    // The same key twice with the *same* value is one claim, not two: the pairs are a set.
+    assert!(build(vec![("sensor", "ZED2i"), ("sensor", "ZED2i")]).is_ok());
+    // And the keys that are lists may repeat, because a pooled dataset really has several.
+    assert!(build(vec![("upstream", "ds-a"), ("upstream", "ds-b")]).is_ok());
+}

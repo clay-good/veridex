@@ -731,6 +731,26 @@ mod tests {
     }
 
     #[test]
+    fn a_segment_of_exactly_the_length_limit_is_accepted_and_one_longer_is_not() {
+        // The length cap is on a segment that becomes both a URL path element and a directory name
+        // under the temporary root, so it is a bound on what this module will put on a filesystem.
+        // 128 characters is the limit and is accepted; 129 is not — the sweep found nothing between
+        // them, and the mutant that moved the line refused a name the Hub itself allows.
+        let at = "a".repeat(128);
+        let past = "a".repeat(129);
+        assert!(
+            HubRepo::parse(&format!("hf://owner/{at}")).is_ok(),
+            "128 characters is the limit, not one past it"
+        );
+        assert!(HubRepo::parse(&format!("hf://owner/{past}")).is_err());
+        assert!(HubRepo::parse(&format!("hf://{at}/name")).is_ok());
+        assert!(HubRepo::parse(&format!("hf://{past}/name")).is_err());
+        // And a revision is a segment too, for the same reason: it reaches the request path.
+        assert!(HubRepo::parse(&format!("hf://owner/name@{at}")).is_ok());
+        assert!(HubRepo::parse(&format!("hf://owner/name@{past}")).is_err());
+    }
+
+    #[test]
     fn the_url_names_the_revision_and_the_repo_id_names_the_owner() {
         let r = HubRepo::parse("hf://lerobot/pickplace@v2").unwrap();
         assert_eq!(

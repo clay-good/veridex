@@ -266,6 +266,10 @@ fn near_matches(
                             }
                         }
                         None => {
+                            // `>=` or `>` differ by one fingerprint at a ceiling of two million, and either way the
+                            // overflow is disclosed rather than dropped — a fixture that could see the difference would
+                            // have to build two million fingerprints. A mutation sweep flagged it; it is untestable at
+                            // any cost worth paying, and the behavior either side of the ceiling is what the tests cover.
                             if holders.len() >= MAX_FINGERPRINTS_PER_DATASET {
                                 over = true;
                                 break 'dataset;

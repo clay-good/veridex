@@ -37,12 +37,22 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   duration is zero has **no** rate rather than a rate of zero — a rate of zero is a measurement, and
   nothing measured it.
 
-  Six more are provably untestable and now say so at their sites: the tolerance-departure direction
+  A later shard of the same pass pinned five more that a reader depends on: an **attestation** may
+  repeat only the keys that are genuinely lists (`upstream`), because one key with two values is a
+  signed claim nobody can act on; the **non-negative tolerances** accept zero — "tolerate no
+  deviation at all" is what a strict rig wants — and refuse a negative; an unchanged trust score
+  renders as `(0)` rather than `(+0)`, since a plus sign on a difference of nothing reads as an
+  improvement in a diff whose purpose is to say what changed; and a **Hub segment** of exactly 128
+  characters is accepted while 129 is not, in the owner, the name and the revision alike, because
+  each becomes both a URL path element and a directory name.
+
+  Seven more are provably untestable and now say so at their sites: the tolerance-departure direction
   (only reached when the two values differ, so equality never reaches the comparison), the
   profile's `stricter` tie (both branches return the same value), the two hex abbreviations (applied
   only to 64-character digests, so a boundary at 16 or 20 characters decides nothing), and two bounds
   in the MP4 box walk whose only disagreement is whether a *trailing empty* box joins a list that
-  every consumer searches by type and reads a payload from.
+  every consumer searches by type and reads a payload from, and the pooling fingerprint ceiling,
+  which differs by one fingerprint at two million.
 
 - **The corrupted-input sweep now damages a KITTI drive.** The sweep's own doc comment listed the
   formats it covered and the tenth one was not among them — the newest adapter, and the one with the

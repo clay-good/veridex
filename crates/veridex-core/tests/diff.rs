@@ -418,3 +418,21 @@ fn a_redacted_reports_placeholder_id_is_not_a_dataset_mismatch() {
     let d = veridex_core::diff::diff_reports(&plain, &other);
     assert!(d.dataset_differs(), "two real, different ids still differ");
 }
+
+#[test]
+fn a_score_that_did_not_move_is_rendered_without_a_sign() {
+    // The sign is for a score that *moved*: `+4` or `-4`. An unchanged score renders as `(0)`, and
+    // the mutant that widened the comparison printed `(+0)` — a plus sign on a difference of
+    // nothing, which reads as an improvement in a diff whose whole purpose is to say what changed.
+    let same = veridex_core::diff_reports(&report(json!([]), 76), &report(json!([]), 76));
+    let text = veridex_core::render_diff(&same);
+    assert!(
+        text.contains("76 -> 76 (0)"),
+        "an unchanged score carries no sign: {text}"
+    );
+    // Either direction does carry one.
+    let up = veridex_core::diff_reports(&report(json!([]), 70), &report(json!([]), 76));
+    assert!(veridex_core::render_diff(&up).contains("(+6)"));
+    let down = veridex_core::diff_reports(&report(json!([]), 76), &report(json!([]), 70));
+    assert!(veridex_core::render_diff(&down).contains("(-6)"));
+}
