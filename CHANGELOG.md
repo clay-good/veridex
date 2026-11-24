@@ -38,11 +38,25 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   output) and is now documented as such at the site, which is the honest answer rather than a test
   that cannot fail.
 
-  The remaining survivors are message and display comparisons — how many names a finding lists before
-  "and N more", which end of a range a tie names, the `+` on a signed delta — and skip guards whose
-  mutation cannot change an answer on any reachable input. One of those ties is now pinned anyway
-  (`extreme-outlier` names the maximum when both ends are equally extreme), because a finding that
-  named a different end on a different machine would be a report that does not reproduce.
+  A second pass took the display comparisons, which are messages rather than verdicts and are pinned
+  for two reasons: a count a reader acts on ("missing from 14 episodes") must agree with the list
+  beside it, and the cap is what keeps a pathological dataset from writing half a gigabyte of report.
+  A missing-episode list of exactly eight indices prints no "… (0 more)"; a conflicting-annotation
+  list names four and counts the rest, with the full count always beside it; `extreme-outlier` names
+  the maximum when both ends are equally extreme, because a finding that named a different end on a
+  different machine would be a report that does not reproduce. And one threshold in that pass is a
+  real guard rather than a message: a frame hash held by **exactly**
+  `MAX_EPISODES_PER_HASH` episodes is still evidence, because the ceiling exists to skip boilerplate
+  and a recording ingested forty times shares every frame with thirty-nine others — moving that line
+  by one episode in the wrong direction defeats the check it protects.
+
+  Three survivors are provably **equivalent** and are now documented at their sites rather than left
+  looking untested: `stream-presence`'s "present in every episode" guard (the only inputs that
+  separate `>=` from `>` are stopped by the empty-list guard below it), the near-duplicate pair
+  ceiling (one tracked pair at 200,000, with the overflow disclosed either way), and the
+  shorter/longer wording on a systematic video frame delta (a zero delta clears the pattern, so the
+  value reaching that line is never zero). What is left is skip guards whose mutation cannot change
+  an answer on any reachable input.
 
 - **A mutation sweep over this release's new code, and what it found.** Flipping every comparison in
   the four new checks, the pooling module and the KITTI reader (`>` ↔ `>=`, `<` ↔ `<=`) and running

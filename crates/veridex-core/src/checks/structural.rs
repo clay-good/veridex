@@ -554,6 +554,11 @@ impl Check for StreamPresence {
 
         let mut findings = Vec::new();
         for (name, present_in) in &presence {
+            // `>=` rather than `>`, and the difference is unobservable: duplicate episode indices
+            // can make `present_in.len() < total` for a stream that is in fact in every distinct
+            // episode, and the `missing.is_empty()` guard below catches exactly that case. A
+            // mutation sweep flagged this comparison as untested; the two spellings cannot produce
+            // different output, because the only inputs that separate them are stopped there.
             if present_in.len() >= total {
                 continue; // present in every episode — consistent.
             }
@@ -1246,6 +1251,10 @@ impl Check for NearDuplicateEpisode {
                 }
                 for (i, a) in holders.iter().enumerate() {
                     for b in &holders[i + 1..] {
+                        // `>=` or `>` here differ by one tracked pair at a ceiling of 200,000, and
+                        // either way the overflow is disclosed rather than dropped — the mutation
+                        // changes nothing a report can show, and a fixture that could see it would
+                        // need some 633 mutually-overlapping episodes to build.
                         if shared.len() >= Self::MAX_TRACKED_PAIRS
                             && !shared.contains_key(&(*a, *b))
                         {

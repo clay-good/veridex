@@ -16,7 +16,7 @@ use veridex_core::cdm::{
     StreamStats, ValueRef,
 };
 use veridex_core::check::Check;
-use veridex_core::checks::{statistical, structural, temporal, video};
+use veridex_core::checks::{semantic, statistical, structural, temporal, video};
 
 fn vref() -> ValueRef {
     ValueRef {
@@ -696,4 +696,159 @@ fn a_stream_frozen_in_half_its_episodes_is_the_datasets_shape() {
         2,
         "two of five is, and each frozen episode is named"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The lists a finding prints: exactly at the cap, and one past it
+// ---------------------------------------------------------------------------
+//
+// These are messages rather than verdicts, and they are pinned for two reasons. A count a reader
+// acts on ("missing from 14 episodes") must agree with the list beside it, and the cap is what keeps
+// a pathological dataset from writing half a gigabyte of report. A mutation sweep found every one of
+// these comparisons untested.
+
+/// `episodes` episodes, with the stream `s` absent from the first `missing_from` of them.
+fn presence_dataset(episodes: u64, missing_from: u64) -> Dataset {
+    let mut d = dataset(
+        (0..episodes)
+            .map(|i| {
+                let mut streams = vec![stream("always", "c", None, &[0, 1])];
+                if i >= missing_from {
+                    streams.push(stream("sometimes", "c", None, &[0, 1]));
+                }
+                episode(i, streams)
+            })
+            .collect(),
+    );
+    d.canonicalize_order();
+    d
+}
+
+#[test]
+fn a_missing_episode_list_exactly_at_the_cap_prints_no_remainder() {
+    // Eight indices are shown in full; the ninth turns into "… (1 more)". Under the flipped
+    // comparison a list of exactly eight printed "… (0 more)", which reads as a truncation that is
+    // not there.
+    let check = structural::StreamPresence;
+    let at = presence_dataset(20, 8);
+    let f = check
+        .run(&at)
+        .into_iter()
+        .find(|f| f.code == "STRUCTURAL.STREAM_PRESENCE_INCONSISTENT")
+        .expect("a stream missing from eight episodes is inconsistent");
+    assert!(
+        !f.message.contains("more)"),
+        "eight indices are shown in full: {}",
+        f.message
+    );
+    let past = presence_dataset(20, 9);
+    let f = check
+        .run(&past)
+        .into_iter()
+        .find(|f| f.code == "STRUCTURAL.STREAM_PRESENCE_INCONSISTENT")
+        .expect("nine is still inconsistent");
+    assert!(
+        f.message.contains("… (1 more)"),
+        "the ninth is counted, not shown: {}",
+        f.message
+    );
+}
+
+#[test]
+fn a_frame_hash_in_exactly_the_episode_ceiling_is_still_evidence() {
+    // "A hash in **more** episodes than this is boilerplate." The ceiling is deliberately far above
+    // any plausible duplication group, because a recording ingested forty times shares every frame
+    // with thirty-nine others — mistaking that for boilerplate defeats the check entirely. So the
+    // ceiling itself must still count, and the mutant that made it `>=` moved the line by one
+    // episode in the dangerous direction.
+    let n = structural::NearDuplicateEpisode::MAX_EPISODES_PER_HASH;
+    let check = structural::NearDuplicateEpisode { min_overlap: 0.8 };
+    // `n` episodes sharing seven of eight frame hashes: at the ceiling, still evidence.
+    let at = shared_frame_dataset(n, 8, 7);
+    assert!(
+        !check.run(&at).is_empty(),
+        "a hash held by exactly MAX_EPISODES_PER_HASH episodes is still evidence"
+    );
+    // One more and it is boilerplate, by the check's own rule.
+    let past = shared_frame_dataset(n + 1, 8, 7);
+    assert!(
+        check.run(&past).is_empty(),
+        "past the ceiling the hash is boilerplate and nothing is reported"
+    );
+}
+
+/// `episodes` episodes of one stream, each with `frames` frames, the first `shared` of them carrying
+/// hashes every episode holds and the rest unique to that episode.
+fn shared_frame_dataset(episodes: usize, frames: usize, shared: usize) -> Dataset {
+    let mut d = dataset(
+        (0..episodes)
+            .map(|ep| {
+                let mut s = stream("s", "c", None, &[]);
+                s.frames = (0..frames)
+                    .map(|i| Frame {
+                        ts: i as i64 * 1_000_000,
+                        value_ref: ValueRef {
+                            uri: format!("ep{ep}/{i}"),
+                            byte_offset: None,
+                            byte_len: None,
+                            content_hash: Some(if i < shared {
+                                hash_bytes(0x11, i as u8)
+                            } else {
+                                // Unique per episode: two bytes of episode index, so this stays
+                                // distinct past 255 episodes.
+                                let mut h = hash_bytes(0x22, i as u8);
+                                h[2] = (ep & 0xff) as u8;
+                                h[3] = ((ep >> 8) & 0xff) as u8;
+                                h
+                            }),
+                        },
+                    })
+                    .collect();
+                episode(ep as u64, vec![s])
+            })
+            .collect(),
+    );
+    d.canonicalize_order();
+    d
+}
+
+#[test]
+fn a_conflicting_annotation_list_names_four_and_counts_the_rest() {
+    // The "four and the rest" shape every family carries a copy of. It exists because one check used
+    // to list every other member of a colliding group in every finding — quadratic in the bytes, and
+    // half a gigabyte of report on a real file. The count is always stated in full; only the
+    // enumeration is abbreviated, and the mutant that made the cap five broke that agreement.
+    let check = semantic::AnnotationIntegrity;
+    let label = |v: &str| veridex_core::cdm::Label {
+        key: "language".into(),
+        value: v.into(),
+        ts: Some(500_000),
+    };
+    let with_values = |n: usize| -> Dataset {
+        let mut ep = episode(0, vec![stream("s", "c", None, &[0, 1_000_000])]);
+        ep.start_ts = Some(0);
+        ep.end_ts = Some(1_000_000);
+        ep.labels = (0..n).map(|i| label(&format!("instruction {i}"))).collect();
+        dataset(vec![ep])
+    };
+    let message = |n: usize| -> String {
+        check
+            .run(&with_values(n))
+            .into_iter()
+            .find(|f| f.code == "SEMANTIC.ANNOTATION_CONFLICT")
+            .map(|f| f.message)
+            .unwrap_or_else(|| panic!("{n} distinct annotations at one instant is a conflict"))
+    };
+    let four = message(4);
+    assert!(
+        !four.contains("more"),
+        "four values are listed in full: {four}"
+    );
+    let five = message(5);
+    assert!(
+        five.contains("and 1 more"),
+        "the fifth is counted rather than listed: {five}"
+    );
+    // And the count beside the list is always the full one, which is what makes abbreviating safe.
+    assert!(five.contains("5 conflicting"), "{five}");
 }

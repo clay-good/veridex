@@ -414,6 +414,9 @@ impl Check for MediaConformance {
                                     "every episode with a readable video is {} frame(s) {} than \
                                      its rows",
                                     delta.unsigned_abs(),
+                                    // A zero delta means that episode agreed, which clears the
+                                    // pattern in `systematic_frame_delta` — so the delta reaching
+                                    // this line is never zero and `<` and `<=` cannot differ here.
                                     if delta < 0 { "shorter" } else { "longer" }
                                 ),
                             );
