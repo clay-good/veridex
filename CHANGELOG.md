@@ -10,6 +10,16 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Changed
 
+- **Three more adapter boundaries, each a rule rather than a bound.** A LaserScan return exactly at
+  `range_min` or `range_max` **is** a measurement: those are the window the scanner declares it can
+  measure *in*, inclusive, and a scanner reports its maximum for an open direction — so the mutants
+  that moved either edge discard real returns from most sweeps. A SQLite varint byte of exactly
+  `0x80` **continues** the varint rather than ending it, so `[0x80, 0x01]` is two bytes holding 1 and
+  not one byte holding 128; the mutant mis-read every value from 0 to 127 written in two bytes. And
+  the frame budget is a **ceiling**: a dataset holding exactly as many frames as the budget allows is
+  read, and one more is refused, so an operator who sets the budget to their corpus's size is not
+  refused by it.
+
 - **And over the adapters, where the same date bug was waiting.** The civil-date conversion in the
   Vector BLF reader is the arithmetic that had a real defect in the KITTI reader — the year shifts
   for January and February, because March is day zero of the algorithm's year. The BLF fixture is

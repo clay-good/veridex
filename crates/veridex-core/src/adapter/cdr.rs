@@ -2065,6 +2065,35 @@ mod tests {
     }
 
     #[test]
+    fn a_return_exactly_at_the_scanners_own_window_is_a_measurement() {
+        // REP 117 again, at the edges: `range_min` and `range_max` are the window the scanner
+        // declares it can measure *in*, inclusive. A return exactly at either is a distance the
+        // scanner reported, and a return just outside is the "nothing there" convention. A mutation
+        // sweep found no test at either edge, and the mutants that moved them discard real returns
+        // from every sweep that touches the scanner's limits — which is most of them, because a
+        // scanner reports its maximum for an open direction.
+        let at_both = laser_scan(0.1, 10.0, &[0.1, 10.0], 0);
+        assert_eq!(
+            decode_laser_scan_returns(&at_both.buf, Encoding::Cdr),
+            Some(2),
+            "both edges of the window are inside it"
+        );
+        let just_outside = laser_scan(0.1, 10.0, &[0.0999, 10.0001], 0);
+        assert_eq!(
+            decode_laser_scan_returns(&just_outside.buf, Encoding::Cdr),
+            Some(0),
+            "and just outside is not a measurement"
+        );
+        // The window itself has to be a window: a scan declaring `range_min == range_max` could
+        // report nothing, and is not this message.
+        let degenerate = laser_scan(5.0, 5.0, &[5.0], 0);
+        assert_eq!(
+            decode_laser_scan_returns(&degenerate.buf, Encoding::Cdr),
+            None
+        );
+    }
+
+    #[test]
     fn a_scanner_that_measured_nothing_reads_as_zero_rather_than_as_absent() {
         // The whole point of the check this feeds: a driver that lost its sensor publishes a full,
         // well-formed, correctly-timed sweep of infinities, and that has to be distinguishable from

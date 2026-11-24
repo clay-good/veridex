@@ -189,6 +189,30 @@ fn an_ingest_refuses_to_materialize_more_frames_than_its_budget() {
         ..IngestOptions::default()
     };
     assert!(McapAdapter.ingest(&source, &opts).is_ok());
+
+    // The budget is a *ceiling*, not a strict bound: a file holding exactly as many frames as the
+    // budget allows is read, and one frame more is refused. The file above holds 50. A mutation
+    // sweep found nothing between the two, and the mutant that moved the line refuses a dataset
+    // whose size the operator set the budget to.
+    let at = IngestOptions {
+        max_frames: Some(50),
+        ..IngestOptions::default()
+    };
+    assert!(
+        McapAdapter.ingest(&source, &at).is_ok(),
+        "50 frames under a budget of 50 is not over it"
+    );
+    let under = IngestOptions {
+        max_frames: Some(49),
+        ..IngestOptions::default()
+    };
+    assert!(
+        matches!(
+            McapAdapter.ingest(&source, &under),
+            Err(IngestError::FrameBudgetExceeded { limit: 49, .. })
+        ),
+        "and 50 frames under a budget of 49 is"
+    );
 }
 
 // ---- half a dataset ------------------------------------------------------------------------------

@@ -544,6 +544,13 @@ mod tests {
         assert_eq!(varint(&[0x00], 0).unwrap(), (0, 1));
         assert_eq!(varint(&[0x7f], 0).unwrap(), (127, 1));
         assert_eq!(varint(&[0x81, 0x00], 0).unwrap(), (128, 2));
+        // The continuation bit is 0x80 itself: a byte of exactly 0x80 continues the varint rather
+        // than ending it, so this is two bytes holding 1 — not one byte holding 128. A mutation
+        // sweep found no test at that bit, and the mutant that moved it mis-reads every varint
+        // whose first byte is exactly 0x80, which is every value from 0 to 127 written in two
+        // bytes.
+        assert_eq!(varint(&[0x80, 0x01], 0).unwrap(), (1, 2));
+        assert_eq!(varint(&[0x80, 0x7f], 0).unwrap(), (127, 2));
         // The nine-byte form carries all eight bits of its last byte.
         let all_ones = [0xff; 9];
         assert_eq!(varint(&all_ones, 0).unwrap(), (-1, 9));
