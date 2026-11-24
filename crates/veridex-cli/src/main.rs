@@ -30,7 +30,7 @@ const EXIT_TOOL_ERROR: u8 = 2;
 const COMMANDS: &[(&str, &str)] = &[
     (
         "check",
-        "validate a dataset and report findings (--max-frames <n> / --max-decompression-ratio <n> / --max-source-bytes <n> raise the ingest ceilings; --sample-episodes / --sample-fraction check a subset; --print-config prints the effective config instead)",
+        "validate a dataset and report findings (--max-frames <n> / --max-decompression-ratio <n> / --max-source-bytes <n> raise the ingest ceilings; --sample-episodes / --sample-fraction check a subset; --deadline <secs> bounds the run in time and --progress reports each check; --print-config prints the effective config instead)",
     ),
     (
         "certify",
@@ -94,6 +94,14 @@ struct Args {
     config: Option<String>,
     force: bool,
     allow_any_issuer: bool,
+    /// `--emit-cdm <file>`: save the Canonical Dataset Model this run built.
+    emit_cdm: Option<String>,
+    /// `--cdm <file>`: validate a saved Canonical Dataset Model instead of reading a dataset.
+    cdm: Option<String>,
+    /// `--deadline <secs>`: the wall-clock budget for the whole run, ingest included.
+    deadline: Option<String>,
+    /// `--progress`: report each check as it finishes, on stderr.
+    progress: bool,
     max_frames: Option<String>,
     max_decompression_ratio: Option<String>,
     max_source_bytes: Option<String>,
@@ -128,7 +136,7 @@ impl Args {
     /// The single source of truth for [`reject_flags_except`]. Adding a flag to the parser without
     /// adding it here means it is never checked, so the two lists are kept adjacent, and a test
     /// asserts this covers the parser's whole flag set.
-    fn given_flags(&self) -> [(&'static str, bool); 30] {
+    fn given_flags(&self) -> [(&'static str, bool); 34] {
         [
             ("--json", self.json),
             ("--sarif", self.sarif),
@@ -146,6 +154,10 @@ impl Args {
             ("--fail-on", self.fail_on.is_some()),
             ("--min-score", self.min_score.is_some()),
             ("--profile", self.profile.is_some()),
+            ("--emit-cdm", self.emit_cdm.is_some()),
+            ("--cdm", self.cdm.is_some()),
+            ("--deadline", self.deadline.is_some()),
+            ("--progress", self.progress),
             ("--max-frames", self.max_frames.is_some()),
             (
                 "--max-decompression-ratio",
@@ -177,6 +189,18 @@ const INGEST_FLAGS: &[&str] = &[
 
 /// The sampling flags, honored only where a partial verdict is meaningful (`check`, `inspect`).
 const SAMPLING_FLAGS: &[&str] = &["--sample-episodes", "--sample-fraction", "--sample-seed"];
+
+/// The flags that bound a run in *time* rather than in data, honored wherever a long run happens
+/// (`check`, `watch`). `--deadline` stops the run and marks the result incomplete; `--progress`
+/// reports each check as it finishes. Both are the front end's: this binary reads the clock and
+/// writes to stderr, and the core is handed closures.
+const RUN_CONTROL_FLAGS: &[&str] = &["--deadline", "--progress"];
+
+/// The flags that save and re-use the Canonical Dataset Model a run built, so the catalog can be
+/// re-run over a dataset without reading it again — nearly all of a run's cost is the read. Honored
+/// by `check` alone: `certify` deliberately does not take `--cdm`, because a certificate is a claim
+/// about a dataset and the issuer should have read it at least once.
+const CDM_CACHE_FLAGS: &[&str] = &["--emit-cdm", "--cdm"];
 
 /// The metadata-only flag, honored alongside sampling wherever a partial verdict is meaningful
 /// (`check`, `inspect`). Separate from [`SAMPLING_FLAGS`] because it is a different kind of partial:
@@ -210,6 +234,8 @@ const COMMAND_FLAGS: &[(&str, &[&[&str]], &str)] = &[
             INGEST_FLAGS,
             SAMPLING_FLAGS,
             METADATA_ONLY_FLAG,
+            RUN_CONTROL_FLAGS,
+            CDM_CACHE_FLAGS,
         ],
         "<dataset>",
     ),
@@ -331,6 +357,10 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
     let mut config = None;
     let mut force = false;
     let mut allow_any_issuer = false;
+    let mut emit_cdm = None;
+    let mut cdm = None;
+    let mut deadline = None;
+    let mut progress = false;
     let mut max_frames = None;
     let mut max_decompression_ratio = None;
     let mut max_source_bytes = None;
@@ -374,6 +404,10 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
             "--allow-any-issuer" => allow_any_issuer = true,
             "--fail-on-regression" => fail_on_regression = true,
             "--metadata-only" => metadata_only = true,
+            "--progress" => progress = true,
+            "--deadline" => deadline = Some(value("--deadline")?),
+            "--emit-cdm" => emit_cdm = Some(value("--emit-cdm")?),
+            "--cdm" => cdm = Some(value("--cdm")?),
             "--print-config" => print_config = true,
             "--redact" => redact = true,
             "--full" => full = true,
@@ -428,6 +462,10 @@ fn parse_args(rest: &[String]) -> Result<Args, String> {
         sample_fraction,
         sample_seed,
         metadata_only,
+        emit_cdm,
+        cdm,
+        deadline,
+        progress,
         profile,
         fail_on_regression,
         interval,
@@ -640,7 +678,58 @@ fn ingest_options(args: &Args) -> Result<IngestOptions, String> {
             args.max_source_bytes.as_deref(),
             defaults.max_source_bytes,
         )?,
+        // The deadline is attached by the command that owns the clock, so `inspect` and the others
+        // keep the options they always had.
+        cancelled: None,
     })
+}
+
+/// Read a saved CDM and the fact that it was one, or print why it cannot be used.
+///
+/// Every refusal here is a case where validating anyway would produce a verdict bound to a hash
+/// nothing can reproduce: a file that is not a cache, one written under a different CDM encoding,
+/// one whose model no longer hashes to the hash it states.
+fn load_cdm_cache(
+    path: &str,
+) -> Result<(veridex_core::Ingested, Option<veridex_core::CachedInput>), ExitCode> {
+    let text = std::fs::read_to_string(path).map_err(|e| {
+        eprintln!("veridex: cannot read {path}: {e}");
+        ExitCode::from(EXIT_TOOL_ERROR)
+    })?;
+    let cache = veridex_core::cdm_cache::load(&text).map_err(|e| {
+        eprintln!("veridex: {path}: {e}");
+        ExitCode::from(EXIT_TOOL_ERROR)
+    })?;
+    let from = veridex_core::CachedInput {
+        veridex_version: cache.veridex_version.clone(),
+        cdm_content_hash: cache.cdm_content_hash.clone(),
+    };
+    Ok((veridex_core::cdm_cache::as_ingested(cache), Some(from)))
+}
+
+/// The run's wall-clock budget as a predicate, or `None` when no `--deadline` was given.
+///
+/// The clock is read here and nowhere in the core: this crate's whole timing surface is one
+/// `Instant` taken before the run, exactly as the issuance timestamp is read here rather than in the
+/// signing code. The predicate is shared by the ingest and the check loop, so one deadline covers
+/// the whole run — almost all of which is the ingest.
+fn deadline_from(args: &Args) -> Result<Option<veridex_core::adapter::Cancel>, String> {
+    let Some(raw) = &args.deadline else {
+        return Ok(None);
+    };
+    let secs: f64 = raw
+        .parse()
+        .map_err(|_| format!("invalid --deadline `{raw}` (expected seconds, e.g. 30 or 2.5)"))?;
+    if !secs.is_finite() || secs <= 0.0 {
+        return Err(format!(
+            "invalid --deadline `{raw}` (expected a positive number of seconds)"
+        ));
+    }
+    let started = std::time::Instant::now();
+    let budget = std::time::Duration::from_secs_f64(secs);
+    Ok(Some(veridex_core::adapter::Cancel::new(move || {
+        started.elapsed() >= budget
+    })))
 }
 
 /// Ingest the dataset named by `args`, autodetecting or honoring `--format`.
@@ -797,10 +886,34 @@ fn cmd_check(rest: &[String]) -> ExitCode {
         );
         return ExitCode::from(EXIT_TOOL_ERROR);
     }
-    let Some(path) = &args.path else {
-        eprintln!("veridex: missing dataset path");
+    // `--cdm` validates a saved model in place of a dataset, so it is the one way `check` runs
+    // without a path. The combinations that cannot mean anything are refused by name rather than
+    // silently ignoring one side: a cache was built by a read whose shape is already recorded in
+    // it, so an ingest flag given beside it would be a flag with nothing to act on.
+    if args.cdm.is_some() {
+        if args.path.is_some() {
+            eprintln!(
+                "veridex: --cdm validates a saved model instead of a dataset, so it takes no \
+                 dataset path (given `{}`)",
+                args.path.as_deref().unwrap_or_default()
+            );
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
+        if args.emit_cdm.is_some() {
+            eprintln!("veridex: --emit-cdm writes the model a read built; --cdm reads one back");
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
+        if args.metadata_only || args.any_sampling_flag() || args.format.is_some() {
+            eprintln!(
+                "veridex: a saved model already records the read that built it, so --format, \
+                 --metadata-only and the sampling flags have nothing to act on with --cdm"
+            );
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
+    } else if args.path.is_none() {
+        eprintln!("veridex: missing dataset path, or --cdm <file> to validate a saved model");
         return ExitCode::from(EXIT_TOOL_ERROR);
-    };
+    }
 
     // Validate --fail-on up front: an unrecognized value must be an error, never a silent fallback
     // to the default threshold (a `--fail-on warn` typo would otherwise quietly disable strictness).
@@ -862,14 +975,25 @@ fn cmd_check(rest: &[String]) -> ExitCode {
     // The CLI flag overrides the config's min_score (which defaults to no gate).
     let min_score = cli_min_score.or(config.min_score);
 
-    let ingest_opts = match ingest_options(&args) {
-        Ok(o) => o,
+    let deadline = match deadline_from(&args) {
+        Ok(d) => d,
         Err(e) => {
             eprintln!("veridex: {e}");
             return ExitCode::from(EXIT_TOOL_ERROR);
         }
     };
-    let source = source_for(path);
+    let ingest_opts = match ingest_options(&args) {
+        Ok(o) => IngestOptions {
+            // One deadline covers the whole run: the ingest is where nearly all of a long run's
+            // time goes, so a budget that only bound the check loop would almost never fire.
+            cancelled: deadline.clone(),
+            ..o
+        },
+        Err(e) => {
+            eprintln!("veridex: {e}");
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
+    };
     let registry = veridex_core::default_registry();
     // The thresholds the profile *names* win over the config's: a readiness judgement is only
     // meaningful at those. The ones it does not name stay as the operator configured them — see
@@ -881,10 +1005,37 @@ fn cmd_check(rest: &[String]) -> ExitCode {
     // An attestation is verified against the dataset's own content hash, which does not exist until
     // the ingest has happened — so the ingest happens here, once, and the verified result is handed
     // to the same pipeline both front ends call.
-    let ingested = match ingest_with(&registry, &source, args.format.as_deref(), &ingest_opts) {
-        Ok(i) => i,
-        Err(code) => return code,
+    //
+    // A saved model stands in for that read: everything downstream is the same code, so a cached
+    // run renders, gates and scores exactly as the read that saved it did.
+    let (ingested, cached) = match &args.cdm {
+        Some(file) => match load_cdm_cache(file) {
+            Ok(pair) => pair,
+            Err(code) => return code,
+        },
+        None => {
+            let source = source_for(args.path.as_deref().unwrap_or_default());
+            match ingest_with(&registry, &source, args.format.as_deref(), &ingest_opts) {
+                Ok(i) => (i, None),
+                Err(code) => return code,
+            }
+        }
     };
+    // `--emit-cdm` saves what this read built, so a later run can validate it without the read.
+    // Written before the checks run, so a cancelled or failing run still leaves the model it paid
+    // for — the read is the expensive half, and it has already happened.
+    if let Some(out) = &args.emit_cdm {
+        let cache = veridex_core::cdm_cache::save(&ingested);
+        if let Err(e) = std::fs::write(out, veridex_core::cdm_cache::render(&cache)) {
+            eprintln!("veridex: cannot write {out}: {e}");
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
+        eprintln!(
+            "veridex: wrote the Canonical Dataset Model to {out} (hash {}) — validate it again \
+             with `veridex check --cdm {out}`",
+            cache.cdm_content_hash
+        );
+    }
     let (attestation, attested_values) = match &args.attestation {
         None => (None, Vec::new()),
         Some(path) => match load_attestation(path, &ingested.dataset) {
@@ -921,7 +1072,26 @@ fn cmd_check(rest: &[String]) -> ExitCode {
             Err(code) => return code,
         },
     };
-    let out = veridex_core::check_ingested(ingested, &run_config, attestation.as_ref());
+    // `--progress` goes to stderr, so a `--json` or `--sarif` run can be piped while still showing
+    // its progress on a terminal — the report is the stdout contract and nothing else may enter it.
+    let progress = |p: veridex_core::RunProgress| {
+        eprintln!("checked {}/{} {}", p.completed, p.total, p.check_id);
+    };
+    let expired = || deadline.as_ref().is_some_and(|d| d.stop());
+    let control = veridex_core::RunControl {
+        progress: args.progress.then_some(&progress as &dyn Fn(_)),
+        cancelled: args
+            .deadline
+            .is_some()
+            .then_some(&expired as &dyn Fn() -> bool),
+    };
+    let out = veridex_core::check_ingested_cached(
+        ingested,
+        &run_config,
+        attestation.as_ref(),
+        control,
+        cached,
+    );
 
     // Capture the score before rendering, which consumes `out.trust`.
     let trust_score = out.trust.score;
@@ -2956,6 +3126,19 @@ fn option_docs() -> Vec<OptionDoc> {
     vec![
         doc("--format <fmt>", "force an adapter (e.g. mcap) instead of autodetecting"),
         doc("--json", "machine-readable JSON output"),
+        doc(
+            "--deadline <secs>",
+            "stop the run after this long and mark the result incomplete (never a pass)",
+        ),
+        doc("--progress", "report each check as it finishes, on stderr"),
+        doc(
+            "--emit-cdm <file>",
+            "save the Canonical Dataset Model this run built, for a later --cdm run",
+        ),
+        doc(
+            "--cdm <file>",
+            "validate a saved model instead of reading a dataset (no dataset path)",
+        ),
         doc("--sarif", "SARIF 2.1.0 output for CI code scanning"),
         doc("--html", "self-contained HTML report"),
         doc("--key <file>", "the issuer secret key when signing, the trusted public key when verifying"),

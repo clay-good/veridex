@@ -22,5 +22,9 @@ rust-version = "1.74"
 sha2 = "0.10"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `float_roundtrip` makes parsing a double exactly the inverse of writing it. Without it the parser
+# is fast and can land one unit in the last place away, which is invisible everywhere except where
+# a float reaches a content hash — and in a saved CDM every recomputed statistic does, so a cache
+# would not hash to the dataset it was built from.
+serde_json = { version = "1", features = ["float_roundtrip"] }
 zeroize = { version = "1", features = ["zeroize_derive"] }

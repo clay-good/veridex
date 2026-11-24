@@ -307,6 +307,79 @@ impl CoverageNote {
     }
 }
 
+/// Where a run has got to, handed to a caller's progress callback as each check finishes.
+///
+/// A long run is otherwise silent for its whole duration, and a caller that cannot tell a slow run
+/// from a stuck one kills the slow one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunProgress {
+    /// Checks finished, including this one.
+    pub completed: usize,
+    /// Checks this run will execute in total, after selection.
+    pub total: usize,
+    /// The check that just finished.
+    pub check_id: &'static str,
+}
+
+/// Observing and interrupting a run in progress.
+///
+/// Both halves are the caller's: this crate reads no clock, so a deadline is a closure the front end
+/// builds, exactly as an issuance timestamp is. `cancelled` is consulted **between** checks — never
+/// inside one, which would leave a check half-run and its findings half-collected.
+#[derive(Default, Clone, Copy)]
+pub struct RunControl<'a> {
+    /// Called as each check finishes, with the run's position.
+    pub progress: Option<&'a dyn Fn(RunProgress)>,
+    /// Asked between checks whether to stop. A run that stops this way is marked
+    /// [`Verdict::cancelled`] and discloses `COVERAGE.CANCELLED`.
+    pub cancelled: Option<&'a dyn Fn() -> bool>,
+}
+
+impl std::fmt::Debug for RunControl<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunControl")
+            .field("progress", &self.progress.is_some())
+            .field("cancelled", &self.cancelled.is_some())
+            .finish()
+    }
+}
+
+/// What the *ingest* told the engine about itself: the facts a verdict has to carry and no check can
+/// read from the CDM.
+#[derive(Debug, Default, Clone)]
+pub struct RunInputs<'a> {
+    /// How much of the source the ingest covered.
+    pub coverage: CoverageNote,
+    /// Source data the ingest declined to read.
+    pub unread: &'a [crate::adapter::UnmappedField],
+    /// A producer attestation the caller verified.
+    pub attestation: Option<&'a AppliedAttestation>,
+    /// Present when the run validated a **saved CDM** rather than a dataset.
+    pub cached: Option<CachedInput>,
+}
+
+/// Where a run's CDM came from, when it came from a cache rather than a read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CachedInput {
+    /// The `veridex-core` version that built the cached CDM.
+    pub veridex_version: String,
+    /// The content hash the cache is bound to.
+    pub cdm_content_hash: String,
+}
+
+/// What a cancelled run got through before it was stopped.
+///
+/// Present only on a run that was cancelled, so every verdict from an uninterrupted run — and every
+/// result hash and certificate taken over one — is byte-identical to what it was before this
+/// existed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunCancellation {
+    /// Checks that finished before the run was stopped.
+    pub checks_completed: usize,
+    /// Checks the run would have executed.
+    pub checks_total: usize,
+}
+
 /// The full result of a run. (Not `Eq`: the effective config's tolerances carry floats.)
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Verdict {
@@ -334,6 +407,15 @@ pub struct Verdict {
     /// which checks produced it is not reproducible from what it states about itself.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub packs: Vec<PackRecord>,
+    /// Present when the run was **cancelled** partway: what it got through before it stopped.
+    ///
+    /// A cancelled run is not a verdict on the dataset, and this is what says so to a machine
+    /// reader. The humans get `COVERAGE.CANCELLED`, which is a *warning* — so a cancelled run can
+    /// never present as a clean `pass` — and `certify` refuses to issue over one. Absent, and
+    /// omitted from the JSON and the result hash, for every run that finished, so existing verdicts
+    /// and the certificates taken over them are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancelled: Option<RunCancellation>,
     /// The effective configuration used.
     pub effective_config: EffectiveConfig,
     /// SHA-256 over the canonical JSON of every other field (hex). Two byte-identical runs share it.
@@ -389,6 +471,11 @@ struct DigestView<'a> {
     /// which is the property this whole feature is for.
     #[serde(skip_serializing_if = "<[PackRecord]>::is_empty")]
     packs: &'a [PackRecord],
+    /// Skipped when the run finished, so an uninterrupted run hashes exactly as it did before
+    /// cancellation existed — and a cancelled run hashes differently from the complete one, which
+    /// is the property that keeps the two from being interchangeable under a signature.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cancelled: &'a Option<RunCancellation>,
     effective_config: &'a EffectiveConfig,
 }
 
@@ -663,6 +750,42 @@ impl Engine {
         unread: &[crate::adapter::UnmappedField],
         attestation: Option<&AppliedAttestation>,
     ) -> Verdict {
+        self.run_with_inputs(
+            dataset,
+            cdm_hash,
+            config,
+            RunInputs {
+                coverage,
+                unread,
+                attestation,
+                cached: None,
+            },
+            RunControl::default(),
+        )
+    }
+
+    /// Like [`Engine::run_over_attested`], taking everything the ingest knows as one
+    /// [`RunInputs`], and a caller's progress and cancellation hooks.
+    ///
+    /// `control.cancelled` is asked **between** checks. Inside one is not a cancellation point: a
+    /// check that was interrupted partway has produced some of its findings and not others, and
+    /// half a check's findings are worse than none — they would read as a check that ran and found
+    /// only those. So the run stops at the next boundary, keeps every finding from the checks that
+    /// finished, and says how far it got.
+    pub fn run_with_inputs(
+        &self,
+        dataset: &Dataset,
+        cdm_hash: ContentHash,
+        config: &RunConfig,
+        inputs: RunInputs<'_>,
+        control: RunControl<'_>,
+    ) -> Verdict {
+        let RunInputs {
+            coverage,
+            unread,
+            attestation,
+            cached,
+        } = inputs;
         let mut findings: Vec<Finding> = Vec::new();
         let mut errored_checks: Vec<ErroredCheck> = Vec::new();
         let mut executed_checks: Vec<ExecutedCheck> = Vec::new();
@@ -694,9 +817,24 @@ impl Engine {
             findings.push(finding);
         }
 
-        for check in &self.checks {
-            if !check_selected(check.as_ref(), config) {
-                continue;
+        // How many checks this run will execute, so progress has a denominator and a cancellation
+        // has something to be a fraction of.
+        let selected: Vec<&Box<dyn Check>> = self
+            .checks
+            .iter()
+            .filter(|c| check_selected(c.as_ref(), config))
+            .collect();
+        let total = selected.len();
+        let mut cancelled: Option<RunCancellation> = None;
+        for check in selected {
+            // Between checks, never inside one. A caller that asked to stop gets the findings of
+            // every check that finished and a verdict that says so.
+            if control.cancelled.is_some_and(|stop| stop()) {
+                cancelled = Some(RunCancellation {
+                    checks_completed: executed_checks.len(),
+                    checks_total: total,
+                });
+                break;
             }
             executed_checks.push(ExecutedCheck {
                 check_id: check.id().to_string(),
@@ -724,6 +862,13 @@ impl Engine {
                     });
                 }
             }
+            if let Some(report) = control.progress {
+                report(RunProgress {
+                    completed: executed_checks.len(),
+                    total,
+                    check_id: check.id(),
+                });
+            }
         }
 
         // A narrowed run says so as a finding too, for the same reason a partial ingest does. Counted
@@ -743,6 +888,23 @@ impl Engine {
         }
         if let Some(applied) = attestation {
             findings.extend(attestation_findings(applied));
+        }
+        // A cancelled run says so as a finding, for the reason a partial ingest does: the verdict's
+        // own field reaches the terminal report, the JSON and the HTML, and nothing else — not
+        // SARIF, not `diff`. A **warning**, not info, and that is the whole point: info would let a
+        // cancelled run present as a clean `pass`, which is the one thing it must never do. It is
+        // not an error either, because nothing about the data is known to be wrong; what is wrong is
+        // reading this as a verdict.
+        if let Some(stopped) = cancelled {
+            findings.push(cancellation_finding(stopped));
+        }
+        // A run whose CDM came from a cache rather than a read says so, in the one channel that
+        // reaches every renderer and the certificate's own summary.
+        if let Some(from) = &cached {
+            findings.push(crate::cdm_cache::cached_finding(
+                &from.veridex_version,
+                &from.cdm_content_hash,
+            ));
         }
 
         // Total order over the finding's full content, independent of execution order. See
@@ -765,6 +927,7 @@ impl Engine {
             errored_checks: &errored_checks,
             executed_checks: &executed_checks,
             packs: &self.packs,
+            cancelled: &cancelled,
             effective_config: &effective_config,
         };
         let result_content_hash = digest_hex(&digest);
@@ -779,6 +942,7 @@ impl Engine {
             errored_checks,
             executed_checks,
             packs: self.packs.clone(),
+            cancelled,
             effective_config,
             result_content_hash,
         }
@@ -865,6 +1029,32 @@ fn short_key(key: &str) -> String {
         true => format!("{}…{}", &key[..8], &key[key.len() - 8..]),
         false => key.to_string(),
     }
+}
+
+/// The finding a cancelled run discloses about itself.
+fn cancellation_finding(stopped: RunCancellation) -> Finding {
+    Finding::new(
+        COVERAGE_CHECK_ID,
+        Category::Structural,
+        Severity::Warning,
+        crate::check::Location::Dataset,
+        "COVERAGE.CANCELLED",
+        format!(
+            "this run was cancelled after {} of {} check(s), so it is not a verdict on the dataset \
+             — the checks that had not run produced nothing, and their silence is the shape of the \
+             interruption",
+            stopped.checks_completed, stopped.checks_total
+        ),
+    )
+    .with_risk(
+        "Every check that never ran is a question nobody asked, and in a report there is nothing to \
+         tell those apart from questions asked and answered cleanly. A gate that accepted this \
+         accepted a dataset that was never finished being checked.",
+    )
+    .with_remedy(
+        "Re-run without the deadline, or with a longer one, before treating this as a verdict. \
+         `veridex certify` refuses a cancelled run for the same reason it refuses a sampled one.",
+    )
 }
 
 fn coverage_finding(coverage: &CoverageNote) -> Option<Finding> {

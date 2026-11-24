@@ -621,6 +621,77 @@ fn supersedes(
     ))
 }
 
+/// `veridex.emit_cdm(path, format=None, metadata_only=False) -> str`
+///
+/// Read a dataset once and return its Canonical Dataset Model as a JSON string — the same document
+/// `veridex check <dataset> --emit-cdm <file>` writes. Hand it to [`check_cdm`] to re-run the
+/// catalog without reading the dataset again; nearly all of a run's cost is that read.
+#[pyfunction]
+#[pyo3(signature = (path, format=None, metadata_only=false))]
+fn emit_cdm(path: &str, format: Option<&str>, metadata_only: bool) -> PyResult<String> {
+    let registry = veridex_core::default_registry();
+    let opts = IngestOptions {
+        metadata_only,
+        ..IngestOptions::default()
+    };
+    let source = source_for(path);
+    let ingested = match format {
+        Some(f) => registry.ingest_as(f, &source, &opts),
+        None => registry.ingest(&source, &opts),
+    }
+    .map_err(to_py_err)?;
+    Ok(veridex_core::cdm_cache::render(
+        &veridex_core::cdm_cache::save(&ingested),
+    ))
+}
+
+/// `veridex.check_cdm(cdm_json, config=None, profile=None, redact=False) -> str`
+///
+/// Validate a saved Canonical Dataset Model and return the report, byte-identical to
+/// `veridex check --cdm <file> --json`. For the content hash the model names, this is the verdict a
+/// full read produces — the model is the whole of what a read computes — plus one informational
+/// finding saying the dataset was not opened.
+///
+/// Raises `ValueError` for a file that is not a model, one written under a different CDM encoding,
+/// or one whose model no longer hashes to the hash it states.
+#[pyfunction]
+#[pyo3(signature = (cdm_json, config=None, profile=None, redact=false))]
+fn check_cdm(
+    cdm_json: &str,
+    config: Option<&str>,
+    profile: Option<&str>,
+    redact: bool,
+) -> PyResult<String> {
+    let mut run_config = run_config_from(config)?;
+    let profile = profile_by_name(profile)?;
+    if let Some(p) = &profile {
+        run_config.tolerances = p.apply_tolerances(run_config.tolerances);
+    }
+    let cache = veridex_core::cdm_cache::load(cdm_json)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let from = veridex_core::CachedInput {
+        veridex_version: cache.veridex_version.clone(),
+        cdm_content_hash: cache.cdm_content_hash.clone(),
+    };
+    let out = veridex_core::check_ingested_cached(
+        veridex_core::cdm_cache::as_ingested(cache),
+        &run_config,
+        None,
+        veridex_core::RunControl::default(),
+        Some(from),
+    );
+    let readiness = profile.as_ref().filter(|p| p.judges_readiness()).map(|p| {
+        veridex_core::certificate::ReadinessReport::evaluate(p, &out.verdict, &out.ingested.dataset)
+    });
+    let dataset_id = redacted_id(redact, &out, &[]);
+    Ok(veridex_core::render_json_with_readiness(
+        &redacted_if(redact, &out, &[]),
+        Some(out.trust),
+        readiness.as_ref(),
+        Some(&dataset_id),
+    ))
+}
+
 /// `veridex.overlap(paths, format=None) -> str`
 ///
 /// Compare two or more datasets and return the machine-readable summary
@@ -928,6 +999,8 @@ fn veridex(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(verify, m)?)?;
     m.add_function(wrap_pyfunction!(supersedes, m)?)?;
     m.add_function(wrap_pyfunction!(overlap, m)?)?;
+    m.add_function(wrap_pyfunction!(emit_cdm, m)?)?;
+    m.add_function(wrap_pyfunction!(check_cdm, m)?)?;
     m.add_function(wrap_pyfunction!(version, m)?)?;
     Ok(())
 }

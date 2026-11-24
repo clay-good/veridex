@@ -429,6 +429,22 @@ interpreting.
 A run that read less than the whole dataset emits **`COVERAGE.SAMPLE`** or **`COVERAGE.METADATA_ONLY`**
 (info, check id `veridex.coverage`) alongside its findings.
 
+A run that was **stopped partway** emits **`COVERAGE.CANCELLED`** (**warning**, same check id)
+naming how many of how many checks ran. A warning rather than info, and deliberately: info would let
+a cancelled run present as a clean `pass`, which is the one thing it must never do. It is not an
+error either, because nothing about the data is known to be wrong — what is wrong is reading this as
+a verdict. `certify` refuses it, and the verdict hashes differently from the complete run's, so the
+two are never interchangeable under a signature. A run whose *read* was stopped produces no verdict
+at all: the episodes it never reached are not a sample, so the read is refused by name.
+
+A run that validated a **saved CDM** rather than a dataset emits **`COVERAGE.CACHED_CDM`** (info,
+same check id), naming the version that built the model and the hash it is bound to. Info because for
+that hash this *is* a full read's verdict — the model is the whole of what a read computes, and the
+verdict is a function of it — so the catalog can be re-run after an upgrade or a moved threshold
+without the read. What a cached run did not do is establish that the hash is the dataset on this
+disk, which is what `veridex verify <dataset> --certificate …` answers; see
+[docs/partial-runs.md](partial-runs.md).
+
 A run that read less than the whole dataset *without being asked to* emits
 **`COVERAGE.SOURCE_UNREAD`** (**warning**, same check id): the dataset declares data the adapter did
 not read. Today that is a data shard resolving outside the dataset directory, a rosbag2 shard the

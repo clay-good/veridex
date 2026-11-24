@@ -3786,3 +3786,124 @@ fn overlap_refuses_the_requests_it_cannot_honestly_answer() {
     assert_eq!(code, 2, "{stderr}");
     assert!(stderr.contains("--sample-episodes"), "{stderr}");
 }
+
+// ---------------------------------------------------------------------------
+// `check --deadline` / `--progress` / `--emit-cdm` / `--cdm`
+// ---------------------------------------------------------------------------
+
+#[test]
+fn progress_goes_to_stderr_so_the_report_stays_the_stdout_contract() {
+    let (code, stdout, stderr) = run(&["check", &fixture_dataset(), "--progress"]);
+    assert_eq!(code, 20, "the demo fails; progress changes no verdict");
+    assert!(stderr.contains("checked 1/"), "{stderr}");
+    assert!(
+        !stdout.contains("checked 1/"),
+        "a piped --json run must not have progress in its output: {stdout}"
+    );
+    // The same run without the flag says nothing extra.
+    let (_, _, quiet) = run(&["check", &fixture_dataset()]);
+    assert!(!quiet.contains("checked "), "{quiet}");
+}
+
+#[test]
+fn a_deadline_that_expires_during_the_read_refuses_rather_than_reporting() {
+    // The read is where nearly all of a run's time goes, and a read that stopped partway holds no
+    // dataset worth reporting on — the episodes it never reached are wherever it stopped.
+    let (code, stdout, stderr) = run(&["check", &fixture_dataset(), "--deadline", "0.000001"]);
+    assert_eq!(code, 2, "no verdict was reached: {stdout}{stderr}");
+    assert!(stderr.contains("cancelled"), "{stderr}");
+}
+
+#[test]
+fn a_generous_deadline_changes_nothing() {
+    let (code, with, _) = run(&["check", &fixture_dataset(), "--deadline", "600"]);
+    let (plain_code, without, _) = run(&["check", &fixture_dataset()]);
+    assert_eq!(code, plain_code);
+    assert_eq!(with, without, "a deadline nobody hit is not a narrowing");
+}
+
+#[test]
+fn an_invalid_deadline_is_refused_by_name() {
+    for bad in ["abc", "0", "-5"] {
+        let (code, _, stderr) = run(&["check", &fixture_dataset(), "--deadline", bad]);
+        assert_eq!(code, 2, "`{bad}`: {stderr}");
+        assert!(stderr.contains("--deadline"), "`{bad}`: {stderr}");
+    }
+}
+
+#[test]
+fn a_saved_model_validates_to_the_same_report_as_the_read_that_saved_it() {
+    // The incremental run: the read is the expensive half, so a later run over the model it built
+    // answers the same question for the price of the checks — and says that is what it did.
+    let dir = temp_dir("cdm-cache");
+    let cache = dir.join("demo.cdm.json");
+    let (code, full, stderr) = run(&[
+        "check",
+        &fixture_dataset(),
+        "--emit-cdm",
+        cache.to_str().expect("path"),
+    ]);
+    assert_eq!(code, 20, "the demo's own verdict is unchanged: {stderr}");
+    assert!(cache.is_file(), "the model was written: {stderr}");
+    assert!(stderr.contains("Canonical Dataset Model"), "{stderr}");
+
+    let (cached_code, cached, _) = run(&["check", "--cdm", cache.to_str().expect("path")]);
+    assert_eq!(cached_code, code, "the same verdict, so the same exit code");
+    // The same bound hash, the same score, the same findings — plus the one disclosure.
+    let hash_line = |text: &str| -> String {
+        text.lines()
+            .find(|l| l.contains("CDM hash"))
+            .unwrap_or_default()
+            .to_string()
+    };
+    assert_eq!(hash_line(&cached), hash_line(&full));
+    let trust = |text: &str| -> String {
+        text.lines()
+            .find(|l| l.contains("Trust:"))
+            .unwrap_or_default()
+            .to_string()
+    };
+    assert_eq!(trust(&cached), trust(&full));
+    assert!(cached.contains("COVERAGE.CACHED_CDM"), "{cached}");
+    assert!(!full.contains("COVERAGE.CACHED_CDM"), "{full}");
+}
+
+#[test]
+fn the_cdm_flags_refuse_what_they_cannot_mean() {
+    let dir = temp_dir("cdm-refuse");
+    let cache = dir.join("demo.cdm.json");
+    let (code, _, _) = run(&[
+        "check",
+        &fixture_dataset(),
+        "--emit-cdm",
+        cache.to_str().expect("path"),
+    ]);
+    assert_eq!(code, 20);
+    let cache = cache.to_str().expect("path").to_string();
+
+    // A model stands in for the dataset, so a path beside it is two inputs for one question.
+    let (code, _, stderr) = run(&["check", &fixture_dataset(), "--cdm", &cache]);
+    assert_eq!(code, 2, "{stderr}");
+    assert!(stderr.contains("takes no"), "{stderr}");
+
+    // The read's own shape is already recorded in the file, so an ingest flag has nothing to act on.
+    let (code, _, stderr) = run(&["check", "--cdm", &cache, "--metadata-only"]);
+    assert_eq!(code, 2, "{stderr}");
+    assert!(stderr.contains("already records"), "{stderr}");
+
+    // And a file that is not a model is refused by name rather than read as an empty dataset.
+    let bogus = dir.join("not-a-cache.json");
+    std::fs::write(&bogus, "{\"schema\":\"veridex.report/1\"}").expect("write");
+    let (code, _, stderr) = run(&["check", "--cdm", bogus.to_str().expect("path")]);
+    assert_eq!(code, 2, "{stderr}");
+    assert!(stderr.contains("not a Veridex CDM cache"), "{stderr}");
+}
+
+#[test]
+fn certify_takes_no_saved_model() {
+    // A certificate is a claim about a dataset, and the issuer should have read it at least once.
+    // The flag is not in `certify`'s table, so it is refused by name.
+    let (code, _, stderr) = run(&["certify", "--cdm", "whatever.json", "--key", "k"]);
+    assert_eq!(code, 2, "{stderr}");
+    assert!(stderr.contains("--cdm"), "{stderr}");
+}

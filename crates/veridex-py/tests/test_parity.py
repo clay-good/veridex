@@ -735,6 +735,57 @@ def test_cli_and_python_overlap_agree(tmp_path):
         raise AssertionError("overlap must refuse fewer than two datasets")
 
 
+def test_cli_and_python_cdm_cache_agree(tmp_path):
+    """A saved model must validate to the same report on both surfaces.
+
+    And to the same report the read that saved it produced, plus the one finding saying the dataset
+    was not opened — that is the whole claim of the cache.
+    """
+    binary = os.environ.get("VERIDEX_BIN", "target/debug/veridex")
+    dataset = _demo_dataset(tmp_path)
+
+    # The model, from Python and from the CLI: the same document.
+    py_cdm = veridex.emit_cdm(str(dataset))
+    cli_cdm = tmp_path / "demo.cdm.json"
+    subprocess.run(
+        [binary, "check", str(dataset), "--emit-cdm", str(cli_cdm)],
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(py_cdm) == json.loads(cli_cdm.read_text()), "the saved models must agree"
+
+    # The report over it: the same on both surfaces.
+    py = json.loads(veridex.check_cdm(py_cdm))
+    result = subprocess.run(
+        [binary, "check", "--cdm", str(cli_cdm), "--json"],
+        capture_output=True,
+        text=True,
+    )
+    cli = json.loads(result.stdout)
+    assert py == cli, "Python and CLI must validate a saved model identically"
+
+    # And the same verdict as the read, plus the disclosure.
+    full = _cli_check_json(dataset)
+    codes = lambda doc: sorted(f["code"] for f in doc["verdict"]["findings"])
+    assert set(codes(py)) - set(codes(full)) == {"COVERAGE.CACHED_CDM"}
+    assert set(codes(full)) - set(codes(py)) == set()
+    assert py["verdict"]["cdm_content_hash"] == full["verdict"]["cdm_content_hash"]
+    assert py["trust_score"]["score"] == full["trust_score"]["score"]
+
+    # A model that does not hash to the hash it states does not validate: the verdict would be
+    # bound to a hash nothing produced. Done by altering the stated hash, which is deterministic —
+    # the Rust tests cover editing the model's own contents, where the fixture is known exactly.
+    doc = json.loads(py_cdm)
+    claimed = doc["cdm_content_hash"]
+    doc["cdm_content_hash"] = ("0" if claimed[0] != "0" else "1") + claimed[1:]
+    try:
+        veridex.check_cdm(json.dumps(doc))
+    except ValueError as e:
+        assert "hashes to" in str(e), str(e)
+    else:
+        raise AssertionError("a model whose hash does not match must not validate")
+
+
 if __name__ == "__main__":
     # Minimal runner when pytest is unavailable. Defined last, so every test above it exists.
     import tempfile

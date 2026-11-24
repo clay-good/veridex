@@ -243,6 +243,9 @@ impl ReadinessReport {
         // `status: fail` for exactly this reason.
         let applicable = verdict.coverage == crate::engine::CoverageNote::Full
             && !verdict.scope_narrowed()
+            // A cancelled run is not a readiness answer either: a criterion is judged by "the
+            // check ran and found nothing", and a check that never ran finds nothing.
+            && verdict.cancelled.is_none()
             && (profile.applies_to)(dataset);
         let criteria: Vec<CriterionResult> = profile
             .criteria
@@ -290,6 +293,16 @@ impl Certificate {
     /// exactly where the problem it is being waved through would be. Callers check this before
     /// issuing; both front-ends do, so the CLI and Python refuse identically.
     pub fn certifiable(verdict: &Verdict) -> Result<(), String> {
+        // A cancelled run is refused before its coverage is even consulted: whatever the ingest
+        // read, the checks did not all run, so the document would attest a verdict that was never
+        // reached. Same reasoning as the sampled run below, one stage later in the pipeline.
+        if let Some(stopped) = verdict.cancelled {
+            return Err(format!(
+                "cannot certify a cancelled run ({} of {} check(s) ran) — a certificate attests \
+                 the verdict of a finished run, and the checks that never ran produced nothing",
+                stopped.checks_completed, stopped.checks_total
+            ));
+        }
         match &verdict.coverage {
             crate::engine::CoverageNote::Full => Ok(()),
             crate::engine::CoverageNote::Sample {

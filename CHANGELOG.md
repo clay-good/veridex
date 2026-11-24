@@ -10,6 +10,40 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **A run can be watched, bounded in time, and re-used.** The two `validation-engine` requirements
+  that were left unbuilt are built.
+
+  `--progress` reports each check as it finishes, on **stderr**, so a piped `--json` run can still
+  be watched. `--deadline <secs>` bounds the whole run in wall-clock time — the read included, which
+  is where nearly all of a long run's time goes, so the predicate is consulted by `FrameBudget::take`,
+  the one place every one of the ten adapters already passes through. A read that stops is
+  **refused** rather than reported: the episodes it never reached are not a sample, they are wherever
+  it stopped, so there is no honest partial answer. A run stopped during the *checks* keeps every
+  finding from the checks that finished and marks itself three ways — a `COVERAGE.CANCELLED`
+  **warning**, so it can never present as a clean `pass`; a `cancelled` block in the JSON naming how
+  many of how many checks ran; and a refusal from `certify` — and it hashes differently from the
+  complete run, so the two are never interchangeable under a signature. Cancellation is asked
+  *between* checks, never inside one: half a check's findings read as a check that ran and found
+  only those. A run nobody interrupted is byte-identical to what it was before this existed.
+
+  And the read can be re-used, which is the honest form of incremental validation here.
+  `check <dataset> --emit-cdm <file>` saves the Canonical Dataset Model the read built;
+  `check --cdm <file>` validates it. For the content hash the model names the verdict is
+  **identical** to a full read's — the model is the whole of what a read computes, and the verdict is
+  a function of it plus the configuration — plus one informational finding, `COVERAGE.CACHED_CDM`,
+  saying the dataset was not opened. Re-running the catalog after an upgrade, a moved threshold or a
+  new profile is then free on a corpus that costs hours to read.
+
+  Three refusals keep the cache from laundering a verdict: it names the **CDM encoding version** its
+  hash was computed under and is refused under another, loading **recomputes the hash** from the
+  model in the file so an edited cache does not load, and `certify` takes no cache at all — a
+  certificate is a claim about a dataset, and the issuer should have read it at least once. Finding
+  the first of those took enabling `serde_json`'s `float_roundtrip`: without it the parser can land
+  one unit in the last place from the value it wrote, which is invisible everywhere except where a
+  float reaches a content hash — and in a saved model every recomputed statistic does.
+
+  `veridex.emit_cdm` and `veridex.check_cdm` are the Python twins, with a parity test.
+
 - **A tenth format: KITTI raw, a rig recorded as a directory per sensor.** The layout the KITTI raw
   dev kit publishes — one directory per sensor, each with its own `timestamps.txt` and a `data/`
   folder of one file per sample, with the calibration in text files beside the drive — and the shape

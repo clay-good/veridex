@@ -31,6 +31,7 @@ pub mod zarr;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use thiserror::Error;
 
@@ -47,7 +48,7 @@ pub enum Source {
 }
 
 /// How much of the dataset to ingest.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum Sample {
     /// The whole dataset.
     #[default]
@@ -216,6 +217,44 @@ pub struct IngestOptions {
     /// Ceiling on the size of one source file an adapter reads whole into memory; `None` removes the
     /// limit. Defaults to [`DEFAULT_MAX_SOURCE_BYTES`].
     pub max_source_bytes: Option<u64>,
+    /// Asked, as the ingest charges its frame budget, whether to stop reading.
+    ///
+    /// Almost all of a long run's wall clock is ingest — the check loop over a built CDM is
+    /// milliseconds — so this is where an interruption has to be answerable. It is consulted at the
+    /// one place every adapter already passes through, [`FrameBudget::take`], rather than at a
+    /// hand-placed point in each of ten readers, which is how a cancellation point gets forgotten
+    /// in the one reader that needed it.
+    ///
+    /// A cancelled ingest **fails** rather than returning a short dataset:
+    /// [`IngestError::Cancelled`]. Unlike the check loop there is no honest partial answer here —
+    /// the episodes the read never reached are not a sample, they are wherever it stopped — and half
+    /// a dataset presented as a dataset is the one outcome this must not produce.
+    pub cancelled: Option<Cancel>,
+}
+
+/// A caller's "stop reading" predicate, asked by [`FrameBudget::take`].
+///
+/// Cloneable and shareable so one deadline can be handed to several ingests, and opaque in `Debug`
+/// because a closure has nothing to print.
+#[derive(Clone)]
+pub struct Cancel(pub std::sync::Arc<dyn Fn() -> bool + Send + Sync>);
+
+impl Cancel {
+    /// Build one from any predicate.
+    pub fn new(f: impl Fn() -> bool + Send + Sync + 'static) -> Cancel {
+        Cancel(std::sync::Arc::new(f))
+    }
+
+    /// Whether the caller wants the read to stop.
+    pub fn stop(&self) -> bool {
+        (self.0)()
+    }
+}
+
+impl std::fmt::Debug for Cancel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Cancel(<predicate>)")
+    }
 }
 
 impl Default for IngestOptions {
@@ -226,6 +265,7 @@ impl Default for IngestOptions {
             max_frames: Some(DEFAULT_MAX_FRAMES),
             max_decompression_ratio: Some(DEFAULT_MAX_DECOMPRESSION_RATIO),
             max_source_bytes: Some(DEFAULT_MAX_SOURCE_BYTES),
+            cancelled: None,
         }
     }
 }
@@ -295,6 +335,9 @@ pub(crate) fn in_band_calibration(calibration: &crate::cdm::Calibration) -> Stri
 pub struct FrameBudget {
     limit: Option<u64>,
     used: u64,
+    /// The caller's "stop reading" predicate, asked on every charge — see
+    /// [`IngestOptions::cancelled`] for why it lives here.
+    cancelled: Option<Cancel>,
 }
 
 impl FrameBudget {
@@ -303,11 +346,20 @@ impl FrameBudget {
         FrameBudget {
             limit: options.max_frames,
             used: 0,
+            cancelled: options.cancelled.clone(),
         }
     }
 
     /// Charge `n` frames, or fail with a clear error naming the budget.
     pub fn take(&mut self, format_id: &'static str, n: u64) -> Result<(), IngestError> {
+        // Checked before the charge, so a cancelled read reports the cancellation rather than
+        // whichever budget it happened to cross on the same call.
+        if self.cancelled.as_ref().is_some_and(Cancel::stop) {
+            return Err(IngestError::Cancelled {
+                format_id,
+                frames_read: self.used,
+            });
+        }
         self.used = self.used.saturating_add(n);
         match self.limit {
             Some(limit) if self.used > limit => Err(IngestError::FrameBudgetExceeded {
@@ -370,7 +422,7 @@ impl DecompressionBudget {
 
 /// What coverage an ingest actually achieved — recorded so verdicts and certificates can state
 /// whether they saw the whole dataset or only a sample.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Coverage {
     /// Every episode was ingested.
     Full,
@@ -445,7 +497,7 @@ const MAX_HINT_SCAN: usize = 200;
 const MAX_HINT_MATCHES: usize = 5;
 
 /// A source field that existed but the CDM cannot represent.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnmappedField {
     /// Where the field lived in the source (a dotted/pathy locator).
     pub source_path: String,
@@ -572,6 +624,16 @@ pub enum IngestError {
         limit: u64,
         /// Decompressed bytes the source would have produced.
         requested: u64,
+    },
+
+    /// The caller asked the read to stop. Not a defect in the dataset and not a verdict about it:
+    /// the episodes the read never reached are not a sample, they are wherever it stopped.
+    #[error("{format_id}: the read was cancelled after {frames_read} frame(s)")]
+    Cancelled {
+        /// The adapter that was reading.
+        format_id: &'static str,
+        /// Frames charged before the stop.
+        frames_read: u64,
     },
 
     /// One source file is larger than this ingest will read into memory at once.

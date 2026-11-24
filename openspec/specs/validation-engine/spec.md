@@ -103,21 +103,25 @@ SHALL never change the verdict.
 - **THEN** the resulting verdict is identical to a full revalidation of the current dataset
 - **AND** unchanged episodes are not needlessly reprocessed
 
-**Decided against as specified, not pending.** The two clauses cannot both hold here. A verdict
-identical to a full run is only identical if the bytes it covers were read: seven of the catalog's
-checks compare episodes against each other, and the content hash the verdict is bound to is taken
-over the whole canonicalized CDM — so a run that skipped an episode would have to reconstruct both
-from something other than that episode's bytes. Keying the skip on anything cheaper than the bytes
-(a modification time, a size, a path) makes the verdict a claim about what was *probably* there,
-which is the one thing a tool whose output is a signed certificate must not do; and keying it on the
-bytes means reading them, which is the cost the requirement exists to avoid.
+<!-- Implemented in v0.1, as a cache of the *CDM* rather than of the validation. Nearly all of a
+     run's cost is the read; the check loop over a built model is milliseconds. So
+     `veridex check <dataset> --emit-cdm <file>` saves the model a read built and
+     `veridex check --cdm <file>` validates it, and the verdict is identical to a full read over
+     those bytes by construction — the model is the whole of what a read computes, and the verdict
+     is a function of it plus the configuration. The cache names the encoding version its hash was
+     computed under and is refused under another; loading recomputes the hash from the model in the
+     file, so an edited cache does not load; and a cached run discloses itself with
+     `COVERAGE.CACHED_CDM`, because for that hash this is a full read's verdict and whether the hash
+     is the dataset on this disk is what `verify` answers. `certify` deliberately takes no cache: a
+     certificate is a claim about a dataset, and the issuer should have read it at least once. See
+     crates/veridex-core/src/cdm_cache.rs and docs/partial-runs.md.
 
-What the need behind it is actually served by, and what the CLI offers today:
-`--sample-episodes` / `--sample-fraction` for a cheap triage that **declares itself partial** and
-cannot be certified, and `--metadata-only` for a structural pass that opens no payload. Both are
-specified under `dataset-ingestion` and documented in [docs/partial-runs.md](../../../docs/partial-runs.md).
-A future cache would have to be a cache of *ingest* (the CDM for a set of file digests) rather than
-of validation, which is a different capability and would get its own proposal.
+     What is *not* implemented is skipping the episodes that did not change, and the reason is in
+     the requirement's own second clause: a verdict identical to a full run is identical only if the
+     bytes it covers were read — seven catalog checks compare episodes against each other, and the
+     bound content hash is taken over the whole canonicalized model. Keying a skip on anything
+     cheaper than the bytes makes the verdict a claim about what was probably there. Keying it on
+     the bytes means reading them, and then the model cache above is the saving. -->
 
 ### Requirement: Progress and cancellation
 For long runs, the engine SHALL report progress and SHALL support cancellation that leaves no
@@ -128,11 +132,26 @@ partial or misleading verdict. A cancelled run SHALL be clearly marked incomplet
 - **THEN** no verdict claims completion
 - **AND** the result is marked incomplete/cancelled
 
-**Status: specified, and deliberately not built in the engine.** The safety half already holds —
-nothing partial is ever emitted, because the engine assembles a verdict only after every selected
-check has run, and a cancelled process produces no document at all. The *progress* half would be
-theater where this requirement puts it: the check loop over a CDM is milliseconds, and essentially
-all of a long run's wall clock is in ingest, which is where a progress and cancellation surface
-belongs. Building it in the engine would add a cancellation point that is never reached on a real
-dataset. It is left specified rather than implemented, so the gap is a known one rather than an
-unstated one.
+<!-- Implemented in v0.1. `Engine::run_with_inputs` takes a `RunControl` carrying two of the
+     caller's closures: `progress`, called as each check finishes with (completed, total, check id),
+     and `cancelled`, asked *between* checks — never inside one, because a check interrupted partway
+     has produced some of its findings and not others, and half a check's findings read as a check
+     that ran and found only those.
+
+     A cancelled run keeps every finding from the checks that finished and marks itself three ways:
+     `Verdict::cancelled` for a machine reader, a `COVERAGE.CANCELLED` **warning** so it can never
+     present as a clean pass, and a refusal from `Certificate::certifiable`. It also hashes
+     differently from the complete run, so the two are not interchangeable under a signature, while
+     a run nobody cancelled hashes exactly as it did before this existed.
+
+     Cancellation also covers the *ingest*, which is where nearly all of a long run's wall clock is:
+     `IngestOptions::cancelled` is consulted by `FrameBudget::take`, the one place every adapter
+     already passes through. A cancelled read fails (`IngestError::Cancelled`) rather than returning
+     a short dataset — unlike the check loop there is no honest partial answer, because the episodes
+     a stopped read never reached are not a sample, they are wherever it stopped.
+
+     The clock is the front end's: `veridex check --deadline <secs>` builds the predicate and
+     `--progress` writes to stderr, so the report stays the stdout contract. This crate reads no
+     clock, exactly as it reads none for an issuance timestamp. See
+     crates/veridex-core/tests/run_control.rs. -->
+

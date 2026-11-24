@@ -643,6 +643,16 @@ pub fn render_terminal_with(
             );
         }
     }
+    // Cancellation is its own line rather than a coverage variant: it says how much of the
+    // *catalog* ran, which is a different axis from how much of the dataset was read, and a run can
+    // be both narrow and interrupted.
+    if let Some(stopped) = verdict.cancelled {
+        let _ = writeln!(
+            out,
+            "  Coverage: CANCELLED — {} of {} check(s) ran. This is not a verdict on the dataset.",
+            stopped.checks_completed, stopped.checks_total
+        );
+    }
 
     // Surface any tolerance that was loosened/tightened from its default, so a reader knows a
     // "no findings" result reflects the thresholds actually applied. Silent when all are default.
@@ -830,6 +840,14 @@ pub fn render_html_with_readiness(
                  statistics, and the provenance — not the data.</p>"
             );
         }
+    }
+    if let Some(stopped) = verdict.cancelled {
+        let _ = write!(
+            body,
+            "<p class=\"status warn\">Coverage: CANCELLED — {} of {} check(s) ran. This is not a \
+             verdict on the dataset.</p>",
+            stopped.checks_completed, stopped.checks_total
+        );
     }
 
     // The same rollups the terminal report prints, from the same function, so a shared HTML

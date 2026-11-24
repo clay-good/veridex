@@ -30,6 +30,7 @@
 pub mod adapter;
 pub mod canonical;
 pub mod cdm;
+pub mod cdm_cache;
 pub mod certificate;
 pub mod check;
 pub mod checks;
@@ -74,10 +75,13 @@ pub use emit::{
     to_prov_attested,
 };
 pub use engine::{
-    AppliedAttestation, CheckInfo, CoverageNote, Engine, RegistryError, RunConfig, Status,
-    Tolerances, Verdict,
+    AppliedAttestation, CachedInput, CheckInfo, CoverageNote, Engine, RegistryError,
+    RunCancellation, RunConfig, RunControl, RunInputs, RunProgress, Status, Tolerances, Verdict,
 };
-pub use pipeline::{check_ingested, run_check, run_check_attested, run_check_with, CheckOutput};
+pub use pipeline::{
+    check_ingested, check_ingested_cached, check_ingested_controlled, run_check,
+    run_check_attested, run_check_with, CheckOutput,
+};
 pub use redact::{Redactor, REDACTION_CHECK_ID, REDACTION_CODE};
 pub use report::{
     render_catalog_json, render_html, render_html_with_readiness, render_inspect_json, render_json,

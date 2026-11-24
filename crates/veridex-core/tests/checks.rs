@@ -2587,6 +2587,11 @@ fn docs_checks_md_lists_no_unknown_finding_codes() {
         // `coverage` field cannot express: a `Coverage::Full` ingest read everything it was
         // *willing* to read, which is not everything the dataset declared.
         "COVERAGE.SOURCE_UNREAD",
+        // A run that was stopped partway, and one that validated a saved CDM rather than a
+        // dataset. Both are properties of the run itself — how far it got, and what its input was —
+        // which no check can read from the CDM.
+        "COVERAGE.CANCELLED",
+        "COVERAGE.CACHED_CDM",
         // The scope disclosure, emitted by the engine for the same reason: whether the catalog was
         // narrowed is a property of the run's configuration, which no check can read from the CDM.
         "SCOPE.NARROWED",

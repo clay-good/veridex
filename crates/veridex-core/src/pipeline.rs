@@ -71,9 +71,43 @@ pub fn run_check_attested(
 /// hash, and the whole pipeline again to apply what it verified, would read the data twice. Both
 /// front ends call this, so a verdict is identical whichever one produced it.
 pub fn check_ingested(
+    ingested: Ingested,
+    run_config: &RunConfig,
+    attestation: Option<&crate::engine::AppliedAttestation>,
+) -> CheckOutput {
+    check_ingested_controlled(
+        ingested,
+        run_config,
+        attestation,
+        crate::engine::RunControl::default(),
+    )
+}
+
+/// As [`check_ingested`], with a caller's progress and cancellation hooks for the check loop.
+///
+/// The ingest's own interruption is [`crate::adapter::IngestOptions::cancelled`], which is where
+/// almost all of a long run's time is. This is the other half: a caller that set a deadline wants it
+/// to hold over the whole run, not to become unstoppable once the CDM is built.
+pub fn check_ingested_controlled(
+    ingested: Ingested,
+    run_config: &RunConfig,
+    attestation: Option<&crate::engine::AppliedAttestation>,
+    control: crate::engine::RunControl<'_>,
+) -> CheckOutput {
+    check_ingested_cached(ingested, run_config, attestation, control, None)
+}
+
+/// As [`check_ingested_controlled`], for a run whose input was a **saved CDM** rather than a dataset.
+///
+/// That is a fact about the run's input, which nothing in the CDM can see — the same reason the
+/// engine emits the coverage findings itself — and it has to reach every renderer, so it is carried
+/// into the engine beside the coverage note rather than printed by one front end.
+pub fn check_ingested_cached(
     mut ingested: Ingested,
     run_config: &RunConfig,
     attestation: Option<&crate::engine::AppliedAttestation>,
+    control: crate::engine::RunControl<'_>,
+    cached: Option<crate::engine::CachedInput>,
 ) -> CheckOutput {
     // Normalize episode/stream order before validating so the verdict and reports are
     // order-independent, matching the order-independent content hash. The hash itself is unaffected
@@ -104,13 +138,17 @@ pub fn check_ingested(
             episodes_declared: *episodes_declared,
         },
     };
-    let verdict = engine.run_over_attested(
+    let verdict = engine.run_with_inputs(
         &ingested.dataset,
         hash,
         &run_config,
-        coverage,
-        &ingested.report.unread_sources,
-        attestation,
+        crate::engine::RunInputs {
+            coverage,
+            unread: &ingested.report.unread_sources,
+            attestation,
+            cached,
+        },
+        control,
     );
     let attested_keys: Vec<String> = attestation.map(|a| a.keys.clone()).unwrap_or_default();
     let trust = score(

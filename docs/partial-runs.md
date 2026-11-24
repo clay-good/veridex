@@ -35,6 +35,49 @@ RLDS/TFDS, HDF5, and Zarr (which have an episode axis); MCAP, ROS 2 rosbag2, ROS
 MF4 and a KITTI raw drive ingest a recording as one episode and refuse the request rather than
 handing back everything labelled as a sample.
 
+## Bounding a run in time, and re-using what it read
+
+Two more ways a run can be less than a full one, and both say so.
+
+`--deadline <secs>` bounds the whole run in wall-clock time — the read included, which is where
+nearly all of a long run's time goes. A read that stops is **refused** rather than reported: the
+episodes it never reached are not a sample, they are wherever it stopped, so there is no honest
+partial answer and `veridex` exits 2 saying the read was cancelled. A run that gets as far as the
+checks and is stopped there keeps every finding from the checks that finished and marks itself three
+ways: `COVERAGE.CANCELLED` (a **warning**, so it can never present as a clean pass), a `cancelled`
+block in `--json` naming how many of how many checks ran, and a refusal from `certify`. It also
+hashes differently from the complete run, so the two are never interchangeable under a signature.
+
+`--progress` reports each check as it finishes, on **stderr** — so a `--json` run can be piped while
+still showing progress on a terminal.
+
+```sh
+veridex check huge-corpus/ --deadline 300 --progress
+```
+
+And the read itself can be re-used. Nearly all of a run's cost is that read: a terabyte of shards
+becomes a few megabytes of Canonical Dataset Model, and the check loop over the model is
+milliseconds. So:
+
+```sh
+veridex check my-dataset/ --emit-cdm my-dataset.cdm.json   # read once
+veridex check --cdm my-dataset.cdm.json                    # check again, no read
+```
+
+For the content hash the model names, the second run's verdict is **identical** to the first's — the
+model is the whole of what a read computes, and the verdict is a function of it plus the
+configuration — plus one informational finding, `COVERAGE.CACHED_CDM`, saying the dataset was not
+opened. That makes re-running the catalog after an upgrade, a moved threshold or a new profile free,
+on a corpus where reading it again is not.
+
+Three refusals keep it from becoming a way to launder a verdict. A cache states the **CDM encoding
+version** its hash was computed under and is refused under another, because a hash is only
+comparable within one encoding. Loading **recomputes the hash** from the model in the file, so an
+edited cache — an episode removed, a value softened — does not load. And `certify` deliberately takes
+no cache: a certificate is a claim about a dataset, and the issuer should have read it at least once.
+Whether the hash a cache names is the dataset you have now is what `veridex verify <dataset>
+--certificate …` answers, and a cached run does not pretend to have asked.
+
 A sampled run is never presented as a whole-dataset one. The verdict carries a `coverage` field
 (bound into its hash), every report states the sample and the episode count, and **`certify` refuses
 to issue a certificate from a partial run** — a certificate speaks for a dataset, and the episodes a
