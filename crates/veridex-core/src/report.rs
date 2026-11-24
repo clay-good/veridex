@@ -1197,3 +1197,257 @@ fn category_tag(f: &crate::check::Finding) -> &'static str {
         Autonomy => "autonomy",
     }
 }
+
+/// What `veridex explain <query>` found: the check a finding code belongs to, or the check itself.
+///
+/// A CI log shows a code and nothing else — `TEMPORAL.CLOCK_SKEW  episode 0` — and the reader's next
+/// question is what raised it and whether it is a measurement or an abstention. `veridex checks`
+/// answers that by printing the whole catalog; this answers it for one string.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Explained {
+    /// The query named a finding code, and this is the check that emits it.
+    Code {
+        /// The code, as the catalog spells it.
+        code: &'static str,
+        /// The check that can emit it.
+        check: CheckInfo,
+    },
+    /// The query named a check id.
+    Check(CheckInfo),
+    /// The query named a code the **engine or a renderer** emits, which no registered check owns.
+    ///
+    /// These are the codes a reader is most likely to look up and least likely to find in
+    /// `veridex checks`, which lists the checks that run.
+    Engine {
+        /// The code.
+        code: &'static str,
+        /// The pseudo-check it is attributed to in a report.
+        check_id: &'static str,
+        /// Why no check owns it.
+        why: &'static str,
+    },
+    /// Nothing matched. Carries the closest candidates, so a typo is one line from its answer.
+    Unknown {
+        /// What was asked for, as given.
+        query: String,
+        /// Check ids and finding codes that contain the query, case-insensitively.
+        near: Vec<String>,
+    },
+}
+
+/// How many near matches an unknown query names. Enough to recognize a typo, few enough to read.
+const EXPLAIN_NEAR_MATCHES: usize = 8;
+
+/// Look `query` up in `catalog`: a finding code, a check id, or neither.
+///
+/// Case-insensitive, because a reader pastes a code from a log in whatever case it appeared, and a
+/// check id and a finding code are distinguishable by shape rather than by case.
+pub fn explain(catalog: &[CheckInfo], query: &str) -> Explained {
+    let wanted = query.trim();
+    // Exact first, then case-insensitively, because the two namespaces can collide: the check
+    // `temporal.gap` and the code `TEMPORAL.GAP` differ only in case. Exact-first means each spelling
+    // resolves to the thing that is actually spelled that way, and a reader who types either in the
+    // wrong case still lands on one of them rather than on "unknown".
+    for exact in [true, false] {
+        let same = |a: &str, b: &str| {
+            if exact {
+                a == b
+            } else {
+                a.eq_ignore_ascii_case(b)
+            }
+        };
+        for check in catalog {
+            if same(check.id, wanted) {
+                return Explained::Check(check.clone());
+            }
+        }
+        for check in catalog {
+            for code in check.finding_codes {
+                if same(code, wanted) {
+                    return Explained::Code {
+                        code,
+                        check: check.clone(),
+                    };
+                }
+            }
+        }
+        for (code, check_id, why) in crate::engine::ENGINE_EMITTED_CODES {
+            if same(code, wanted) {
+                return Explained::Engine {
+                    code,
+                    check_id,
+                    why,
+                };
+            }
+        }
+    }
+    let needle = wanted.to_ascii_lowercase();
+    let mut near: Vec<String> = Vec::new();
+    if !needle.is_empty() {
+        for (code, check_id, _) in crate::engine::ENGINE_EMITTED_CODES {
+            if code.to_ascii_lowercase().contains(&needle)
+                || check_id.to_ascii_lowercase().contains(&needle)
+            {
+                near.push((*code).to_string());
+            }
+        }
+        for check in catalog {
+            if check.id.to_ascii_lowercase().contains(&needle) {
+                near.push(check.id.to_string());
+            }
+            for code in check.finding_codes {
+                if code.to_ascii_lowercase().contains(&needle) {
+                    near.push((*code).to_string());
+                }
+            }
+        }
+    }
+    near.sort();
+    near.dedup();
+    near.truncate(EXPLAIN_NEAR_MATCHES);
+    Explained::Unknown {
+        query: wanted.to_string(),
+        near,
+    }
+}
+
+/// The human rendering of an [`Explained`].
+pub fn render_explain(explained: &Explained) -> String {
+    let mut out = String::new();
+    let block = |out: &mut String, check: &CheckInfo, code: Option<&str>| {
+        let abstention = code.is_some_and(|c| check.abstention_codes.contains(&c));
+        out.push_str(&format!(
+            "  check      {} (version {})\n",
+            check.id, check.version
+        ));
+        out.push_str(&format!("  title      {}\n", check.title));
+        out.push_str(&format!("  family     {}\n", check.category.tag()));
+        out.push_str(&format!(
+            "  severity   {} by default — a `veridex.toml` may override it\n",
+            check.default_severity.tag()
+        ));
+        out.push_str(&format!("  scope      {}\n", check.scope.tag()));
+        if let Some(code) = code {
+            out.push_str(&format!(
+                "  means      {}\n",
+                if abstention {
+                    "the check could not measure — not that it measured and found it sound"
+                } else {
+                    "the check measured the data and this is what it found"
+                }
+            ));
+            let siblings: Vec<&str> = check
+                .finding_codes
+                .iter()
+                .copied()
+                .filter(|c| *c != code)
+                .collect();
+            if !siblings.is_empty() {
+                out.push_str(&format!("  siblings   {}\n", siblings.join(", ")));
+            }
+        } else {
+            let codes: Vec<String> = check
+                .finding_codes
+                .iter()
+                .map(|c| {
+                    if check.abstention_codes.contains(c) {
+                        format!("{c}†")
+                    } else {
+                        (*c).to_string()
+                    }
+                })
+                .collect();
+            out.push_str(&format!("  codes      {}\n", codes.join(", ")));
+            if !check.abstention_codes.is_empty() {
+                out.push_str("             † the check could not measure, rather than\n");
+                out.push_str("               measured and found nothing\n");
+            }
+        }
+        out.push('\n');
+        out.push_str("  The risk this addresses and the remedy it suggests travel with the\n");
+        out.push_str("  finding itself, and the full entry is in docs/checks.md — search it\n");
+        out.push_str(&format!("  for `{}`.\n", check.id));
+    };
+    match explained {
+        Explained::Code { code, check } => {
+            out.push_str(&format!("{code} — a finding code\n\n"));
+            block(&mut out, check, Some(code));
+        }
+        Explained::Check(check) => {
+            out.push_str(&format!("{} — a check\n\n", check.id));
+            block(&mut out, check, None);
+        }
+        Explained::Engine {
+            code,
+            check_id,
+            why,
+        } => {
+            out.push_str(&format!("{code} — a finding code no check owns\n\n"));
+            out.push_str(&format!("  attributed to  {check_id}\n"));
+            out.push_str(&format!("  what it means  {why}\n"));
+            // One line per `push_str`: rustfmt bakes a `\`-continuation's indentation into the
+            // string, which lands mid-sentence in the output
+            // (`tests/report.rs::no_user_facing_message_was_mangled_by_the_formatter`).
+            for line in [
+                "",
+                "  It is emitted by the engine rather than by a check, which is why",
+                "  `veridex checks` does not list it: that lists the checks that run, and",
+                "  configuration must not be able to disable a disclosure. The full entry",
+                "  is in docs/checks.md.",
+            ] {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+        Explained::Unknown { query, near } => {
+            out.push_str(&format!("no check or finding code is called `{query}`\n"));
+            if !near.is_empty() {
+                out.push_str("\n  did you mean one of these?\n");
+                for candidate in near {
+                    out.push_str(&format!("    {candidate}\n"));
+                }
+            } else {
+                out.push_str(
+                    "\n  `veridex checks` lists every check and every code it can emit.\n",
+                );
+            }
+        }
+    }
+    out
+}
+
+/// The machine rendering of an [`Explained`] — the shape `veridex explain --json` prints and the
+/// Python binding returns.
+pub fn render_explain_json(explained: &Explained) -> String {
+    let doc = match explained {
+        Explained::Code { code, check } => serde_json::json!({
+            "found": true,
+            "kind": "finding_code",
+            "code": code,
+            "abstention": check.abstention_codes.contains(code),
+            "check": check,
+        }),
+        Explained::Check(check) => serde_json::json!({
+            "found": true,
+            "kind": "check",
+            "check": check,
+        }),
+        Explained::Engine {
+            code,
+            check_id,
+            why,
+        } => serde_json::json!({
+            "found": true,
+            "kind": "engine_code",
+            "code": code,
+            "check_id": check_id,
+            "why": why,
+        }),
+        Explained::Unknown { query, near } => serde_json::json!({
+            "found": false,
+            "query": query,
+            "near": near,
+        }),
+    };
+    serde_json::to_string_pretty(&doc).expect("an explanation serializes")
+}

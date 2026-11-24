@@ -141,6 +141,24 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **`veridex explain <CODE>`: what one string in a report means.** A CI log shows a code and nothing
+  else — `TEMPORAL.CLOCK_SKEW  episode 0` — and the reader's next question is which check raised it
+  and whether it is a measurement or an **abstention**, a distinction that produces the same silence
+  everywhere else. `veridex checks` answered that by printing the whole catalog; this answers it for
+  one string, which is the form the question arrives in. It takes a finding code or a check id,
+  prints the check behind it, its family, its default severity (and that a `veridex.toml` may
+  override it), its scope and the code's siblings, and exits **2** on a string that is neither — with
+  the near misses, so a gate grepping a log for codes it does not know fails rather than reporting
+  nothing.
+
+  It also answers the codes **no check owns**, which are the hardest to look up anywhere else:
+  `veridex checks` lists the checks that run, and a coverage disclosure is not one of them — it is a
+  property of the run, which no check can read from the CDM, and configuration must not be able to
+  disable it. Those eleven now live in one table (`ENGINE_EMITTED_CODES`) with a line each on why no
+  check owns them, and a test holds that table and the catalog to being disjoint and complete: a code
+  in both would be answered twice, differently, and a code in neither is one nothing can explain.
+  `--json` and `veridex.explain(query)` print the same answer.
+
 - **Check-packs from Python, and a plugin API version that means something.** The extensibility
   spec asks for the plugin surface "from both Rust and Python", and from Python there was none: a
   lab's house rule meant writing a Rust crate. `veridex.CheckPack(name, version)` with

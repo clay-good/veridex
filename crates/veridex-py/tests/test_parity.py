@@ -1005,6 +1005,36 @@ def test_a_python_check_that_misbehaves_is_errored_not_silent(tmp_path):
     ), report["verdict"]["errored_checks"]
 
 
+def test_cli_and_python_explain_agree(tmp_path):
+    """One code's explanation must be the same on both surfaces, including "not a code"."""
+    binary = os.environ.get("VERIDEX_BIN", "target/debug/veridex")
+
+    def cli(query):
+        result = subprocess.run(
+            [binary, "explain", query, "--json"], capture_output=True, text=True
+        )
+        return json.loads(result.stdout), result.returncode
+
+    for query in [
+        "TEMPORAL.CLOCK_SKEW",            # a measurement
+        "SEMANTIC.NO_ANNOTATIONS",        # an abstention
+        "COVERAGE.CANCELLED",             # emitted by the engine, owned by no check
+        "temporal.clock-skew",            # a check id
+    ]:
+        expected, code = cli(query)
+        assert code == 0, (query, expected)
+        assert json.loads(veridex.explain(query)) == expected, query
+        assert expected["found"] is True
+
+    # Not a code: the same answer and the same near misses, and the CLI exits 2 while Python returns
+    # the shape rather than raising — "that is not a code, did you mean one of these" is an answer.
+    expected, code = cli("clock")
+    assert code == 2
+    assert json.loads(veridex.explain("clock")) == expected
+    assert expected["found"] is False
+    assert "TEMPORAL.CLOCK_SKEW" in expected["near"]
+
+
 if __name__ == "__main__":
     # Minimal runner when pytest is unavailable. Defined last, so every test above it exists.
     import tempfile

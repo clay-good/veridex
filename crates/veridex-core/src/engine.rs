@@ -705,7 +705,7 @@ impl EngineBuilder {
 
 /// Static, run-independent metadata describing one registered check. Emitted by
 /// [`Engine::catalog`] for discoverability (`veridex checks`).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CheckInfo {
     /// The check's stable id (e.g. `structural.shape-consistency`).
     pub id: &'static str,
@@ -1013,6 +1013,72 @@ impl Engine {
     }
 }
 
+/// Every finding code the **engine or a renderer** emits rather than a registered check, with the
+/// pseudo-check id it is attributed to and one line on why no check owns it.
+///
+/// These are the codes a reader is most likely to look up and least likely to find: they appear in a
+/// report exactly as a check's codes do, and `veridex checks` deliberately does not list them —
+/// because it lists the checks that *run*, and configuration must not be able to disable a
+/// disclosure. So `veridex explain` reads this table, and a test asserts it holds exactly the codes
+/// the catalog does not.
+pub const ENGINE_EMITTED_CODES: &[(&str, &str, &str)] = &[
+    (
+        "COVERAGE.SAMPLE",
+        COVERAGE_CHECK_ID,
+        "how much of the dataset the ingest read: a property of the run, not of the CDM",
+    ),
+    (
+        "COVERAGE.METADATA_ONLY",
+        COVERAGE_CHECK_ID,
+        "the run checked what the dataset says about itself and opened no data file",
+    ),
+    (
+        "COVERAGE.SOURCE_UNREAD",
+        COVERAGE_CHECK_ID,
+        "data the adapter declined to read, which full coverage does not express",
+    ),
+    (
+        "COVERAGE.CANCELLED",
+        COVERAGE_CHECK_ID,
+        "the run was stopped partway, so it is not a verdict on the dataset",
+    ),
+    (
+        "COVERAGE.CACHED_CDM",
+        COVERAGE_CHECK_ID,
+        "the run validated a saved Canonical Dataset Model rather than opening the dataset",
+    ),
+    (
+        "SCOPE.NARROWED",
+        SCOPE_CHECK_ID,
+        "the catalog was narrowed or a threshold loosened, which raises a score",
+    ),
+    (
+        "PROVENANCE.ATTESTED",
+        ATTESTATION_CHECK_ID,
+        "a producer signed for a provenance element: a property of the run's inputs, not of the CDM",
+    ),
+    (
+        "PROVENANCE.ATTESTATION_CONFLICT",
+        ATTESTATION_CHECK_ID,
+        "an attested value contradicts what the dataset records",
+    ),
+    (
+        "REPORT.REDACTED",
+        crate::redact::REDACTION_CHECK_ID,
+        "the report was prepared for sharing: what it may quote is a property of who will read it",
+    ),
+    (
+        "VERIDEX.CHECK_ERRORED",
+        "veridex.report",
+        "a check crashed, reported as a SARIF result because that is what a scanner reads",
+    ),
+    (
+        "VERIDEX.PROFILE_NOT_READY",
+        "veridex.report",
+        "a readiness profile's verdict, synthesized as a SARIF result for the same reason",
+    ),
+];
+
 /// The check id under which a partial run discloses its own scope.
 ///
 /// Not a registered [`Check`] — coverage is a property of the ingest, which no check can read from
@@ -1025,7 +1091,7 @@ pub const COVERAGE_CHECK_ID: &str = "veridex.coverage";
 /// The check id the attestation disclosures are attributed to. Not a registered check: whether a
 /// producer signed for a provenance element is a property of the run's inputs, which nothing in the
 /// CDM can see.
-const ATTESTATION_CHECK_ID: &str = "veridex.attestation";
+pub(crate) const ATTESTATION_CHECK_ID: &str = "veridex.attestation";
 
 /// Disclose an applied attestation, and any value it contradicts.
 fn attestation_findings(applied: &AppliedAttestation) -> Vec<Finding> {

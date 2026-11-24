@@ -4169,3 +4169,49 @@ fn audit_says_whether_a_certificate_document_is_in_the_log() {
     assert_eq!(doc["certificate"]["recorded"], serde_json::json!(false));
     assert_eq!(doc["intact"], serde_json::json!(false));
 }
+
+#[test]
+fn explain_answers_one_code_and_refuses_a_string_that_is_not_one() {
+    // The question a CI log actually prompts: this code appeared, what is it? `veridex checks`
+    // answers it by printing the whole catalog.
+    let (code, out, err) = run(&["explain", "TEMPORAL.CLOCK_SKEW"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("temporal.clock-skew"), "{out}");
+    assert!(out.contains("a finding code"), "{out}");
+    assert!(out.contains("error by default"), "{out}");
+
+    // A check id resolves too, listing what it can emit, with abstentions marked.
+    let (code, out, _) = run(&["explain", "semantic.annotation-integrity"]);
+    assert_eq!(code, 0);
+    assert!(out.contains("SEMANTIC.NO_ANNOTATIONS†"), "{out}");
+
+    // A code the engine emits rather than a check — the one a reader is least likely to find in
+    // `veridex checks`, which lists the checks that run.
+    let (code, out, _) = run(&["explain", "COVERAGE.CANCELLED"]);
+    assert_eq!(code, 0);
+    assert!(out.contains("no check owns"), "{out}");
+    assert!(out.contains("veridex.coverage"), "{out}");
+
+    // Not a code: exit 2, with the near misses, so a gate grepping a log for codes it does not know
+    // fails rather than reporting nothing.
+    let (code, out, _) = run(&["explain", "clock"]);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("did you mean"), "{out}");
+    assert!(out.contains("TEMPORAL.CLOCK_SKEW"), "{out}");
+
+    // And the machine form says the same thing in fields.
+    let (code, out, _) = run(&["explain", "SEMANTIC.NO_TASKS", "--json"]);
+    assert_eq!(code, 0);
+    let doc: serde_json::Value = serde_json::from_str(&out).expect("json");
+    assert_eq!(doc["found"], serde_json::json!(true));
+    assert_eq!(doc["abstention"], serde_json::json!(true));
+    assert_eq!(
+        doc["check"]["id"],
+        serde_json::json!("semantic.task-quality")
+    );
+
+    // Missing argument: a tool error naming what it wanted.
+    let (code, _, err) = run(&["explain"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("finding code or a check id"), "{err}");
+}

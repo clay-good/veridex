@@ -645,6 +645,24 @@ fn emit_cdm(path: &str, format: Option<&str>, metadata_only: bool) -> PyResult<S
     ))
 }
 
+/// `veridex.explain(query) -> str`
+///
+/// What one finding code or check id is, as the JSON `veridex explain --json` prints: the check
+/// behind it, whether the code is a measurement or an **abstention** ("I could not measure", which
+/// produces the same silence as a clean result everywhere else), and — for the codes the engine
+/// emits rather than a check — why no check owns it.
+///
+/// Returns the `{"found": false, "near": [...]}` shape for a string that is neither, rather than
+/// raising: "that is not a code, did you mean one of these" is an answer.
+#[pyfunction]
+fn explain(query: &str) -> PyResult<String> {
+    let engine = veridex_core::checks::default_engine().map_err(to_py_err)?;
+    Ok(veridex_core::render_explain_json(&veridex_core::explain(
+        &engine.catalog(),
+        query,
+    )))
+}
+
 /// `veridex.audit(log_text, expect_head=None, certificate_json=None) -> str`
 ///
 /// Walk an append-only issuance log and return the JSON `veridex audit --json` prints: whether the
@@ -1062,6 +1080,7 @@ fn veridex(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(emit_cdm, m)?)?;
     m.add_function(wrap_pyfunction!(check_cdm, m)?)?;
     m.add_function(wrap_pyfunction!(audit, m)?)?;
+    m.add_function(wrap_pyfunction!(explain, m)?)?;
     m.add_function(wrap_pyfunction!(version, m)?)?;
     Ok(())
 }

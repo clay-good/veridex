@@ -151,6 +151,7 @@ veridex verify     <dataset> --certificate c.json --key pub.key   # verify offli
 veridex provenance <dataset> --emit croissant                     # extract + emit provenance
 veridex inspect    <dataset>                                      # summarize the dataset
 veridex checks                                                    # list the built-in check catalog
+veridex explain TEMPORAL.CLOCK_SKEW                               # what one code in a report means
 veridex diff       <old.json> <new.json>                         # diff two report JSONs
 veridex watch      <dataset> [--interval <secs>] [--iterations <n>]  # re-validate as it records
 veridex attest     <dataset> --key producer.key --set clock=ptp   # sign provenance you can vouch for
@@ -350,7 +351,8 @@ print(manifest["verdict"]["coverage"])
 ```
 
 Python mirrors the CLI's *operations* — `check`, `certify`, `verify`, `provenance`, `inspect`, `diff`,
-`effective_config`, `label`, `attest`, `supersedes`, `overlap`, `audit`, `emit_cdm` / `check_cdm`.
+`effective_config`, `label`, `attest`, `supersedes`, `overlap`, `audit`, `explain`,
+`emit_cdm` / `check_cdm`.
 `watch` is not among them by design: it is a loop around `check`, not an operation, and a Python
 caller already owns their own loop.
 

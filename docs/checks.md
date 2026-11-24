@@ -255,6 +255,29 @@ make an episode a rig.
 | `autonomy.sensor-clock` | `AUTONOMY.SENSOR_CLOCK_OFFSET` | warning | A rig sensor's capture stamps sit further than the tolerance from the recorder's clock on **every** message (default 1 s, `sensor_clock_offset_ms`) — the two are not one clock, so this stream's capture times cannot be compared with any other sensor's on the rig. Judged from the smallest disagreement seen across the whole stream, not from an average, so a transient buffering spike cannot raise it and a constant pipeline latency of tens of milliseconds does not either. The default sits three orders of magnitude above real sensor latency and far below what an undisciplined clock produces (minutes to years), so it is nowhere near either edge. The frame timestamps hide the fault completely: they are all the recorder's. |
 | `autonomy.sensor-clock` | `AUTONOMY.SENSOR_CLOCK_UNREAD` | info | A rig sensor stream records no capture time of its own, so the sensor-clock rules had nothing to compare the recording's timeline against — every non-ROS format, whose files carry one clock rather than one stamp per sample. Reported once for the dataset, naming the streams. **Withheld under `--metadata-only`**, which read no message bodies for any format; `COVERAGE.METADATA_ONLY` states that instead. Informational, not a defect: what it changes is what a passing sync result is evidence of — one clock agreeing with itself rather than two clocks agreeing with each other. |
 
+## Looking one code up
+
+A CI log shows a code and nothing else — `TEMPORAL.CLOCK_SKEW  episode 0` — and the next question is
+which check raised it and whether it is a measurement or an abstention.
+
+```sh
+veridex explain TEMPORAL.CLOCK_SKEW
+veridex explain semantic.annotation-integrity     # a check id works too
+veridex explain COVERAGE.CANCELLED                # and so do the codes no check owns
+```
+
+It prints the check behind the code, its family, its default severity (and that a `veridex.toml` may
+override it), its scope, the code's siblings, and — the line this exists for — whether the code means
+*the check measured the data* or *the check could not measure*, which produce the same silence
+everywhere else. A string that is neither a code nor a check id gets the near misses and exit **2**,
+so a gate grepping a log for codes it does not know fails rather than reporting nothing. `--json`
+prints the same answer, and `veridex.explain(query)` returns it byte-for-byte.
+
+The codes the **engine** emits are included, and they are the ones hardest to look up otherwise:
+`veridex checks` lists the checks that *run*, and a coverage disclosure is not one of them — it is a
+property of the run, which no check can read from the CDM, and configuration must not be able to
+disable it.
+
 ## What the catalog does not check
 
 One capability the [checks-catalog spec](../openspec/specs/checks-catalog/spec.md) describes has no

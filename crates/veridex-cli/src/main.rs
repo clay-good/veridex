@@ -78,6 +78,10 @@ const COMMANDS: &[(&str, &str)] = &[
         "walk an append-only issuance log and say whether its chain is intact (--expect-head <hash>; --certificate <c.json> asks whether that document is recorded; --json)",
     ),
     ("checks", "list the built-in check catalog"),
+    (
+        "explain",
+        "say what one finding code or check id is: the check behind it, whether it is a measurement or an abstention, and where its full entry lives (--json)",
+    ),
 ];
 
 /// Parsed command line for the data-consuming commands.
@@ -343,6 +347,7 @@ const COMMAND_FLAGS: &[(&str, &[&[&str]], &str)] = &[
         "<audit-log.jsonl>",
     ),
     ("checks", &[&["--json"]], ""),
+    ("explain", &[&["--json"]], "<CODE|check-id>"),
 ];
 
 /// The flag groups `command` honors, or nothing for a name that is not a command.
@@ -610,6 +615,7 @@ fn main() -> ExitCode {
         Some("check") => cmd_check(&args[1..]),
         Some("inspect") => cmd_inspect(&args[1..]),
         Some("checks") => cmd_checks(&args[1..]),
+        Some("explain") => cmd_explain(&args[1..]),
         Some("certify") => cmd_certify(&args[1..]),
         Some("verify") => cmd_verify(&args[1..]),
         Some("supersedes") => cmd_supersedes(&args[1..]),
@@ -2476,6 +2482,50 @@ fn cmd_audit(rest: &[String]) -> ExitCode {
         ExitCode::SUCCESS
     } else {
         ExitCode::from(EXIT_FAIL)
+    }
+}
+
+/// `veridex explain <CODE|check-id>` — what one string in a report means.
+///
+/// A CI log shows a code and nothing else (`TEMPORAL.CLOCK_SKEW  episode 0`), and the reader's next
+/// question is which check raised it and whether it is a measurement or an abstention — "I could not
+/// measure" and "I measured and it is sound" produce the same silence everywhere else.
+/// `veridex checks` answers that by printing the whole catalog; this answers it for one string, which
+/// is the form the question actually arrives in.
+///
+/// Exits 0 when the string is a code or a check id, and 2 when it is neither — a gate that greps a
+/// log for codes it does not know should fail rather than report nothing.
+fn cmd_explain(rest: &[String]) -> ExitCode {
+    let args = match parse_args_or_exit(rest) {
+        Ok(a) => a,
+        Err(code) => return code,
+    };
+    if let Err(code) = reject_flags_except("explain", &args) {
+        return code;
+    }
+    if let Err(code) = reject_extra_positionals("explain", &args, "finding code or check id") {
+        return code;
+    }
+    let Some(query) = &args.path else {
+        eprintln!("veridex: explain takes a finding code or a check id, e.g. `veridex explain TEMPORAL.CLOCK_SKEW`");
+        return ExitCode::from(EXIT_TOOL_ERROR);
+    };
+    let engine = match veridex_core::checks::default_engine() {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("veridex: {e}");
+            return ExitCode::from(EXIT_TOOL_ERROR);
+        }
+    };
+    let explained = veridex_core::explain(&engine.catalog(), query);
+    if args.json {
+        println!("{}", veridex_core::render_explain_json(&explained));
+    } else {
+        print!("{}", veridex_core::render_explain(&explained));
+    }
+    match explained {
+        veridex_core::Explained::Unknown { .. } => ExitCode::from(EXIT_TOOL_ERROR),
+        _ => ExitCode::SUCCESS,
     }
 }
 
