@@ -911,6 +911,20 @@ position is still recorded — unlike a `NavSatFix` whose `STATUS_NO_FIX` discla
 coordinates, an OXTS row reports a blended inertial position and disclaims nothing, and dropping it
 would be the reader deciding the row was lying.
 
+The same rows carry the **inertial** half of the OXTS unit, and it is read as two further streams:
+`oxts/pose` (roll, pitch, yaw and the forward/left/up velocities) and `oxts/imu` (the vehicle-frame
+accelerations and angular rates). That matters beyond the extra numbers. A rig episode is three
+rig-sensor streams across two AV-native modalities, and a KITTI drive read for its position alone
+carried **two** — so rig-wide sync, calibration completeness, calibration plausibility and
+per-sensor frame resolution all stood down on the format those checks were written for, with the
+published calibration sitting beside them unexamined. A drive whose `K_0N` principal point came from
+a 1920-wide calibration now reports `AUTONOMY.CALIBRATION_IMPLAUSIBLE`; before, it passed.
+
+Every one of the thirty fields `dataformat.txt` defines is either mapped or named as unread, and a
+test reads those field numbers back out of the report: the map-frame velocities and the
+forward/left/up accelerations and rates (the mapped measurements in another frame), the two accuracy
+estimates, and `navstat` with the three mode flags are the ones this reader does not use.
+
 Three things this reader deliberately does not claim.
 
 A KITTI timestamp is a **naive** civil time — `2011-09-26 13:02:25.964389445`, with no offset. It is

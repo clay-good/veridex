@@ -8,6 +8,27 @@ All notable changes to Veridex are recorded here. The format follows
 The first shippable slice of the [`bootstrap-veridex-mvp`](openspec/changes/bootstrap-veridex-mvp/)
 change. Runs end-to-end: ingest → validate → score → report → sign.
 
+### Added
+
+- **KITTI's OXTS rows are read as all three records they hold, which makes a drive a rig.** The unit
+  is an RT3003 — a GNSS receiver, an IMU and an inertial navigation solution in one box — and
+  `dataformat.txt` lays all three out in the same thirty fields. The reader took the position and
+  disclosed the rest as unread, which left a drive with **two** rig-sensor streams. A rig episode is
+  three across two AV-native modalities, so rig-wide sync, calibration completeness, calibration
+  plausibility and per-sensor frame resolution all stood down on the canonical autonomy dataset,
+  with its published calibration sitting beside them unexamined. `oxts/pose` (roll, pitch, yaw and
+  the forward/left/up velocities) and `oxts/imu` (the vehicle-frame accelerations and angular rates)
+  close that: a drive whose `K_0N` principal point came from a 1920-wide calibration now reports
+  `AUTONOMY.CALIBRATION_IMPLAUSIBLE`, and before it passed. The demo drive writes a real motion
+  profile for those fields — rational arithmetic in the sample index, no `sin`, whose last bit is a
+  platform's libm's business — because a column of zeros is a dead sensor and the statistical family
+  would be right to say so.
+- **Every one of the thirty OXTS fields is either mapped or named as unread, and a test checks it by
+  number.** The note that disclosed the unread ones had drifted: it still described fields 4-26 as
+  unread (and, separately, had lost three words to a line continuation). The new guard reads the
+  field numbers back out of the report's own mapped and unmapped lists and asserts they cover 1-30
+  exactly once, so a field that is read by nobody and disclosed to nobody fails the build.
+
 ### Changed
 
 - **Three boundaries the adapter mutation sweep found unpinned, and one calibration field read

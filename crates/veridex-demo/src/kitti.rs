@@ -165,8 +165,9 @@ pub fn write(dir: &Path, variant: &str) -> Result<(), DemoError> {
         .map_err(DemoError::Io)?;
     }
 
-    // The GPS/IMU. Thirty whitespace-separated fields per sample, as `dataformat.txt` defines them;
-    // the first three are latitude, longitude and altitude.
+    // The GPS/IMU. Thirty whitespace-separated fields per sample, as `dataformat.txt` defines them:
+    // the position first, then the orientation and velocities the navigation solution reports, then
+    // the inertial measurements, then the accuracy and mode flags.
     let mut lines = String::new();
     for i in 0..SAMPLES {
         lines.push_str(&stamp(i, 100_000_000));
@@ -176,7 +177,13 @@ pub fn write(dir: &Path, variant: &str) -> Result<(), DemoError> {
     fs::write(
         drive.join("oxts").join("dataformat.txt"),
         "lat:   latitude of the oxts-unit (deg)\nlon:   longitude of the oxts-unit (deg)\n\
-         alt:   altitude of the oxts-unit (m)\n",
+         alt:   altitude of the oxts-unit (m)\nroll:  roll angle (rad)\npitch: pitch angle (rad)\n\
+         yaw:   heading (rad)\nvf:    forward velocity (m/s)\nvl:    leftward velocity (m/s)\n\
+         vu:    upward velocity (m/s)\nax:    acceleration in x, wrt. the vehicle frame (m/s^2)\n\
+         ay:    acceleration in y, wrt. the vehicle frame (m/s^2)\n\
+         az:    acceleration in z, wrt. the vehicle frame (m/s^2)\n\
+         wx:    angular rate around x (rad/s)\nwy:    angular rate around y (rad/s)\n\
+         wz:    angular rate around z (rad/s)\nnumsats: number of satellites tracked\n",
     )
     .map_err(DemoError::Io)?;
     for i in 0..SAMPLES {
@@ -185,15 +192,52 @@ pub fn write(dir: &Path, variant: &str) -> Result<(), DemoError> {
         } else {
             (49.015 + i as f64 * 9.0e-6, 8.434, 112.0)
         };
+        // A vehicle driving gently straight ahead: a small steady acceleration, gravity on the
+        // down axis, a yaw rate that eases off as it comes out of a bend, and a heading that turns
+        // with it. All of it rational arithmetic in the sample index — no `sin`, whose last bit is
+        // the platform's libm's business and would make this fixture hash differently on two
+        // machines. Only a real profile is worth writing: a column of zeros is a dead sensor, and
+        // the statistical family would be right to say so.
+        let t = i as f64;
+        let yaw_rate = 0.12 - t * 0.004;
+        let yaw = 1.42 + t * 0.012;
+        let forward = 8.4 + t * 0.05;
         let mut fields: Vec<String> = vec![
             format!("{lat:.12}"),
             format!("{lon:.12}"),
             format!("{alt:.6}"),
+            // roll, pitch, yaw
+            format!("{:.9}", 0.004 + t * 0.0002),
+            format!("{:.9}", -0.011 + t * 0.0001),
+            format!("{yaw:.9}"),
+            // vn, ve — the same motion in map coordinates, which this reader leaves unmapped
+            format!("{:.9}", forward * 0.98),
+            format!("{:.9}", forward * 0.19),
+            // vf, vl, vu — the body-frame velocity triple
+            format!("{forward:.9}"),
+            format!("{:.9}", 0.06 - t * 0.002),
+            format!("{:.9}", 0.01),
+            // ax, ay, az — vehicle frame, gravity included on the vertical axis
+            format!("{:.9}", 0.5 + t * 0.01),
+            format!("{:.9}", forward * yaw_rate),
+            format!("{:.9}", 9.81 + t * 0.001),
+            // af, al, au — the same accelerations forward/left/up, left unmapped
+            format!("{:.9}", 0.5 + t * 0.01),
+            format!("{:.9}", forward * yaw_rate),
+            format!("{:.9}", 9.81),
+            // wx, wy, wz — angular rates in the vehicle frame
+            format!("{:.9}", 0.002),
+            format!("{:.9}", -0.003),
+            format!("{yaw_rate:.9}"),
+            // wf, wl, wu — the same rates forward/left/up, left unmapped
+            format!("{:.9}", 0.002),
+            format!("{:.9}", -0.003),
+            format!("{yaw_rate:.9}"),
         ];
-        // Orientation, velocities, accelerations and accuracies: present because the format defines
-        // thirty fields, and a row of another width is not an OXTS record.
-        for _ in 3..25 {
-            fields.push("0.000000".into());
+        // The two accuracy estimates, present because the format defines thirty fields and a row of
+        // another width is not an OXTS record.
+        for _ in 23..25 {
+            fields.push("0.030000".into());
         }
         // The five integer mode fields the format ends with: navstat, numsats, posmode, velmode,
         // orimode. `no-fix` sets `numsats` to zero for four fifths of the drive — the receiver

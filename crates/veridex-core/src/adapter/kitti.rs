@@ -26,7 +26,11 @@
 //! for the spatial checks to resolve sensors through. **GNSS values** are the first three fields of
 //! each `oxts` row — latitude, longitude, altitude — which is what lets the plausibility rules grade
 //! a drive, and `numsats` becomes the **fix availability**, so a drive that lost the sky is reported
-//! rather than abstained on.
+//! rather than abstained on. The same rows carry the **inertial** half of the OXTS unit's output,
+//! and it is read as two further streams: `oxts/pose` (orientation and body-frame velocity) and
+//! `oxts/imu` (accelerations and angular rates). Without them a drive carried two rig-sensor
+//! streams, one short of what [`crate::checks::autonomy::is_rig_episode`] requires, so the whole
+//! rig family stood down on the format those checks were written for.
 //!
 //! Three honesty notes, because each is a claim this reader deliberately does not make.
 //!
@@ -544,12 +548,19 @@ fn quaternion_from_matrix(r: &[f64]) -> [f64; 4] {
     }
 }
 
-/// The first three fields of one `oxts` row — latitude, longitude, altitude — or `None` when the row
+/// One `oxts` row, read as the three records the OXTS unit actually writes, or `None` when the row
 /// is not an OXTS record.
 ///
-/// A row has thirty fields and this reads the three the plausibility rules need. The rest (the
-/// velocities, the accelerations, the accuracy and mode flags) are disclosed as unmapped rather than
-/// silently dropped.
+/// The unit is an RT3003 — a GNSS receiver, an IMU and an inertial navigation solution in one box —
+/// and `dataformat.txt` lays all three out in the same thirty fields. Reading only the position
+/// left the inertial half of a KITTI drive unread: a drive then carried two rig-sensor streams,
+/// one short of what [`crate::checks::autonomy::is_rig_episode`] needs, so the rig family — sync,
+/// calibration completeness, calibration plausibility, per-sensor frame resolution — stood down on
+/// the canonical autonomy dataset while its calibration sat beside it unchecked.
+///
+/// What is still unmapped is disclosed rather than dropped: the second velocity triple (`vn`/`ve`,
+/// the same motion in map coordinates), the forward/left/up accelerations and angular rates (the
+/// same measurements rotated), the accuracy estimates, and the four mode flags beside `numsats`.
 fn oxts_row(text: &str) -> Option<OxtsRow> {
     let fields: Vec<&str> = text.split_whitespace().collect();
     // Thirty fields exactly, as `dataformat.txt` defines them: a row of another width is not this
@@ -558,11 +569,19 @@ fn oxts_row(text: &str) -> Option<OxtsRow> {
     if fields.len() != 30 {
         return None;
     }
-    let lat = fields[0].parse().ok()?;
-    let lon = fields[1].parse().ok()?;
-    let alt = fields[2].parse().ok()?;
+    let at = |i: usize| fields[i].parse::<f64>().ok();
+    let lat = at(0)?;
+    let lon = at(1)?;
+    let alt = at(2)?;
     Some(OxtsRow {
         position: [lat, lon, alt],
+        // Fields 4-6 and 9-11: the orientation the navigation solution reports and the body-frame
+        // velocity triple (forward, left, up). A field that does not parse stays `None` — the
+        // accumulator records the dimension as unmeasured for that sample rather than as a zero.
+        pose: [at(3), at(4), at(5), at(8), at(9), at(10)],
+        // Fields 12-14 and 18-20: the accelerations and angular rates in the vehicle frame, which
+        // is the IMU's own measurement rather than a derived quantity.
+        imu: [at(11), at(12), at(13), at(17), at(18), at(19)],
         // `numsats`, which `dataformat.txt` defines as the number of satellites the primary GPS
         // receiver tracked: field 27 of the thirty. Unparseable stays `None` rather than becoming
         // zero, because "the row does not say" and "it tracked none" are opposite facts.
@@ -574,12 +593,33 @@ fn oxts_row(text: &str) -> Option<OxtsRow> {
 struct OxtsRow {
     /// Latitude, longitude and altitude, in that order.
     position: [f64; 3],
+    /// Roll, pitch, yaw and the forward/left/up velocities, in [`OXTS_POSE_DIM_NAMES`] order.
+    pose: [Option<f64>; 6],
+    /// The vehicle-frame accelerations and angular rates, in [`OXTS_IMU_DIM_NAMES`] order.
+    imu: [Option<f64>; 6],
     /// How many satellites the receiver tracked, where the row states it.
     satellites: Option<u64>,
 }
 
-/// The names of the three `oxts` fields this reader summarizes, in order.
+/// The names of the three `oxts` fields the GNSS stream summarizes, in order.
 const OXTS_DIM_NAMES: [&str; 3] = ["latitude", "longitude", "altitude"];
+
+/// The `oxts` fields the ego-pose stream summarizes, in order.
+const OXTS_POSE_DIM_NAMES: [&str; 6] = ["roll", "pitch", "yaw", "vf", "vl", "vu"];
+
+/// The `oxts` fields the IMU stream summarizes, in order.
+const OXTS_IMU_DIM_NAMES: [&str; 6] = ["ax", "ay", "az", "wx", "wy", "wz"];
+
+/// The coordinate frame the OXTS unit's records are in — the sensor directory's own name, which is
+/// what `calib_imu_to_velo.txt` relates to the rest of the rig.
+const OXTS_FRAME: &str = "oxts";
+
+/// The two streams the `oxts` directory carries besides its position: the name each is published
+/// under and the modality it is.
+const OXTS_DERIVED: [(&str, Modality); 2] = [
+    ("oxts/imu", Modality::Imu),
+    ("oxts/pose", Modality::EgoPose),
+];
 
 /// Ingest one drive directory.
 fn ingest_drive(path: &Path, options: &IngestOptions) -> Result<Ingested, IngestError> {
@@ -672,6 +712,11 @@ fn ingest_drive(path: &Path, options: &IngestOptions) -> Result<Ingested, Ingest
         };
         let mut point_counts = super::cdr::PointCountAccum::default();
         let mut values = super::stats::StreamValues::default();
+        // The `oxts` directory is one file per sample holding three records — position, orientation
+        // and velocity, and the inertial measurement — so its rows feed three accumulators and
+        // become three streams over the same frames.
+        let mut pose_values = super::stats::StreamValues::default();
+        let mut imu_values = super::stats::StreamValues::default();
         let mut frames: Vec<Frame> = Vec::with_capacity(samples);
         for (i, ts) in stamps.iter().take(samples).enumerate() {
             let file = files.get(i);
@@ -714,6 +759,8 @@ fn ingest_drive(path: &Path, options: &IngestOptions) -> Result<Ingested, Ingest
                                     // position and, separately, how many satellites went into it.
                                     // Dropping it would be this reader deciding the row was lying.
                                     values.push_fixed(&row.position.map(Some), &OXTS_DIM_NAMES);
+                                    pose_values.push_fixed(&row.pose, &OXTS_POSE_DIM_NAMES);
+                                    imu_values.push_fixed(&row.imu, &OXTS_IMU_DIM_NAMES);
                                     if let Some(satellites) = row.satellites {
                                         fix.message_count += 1;
                                         if satellites == 0 {
@@ -740,6 +787,9 @@ fn ingest_drive(path: &Path, options: &IngestOptions) -> Result<Ingested, Ingest
 
         let measured = values.finish();
         let accum = measured.as_ref().map(|(a, _)| a);
+        // Cloned before the frames are moved into the position stream: the inertial records are in
+        // the same rows, at the same times, and refer to the same files.
+        let oxts_frames = (*modality == Modality::Gnss).then(|| frames.clone());
         streams.push(Stream {
             name: (*name).to_string(),
             modality: *modality,
@@ -775,6 +825,51 @@ fn ingest_drive(path: &Path, options: &IngestOptions) -> Result<Ingested, Ingest
             // own name is the frame the spatial checks resolve it through.
             frame_id: Some((*name).to_string()),
         });
+
+        // The inertial half of the same rows: the orientation and velocity the navigation solution
+        // reports, and the accelerations and angular rates the IMU measured. Both sit in the `oxts`
+        // frame — they are the same unit's output, and the calibration's `imu -> velo` transform is
+        // what relates them to the rest of the rig.
+        if let Some(oxts_frames) = oxts_frames {
+            for (derived, (stream_name, stream_modality)) in
+                [imu_values, pose_values].into_iter().zip(OXTS_DERIVED)
+            {
+                let measured = derived.finish();
+                let accum = measured.as_ref().map(|(a, _)| a);
+                streams.push(Stream {
+                    name: stream_name.to_string(),
+                    modality: stream_modality,
+                    declared_rate_hz: None,
+                    clock_id: CLOCK_ID.to_string(),
+                    clock_kind: ClockKind::Measured,
+                    dtype: None,
+                    shape: None,
+                    dim_names: measured.as_ref().and_then(|(_, n)| n.clone()),
+                    frames: oxts_frames.clone(),
+                    stats: None,
+                    dim_stats: None,
+                    observed_stats: accum.and_then(|a| a.stats()),
+                    observed_saturation: accum.and_then(|a| a.saturation()),
+                    observed_non_finite: accum.map(|a| a.non_finite()),
+                    observed_dim_stats: accum.and_then(|a| a.dim_stats()),
+                    latched: None,
+                    declared_range: None,
+                    point_fields: None,
+                    observed_diagnostics: None,
+                    observed_point_counts: None,
+                    observed_image_dims: None,
+                    observed_body_decodes: None,
+                    observed_byte_order: None,
+                    observed_header_stamps: None,
+                    observed_sequence: None,
+                    // The fix is the receiver's statement about the position, and it is reported
+                    // once, on the stream that carries the position.
+                    observed_fix_availability: None,
+                    media: None,
+                    frame_id: Some(OXTS_FRAME.to_string()),
+                });
+            }
+        }
     }
 
     if streams.is_empty() {
@@ -866,15 +961,27 @@ fn ingest_drive(path: &Path, options: &IngestOptions) -> Result<Ingested, Ingest
 
     unmapped.push(UnmappedField {
         source_path: "oxts/data/*.txt".into(),
-        note: "fields 4-26 and 28-30 (orientation, velocities, accelerations, accuracies and the \
-               are recorded per sample and the CDM holds the position; the three position fields \
-               are summarized"
-            .into(),
+        note: concat!(
+            "fields 7-8, 15-17 and 21-23 (the map-frame velocities and the forward/left/up ",
+            "accelerations and angular rates, which are the mapped measurements in another frame), ",
+            "24-25 (the position and velocity accuracy estimates), and 26 and 28-30 (navstat and ",
+            "the three mode flags)"
+        )
+        .into(),
     });
     if !options.metadata_only {
         mapped.push("sample bytes -> frame.value_ref.content_hash (SHA-256)".into());
         mapped.push("velodyne_points/data/*.bin length -> observed point counts".into());
         mapped.push("oxts/data/*.txt fields 1-3 -> measured latitude/longitude/altitude".into());
+        mapped.push(
+            "oxts/data/*.txt fields 4-6 and 9-11 -> `oxts/pose` roll/pitch/yaw and forward/left/up \
+             velocity"
+                .into(),
+        );
+        mapped.push(
+            "oxts/data/*.txt fields 12-14 and 18-20 -> `oxts/imu` accelerations and angular rates"
+                .into(),
+        );
         mapped.push("oxts/data/*.txt field 27 (numsats) -> satellite fix availability".into());
     } else {
         omitted.push(

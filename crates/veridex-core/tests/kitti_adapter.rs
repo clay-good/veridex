@@ -62,7 +62,8 @@ fn every_sensor_becomes_a_stream_on_one_clock_with_its_own_timestamps() {
     let (_dir, got) = ingest("rig");
     let episode = &got.dataset.episodes[0];
     // Sorted here because the pipeline canonicalizes stream order before anything reads it; what
-    // this pins is the set, which is every sensor directory the drive holds.
+    // this pins is the set: every sensor directory the drive holds, plus the two further records
+    // the OXTS unit writes into the same rows as its position.
     let mut names: Vec<&str> = episode.streams.iter().map(|s| s.name.as_str()).collect();
     names.sort_unstable();
     assert_eq!(
@@ -73,6 +74,8 @@ fn every_sensor_becomes_a_stream_on_one_clock_with_its_own_timestamps() {
             "image_02",
             "image_03",
             "oxts",
+            "oxts/imu",
+            "oxts/pose",
             "velodyne_points"
         ]
     );
@@ -277,7 +280,7 @@ fn a_metadata_only_run_reads_the_manifest_and_opens_no_sample() {
     );
     assert!(matches!(got.report.coverage, Coverage::MetadataOnly { .. }));
     let episode = &got.dataset.episodes[0];
-    assert_eq!(episode.streams.len(), 6);
+    assert_eq!(episode.streams.len(), 8);
     assert!(
         episode.streams.iter().all(|s| s.frames.is_empty()),
         "no payload was read, so no stream carries frames"
@@ -349,6 +352,200 @@ fn a_drive_whose_lidar_recorded_nothing_is_caught_end_to_end() {
     assert!(
         codes.contains(&"AUTONOMY.POINT_CLOUD_EMPTY".to_string()),
         "{codes:?}"
+    );
+}
+
+/// Rewrite the demo drive's camera calibration, line by line, and return the drive path.
+fn with_calibration(path: &Path, edit: impl Fn(&str) -> Option<String>) {
+    let calib = path
+        .parent()
+        .expect("date directory")
+        .join("calib_cam_to_cam.txt");
+    let text = std::fs::read_to_string(&calib).expect("the demo calibration");
+    let rewritten: Vec<String> = text
+        .lines()
+        .map(|line| edit(line).unwrap_or_else(|| line.to_string()))
+        .collect();
+    std::fs::write(&calib, rewritten.join("\n") + "\n").expect("rewrite the calibration");
+}
+
+/// Every finding code the standard catalog raises on a dataset.
+fn codes_for(got: &Ingested) -> Vec<String> {
+    let engine = veridex_core::checks::default_engine().expect("the standard catalog");
+    let hash = veridex_core::content_hash(&got.dataset);
+    engine
+        .run(&got.dataset, hash, &veridex_core::RunConfig::default())
+        .findings
+        .into_iter()
+        .map(|f| f.code)
+        .collect()
+}
+
+#[test]
+fn every_one_of_the_thirty_oxts_fields_is_either_mapped_or_disclosed() {
+    // `dataformat.txt` defines thirty fields and the report accounts for them by number: the mapped
+    // list says where each one went, the unmapped note says which were not read. A field in neither
+    // is read by nobody and disclosed to nobody, and a field in both is a note that went stale
+    // while the reader moved on — which is how the previous note came to describe fields 4-26 as
+    // unread after six of them had been mapped. Numbers rather than prose because prose is what
+    // drifted: this test reads the ranges the report prints.
+    let (_dir, got) = ingest("rig");
+
+    /// Every `N` and `N-M` in one note, as the field numbers they name.
+    fn fields(note: &str) -> Vec<u32> {
+        let mut out = Vec::new();
+        for token in note.split(|c: char| !(c.is_ascii_digit() || c == '-')) {
+            let token = token.trim_matches('-');
+            if token.is_empty() {
+                continue;
+            }
+            match token.split_once('-') {
+                Some((lo, hi)) => {
+                    if let (Ok(lo), Ok(hi)) = (lo.parse::<u32>(), hi.parse::<u32>()) {
+                        out.extend(lo..=hi);
+                    }
+                }
+                None => {
+                    if let Ok(n) = token.parse::<u32>() {
+                        out.push(n);
+                    }
+                }
+            }
+        }
+        out.retain(|n| (1..=30).contains(n));
+        out
+    }
+
+    let mut accounted: Vec<u32> = Vec::new();
+    for note in got
+        .report
+        .mapped_fields
+        .iter()
+        .filter(|m| m.contains("oxts/data/*.txt"))
+        .map(String::as_str)
+        .chain(
+            got.report
+                .unmapped_fields
+                .iter()
+                .filter(|u| u.source_path == "oxts/data/*.txt")
+                .map(|u| u.note.as_str()),
+        )
+    {
+        accounted.extend(fields(note));
+    }
+    accounted.sort_unstable();
+    let before = accounted.len();
+    accounted.dedup();
+    assert_eq!(
+        before,
+        accounted.len(),
+        "a field is both mapped and disclosed as unread: {accounted:?}"
+    );
+    assert_eq!(
+        accounted,
+        (1..=30).collect::<Vec<u32>>(),
+        "every field `dataformat.txt` defines is either mapped or named as unread"
+    );
+}
+
+#[test]
+fn a_calibration_computed_for_another_resolution_is_caught_end_to_end() {
+    // The defect `autonomy.calibration-plausibility` exists for, in the container that publishes
+    // the calibration it reads: a principal point from a 1920-wide image applied to KITTI's
+    // 1392-wide one. Until the OXTS row's inertial records were read, no KITTI drive was a rig
+    // episode, so this check — and the rest of the rig family — never ran on this format at all,
+    // and a drive with mismatched intrinsics passed with the calibration beside it unexamined.
+    let (dir, path) = drive("rig");
+    with_calibration(&path, |line| {
+        line.starts_with("K_00").then(|| {
+            // The same focal lengths, with `cx` moved to where a 1920-wide calibration puts it.
+            let mut fields: Vec<String> = line.split_whitespace().map(str::to_string).collect();
+            fields[3] = "1.600000e+03".to_string();
+            fields.join(" ")
+        })
+    });
+
+    let got = ingest_at(&path, IngestOptions::default());
+    let codes = codes_for(&got);
+    assert!(
+        codes.contains(&"AUTONOMY.CALIBRATION_IMPLAUSIBLE".to_string()),
+        "a principal point 1600 px across a 1392 px image is outside it: {codes:?}"
+    );
+    drop(dir);
+}
+
+#[test]
+fn the_oxts_rows_inertial_records_are_read_and_the_drive_is_a_rig() {
+    // The OXTS unit is a GNSS receiver, an IMU and an inertial navigation solution in one box, and
+    // `dataformat.txt` lays all three out in the same thirty fields. Reading only the position left
+    // a KITTI drive with two rig-sensor streams — one short of what `is_rig_episode` requires — so
+    // the whole autonomy rig family (sync, calibration completeness, calibration plausibility,
+    // per-sensor frame resolution) stood down on the canonical autonomy dataset while its published
+    // calibration sat beside it unchecked.
+    let (_dir, got) = ingest("rig");
+    let episode = &got.dataset.episodes[0];
+    let stream = |name: &str| {
+        episode
+            .streams
+            .iter()
+            .find(|s| s.name == name)
+            .unwrap_or_else(|| panic!("the {name} stream"))
+    };
+
+    let imu = stream("oxts/imu");
+    assert_eq!(imu.modality, Modality::Imu);
+    assert_eq!(
+        imu.dim_names.as_deref().map(|n| n.to_vec()),
+        Some(vec![
+            "ax".to_string(),
+            "ay".to_string(),
+            "az".to_string(),
+            "wx".to_string(),
+            "wy".to_string(),
+            "wz".to_string(),
+        ])
+    );
+    let pose = stream("oxts/pose");
+    assert_eq!(pose.modality, Modality::EgoPose);
+    assert_eq!(
+        pose.dim_names.as_deref().map(|n| n.len()),
+        Some(6),
+        "{:?}",
+        pose.dim_names
+    );
+
+    // The values are measured, not supplied: the vertical acceleration of a vehicle on the road is
+    // about one g, and a column of zeros — which is what this reader used to leave here — would be
+    // a dead sensor instead.
+    let dims = imu
+        .observed_dim_stats
+        .as_ref()
+        .expect("the IMU dimensions are summarized");
+    // Dimension 2 is `az`, by the order `dim_names` states above.
+    let az = dims
+        .iter()
+        .find(|d| d.dim == 2)
+        .expect("the vertical acceleration");
+    assert!(az.stats.min >= 9.8 && az.stats.max <= 9.9, "{:?}", az.stats);
+
+    // The three records are the same unit's output at the same times, over the same files.
+    assert_eq!(imu.frames.len(), pose.frames.len());
+    assert_eq!(imu.frames.len(), stream("oxts").frames.len());
+    assert_eq!(imu.frame_id.as_deref(), Some("oxts"));
+    // The fix is a statement about the position, so it is reported once, on the position.
+    assert!(imu.observed_fix_availability.is_none());
+    assert!(stream("oxts").observed_fix_availability.is_some());
+
+    // And the consequence: four rig-sensor streams across three AV-native modalities, which is a
+    // rig by `is_rig_episode`'s own rule.
+    assert!(
+        veridex_core::checks::autonomy::is_rig_episode(episode),
+        "{:?}",
+        episode
+            .streams
+            .iter()
+            .map(|s| (s.name.as_str(), s.modality))
+            .collect::<Vec<_>>()
     );
 }
 
