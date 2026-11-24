@@ -49,7 +49,7 @@ pub fn render_label(signed: &SignedCertificate, issuer_verified: bool) -> String
     let _ = writeln!(out);
     let _ = writeln!(out, "| | |");
     let _ = writeln!(out, "| --- | --- |");
-    let _ = writeln!(out, "| Dataset | `{}` |", cert.dataset_id);
+    let _ = writeln!(out, "| Dataset | `{}` |", cell(&cert.dataset_id));
     let _ = writeln!(
         out,
         "| Content hash | `{}` |",
@@ -87,7 +87,7 @@ pub fn render_label(signed: &SignedCertificate, issuer_verified: bool) -> String
         let _ = writeln!(
             out,
             "| Checks that failed to run | {} |",
-            cert.checks_errored.join(", ")
+            cell(&cert.checks_errored.join(", "))
         );
     }
     if !cert.categories_skipped.is_empty() {
@@ -111,7 +111,7 @@ pub fn render_label(signed: &SignedCertificate, issuer_verified: bool) -> String
         let _ = writeln!(
             out,
             "| Attested | {} — by producer key `{}` |",
-            record.keys.join(", "),
+            cell(&record.keys.join(", ")),
             abbreviate(&record.producer_key)
         );
     }
@@ -124,7 +124,7 @@ pub fn render_label(signed: &SignedCertificate, issuer_verified: bool) -> String
         let _ = writeln!(
             out,
             "| Readiness (`{}`) | {} — {} of {} criteria met |",
-            readiness.profile,
+            cell(&readiness.profile),
             readiness_verdict(readiness),
             met,
             readiness.criteria.len()
@@ -174,6 +174,35 @@ pub fn render_label(signed: &SignedCertificate, issuer_verified: bool) -> String
         "*A Veridex certificate records what was checked and what was found. It is a statement of \
          fact about a specific dataset, not an endorsement of it.*"
     );
+    out
+}
+
+/// One free-text value, flattened so it cannot be anything but a single table cell.
+///
+/// Every string here that is not this project's own vocabulary comes from somewhere else. A dataset
+/// id is the clearest case: RLDS reads it from `dataset_info.json`, so it is whatever a downloaded
+/// dataset's author wrote. This label is Markdown destined for a public dataset card, where an
+/// unescaped `|` ends the cell, a newline ends the row, and a backtick ends the code span — and
+/// what follows is the author's Markdown in somebody else's README: a link, an image pulled from a
+/// host they chose, a row that looks like a Veridex row and is not.
+///
+/// So: whitespace collapses to single spaces (a cell is one line), `|` is escaped the way Markdown
+/// tables escape it, and a backtick becomes an apostrophe, which is the one substitution rather
+/// than an escape — inside a code span a backslash is literal, so `\``​ would be shown as typed.
+/// The value is still *shown*, flattened rather than dropped: a label that hid the id would not say
+/// which dataset it is about. Long values are cut at 120 characters, because the rest of the card
+/// belongs to its author.
+fn cell(value: &str) -> String {
+    let flattened: String = value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace('`', "'")
+        .replace('|', "\\|");
+    let mut out: String = flattened.chars().take(120).collect();
+    if out.chars().count() < flattened.chars().count() {
+        out.push('…');
+    }
     out
 }
 

@@ -74,6 +74,18 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Fixed
 
+- **A dataset id is file content, and it reached a public dataset card as Markdown.** RLDS takes the
+  dataset's name from `dataset_info.json`, so the id in a certificate is whatever a downloaded
+  dataset's author wrote — and `veridex label` renders it into Markdown destined for a dataset card,
+  where an unescaped `|` ends the table cell, a newline ends the row, and a backtick ends the code
+  span. What follows is the author's own Markdown in somebody else's README: a link, an image pulled
+  from a host they chose, a row that looks like a Veridex row and is not. Every free-text value in
+  the label is now rendered as one cell — whitespace collapsed, `|` escaped, backticks flattened to
+  apostrophes, cut at 120 characters — and the value is still shown, because a label that hid the id
+  would not say which dataset it is about. Inside the intact code span the link and image syntax is
+  literal text, which is exactly what a reader should see.
+
+
 - **A certificate could choose where in the filesystem its registry record landed.** `publish`
   writes `by-hash/<cdm_content_hash>.json`, and that hash comes from the document being published.
   Verification cannot constrain it — a registry does not decide whom to trust, so a self-signed

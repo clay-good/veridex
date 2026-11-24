@@ -1061,3 +1061,70 @@ fn an_attestation_may_repeat_only_the_keys_that_are_lists() {
     // And the keys that are lists may repeat, because a pooled dataset really has several.
     assert!(build(vec![("upstream", "ds-a"), ("upstream", "ds-b")]).is_ok());
 }
+
+/// A dataset id is file content, and the label is the artifact that travels furthest.
+///
+/// RLDS takes the dataset's name from `dataset_info.json`, so the id in a certificate can be
+/// anything a downloaded dataset's author wrote. `veridex label` renders it into Markdown destined
+/// for a public dataset card, and an unescaped `|` ends the table cell, a backtick ends the code
+/// span, and what follows is the author's own Markdown in somebody else's README — a link, an image
+/// pulled from a host they chose, a row that looks like a Veridex row and is not.
+///
+/// Rendered as one cell, whatever is in it. The id is shown, because hiding it would be a label
+/// that does not say which dataset it is about.
+#[test]
+fn a_dataset_id_from_file_content_cannot_write_markdown_into_a_dataset_card() {
+    let hostile = "evil`](https://example.invalid/x) [![pixel](https://example.invalid/p.png)](#) | Grade | A 100 |\n| Issued | yesterday |";
+    let mut d = dataset(vec![stream("s", "c", &[0, 1_000_000, 2_000_000])]);
+    d.id = hostile.into();
+    let (cert, _) = issue_cert(&d);
+    let signed = sign(cert, &keypair());
+    let label = veridex_core::render_label(&signed, true);
+
+    // The table is still the table: every row that starts with `|` has the two cells this label's
+    // rows have, so nothing new was added and nothing was pushed out.
+    for line in label.lines().filter(|l| l.starts_with('|')) {
+        let cells = line.matches(" | ").count();
+        assert!(
+            cells <= 1,
+            "a row grew extra cells, so something broke out of one: {line}"
+        );
+    }
+    // And the pieces that would have done it are not in the output as themselves.
+    // The id's text is still shown, inside the code span the cell puts it in — so a URL in it is
+    // text, not a link. What must not survive is the syntax that *makes* it one: the closing
+    // bracket and parenthesis of a link or image, which need the code span to have ended.
+    let dataset_row = label
+        .lines()
+        .find(|l| l.starts_with("| Dataset "))
+        .expect("the dataset row");
+    assert_eq!(
+        dataset_row.matches('`').count(),
+        2,
+        "the cell's code span has to be the only one on the row: {dataset_row}"
+    );
+    // Inside that span the link and image syntax is literal text — which is the point: a reader
+    // sees what the dataset calls itself, and nothing fetches a host the dataset's author chose.
+    // The two things that would end the span are what the cell removes, and the count above is what
+    // holds them removed.
+    assert!(!dataset_row.contains("| Grade |"), "{dataset_row}");
+    assert!(
+        dataset_row.contains("\\|"),
+        "the pipes in the id are escaped, not passed through: {dataset_row}"
+    );
+    // The row is still about this dataset: the id is shown, flattened rather than dropped.
+    assert!(label.contains("| Dataset |"), "{label}");
+    assert!(
+        label.contains("evil"),
+        "the id itself is still shown: {label}"
+    );
+    // One row per line: a newline inside a cell would otherwise split it into two rows.
+    assert_eq!(
+        label
+            .lines()
+            .filter(|l| l.starts_with("| Dataset "))
+            .count(),
+        1,
+        "{label}"
+    );
+}
