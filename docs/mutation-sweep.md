@@ -35,9 +35,9 @@ The survivors by file — `cdr.rs` 27, `candbc/blf.rs` 23, `mdf4.rs` 22, `hdf5/f
 `lerobot.rs` and `rlds.rs` 9 each, the rest fewer — are a map of where the sweep's reach ends, not a
 list of defects. Sorted into the three classes above: **67 cost ceilings**, **52 buffer bounds**
 (an offset or length comparison whose flipped case needs an input crafted to land exactly on a
-buffer's end), and **101 candidate rules**, of which seven were real.
+buffer's end), and **101 candidate rules**, of which eight were real.
 
-### The seven that were real
+### The eight that were real
 
 | Site | The rule | Pinned by |
 | --- | --- | --- |
@@ -48,6 +48,7 @@ buffer's end), and **101 candidate rules**, of which seven were real.
 | `cdr.rs` `width > 0` | An unconfigured `CameraInfo` of all zeros declares no size, for the same reason | `cdr::tests::an_unconfigured_camera_info_declares_no_image_size` |
 | `cdr.rs` `nanosec >= 1_000_000_000` (the **second** one, in `decode_header_seq`) | A ROS 1 sequence is only believed behind a normalized stamp | `cdr::tests::a_ros1_sequence_behind_an_unnormalized_stamp_is_not_believed` |
 | `lerobot.rs` `fps <= 0.0` | A declared rate of zero is carried as stated and never used as a divisor | `lerobot_adapter::a_declared_fps_of_zero_cannot_stand_in_for_a_missing_timestamp_column` |
+| `mdf4.rs` `bit_offset < 8` | `cn_bit_offset` is the offset *within* a byte, so 0-7; an 8 read literally shifts the field a byte past where the signal sits | `mdf4::tests::a_bit_offset_past_the_byte_is_not_a_channel_this_reader_decodes` |
 
 ### Worked arguments for the equivalents
 
@@ -59,6 +60,9 @@ Three representative ones, because the reasoning is the reusable part:
 - `sqlite.rs` `reserved >= page_size` — the clause beside it, `page_size - reserved < MIN_PAGE_SIZE`,
   already refuses `reserved == page_size`. Either spelling also keeps the subtraction from
   underflowing, which is the other reason the first clause is there.
+- `mdf4.rs` `bits == 0 || bits >= 64` in `sign_extend` — flipped, a 64-bit value takes the shift
+  path, where `shift = 64 - bits` is zero and `((value << 0) as i64) >> 0` is the same `value as
+  i64` the guard clause returns. The clause is defensive at that end, not load-bearing.
 - `zarr/store.rs` `grid[d] * chunks[d] < shape[d]` — flipped, the chunk-grid walk visits one
   position past the array's extent when a dimension is an exact multiple of its chunk size. The
   copy is harmless: `copy_chunk_into_row` clips each extent to `dims[d] - origin[d]`, which is zero
@@ -66,6 +70,11 @@ Three representative ones, because the reasoning is the reusable part:
   loading a chunk that is part of the array and one that is not.
 
 ## Two things the harness gets wrong if you let it
+
+**Three answers, and the third is the common one.** Of the survivors looked at by hand here, the
+provably-equivalent class was the largest, and in every case the argument came from somewhere other
+than the line itself: an invariant on the loop variable, a clause beside it, a clip downstream. That
+is why the triage cannot be done from the survivor list alone.
 
 **A line of text is not a site.** Survivors are reported by source line, and a repeated line is two
 different sites: `cdr.rs` has two copies of `nanosec >= 1_000_000_000`, one covered since the

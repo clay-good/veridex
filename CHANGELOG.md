@@ -10,6 +10,16 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **An MF4 bit offset past the byte, and a non-finite OXTS reading.** Two more from the sweep's
+  triage. `cn_bit_offset` is the offset *within* the byte at `cn_byte_offset`, so the standard's
+  range is 0-7: an 8 is a writer that meant the next byte, and reading it anyway shifts the field a
+  byte past where the signal sits and reports a plausible number for something else. 7 is an
+  ordinary bit-packed automotive signal and still decodes. Separately, the OXTS fields KITTI now
+  reads are new attack surface — a log written through a failing filter carries `nan` where an
+  acceleration should be — and a test holds the division of labour: the reader carries the row's own
+  numbers, including a non-finite one, and `STATISTICAL.NON_FINITE_OBSERVED` is what reports it.
+
+
 - **`AUTONOMY.CALIBRATION_UNCHECKED`: a calibration the rig rules did not judge now says so.** The
   rig family is gated on three AV-native sensor streams across two modalities, and the gate is
   right — a bus-only measurement is not what those rules reason about. Its *silence* was not: a

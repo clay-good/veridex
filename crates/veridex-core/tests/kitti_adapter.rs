@@ -382,6 +382,48 @@ fn codes_for(got: &Ingested) -> Vec<String> {
 }
 
 #[test]
+fn a_nan_in_the_inertial_fields_is_reported_rather_than_summarized_away() {
+    // The inertial fields are new attack surface: an OXTS log written through a failing filter
+    // carries `nan` where an acceleration should be, and a reader that folded it into the summary
+    // would turn a dead inertial unit into a stream with statistics. The row's own numbers are
+    // carried as stated — including a non-finite one — and the statistical family is what reports
+    // it, which is the same division of labour the rest of this reader follows.
+    let (dir, path) = drive("rig");
+    let data = path.join("oxts/data");
+    for entry in std::fs::read_dir(&data)
+        .expect("the oxts samples")
+        .flatten()
+    {
+        let text = std::fs::read_to_string(entry.path()).expect("a row");
+        let mut fields: Vec<String> = text.split_whitespace().map(str::to_string).collect();
+        assert_eq!(fields.len(), 30, "the row shape the reader requires");
+        // Field 12 (`ax`), the first of the accelerations.
+        fields[11] = "nan".to_string();
+        std::fs::write(entry.path(), fields.join(" ") + "\n").expect("rewrite the row");
+    }
+
+    let got = ingest_at(&path, IngestOptions::default());
+    let imu = got.dataset.episodes[0]
+        .streams
+        .iter()
+        .find(|s| s.name == "oxts/imu")
+        .expect("the imu stream");
+    assert_eq!(
+        imu.observed_non_finite.map(|n| n > 0),
+        Some(true),
+        "{:?}",
+        imu.observed_non_finite
+    );
+
+    let codes = codes_for(&got);
+    assert!(
+        codes.contains(&"STATISTICAL.NON_FINITE_OBSERVED".to_string()),
+        "{codes:?}"
+    );
+    drop(dir);
+}
+
+#[test]
 fn every_one_of_the_thirty_oxts_fields_is_either_mapped_or_disclosed() {
     // `dataformat.txt` defines thirty fields and the report accounts for them by number: the mapped
     // list says where each one went, the unmapped note says which were not read. A field in neither

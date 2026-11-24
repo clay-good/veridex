@@ -2634,6 +2634,48 @@ mod tests {
     }
 
     #[test]
+    fn a_bit_offset_past_the_byte_is_not_a_channel_this_reader_decodes() {
+        // `cn_bit_offset` is the offset *within* the byte at `cn_byte_offset`, so the standard's
+        // range is 0-7: an 8 is a writer that meant the next byte, and reading it anyway would
+        // shift the field one byte past where it sits and report a plausible number for a signal
+        // that is somewhere else. The boundary is the whole rule — 7 is an ordinary bit-packed
+        // automotive signal, which this reader decodes on purpose.
+        let channel = |bit_offset: u8| Channel {
+            name: "pedal".into(),
+            channel_type: 0,
+            sync_type: 0,
+            data_type: 0,
+            bit_offset,
+            byte_offset: 0,
+            bit_count: 12,
+            flags: 0,
+            inval_bit_pos: 0,
+            conversion: Conversion::Identity,
+            unapplied_conversion: None,
+        };
+        for offset in 0..8 {
+            assert!(
+                channel(offset).is_decodable(),
+                "a 12-bit field {offset} bit(s) into its byte is ordinary"
+            );
+        }
+        for offset in [8u8, 9, 16, 255] {
+            assert!(
+                !channel(offset).is_decodable(),
+                "{offset} is not an offset within a byte"
+            );
+        }
+        // Unchanged for the orders that are whole-byte only, so the rule above is about the
+        // bit-packed path alone.
+        assert!(!Channel {
+            data_type: 1,
+            bit_count: 16,
+            ..channel(1)
+        }
+        .is_decodable());
+    }
+
+    #[test]
     fn a_linear_conversion_is_applied_and_identity_leaves_the_value_alone() {
         let linear = Conversion::Linear { p1: 10.0, p2: 0.5 };
         assert_eq!(linear.apply(4.0), 12.0);
