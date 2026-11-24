@@ -3644,7 +3644,7 @@ fn the_demo_rig_hashes_the_same_on_every_machine() {
         .dataset;
     assert_eq!(
         veridex_core::content_hash(&d).to_hex(),
-        "10ebc9dd461c72bbedd63d669490a77a2d3c9fa5ad341783748cec161b446392",
+        "e364c7f028ee7d0c2dcdb2d11d0d3526583963598a7505fcb772ea766c33a5c0",
         "the demo rig's content hash must not depend on the machine that computed it"
     );
 
@@ -3780,5 +3780,84 @@ fn a_cloud_that_names_its_coordinates_wrong_moves_nothing_but_the_layout() {
     assert!(
         !healthy.contains(&"AUTONOMY.POINT_CLOUD_NO_GEOMETRY".to_string()),
         "the healthy rig must not be flagged"
+    );
+}
+
+#[test]
+fn a_rig_whose_driver_reported_itself_broken_is_caught_end_to_end() {
+    // The demo rig with the `/diagnostics` topic a ROS rig publishes by default, on which the
+    // LiDAR's own driver reports `ERROR: laser returns stopped` for most of the drive.
+    //
+    // The whole claim is that nothing else sees it. The sweeps keep coming — full of points, on
+    // cadence, in the right coordinate frame, with every body decoding — so the structural family
+    // sees frames, the temporal family sees a clean 10 Hz, the density and layout rules pass, the
+    // transform tree places the sensor, and the only record that the hardware had failed is the
+    // rig's own account of itself, beside the data, which nothing read.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let read = |variant: &str| -> veridex_core::cdm::Dataset {
+        let path = dir.path().join(format!("{variant}.mcap"));
+        veridex_demo::mcap::write(&path, variant).expect("write the demo rig");
+        McapAdapter
+            .ingest(&Source::Local(path), &IngestOptions::default())
+            .expect("ingest")
+            .dataset
+    };
+    let codes = |d: &veridex_core::cdm::Dataset| -> Vec<String> {
+        let engine = veridex_core::checks::default_engine().expect("the standard catalog");
+        let hash = veridex_core::content_hash(d);
+        let mut codes: Vec<String> = engine
+            .run(d, hash, &veridex_core::RunConfig::default())
+            .findings
+            .into_iter()
+            .map(|f| f.code)
+            .collect();
+        codes.sort();
+        codes.dedup();
+        codes
+    };
+
+    let sick = read("av-sick-lidar");
+    // The CDM carries what the components said, keyed by component rather than by topic.
+    let diagnostics = sick.episodes[0]
+        .streams
+        .iter()
+        .find(|s| s.name == "/diagnostics")
+        .expect("the diagnostics stream");
+    assert_eq!(
+        diagnostics.modality,
+        veridex_core::cdm::Modality::Diagnostics,
+        "a health topic reports on the rig rather than measuring the world"
+    );
+    let components = diagnostics
+        .observed_diagnostics
+        .as_ref()
+        .expect("the statuses decoded");
+    assert_eq!(components.len(), 2, "{components:?}");
+    let lidar = components
+        .iter()
+        .find(|c| c.name == "velodyne: Hardware")
+        .expect("the LiDAR reported on itself");
+    assert_eq!(lidar.messages, 11);
+    assert_eq!(lidar.error, 10);
+    assert_eq!(lidar.detail.as_deref(), Some("laser returns stopped"));
+
+    // And the sweeps it was reporting on are healthy by every other measure, which is the point.
+    let cloud = sick.episodes[0]
+        .streams
+        .iter()
+        .find(|s| s.name == "/lidar/points")
+        .expect("the LiDAR stream");
+    let counts = cloud.observed_point_counts.expect("point counts decoded");
+    assert_eq!(counts.empty, 0, "the clouds are full");
+
+    let healthy = codes(&read("av"));
+    let added: Vec<String> = codes(&sick)
+        .into_iter()
+        .filter(|c| !healthy.contains(c))
+        .collect();
+    assert_eq!(
+        added,
+        ["AUTONOMY.HARDWARE_ERROR"],
+        "adding the rig's own account of itself must add exactly the finding that reads it"
     );
 }

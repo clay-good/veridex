@@ -414,6 +414,8 @@ struct StreamBuilder {
     /// From the topic's recorded QoS durability, when it states one unambiguously.
     latched: Option<bool>,
     point_fields: Option<Vec<PointField>>,
+    /// What the rig's components said about their own health, per component name.
+    diagnostics: super::cdr::DiagnosticAccum,
     point_counts: super::cdr::PointCountAccum,
     image_dims: super::cdr::ImageDimAccum,
     body_decodes: super::cdr::BodyDecodeAccum,
@@ -761,6 +763,7 @@ fn read_shard(
                 frames: Vec::new(),
                 latched: topic.latched,
                 point_fields: None,
+                diagnostics: Default::default(),
                 frame_id: None,
                 values: super::stats::StreamValues::default(),
             });
@@ -787,6 +790,7 @@ fn read_shard(
         let decoded = super::rosmsg::decode_body(
             &mut super::rosmsg::BodyTargets {
                 point_fields: &mut builder.point_fields,
+                diagnostics: &mut builder.diagnostics,
                 point_counts: &mut builder.point_counts,
                 image_dims: &mut builder.image_dims,
                 fix_availability: &mut builder.fix_availability,
@@ -888,6 +892,7 @@ fn read_mcap_shard(
                     .get("offered_qos_profiles")
                     .and_then(|qos| declares_latched(qos)),
                 point_fields: None,
+                diagnostics: Default::default(),
                 frame_id: None,
                 values: super::stats::StreamValues::default(),
             });
@@ -914,6 +919,7 @@ fn read_mcap_shard(
         let decoded = super::rosmsg::decode_body(
             &mut super::rosmsg::BodyTargets {
                 point_fields: &mut builder.point_fields,
+                diagnostics: &mut builder.diagnostics,
                 point_counts: &mut builder.point_counts,
                 image_dims: &mut builder.image_dims,
                 fix_availability: &mut builder.fix_availability,
@@ -1021,6 +1027,7 @@ fn ingest_metadata_only(
             observed_non_finite: None,
             observed_dim_stats: None,
             point_fields: None,
+            observed_diagnostics: None,
             observed_point_counts: None,
             observed_image_dims: None,
             observed_body_decodes: None,
@@ -1438,6 +1445,7 @@ impl Adapter for Rosbag2Adapter {
                     latched: b.latched,
                     declared_range: None,
                     point_fields: b.point_fields,
+                    observed_diagnostics: b.diagnostics.finish(),
                     observed_point_counts: b.point_counts.finish(),
                     observed_image_dims: b.image_dims.finish(),
                     observed_body_decodes: b.body_decodes.finish(),

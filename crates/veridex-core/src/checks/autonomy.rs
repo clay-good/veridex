@@ -2561,6 +2561,230 @@ impl Check for PointCloudLayout {
     }
 }
 
+/// **Reported health (design A2).** What the rig said about itself, which nothing read.
+///
+/// A ROS driver written with `diagnostic_updater` publishes its own state, and the
+/// `diagnostic_aggregator` beside it republishes the whole rig's. So a recording made while a sensor
+/// was failing very often **contains the driver's own statement that it was failing**, on a topic
+/// beside the data, at the time — and every other family passes on it. The frames are there, on
+/// cadence, in the right coordinate frame; the data in them may even be well-formed. A LiDAR
+/// reporting `ERROR: no returns from sensor` for half a drive looked, in a report, exactly like one
+/// that reported nothing at all.
+///
+/// Graded per **component**, which is what a `DiagnosticStatus` is keyed by, so the finding is about
+/// a piece of hardware rather than about the topic that reported it:
+///
+/// - `AUTONOMY.HARDWARE_ERROR` — a component reported `ERROR` on more than `hardware_error_fraction`
+///   of its statuses (default 0.1). A fraction rather than any error at all, because a driver that
+///   reports one `ERROR` while it starts up and `OK` for the rest of the drive describes a boot, not
+///   a fault, and a check that fired on it would be switched off.
+/// - `AUTONOMY.HARDWARE_STALE` — the aggregator reported the component `STALE`: it stopped
+///   publishing diagnostics. A different fact from reporting a fault, and reported separately,
+///   because what it says about the *data* is nothing — only that the component stopped saying.
+/// - `AUTONOMY.HARDWARE_WARNING` — a component reported `WARN` on most of its statuses and never
+///   `ERROR`. Informational: a sustained warning is the driver saying something is off without
+///   saying the data is wrong.
+/// - `AUTONOMY.HARDWARE_UNREPORTED` — a diagnostics stream is present and **no body on it decoded**,
+///   so the rig's own account of itself was not read. Never raised for a rig that simply does not
+///   publish diagnostics: most datasets do not, and a dataset is not worse for the topics it does
+///   not carry.
+///
+/// Each finding quotes the component's own message where it published one, because the driver's
+/// sentence is more actionable than any paraphrase of it.
+pub struct ReportedHealth {
+    /// The share of a component's statuses that must be `ERROR` before it is reported (0.1).
+    pub max_error_fraction: f64,
+}
+
+impl Check for ReportedHealth {
+    fn id(&self) -> &'static str {
+        "autonomy.reported-health"
+    }
+    fn finding_codes(&self) -> &'static [&'static str] {
+        &[
+            "AUTONOMY.HARDWARE_ERROR",
+            "AUTONOMY.HARDWARE_STALE",
+            "AUTONOMY.HARDWARE_WARNING",
+            "AUTONOMY.HARDWARE_UNREPORTED",
+        ]
+    }
+    fn abstention_codes(&self) -> &'static [&'static str] {
+        &["AUTONOMY.HARDWARE_UNREPORTED"]
+    }
+    fn title(&self) -> &'static str {
+        "Reported hardware health"
+    }
+    fn category(&self) -> Category {
+        Category::Autonomy
+    }
+    fn default_severity(&self) -> Severity {
+        Severity::Error
+    }
+    fn scope(&self) -> Scope {
+        Scope::Stream
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn run(&self, dataset: &Dataset) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        for ep in &dataset.episodes {
+            for stream in &ep.streams {
+                let Some(components) = &stream.observed_diagnostics else {
+                    continue;
+                };
+                let at = || Location::Stream {
+                    episode: ep.index,
+                    stream: stream.name.clone(),
+                };
+                for c in components {
+                    let who = match &c.hardware_id {
+                        Some(id) => format!("`{}` (hardware `{id}`)", c.name),
+                        None => format!("`{}`", c.name),
+                    };
+                    let said = match &c.detail {
+                        Some(d) => format!(" — it said \"{d}\""),
+                        None => String::new(),
+                    };
+                    if c.error_fraction() > self.max_error_fraction {
+                        findings.push(
+                            Finding::new(
+                                self.id(),
+                                Category::Autonomy,
+                                Severity::Error,
+                                at(),
+                                "AUTONOMY.HARDWARE_ERROR",
+                                format!(
+                                    "episode {}: component {who} reported `ERROR` on {} of its {} \
+                                     diagnostic status(es){said}",
+                                    ep.index, c.error, c.messages
+                                ),
+                            )
+                            .with_risk(
+                                "This is the rig telling you, in the recording, that a component \
+                                 was not working — and it is the only place that says so. The \
+                                 component kept publishing, so the frames, the cadence and the \
+                                 coordinate frames are a healthy sensor's, and whatever the data \
+                                 holds was produced by hardware its own driver had given up on.",
+                            )
+                            .with_remedy(
+                                "Read the component's diagnostics for the recording and treat its \
+                                 data as suspect over the span it reported the fault; re-record \
+                                 once the hardware is sound. Veridex reports what the driver said; \
+                                 it does not re-diagnose the device.",
+                            ),
+                        );
+                    } else if c.stale > 0 {
+                        findings.push(
+                            Finding::new(
+                                self.id(),
+                                Category::Autonomy,
+                                Severity::Warning,
+                                at(),
+                                "AUTONOMY.HARDWARE_STALE",
+                                format!(
+                                    "episode {}: component {who} was reported `STALE` on {} of {} \
+                                     status(es) — it stopped publishing diagnostics while the \
+                                     recording continued{said}",
+                                    ep.index, c.stale, c.messages
+                                ),
+                            )
+                            .with_risk(
+                                "A stale component is one the rig stopped hearing from. It says \
+                                 nothing about the data that component produced, which is exactly \
+                                 the problem: the stream may have continued, stopped, or gone \
+                                 quietly wrong, and the one source that would have said is the one \
+                                 that went silent.",
+                            )
+                            .with_remedy(
+                                "Check whether the component's own stream continued over that \
+                                 span, and why its updater stopped — a crashed driver node \
+                                 publishes neither diagnostics nor data, while a hung one often \
+                                 keeps publishing stale data.",
+                            ),
+                        );
+                    } else if c.warn > c.messages / 2 && c.messages > 0 {
+                        findings.push(
+                            Finding::new(
+                                self.id(),
+                                Category::Autonomy,
+                                Severity::Info,
+                                at(),
+                                "AUTONOMY.HARDWARE_WARNING",
+                                format!(
+                                    "episode {}: component {who} reported `WARN` on {} of its {} \
+                                     status(es) and never `ERROR`{said}",
+                                    ep.index, c.warn, c.messages
+                                ),
+                            )
+                            .with_risk(
+                                "A sustained warning is the driver saying something is off without \
+                                 saying the data is wrong — a temperature climbing, a buffer \
+                                 filling, a link degrading. It is not a verdict about the \
+                                 recording, and it is the context a reader of one needs.",
+                            )
+                            .with_remedy(
+                                "Read the component's own message above; it names what it was \
+                                 warning about. Nothing here says the data is unusable.",
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+
+        // A diagnostics stream nobody could read is the rig's account of itself going unread, which
+        // is not the same as a healthy rig. Scoped to streams that *are* diagnostics: a dataset that
+        // publishes none is not missing anything, and saying otherwise would accuse every dataset in
+        // every format of a silence it did not cause.
+        let unread: BTreeSet<&str> = dataset
+            .episodes
+            .iter()
+            .flat_map(|ep| ep.streams.iter())
+            .filter(|s| s.modality == Modality::Diagnostics && s.observed_diagnostics.is_none())
+            .map(|s| s.name.as_str())
+            .collect();
+        if !unread.is_empty() {
+            findings.push(
+                Finding::new(
+                    self.id(),
+                    Category::Autonomy,
+                    Severity::Info,
+                    Location::Dataset,
+                    "AUTONOMY.HARDWARE_UNREPORTED",
+                    format!(
+                        "{} diagnostics stream(s) carry no status this run could read, so the \
+                         rig's own account of its health was not graded ({})",
+                        unread.len(),
+                        unread.into_iter().collect::<Vec<_>>().join(", ")
+                    ),
+                )
+                .with_risk(
+                    "The recording holds what the rig said about itself and this run did not read \
+                     it. A clean health result here is the absence of a reading, not a rig that \
+                     reported itself sound.",
+                )
+                .with_remedy(
+                    "The statuses are decoded from a `diagnostic_msgs/msg/DiagnosticArray` body, \
+                     so they are available wherever the message bodies are read rather than only \
+                     fingerprinted.",
+                ),
+            );
+        }
+        findings
+    }
+
+    /// Withholds the abstention under a metadata-only ingest, for the reason its siblings do: a run
+    /// that opened no message body read no status on any dataset of any format, so the finding would
+    /// blame the data for a silence the request caused. `COVERAGE.METADATA_ONLY` states that.
+    fn run_in(&self, dataset: &Dataset, context: &CheckContext) -> Vec<Finding> {
+        if !context.frames_read {
+            return Vec::new();
+        }
+        self.run(dataset)
+    }
+}
+
 /// **Message-body decode.** How much of a stream's data actually survived the recording.
 ///
 /// Every typed decoder in the ROS readers is strict on purpose: it yields a reading only once the

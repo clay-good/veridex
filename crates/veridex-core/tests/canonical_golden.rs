@@ -29,12 +29,12 @@ fn the_canonical_encoding_has_not_changed_without_a_version_bump() {
     let d: Dataset = serde_json::from_str(GOLDEN).expect("the golden fixture parses");
 
     assert_eq!(
-        CANONICAL_VERSION, 20,
+        CANONICAL_VERSION, 21,
         "the encoding version changed; re-pin the hash below in the same commit"
     );
     assert_eq!(
         content_hash(&d).to_hex(),
-        "c2e2658e208647b24d18ebee00151ebfabf4dbcf9f46dd9d1e3c8cec91639493",
+        "f6cbb64f86eba3797df43211554b5b22eb37726f9e169bb40295ec8584405ceb",
         "the canonical encoding changed. If that was deliberate, bump CANONICAL_VERSION and \
          re-pin this vector in the same commit — a hash change without a version bump means two \
          builds disagree about byte-identical data while both claiming the same encoding, and \
@@ -50,6 +50,13 @@ fn the_golden_fixture_still_covers_what_it_claims_to() {
     let d: Dataset = serde_json::from_str(GOLDEN).expect("the golden fixture parses");
 
     assert!(d.calibration.is_some(), "calibration arm");
+    assert!(
+        d.episodes.iter().flat_map(|e| e.streams.iter()).any(|s| s
+            .observed_diagnostics
+            .as_ref()
+            .is_some_and(|c| !c.is_empty())),
+        "reported-health arm — what the rig said about its own components"
+    );
     assert!(
         d.calibration
             .as_ref()

@@ -140,6 +140,7 @@ mod tests {
                         latched: None,
                         declared_range: None,
                         point_fields: None,
+                        observed_diagnostics: None,
                         observed_point_counts: None,
                         observed_image_dims: None,
                         observed_body_decodes: None,
@@ -187,6 +188,7 @@ mod tests {
                         latched: None,
                         declared_range: None,
                         point_fields: None,
+                        observed_diagnostics: None,
                         observed_point_counts: None,
                         observed_image_dims: None,
                         observed_body_decodes: None,
@@ -406,7 +408,7 @@ mod tests {
         };
         let base = content_hash(&sample_dataset());
         type Mutator = fn(&mut Stream);
-        let mutate: [(&str, Mutator); 37] = [
+        let mutate: [(&str, Mutator); 38] = [
             // The fields the encoder has carried from the beginning. Absent from this table until a
             // mutation audit deleted `clock_kind` from `encode` and watched 692 tests pass: a
             // stream's frames are a synchronized rig under one value and an unmeasurable timeline
@@ -425,6 +427,20 @@ mod tests {
                     mean: 0.7,
                     std: 1.7,
                 })
+            }),
+            // What the rig's components said about themselves: `autonomy.reported-health` fails a
+            // stream on it, so a recording whose LiDAR driver reported `ERROR` for half the drive
+            // and one whose driver reported nothing must not hash alike.
+            ("observed_diagnostics", |s| {
+                s.observed_diagnostics = Some(vec![crate::cdm::ComponentHealth {
+                    name: "velodyne: Hardware".into(),
+                    hardware_id: Some("HDL-64E".into()),
+                    messages: 100,
+                    error: 61,
+                    warn: 0,
+                    stale: 0,
+                    detail: Some("no returns from sensor".into()),
+                }])
             }),
             ("point_fields", |s| {
                 s.point_fields = Some(vec![
@@ -664,6 +680,7 @@ mod tests {
                 observed_non_finite: _,
                 observed_dim_stats: _,
                 point_fields: _,
+                observed_diagnostics: _,
                 observed_point_counts: _,
                 observed_image_dims: _,
                 observed_body_decodes: _,
@@ -797,6 +814,7 @@ mod proptests {
                 latched: None,
                 declared_range: None,
                 point_fields: None,
+                observed_diagnostics: None,
                 observed_point_counts: None,
                 observed_image_dims: None,
                 observed_body_decodes: None,

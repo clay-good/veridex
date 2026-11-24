@@ -241,6 +241,7 @@ impl Adapter for Rosbag1Adapter {
                 // A bag declares no range for a topic; there is nothing to compare values against.
                 declared_range: None,
                 point_fields: acc.point_fields,
+                observed_diagnostics: acc.diagnostics.finish(),
                 observed_point_counts: acc.point_counts.finish(),
                 observed_image_dims: acc.image_dims.finish(),
                 observed_body_decodes: acc.body_decodes.finish(),
@@ -433,6 +434,8 @@ struct TopicAccum {
     /// Each message's time and the fingerprint of its body.
     msgs: Vec<(i64, [u8; 32])>,
     point_fields: Option<Vec<PointField>>,
+    /// What the rig's components said about their own health, per component name.
+    diagnostics: super::cdr::DiagnosticAccum,
     point_counts: super::cdr::PointCountAccum,
     image_dims: super::cdr::ImageDimAccum,
     body_decodes: super::cdr::BodyDecodeAccum,
@@ -609,6 +612,7 @@ impl Walk {
         let decoded = super::rosmsg::decode_body(
             &mut super::rosmsg::BodyTargets {
                 point_fields: &mut acc.point_fields,
+                diagnostics: &mut acc.diagnostics,
                 point_counts: &mut acc.point_counts,
                 image_dims: &mut acc.image_dims,
                 fix_availability: &mut acc.fix_availability,
@@ -983,6 +987,7 @@ fn ingest_metadata_only(
             latched: None,
             declared_range: None,
             point_fields: None,
+            observed_diagnostics: None,
             observed_point_counts: None,
             observed_image_dims: None,
             observed_body_decodes: None,

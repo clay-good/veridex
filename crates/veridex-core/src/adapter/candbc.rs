@@ -748,6 +748,7 @@ impl Adapter for CanDbcAdapter {
                     observed_dim_stats: None,
                     latched: None,
                     point_fields: None,
+                    observed_diagnostics: None,
                     observed_point_counts: None,
                     observed_image_dims: None,
                     observed_body_decodes: None,

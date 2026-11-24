@@ -52,6 +52,7 @@ fn cloud_stream(fields: &[&str]) -> Stream {
         frame_id: None,
         latched: None,
         declared_range: None,
+        observed_diagnostics: None,
         point_fields: Some(
             fields
                 .iter()
@@ -281,6 +282,7 @@ fn permuting_every_canonicalized_collection_changes_neither_the_hash_nor_the_ver
         latched: None,
         declared_range: None,
         point_fields: None,
+        observed_diagnostics: None,
         observed_point_counts: None,
         observed_image_dims: None,
         observed_body_decodes: None,

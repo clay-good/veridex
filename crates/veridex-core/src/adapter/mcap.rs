@@ -77,6 +77,12 @@ pub(crate) fn infer_modality(schema_name: &str, topic: &str) -> Modality {
     if schema_is(schema_name, "CameraInfo") || schema_is(schema_name, "TFMessage") {
         Modality::Calibration
     }
+    // The rig reporting on *itself*. Typed from the schema rather than the topic name, because a
+    // team calls this topic whatever it likes (`/diagnostics`, `/diagnostics_agg`, `/rig/health`)
+    // and because a name-based guess would type a camera's diagnostics as a camera.
+    else if schema_is(schema_name, "DiagnosticArray") {
+        Modality::Diagnostics
+    }
     // Camera imagery.
     else if has("image") || has("camera") || has("compressedimage") || has("video") {
         Modality::Video
@@ -115,6 +121,8 @@ struct StreamBuilder {
     latched: Option<bool>,
     /// Per-point field layout, decoded from the first `PointCloud2` message on this topic (if any).
     point_fields: Option<Vec<PointField>>,
+    /// What the rig's components said about their own health, per component name.
+    diagnostics: super::cdr::DiagnosticAccum,
     point_counts: super::cdr::PointCountAccum,
     image_dims: super::cdr::ImageDimAccum,
     body_decodes: super::cdr::BodyDecodeAccum,
@@ -579,6 +587,7 @@ impl Adapter for McapAdapter {
                         .get("offered_qos_profiles")
                         .and_then(|qos| super::rosbag2::declares_latched(qos)),
                     point_fields: None,
+                    diagnostics: Default::default(),
                     frame_id: None,
                     values: super::stats::StreamValues::default(),
                 });
@@ -625,6 +634,7 @@ impl Adapter for McapAdapter {
             let decoded = super::rosmsg::decode_body(
                 &mut super::rosmsg::BodyTargets {
                     point_fields: &mut builder.point_fields,
+                    diagnostics: &mut builder.diagnostics,
                     point_counts: &mut builder.point_counts,
                     image_dims: &mut builder.image_dims,
                     fix_availability: &mut builder.fix_availability,
@@ -683,6 +693,7 @@ impl Adapter for McapAdapter {
                     latched: b.latched,
                     declared_range: None,
                     point_fields: b.point_fields,
+                    observed_diagnostics: b.diagnostics.finish(),
                     observed_point_counts: b.point_counts.finish(),
                     observed_image_dims: b.image_dims.finish(),
                     observed_body_decodes: b.body_decodes.finish(),
@@ -1062,6 +1073,7 @@ fn ingest_summary_only(path: &Path, summary: McapSummary) -> Result<Ingested, In
             observed_non_finite: None,
             observed_dim_stats: None,
             point_fields: None,
+            observed_diagnostics: None,
             observed_point_counts: None,
             observed_image_dims: None,
             observed_body_decodes: None,

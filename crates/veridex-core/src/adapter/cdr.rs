@@ -14,8 +14,11 @@
 //! little-endian representation (what ROS 2 emits by default) is decoded; a big-endian body is
 //! declined (the caller simply gets no decoded metadata, exactly as if the field were absent).
 
+use std::collections::BTreeMap;
+
 use crate::cdm::{
-    CameraIntrinsics, HeaderStamps, ImageDims, PointCounts, PointField, Pose, Transform,
+    CameraIntrinsics, ComponentHealth, HeaderStamps, ImageDims, PointCounts, PointField, Pose,
+    Transform,
 };
 
 /// Ceiling on any name this reader will return (coordinate frames, point-field names, distortion
@@ -1404,6 +1407,161 @@ pub fn decode_tf_message(data: &[u8], enc: Encoding) -> Option<Vec<Transform>> {
     Some(transforms)
 }
 
+/// One `diagnostic_msgs/msg/DiagnosticStatus` as this reader needs it: what a component said about
+/// itself at one instant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiagnosticStatus {
+    /// `0` OK, `1` WARN, `2` ERROR, `3` STALE — the constants the message defines, and nothing else
+    /// (a body carrying any other value is declined rather than read as a level).
+    pub level: u8,
+    /// The component's own name for itself.
+    pub name: String,
+    /// What it said, as it wrote it. May be empty: a healthy updater often publishes no text.
+    pub message: String,
+    /// The hardware id it reported, where it reported one.
+    pub hardware_id: Option<String>,
+}
+
+/// The largest number of statuses one `DiagnosticArray` may carry. A rig aggregator publishes one
+/// entry per monitored component; a few hundred is a large rig and ten thousand is a corrupt length.
+const MAX_DIAGNOSTIC_STATUSES: usize = 4_096;
+
+/// The longest component name or status text this reader retains, in bytes. A diagnostic message is
+/// free text written by a driver, and it reaches a finding and the content hash — so it is bounded
+/// here rather than wherever it is rendered.
+const MAX_DIAGNOSTIC_TEXT: usize = 512;
+
+/// Decode a `diagnostic_msgs/msg/DiagnosticArray` body: `Header`, then a sequence of
+/// `DiagnosticStatus { byte level, string name, string message, string hardware_id, KeyValue[] values }`.
+///
+/// This is the message a ROS driver publishes **about itself** — `diagnostic_updater` in the driver,
+/// `diagnostic_aggregator` beside it — so a recording made while a sensor was failing usually
+/// contains the driver's own statement that it was failing. Every other family sees a sensor that
+/// kept publishing.
+///
+/// Strict, for the reason every decoder here is: a channel's declared schema is not proof of its
+/// bodies. A level outside the four the message defines, a status with no name, a declared count
+/// larger than the buffer could hold, or a `values` list that runs past the end all decline the body
+/// rather than yielding a fabricated health report — and a fabricated one would be a finding about a
+/// healthy rig. The `values` pairs are walked to keep the offsets right and otherwise dropped: they
+/// are a driver's own free-form telemetry, with no cross-rig meaning for a check to read.
+pub fn decode_diagnostic_array(data: &[u8], enc: Encoding) -> Option<Vec<DiagnosticStatus>> {
+    let mut r = Reader::new(data, enc)?;
+    r.header()?;
+    let count = r.u32()? as usize;
+    // Bounded by the smallest a status can encode (a level byte plus three empty strings and an
+    // empty `values` length), so a short message can never reserve a large vector.
+    const MIN_STATUS_BYTES: usize = 17;
+    if count > MAX_DIAGNOSTIC_STATUSES || count > data.len() / MIN_STATUS_BYTES {
+        return None;
+    }
+    let mut out = Vec::with_capacity(count);
+    for _ in 0..count {
+        let level = r.u8()?;
+        if level > 3 {
+            return None; // not one of OK / WARN / ERROR / STALE
+        }
+        let name = r.string()?;
+        let message = r.string()?;
+        let hardware_id = r.string()?;
+        // A status that names no component is not a statement about one: the name is the key the
+        // whole summary is grouped by, and an unnamed entry would group every nameless driver on
+        // the rig into one.
+        if name.trim().is_empty() || name.len() > MAX_DIAGNOSTIC_TEXT {
+            return None;
+        }
+        let values = r.u32()? as usize;
+        // Each pair is two strings, so four bytes of length each at minimum.
+        if values > data.len() / 8 {
+            return None;
+        }
+        for _ in 0..values {
+            r.string()?; // key
+            r.string()?; // value
+        }
+        out.push(DiagnosticStatus {
+            level,
+            name: name.trim().to_string(),
+            message: truncate_text(&message),
+            hardware_id: (!hardware_id.trim().is_empty())
+                .then(|| truncate_text(hardware_id.trim())),
+        });
+    }
+    // A body that decoded to nothing is not a health report. An aggregator with nothing to say does
+    // not publish, and a zero-length array is the shape an all-zero buffer takes.
+    (!out.is_empty()).then_some(out)
+}
+
+/// `text` cut to [`MAX_DIAGNOSTIC_TEXT`] bytes at a character boundary, so a driver's long message
+/// cannot grow a finding or the content hash without bound.
+fn truncate_text(text: &str) -> String {
+    if text.len() <= MAX_DIAGNOSTIC_TEXT {
+        return text.to_string();
+    }
+    let mut end = MAX_DIAGNOSTIC_TEXT;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_string()
+}
+
+/// Accumulates what each component said about itself over a stream, keyed by component name.
+///
+/// Per component rather than per message, because the question is whether a *piece of hardware*
+/// reported a fault, and a rig aggregator republishes every component on every tick.
+#[derive(Debug, Default, Clone)]
+pub struct DiagnosticAccum {
+    by_name: BTreeMap<String, ComponentHealth>,
+}
+
+impl DiagnosticAccum {
+    /// Fold in one decoded `DiagnosticArray`.
+    pub fn observe(&mut self, statuses: &[DiagnosticStatus]) {
+        for s in statuses {
+            let entry = self
+                .by_name
+                .entry(s.name.clone())
+                .or_insert_with(|| ComponentHealth {
+                    name: s.name.clone(),
+                    hardware_id: None,
+                    messages: 0,
+                    error: 0,
+                    warn: 0,
+                    stale: 0,
+                    detail: None,
+                });
+            entry.messages += 1;
+            match s.level {
+                1 => entry.warn += 1,
+                2 => entry.error += 1,
+                3 => entry.stale += 1,
+                _ => {}
+            }
+            if entry.hardware_id.is_none() {
+                entry.hardware_id = s.hardware_id.clone();
+            }
+            // The text that goes with the worst level seen so far, and the first such message rather
+            // than the last: the first thing a driver said when it started failing is the one a
+            // reader needs, and holding only one keeps the summary bounded.
+            let worse = match s.level {
+                2 => entry.error == 1,
+                3 => entry.error == 0 && entry.stale == 1,
+                1 => entry.error == 0 && entry.stale == 0 && entry.warn == 1,
+                _ => false,
+            };
+            if worse && !s.message.trim().is_empty() {
+                entry.detail = Some(s.message.clone());
+            }
+        }
+    }
+
+    /// The summary, sorted by component name, or `None` when no body on this stream decoded — a
+    /// stream nobody could read is not a rig reporting itself healthy.
+    pub fn finish(self) -> Option<Vec<ComponentHealth>> {
+        (!self.by_name.is_empty()).then(|| self.by_name.into_values().collect())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2742,5 +2900,103 @@ mod tests {
         many.u32(1);
         many.u32(4_000_000_000);
         assert!(decode_point_cloud2_point_count(&many.buf, Encoding::Cdr).is_none());
+    }
+    /// A `DiagnosticArray` of the given `(level, name, message, hardware_id)` statuses.
+    fn diagnostic_body(statuses: &[(u8, &str, &str, &str)]) -> Vec<u8> {
+        let mut w = W::new();
+        w.header("base_link");
+        w.u32(statuses.len() as u32);
+        for (level, name, message, hardware_id) in statuses {
+            w.u8(*level);
+            w.string(name);
+            w.string(message);
+            w.string(hardware_id);
+            w.u32(0); // values
+        }
+        w.buf
+    }
+
+    #[test]
+    fn a_diagnostic_array_decodes_what_each_component_said() {
+        let body = diagnostic_body(&[
+            (0, "camera_front: Capture", "", "FLIR-BFS"),
+            (2, "velodyne: Hardware", "laser returns stopped", "HDL-64E"),
+        ]);
+        let got = decode_diagnostic_array(&body, Encoding::Cdr).expect("decodes");
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[1].level, 2);
+        assert_eq!(got[1].name, "velodyne: Hardware");
+        assert_eq!(got[1].message, "laser returns stopped");
+        assert_eq!(got[1].hardware_id.as_deref(), Some("HDL-64E"));
+        // An empty hardware id is recorded as absent rather than as the empty string: "this
+        // component named no device" and "it named the device `\"\"`" are different facts.
+        let bare = decode_diagnostic_array(
+            &diagnostic_body(&[(1, "imu: Link", "buffer filling", "")]),
+            Encoding::Cdr,
+        )
+        .expect("decodes");
+        assert_eq!(bare[0].hardware_id, None);
+    }
+
+    #[test]
+    fn a_body_that_is_not_a_diagnostic_array_is_declined_rather_than_read_as_health() {
+        // A fabricated health report is a finding about a healthy rig, so each of these must
+        // decline. The levels are the message's own four; a status with no name has no component to
+        // be about; and an empty array is the shape an all-zero buffer takes.
+        assert!(
+            decode_diagnostic_array(&diagnostic_body(&[(4, "velodyne", "", "")]), Encoding::Cdr)
+                .is_none(),
+            "a level outside OK/WARN/ERROR/STALE is not a level"
+        );
+        assert!(
+            decode_diagnostic_array(&diagnostic_body(&[(2, "   ", "broken", "")]), Encoding::Cdr)
+                .is_none(),
+            "a status that names no component is not a statement about one"
+        );
+        assert!(
+            decode_diagnostic_array(&diagnostic_body(&[]), Encoding::Cdr).is_none(),
+            "an empty array is not a health report"
+        );
+        assert!(
+            decode_diagnostic_array(&vec![0u8; 256], Encoding::Cdr).is_none(),
+            "a buffer of zeroes is not a health report"
+        );
+        // A declared count the body cannot hold must not reserve on that claim.
+        let mut w = W::new();
+        w.header("base_link");
+        w.u32(u32::MAX);
+        assert!(decode_diagnostic_array(&w.buf, Encoding::Cdr).is_none());
+    }
+
+    #[test]
+    fn a_components_worst_level_and_first_explanation_survive_the_summary() {
+        let mut acc = DiagnosticAccum::default();
+        // Healthy for one tick, then failing with a message, then failing with a different one.
+        acc.observe(
+            &decode_diagnostic_array(
+                &diagnostic_body(&[(0, "velodyne: Hardware", "OK", "HDL-64E")]),
+                Encoding::Cdr,
+            )
+            .unwrap(),
+        );
+        for msg in ["laser returns stopped", "still no returns"] {
+            acc.observe(
+                &decode_diagnostic_array(
+                    &diagnostic_body(&[(2, "velodyne: Hardware", msg, "HDL-64E")]),
+                    Encoding::Cdr,
+                )
+                .unwrap(),
+            );
+        }
+        let out = acc.finish().expect("a component reported");
+        assert_eq!(out.len(), 1, "one component, not one entry per message");
+        assert_eq!(out[0].messages, 3);
+        assert_eq!(out[0].error, 2);
+        assert_eq!(out[0].worst_level(), 2);
+        assert_eq!(
+            out[0].detail.as_deref(),
+            Some("laser returns stopped"),
+            "the first thing it said when it started failing, not the last"
+        );
     }
 }

@@ -10,6 +10,33 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Added
 
+- **What the rig said about itself is now read.** A ROS driver written with `diagnostic_updater`
+  publishes its own state, and the `diagnostic_aggregator` beside it republishes the whole rig's — so
+  a recording made while a sensor was failing very often *contains the driver's own statement that it
+  was failing*, on a topic beside the data, at the time. Nothing read it. A LiDAR reporting
+  `ERROR: laser returns stopped` for half a drive looked, in a report, exactly like one that reported
+  nothing: the sweeps keep coming, full of points, on cadence, in the right coordinate frame, every
+  body decoding, the transform tree placing the sensor.
+
+  `diagnostic_msgs/msg/DiagnosticArray` bodies are now decoded (MCAP, ROS 2 rosbag2 and ROS 1
+  rosbag, the same decode for both encodings) and summarized per **component** — what a
+  `DiagnosticStatus` is keyed by — into `Stream.observed_diagnostics`.
+  `autonomy.reported-health` grades them: `AUTONOMY.HARDWARE_ERROR` when a component reported itself
+  in error on more than `hardware_error_fraction` of its own statuses (default 0.1, so a driver that
+  reports one `ERROR` while it boots is not a fault), `AUTONOMY.HARDWARE_STALE` when the aggregator
+  reported it stopped publishing, `AUTONOMY.HARDWARE_WARNING` for a sustained warning, and
+  `AUTONOMY.HARDWARE_UNREPORTED` when a diagnostics stream is present and no body on it decoded. Each
+  finding quotes the component's own message, because the driver's sentence is more actionable than
+  any paraphrase of it.
+
+  A health topic is typed `Modality::Diagnostics`: it observes the rig rather than the scene, so it
+  is kept out of every cross-sensor comparison (a rig-sync result over it would report a synchronized
+  rig as drifting) and out of the statistical family's unread-values list (a level and a sentence are
+  not a measurement). A thirteenth `world-model-ready` criterion, because a rig whose own driver said
+  a sensor was broken satisfies all twelve others. `CANONICAL_VERSION` 20 → 21, since a check now
+  fails a stream on it. Proven on a new demo variant, `av-sick-lidar`, whose report differs from the
+  healthy rig's by exactly this one finding.
+
 - **Two valid certificates for one dataset can now be told apart.** A certificate binds a content
   hash, so re-recording a dataset — or fixing the fault the certificate reported — produces a
   different dataset by the only identity a verifier has. Both certificates then stay valid offline

@@ -24,6 +24,8 @@ pub(crate) struct BodyTargets<'a> {
     /// Per-point field layout, from the first `PointCloud2` on this stream that decoded.
     pub point_fields: &'a mut Option<Vec<PointField>>,
     pub point_counts: &'a mut super::cdr::PointCountAccum,
+    /// What the rig's components said about their own health, from a `DiagnosticArray`.
+    pub diagnostics: &'a mut super::cdr::DiagnosticAccum,
     pub image_dims: &'a mut super::cdr::ImageDimAccum,
     pub fix_availability: &'a mut super::cdr::FixAvailabilityAccum,
     pub values: &'a mut super::stats::StreamValues,
@@ -54,6 +56,18 @@ pub(crate) fn decode_body(
     data: &[u8],
     ts: i64,
 ) -> Option<bool> {
+    // The rig reporting on itself, rather than on the world. Tried first because a diagnostics
+    // topic's name says nothing about its schema (`/diagnostics`, `/diagnostics_agg`, and whatever
+    // a team called theirs), so only the schema identifies it.
+    if super::mcap::schema_is(ros_type, "DiagnosticArray") {
+        return match super::cdr::decode_diagnostic_array(data, enc) {
+            Some(statuses) => {
+                t.diagnostics.observe(&statuses);
+                Some(true)
+            }
+            None => Some(false),
+        };
+    }
     if super::mcap::schema_is(ros_type, "PointCloud2") {
         if t.point_fields.is_none() {
             *t.point_fields = super::cdr::decode_point_cloud2_fields(data, enc);
@@ -343,6 +357,7 @@ mod tests {
     #[derive(Default)]
     struct Sink {
         point_fields: Option<Vec<PointField>>,
+        diagnostics: super::super::cdr::DiagnosticAccum,
         point_counts: super::super::cdr::PointCountAccum,
         image_dims: super::super::cdr::ImageDimAccum,
         fix_availability: super::super::cdr::FixAvailabilityAccum,
@@ -359,6 +374,7 @@ mod tests {
             decode_body(
                 &mut BodyTargets {
                     point_fields: &mut self.point_fields,
+                    diagnostics: &mut self.diagnostics,
                     point_counts: &mut self.point_counts,
                     image_dims: &mut self.image_dims,
                     fix_availability: &mut self.fix_availability,
@@ -381,11 +397,12 @@ mod tests {
         fn summary(self) -> String {
             let measured = self.values.finish();
             format!(
-                "fields={:?} points={:?} images={:?} fix={:?} values={:?} poses={:?} frame={:?} intrinsics={:?} transforms={:?}",
+                "fields={:?} points={:?} images={:?} fix={:?} health={:?} values={:?} poses={:?} frame={:?} intrinsics={:?} transforms={:?}",
                 self.point_fields,
                 self.point_counts.finish(),
                 self.image_dims.finish(),
                 self.fix_availability.finish(),
+                self.diagnostics.finish(),
                 measured.map(|(a, names)| (a.stats(), a.dim_stats(), names)),
                 self.ego_poses,
                 self.ego_frame,
@@ -499,6 +516,26 @@ mod tests {
                     F::F32(1.0),
                     F::F32(2.0),
                     F::F32(f32::INFINITY),
+                    F::U32(0),
+                ],
+            ),
+            (
+                // The rig reporting on itself. Two statuses in one array, one of them in `ERROR`
+                // with a message and a hardware id, so the parity check covers the whole status
+                // record rather than a healthy stub.
+                "diagnostic_msgs/DiagnosticArray",
+                vec![
+                    F::Header("base_link"),
+                    F::U32(2),
+                    F::U8(0),
+                    F::Str("camera_front: Capture"),
+                    F::Str(""),
+                    F::Str("FLIR-BFS"),
+                    F::U32(0),
+                    F::U8(2),
+                    F::Str("velodyne: Hardware"),
+                    F::Str("laser returns stopped"),
+                    F::Str("HDL-64E"),
                     F::U32(0),
                 ],
             ),

@@ -11,9 +11,9 @@
 use sha2::{Digest, Sha256};
 
 use crate::cdm::{
-    Calibration, CameraIntrinsics, Dataset, DimStats, EgoPose, Episode, Frame, Label, MediaParams,
-    MediaStatus, PointField, Pose, Provenance, ProvenanceElement, ProvenanceScope, Stream,
-    StreamStats, Transform, ValueRef,
+    Calibration, CameraIntrinsics, ComponentHealth, Dataset, DimStats, EgoPose, Episode, Frame,
+    Label, MediaParams, MediaStatus, PointField, Pose, Provenance, ProvenanceElement,
+    ProvenanceScope, Stream, StreamStats, Transform, ValueRef,
 };
 
 /// Version of the canonical encoding. Bumping this deliberately changes every content hash; it is
@@ -122,7 +122,7 @@ use crate::cdm::{
 /// that froze for two seconds in the middle of a minute divides out to exactly its declared rate. A
 /// recording with a hole in it and one without carry the same codec, the same resolution, the same
 /// frame count and the same fps. Same rule again.
-pub const CANONICAL_VERSION: u32 = 20;
+pub const CANONICAL_VERSION: u32 = 21;
 
 const DOMAIN: &[u8] = b"veridex.cdm.v1\0";
 
@@ -429,6 +429,25 @@ impl Stream {
             e.seq(pfs, |e, pf: &PointField| {
                 e.str(&pf.name);
                 e.opt(&pf.dtype, |e, d| e.str(d));
+            })
+        });
+        // What the rig's components said about their own health. Bound because
+        // `autonomy.reported-health` fails a stream on it: a recording whose LiDAR driver reported
+        // `ERROR` for half the drive carries the same frames, cadence, frames and point counts as
+        // one whose driver reported nothing, and the two must not hash alike. Already sorted by
+        // component name (the accumulator is keyed by it), and sorted again here so a hand-built CDM
+        // cannot change the hash by reordering a set.
+        e.opt(&self.observed_diagnostics, |e, comps| {
+            let mut sorted: Vec<&ComponentHealth> = comps.iter().collect();
+            sorted.sort_by(|a, b| a.name.cmp(&b.name));
+            e.seq(&sorted, |e, c: &&ComponentHealth| {
+                e.str(&c.name);
+                e.opt(&c.hardware_id, |e, h| e.str(h));
+                e.u64(c.messages);
+                e.u64(c.error);
+                e.u64(c.warn);
+                e.u64(c.stale);
+                e.opt(&c.detail, |e, d| e.str(d));
             })
         });
         // How many points the cloud messages carried. Bound because `autonomy.point-cloud-density`

@@ -254,6 +254,18 @@ pub enum Modality {
     /// Its content is not lost: it is decoded into [`Dataset::calibration`], which is where a rig's
     /// geometry belongs, and the `autonomy.calibration-*` checks grade it there.
     Calibration,
+    /// A channel that reports the rig's own **health** rather than measuring the world: a
+    /// `diagnostic_msgs/msg/DiagnosticArray`, which is what the `diagnostic_updater` in a ROS driver
+    /// and the `diagnostic_aggregator` beside it publish.
+    ///
+    /// Not a rig sensor, for the reason [`Modality::Calibration`] is not: it observes the rig rather
+    /// than the scene, so comparing its span against a LiDAR's would report a synchronized rig as
+    /// drifting. It has no values to summarize either — a level and a sentence are not a measurement
+    /// — so the statistical family passes over it rather than listing it as unread.
+    ///
+    /// Its content is not lost: it is summarized into [`Stream::observed_diagnostics`], where
+    /// `autonomy.reported-health` grades what the components said about themselves.
+    Diagnostics,
 }
 
 impl Modality {
@@ -271,6 +283,7 @@ impl Modality {
             Modality::CanSignal => "can-signal",
             Modality::EgoPose => "ego-pose",
             Modality::Calibration => "calibration",
+            Modality::Diagnostics => "diagnostics",
         }
     }
 
@@ -447,6 +460,16 @@ pub struct Stream {
     /// schema, never the point payloads. Extension for `autonomy-sensor-data` A0.
     #[serde(default)]
     pub point_fields: Option<Vec<PointField>>,
+    /// What the rig's components said about **their own health**, from the
+    /// `diagnostic_msgs/msg/DiagnosticArray` messages on this stream — `None` for every stream that
+    /// carries none, and for a run that did not open the message bodies. Sorted by component name.
+    ///
+    /// The other `observed_*` fields summarize what a sensor *measured*; this is the one that
+    /// records what the rig *said*. A driver that lost its sensor, a camera that overheated, a
+    /// receiver that lost the sky: each is usually reported by its own driver at the time, in the
+    /// recording, beside the data — and before this field nothing in Veridex read it.
+    #[serde(default)]
+    pub observed_diagnostics: Option<Vec<ComponentHealth>>,
     /// The media file backing a video stream, when the source stores its pixels outside the data
     /// table (LeRobot keeps video in `videos/**.mp4` and only the timeline in Parquet). Carries both
     /// what the manifest *declares* about the encoding and what Veridex read out of the container
@@ -836,6 +859,65 @@ pub struct StreamStats {
 // transform tree are first-class and time-scoped (A2), and the ego trajectory is a sequence of
 // timestamped poses. They are all optional; a manipulation dataset leaves them empty and is
 // unaffected.
+
+/// What one component said about **itself** over a recording, summarized from the
+/// `diagnostic_msgs/msg/DiagnosticArray` messages a rig publishes about its own hardware.
+///
+/// A ROS driver written with `diagnostic_updater` publishes its own state, and the
+/// `diagnostic_aggregator` beside it republishes the rig's. So a recording made while a sensor was
+/// failing usually **contains the driver's own statement that it was failing** — and nothing read
+/// it. Every other family sees a sensor that kept publishing: the frames are there, on cadence, in
+/// the right frame, and the data within them may be perfectly well-formed rubbish. This is the one
+/// record of the rig telling you so at the time.
+///
+/// Counted per component name, which is what a `DiagnosticStatus` is keyed by, so the summary is
+/// about a *piece of hardware* rather than about the topic that reported it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComponentHealth {
+    /// The component's own name, as it published it (e.g. `velodyne: Hardware`). The canonical sort
+    /// key, and unique within a stream by construction.
+    pub name: String,
+    /// The hardware id the component reported, where it reported one.
+    pub hardware_id: Option<String>,
+    /// How many statuses this component published (the denominator).
+    pub messages: u64,
+    /// How many of those were `ERROR` (level 2): the component stating it is not working.
+    pub error: u64,
+    /// How many were `WARN` (level 1).
+    pub warn: u64,
+    /// How many were `STALE` (level 3): the aggregator stating the component stopped reporting,
+    /// which is a different fact from the component reporting a fault.
+    pub stale: u64,
+    /// The first status message text seen at the component's worst level, as it wrote it — so a
+    /// finding can quote the rig rather than paraphrase it. `None` when the component published a
+    /// level with no message.
+    pub detail: Option<String>,
+}
+
+impl ComponentHealth {
+    /// The worst level this component reported, as the `DiagnosticStatus` constant
+    /// (0 OK, 1 WARN, 2 ERROR, 3 STALE). `STALE` is treated as worse than `WARN` and less severe
+    /// than `ERROR` for ordering, which is how `diagnostic_aggregator` ranks them.
+    pub fn worst_level(&self) -> u8 {
+        if self.error > 0 {
+            2
+        } else if self.stale > 0 {
+            3
+        } else if self.warn > 0 {
+            1
+        } else {
+            0
+        }
+    }
+
+    /// The share of this component's statuses that were `ERROR`, in `[0.0, 1.0]`.
+    pub fn error_fraction(&self) -> f64 {
+        if self.messages == 0 {
+            return 0.0;
+        }
+        self.error as f64 / self.messages as f64
+    }
+}
 
 /// One field of a point-cloud stream's per-point record layout (e.g. `x`, `y`, `z`, `intensity`,
 /// `ring`). Veridex records the declared schema, never the point payloads.

@@ -296,6 +296,13 @@ pub fn settings(inputs: &Inputs<'_>) -> Vec<Setting> {
             trim(c.sequence_drop_fraction),
         ),
         (
+            "hardware_error_fraction",
+            t.hardware_error_fraction.is_some(),
+            f.hardware_error_fraction == c.hardware_error_fraction,
+            trim(f.hardware_error_fraction),
+            trim(c.hardware_error_fraction),
+        ),
+        (
             "gnss_unfixed_fraction",
             t.gnss_unfixed_fraction.is_some(),
             f.gnss_unfixed_fraction == c.gnss_unfixed_fraction,

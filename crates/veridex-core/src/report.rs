@@ -490,6 +490,13 @@ pub(crate) fn tolerance_departures(t: &crate::Tolerances) -> Vec<ToleranceDepart
         )
     );
     departure!(
+        hardware_error_fraction,
+        format!(
+            "reported ERROR {}%",
+            trim_num(t.hardware_error_fraction * 100.0)
+        )
+    );
+    departure!(
         gnss_unfixed_fraction,
         format!(
             "GNSS unfixed {}%",

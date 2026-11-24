@@ -1151,6 +1151,9 @@ impl Check for ValueMeasurability {
         let mut no_stored: std::collections::BTreeSet<&str> = Default::default();
         for ep in &dataset.episodes {
             for s in &ep.streams {
+                // A diagnostics channel is the same category error one step further: a level and a
+                // sentence are a component's statement about itself, not a measurement of the
+                // world, and `autonomy.reported-health` grades them where they belong.
                 // A calibration channel announces the rig's geometry — a `CameraInfo`, a transform
                 // tree — and has no values to summarize by construction. Both silences below are
                 // about a *measurement* that was not summarized, and neither describes this: naming
@@ -1160,7 +1163,7 @@ impl Check for ValueMeasurability {
                 // `Dataset::calibration`, and the `autonomy.calibration-*` rules grade it there,
                 // including the case (an all-zero `CameraInfo`) that a value summary would be the
                 // wrong tool for anyway.
-                if s.modality == Modality::Calibration {
+                if matches!(s.modality, Modality::Calibration | Modality::Diagnostics) {
                     continue;
                 }
                 let recomputed = s.observed_stats.is_some()

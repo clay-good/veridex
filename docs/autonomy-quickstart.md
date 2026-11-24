@@ -214,6 +214,7 @@ certified av — fail, grade C (76), bound to <the CDM content hash>
     ✓ autonomy.point-cloud-layout — every point cloud's record names the coordinates a consumer reads it by
     ✓ autonomy.image-integrity — every camera actually recorded pixels, at one resolution throughout
     ✓ autonomy.sensor-clock — every rig sensor stamped its own capture time, on a clock that agrees with the recorder's
+    ✓ autonomy.reported-health — no rig component reporting itself in error
     ✓ autonomy.message-decode — every rig sensor's message bodies survived the recording, so the results above are about the whole stream
 ```
 

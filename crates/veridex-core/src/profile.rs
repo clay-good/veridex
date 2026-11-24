@@ -114,6 +114,7 @@ impl Profile {
             outlier_z,
             sequence_drop_fraction,
             gnss_unfixed_fraction,
+            hardware_error_fraction,
             ego_max_speed_mps,
             near_duplicate_fraction,
             sensor_clock_offset_ns,
@@ -173,6 +174,10 @@ const WORLD_MODEL_READY_CRITERIA: &[(&str, &str)] = &[
         "every rig sensor stamped its own capture time, on a clock that agrees with the recorder's",
     ),
     (
+        "autonomy.reported-health",
+        "no rig component reporting itself in error",
+    ),
+    (
         "autonomy.message-decode",
         "every rig sensor's message bodies survived the recording, so the results above are about the whole stream",
     ),
@@ -196,7 +201,10 @@ const WORLD_MODEL_READY_CRITERIA: &[(&str, &str)] = &[
 /// stamped its own data has no second clock for that result to be about, and message decode,
 /// because every criterion above that reads a body — sequence, ego pose, GNSS, point-cloud density,
 /// sensor clock — is computed from the bodies that decoded, so a stream whose bodies mostly did not
-/// survive the recording satisfies all of them on the share that did).
+/// survive the recording satisfies all of them on the share that did, and reported health, because
+/// a rig whose own driver said at the time that a sensor was broken satisfies every criterion above
+/// — the frames are there, on cadence, in the right frame, full of well-formed numbers — and the
+/// recording's own account of itself is the only place that says otherwise).
 pub fn world_model_ready() -> Profile {
     Profile {
         name: "world-model-ready",

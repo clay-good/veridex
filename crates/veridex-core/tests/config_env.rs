@@ -40,6 +40,7 @@ fn every_config_key_has_an_environment_twin() {
                 "saturation_fraction"
                 | "sequence_drop_fraction"
                 | "gnss_unfixed_fraction"
+                | "hardware_error_fraction"
                 | "near_duplicate_fraction" => "0.5",
                 _ => "2",
             };

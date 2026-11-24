@@ -2018,6 +2018,7 @@ mod tests {
             observed_non_finite: None,
             frame_id: None,
             point_fields: None,
+            observed_diagnostics: None,
             observed_point_counts: None,
             observed_image_dims: None,
             observed_body_decodes: None,

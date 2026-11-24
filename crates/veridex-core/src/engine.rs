@@ -80,6 +80,11 @@ pub struct Tolerances {
     /// `AUTONOMY.SEQUENCE_COMPLETE` fires when more than this fraction of the frames a rig sensor's
     /// own median cadence implies over its span are missing (0.05 = 5%).
     pub sequence_drop_fraction: f64,
+    /// `AUTONOMY.HARDWARE_ERROR` fires when more than this share of a component's own diagnostic
+    /// statuses report `ERROR` (0.1 = one in ten). A fraction rather than any error at all, because
+    /// a driver that reports one `ERROR` while it starts up and `OK` for the rest of a drive
+    /// describes a boot rather than a fault.
+    pub hardware_error_fraction: f64,
     /// `AUTONOMY.GNSS_NO_FIX` fires when more than this share of a satellite receiver's messages
     /// declare `STATUS_NO_FIX` (0.5 = half). A brief outage is a fact about the road; a trajectory
     /// that is mostly absence is a fault in the data.
@@ -113,6 +118,7 @@ impl Tolerances {
             outlier_z: fix(self.outlier_z, d.outlier_z),
             sequence_drop_fraction: fix(self.sequence_drop_fraction, d.sequence_drop_fraction),
             gnss_unfixed_fraction: fix(self.gnss_unfixed_fraction, d.gnss_unfixed_fraction),
+            hardware_error_fraction: fix(self.hardware_error_fraction, d.hardware_error_fraction),
             ego_max_speed_mps: fix(self.ego_max_speed_mps, d.ego_max_speed_mps),
             near_duplicate_fraction: fix(self.near_duplicate_fraction, d.near_duplicate_fraction),
             ..self
@@ -135,6 +141,7 @@ impl Default for Tolerances {
             outlier_z: 10.0,
             sequence_drop_fraction: 0.05, // 5%
             gnss_unfixed_fraction: 0.5,   // half
+            hardware_error_fraction: 0.1, // one status in ten
             ego_max_speed_mps: 100.0,
             near_duplicate_fraction: 0.8, // four frames in five
             // 1 s. Far above any sensor pipeline latency (tens of milliseconds) and far below the

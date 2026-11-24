@@ -264,6 +264,15 @@ trajectory **and the ego velocity behind it** — a vehicle's speed and yaw rate
 pose's 36-element covariance. The bulk payload — the points, the pixels — is fingerprinted, never
 decoded.
 
+One message type is read for what it says about the **rig** rather than about the world. A ROS driver
+written with `diagnostic_updater` publishes its own state, and the `diagnostic_aggregator` beside it
+republishes the whole rig's, so a recording made while a sensor was failing usually carries the
+driver's own `ERROR` on a `diagnostic_msgs/msg/DiagnosticArray` topic, beside the data, at the time.
+Veridex summarizes those statuses per component and `autonomy.reported-health` grades them — the
+sensor kept publishing, so every other check passes on frames its own driver had given up on. The
+topic is typed `diagnostics` rather than as a sensor, so it is never compared against one: a health
+channel observes the rig, and a rig-sync result over it would report a synchronized rig as drifting.
+
 Every header-first message also supplies its `header.stamp` — the time the **sensor** says it
 sampled, as distinct from the log time the **recorder** wrote it at, which is the only clock a bag's
 frame timestamps carry. Both are read, and `autonomy.sensor-clock` compares them: without the second

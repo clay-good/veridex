@@ -120,7 +120,13 @@
 //!   check reads every body, and the frame checks place the LiDAR in the tree →
 //!   `AUTONOMY.POINT_CLOUD_NO_GEOMETRY` is the only thing that reports it.
 //!
-//! Usage: `cargo run -p veridex-demo --example make_demo_mcap -- <output.mcap> [skew|clean|stuck|late-start|av|av-miscalibrated|av-ambiguous-tf|av-dead-lidar|av-dead-camera|av-ego-jump|av-null-island|av-truncated-lidar|av-corrupt-bodies|av-split-rig|av-unstamped|av-uncalibrated-camera|av-lossy-camera|av-no-fix|av-mislabelled-cloud]`
+//! - `av-sick-lidar` — the same rig, publishing the `/diagnostics` topic a ROS rig publishes by
+//!   default, on which the LiDAR's own driver reports `ERROR: laser returns stopped` for most of the
+//!   drive. The sweeps keep coming, full of points, on cadence, in the right frame — so every other
+//!   check passes, and the one place that says the sensor was broken is the rig's own account of
+//!   itself, which nothing read → `AUTONOMY.HARDWARE_ERROR`.
+//!
+//! Usage: `cargo run -p veridex-demo --example make_demo_mcap -- <output.mcap> [skew|clean|stuck|late-start|av|av-miscalibrated|av-ambiguous-tf|av-dead-lidar|av-dead-camera|av-ego-jump|av-null-island|av-truncated-lidar|av-corrupt-bodies|av-split-rig|av-unstamped|av-uncalibrated-camera|av-lossy-camera|av-no-fix|av-mislabelled-cloud|av-sick-lidar]`
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
@@ -149,6 +155,7 @@ pub const VARIANTS: &[&str] = &[
     "av-lossy-camera",
     "av-no-fix",
     "av-mislabelled-cloud",
+    "av-sick-lidar",
 ];
 
 /// Write the demo MCAP recording to `path`, replacing anything already there.
@@ -207,6 +214,9 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
     // `X`, `Y`, `Z`. The clouds are full and on time; only the record layout — the one thing that
     // says where a coordinate sits in a point — names them something no consumer looks up.
     let mislabelled_cloud = variant == "av-mislabelled-cloud";
+    // `av-sick-lidar` is the same rig with a `/diagnostics` topic, on which the LiDAR's own driver
+    // reports `ERROR` for most of the drive while publishing full, well-formed, on-time sweeps.
+    let sick_lidar = variant == "av-sick-lidar";
     let av = variant == "av"
         || miscalibrated
         || ambiguous_tf
@@ -221,7 +231,8 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
         || uncalibrated_camera
         || lossy_camera
         || no_fix
-        || mislabelled_cloud;
+        || mislabelled_cloud
+        || sick_lidar;
 
     let mut buf = Vec::new();
     {
@@ -245,6 +256,7 @@ pub fn write(path: &Path, variant: &str) -> Result<(), DemoError> {
                     lossy_camera,
                     no_fix,
                     mislabelled_cloud,
+                    sick_lidar,
                 },
             );
         } else {
@@ -460,6 +472,7 @@ struct RigFaults {
     lossy_camera: bool,
     no_fix: bool,
     mislabelled_cloud: bool,
+    sick_lidar: bool,
 }
 
 /// sensor spans ~1.0 s from a shared start except the IMU, whose span is deliberately cut to ~0.70 s
@@ -481,6 +494,7 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(w: &mut mcap::Writer<W>, faul
         lossy_camera,
         no_fix,
         mislabelled_cloud,
+        sick_lidar,
     } = faults;
     // (schema, topic, message count, inter-message interval ns, coordinate frame). The IMU runs the
     // same 100 msg count as a healthy 100 Hz sensor but at a compressed 7 ms interval, so it finishes
@@ -503,6 +517,17 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(w: &mut mcap::Writer<W>, faul
             "camera_rear",
         ),
     ];
+    // The rig's own health topic, present only in `av-sick-lidar`. A real ROS rig publishes this by
+    // default (`diagnostic_updater` in each driver, `diagnostic_aggregator` beside them); it reports
+    // on the rig rather than measuring the world, which is why it is typed `Diagnostics` and left
+    // out of every cross-sensor comparison.
+    let diagnostics: &[(&str, &str, u64, u64, &str)] = &[(
+        "diagnostic_msgs/msg/DiagnosticArray",
+        "/diagnostics",
+        11,
+        100_000_000,
+        "base_link",
+    )];
     let sensors: &[(&str, &str, u64, u64, &str)] = &[
         (
             "sensor_msgs/msg/Image",
@@ -598,6 +623,7 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(w: &mut mcap::Writer<W>, faul
     let all_sensors: Vec<&(&str, &str, u64, u64, &str)> = sensors
         .iter()
         .chain(if split_rig { rear_camera } else { &[] })
+        .chain(if sick_lidar { diagnostics } else { &[] })
         .collect();
     for (seq_base, (schema, topic, count, interval, frame_id)) in
         all_sensors.iter().copied().enumerate()
@@ -672,6 +698,34 @@ fn write_av_rig<W: std::io::Write + std::io::Seek>(w: &mut mcap::Writer<W>, faul
                     body.truncate(body.len() / 3);
                 }
                 write_msg(w, channel, i as u32, t, &body);
+            } else if *schema == "diagnostic_msgs/msg/DiagnosticArray" {
+                // What the rig said about itself. Two components, as an aggregator publishes them:
+                // the camera is fine throughout, and the LiDAR's driver reports `ERROR` after the
+                // first tick — which is the whole fixture, because the sweeps it is reporting on
+                // are full, on time and in the right frame.
+                let lidar_level = if i == 0 { 0 } else { 2 };
+                write_msg(
+                    w,
+                    channel,
+                    i as u32,
+                    t,
+                    &diagnostic_array_body(
+                        stamp,
+                        &[
+                            (0, "camera_front: Capture", "", "FLIR-BFS"),
+                            (
+                                lidar_level,
+                                "velodyne: Hardware",
+                                if lidar_level == 0 {
+                                    "OK"
+                                } else {
+                                    "laser returns stopped"
+                                },
+                                "HDL-64E",
+                            ),
+                        ],
+                    ),
+                );
             } else if *schema == "sensor_msgs/msg/CameraInfo" {
                 write_msg(
                     w,
@@ -844,6 +898,46 @@ fn nav_sat_fix_body(
         f64v(&mut buf, 0.0); // position_covariance
     }
     buf.push(0); // position_covariance_type = COVARIANCE_TYPE_UNKNOWN
+    buf
+}
+
+/// A real `diagnostic_msgs/msg/DiagnosticArray` CDR body: `Header`, then a sequence of
+/// `DiagnosticStatus { byte level, string name, string message, string hardware_id, KeyValue[] values }`.
+///
+/// This is what a ROS rig publishes about *itself* — `diagnostic_updater` inside each driver, the
+/// `diagnostic_aggregator` beside them — and it is the one record a recording holds of a sensor
+/// having been broken at the time. Written as a real body for the reason the Odometry and NavSatFix
+/// bodies are real: a stub would leave the topic fingerprinted, and the check that reads the rig's
+/// own account of itself would have nothing to read.
+fn diagnostic_array_body(stamp_ns: u64, statuses: &[(u8, &str, &str, &str)]) -> Vec<u8> {
+    let mut buf: Vec<u8> = vec![0x00, 0x01, 0x00, 0x00]; // encapsulation: CDR_LE
+    let align = |buf: &mut Vec<u8>, n: usize| {
+        while (buf.len() - 4) % n != 0 {
+            buf.push(0)
+        }
+    };
+    let u32v = |buf: &mut Vec<u8>, v: u32| {
+        align(buf, 4);
+        buf.extend_from_slice(&v.to_le_bytes());
+    };
+    let strv = |buf: &mut Vec<u8>, s: &str| {
+        align(buf, 4);
+        buf.extend_from_slice(&((s.len() + 1) as u32).to_le_bytes());
+        buf.extend_from_slice(s.as_bytes());
+        buf.push(0);
+    };
+    // Header { stamp { sec, nanosec }, frame_id }
+    u32v(&mut buf, (stamp_ns / 1_000_000_000) as u32);
+    u32v(&mut buf, (stamp_ns % 1_000_000_000) as u32);
+    strv(&mut buf, "base_link");
+    u32v(&mut buf, statuses.len() as u32);
+    for (level, name, message, hardware_id) in statuses {
+        buf.push(*level);
+        strv(&mut buf, name);
+        strv(&mut buf, message);
+        strv(&mut buf, hardware_id);
+        u32v(&mut buf, 0); // values: a driver's own telemetry pairs, none here
+    }
     buf
 }
 

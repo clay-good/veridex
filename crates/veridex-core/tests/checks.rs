@@ -44,6 +44,7 @@ fn stream(name: &str, clock: &str, rate: Option<f64>, ts: &[i64]) -> Stream {
         latched: None,
         declared_range: None,
         point_fields: None,
+        observed_diagnostics: None,
         observed_point_counts: None,
         observed_image_dims: None,
         observed_body_decodes: None,
@@ -354,6 +355,7 @@ fn stream_hashed(name: &str, clock: &str, ts: &[i64], contents: &[u8]) -> Stream
         latched: None,
         declared_range: None,
         point_fields: None,
+        observed_diagnostics: None,
         observed_point_counts: None,
         observed_image_dims: None,
         observed_body_decodes: None,
@@ -449,6 +451,7 @@ fn stream_with_content(name: &str, modality: Modality, contents: &[u8]) -> Strea
         latched: None,
         declared_range: None,
         point_fields: None,
+        observed_diagnostics: None,
         observed_point_counts: None,
         observed_image_dims: None,
         observed_body_decodes: None,
@@ -532,6 +535,7 @@ fn shaped(name: &str, dtype: Option<&str>, shape: Option<Vec<u64>>, ts: &[i64]) 
         latched: None,
         declared_range: None,
         point_fields: None,
+        observed_diagnostics: None,
         observed_point_counts: None,
         observed_image_dims: None,
         observed_body_decodes: None,
@@ -1691,7 +1695,7 @@ fn default_engine_runs_all_families_end_to_end() {
         .findings
         .iter()
         .any(|f| f.code == "TEMPORAL.CLOCK_SKEW"));
-    assert_eq!(verdict.executed_checks.len(), 50);
+    assert_eq!(verdict.executed_checks.len(), 51);
 }
 
 #[test]
@@ -2504,7 +2508,7 @@ fn the_readme_names_every_check_family_the_engine_runs() {
         .count();
     let spelled = [
         "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
-        "eleven", "twelve",
+        "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
     ];
     let claim = format!(
         "{} checks over an autonomy rig",
@@ -3703,6 +3707,7 @@ fn a_bus_only_measurement_is_not_treated_as_a_sensor_rig() {
                 latched: None,
                 declared_range: None,
                 point_fields: None,
+                observed_diagnostics: None,
                 observed_point_counts: None,
                 observed_image_dims: None,
                 observed_body_decodes: None,
@@ -3791,6 +3796,7 @@ fn one_shared_timeline_reports_once_and_an_event_driven_signal_is_not_called_inc
         latched: None,
         declared_range: None,
         point_fields: None,
+        observed_diagnostics: None,
         observed_point_counts: None,
         observed_image_dims: None,
         observed_body_decodes: None,
@@ -7628,6 +7634,8 @@ fn every_abstention_code_in_the_catalog_is_declared_as_one() {
         // "the value was read and this check cannot classify it", which is an abstention for the
         // same reason the rest are: the question was never answered.
         "UNRECOGNIZED",
+        // "the rig said nothing this run could read" — the same silence as the rest.
+        "UNREPORTED",
         // A code whose *local part begins* `NO_` says the question had nothing to be asked about:
         // `SEMANTIC.NO_TASKS`, `SEMANTIC.NO_ANNOTATIONS`, `STATISTICAL.NO_STORED_STATS`. The dot
         // matters — a bare `NO_` would also match `AUTONOMY.GNSS_NO_FIX`, which is the opposite
@@ -8173,4 +8181,165 @@ fn a_conflict_is_judged_across_every_provenance_scope() {
         codes.contains(&"PROVENANCE.LICENSE_CONFLICT".to_string()),
         "{codes:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// `autonomy.reported-health` — what the rig said about its own components.
+// ---------------------------------------------------------------------------
+
+/// A dataset with one diagnostics stream on which `components` reported themselves.
+fn dataset_reporting(components: Vec<veridex_core::cdm::ComponentHealth>) -> Dataset {
+    let mut s = stream("/diagnostics", "rig", Some(10.0), &[0, 100_000_000]);
+    s.modality = Modality::Diagnostics;
+    s.observed_diagnostics = Some(components);
+    dataset(vec![episode(0, vec![s])])
+}
+
+fn health(
+    name: &str,
+    messages: u64,
+    error: u64,
+    warn: u64,
+    stale: u64,
+) -> veridex_core::cdm::ComponentHealth {
+    veridex_core::cdm::ComponentHealth {
+        name: name.into(),
+        hardware_id: Some("HDL-64E".into()),
+        messages,
+        error,
+        warn,
+        stale,
+        detail: Some("laser returns stopped".into()),
+    }
+}
+
+fn health_findings(d: &Dataset) -> Vec<veridex_core::check::Finding> {
+    use veridex_core::check::Check;
+    autonomy::ReportedHealth {
+        max_error_fraction: 0.1,
+    }
+    .run(d)
+}
+
+#[test]
+fn a_component_that_reported_itself_broken_is_the_finding_nothing_else_makes() {
+    // The defect: the recording holds the driver's own statement that the sensor was not working,
+    // on a topic beside the data, and every other family passes because the component kept
+    // publishing well-formed messages on cadence.
+    let f = health_findings(&dataset_reporting(vec![health(
+        "velodyne: Hardware",
+        10,
+        9,
+        0,
+        0,
+    )]));
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "AUTONOMY.HARDWARE_ERROR");
+    // The component, the device, the count and the rig's own words.
+    assert!(
+        f[0].message.contains("velodyne: Hardware"),
+        "{}",
+        f[0].message
+    );
+    assert!(f[0].message.contains("HDL-64E"), "{}", f[0].message);
+    assert!(f[0].message.contains("9 of its 10"), "{}", f[0].message);
+    assert!(
+        f[0].message.contains("laser returns stopped"),
+        "the finding quotes the driver rather than paraphrasing it: {}",
+        f[0].message
+    );
+}
+
+#[test]
+fn one_error_while_a_driver_starts_up_is_not_a_fault() {
+    // The false positive that would get this check switched off: a driver that reports `ERROR` on
+    // its first tick and `OK` for the rest of the drive describes a boot, not a broken sensor.
+    let f = health_findings(&dataset_reporting(vec![health(
+        "velodyne: Hardware",
+        100,
+        1,
+        0,
+        0,
+    )]));
+    assert!(f.is_empty(), "{f:?}");
+}
+
+#[test]
+fn a_component_the_rig_stopped_hearing_from_is_reported_separately() {
+    // `STALE` is the aggregator saying the component stopped reporting, which says nothing about
+    // the data it produced — a different fact from a component reporting a fault, and a warning
+    // rather than an error for exactly that reason.
+    let f = health_findings(&dataset_reporting(vec![health(
+        "velodyne: Hardware",
+        10,
+        0,
+        0,
+        6,
+    )]));
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "AUTONOMY.HARDWARE_STALE");
+    assert_eq!(f[0].severity, Severity::Warning);
+}
+
+#[test]
+fn a_sustained_warning_is_context_rather_than_a_verdict() {
+    let f = health_findings(&dataset_reporting(vec![health(
+        "velodyne: Packets",
+        10,
+        0,
+        9,
+        0,
+    )]));
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "AUTONOMY.HARDWARE_WARNING");
+    assert_eq!(f[0].severity, Severity::Info);
+}
+
+#[test]
+fn a_rig_whose_components_all_reported_themselves_well_produces_nothing() {
+    let f = health_findings(&dataset_reporting(vec![
+        health("camera_front: Capture", 100, 0, 0, 0),
+        health("velodyne: Hardware", 100, 0, 0, 0),
+    ]));
+    assert!(f.is_empty(), "{f:?}");
+}
+
+#[test]
+fn a_diagnostics_stream_nobody_could_read_is_disclosed_and_a_dataset_without_one_is_not() {
+    use veridex_core::check::{Check, CheckContext};
+    // A diagnostics topic whose bodies did not decode: the rig's account of itself went unread,
+    // which is not the same as a rig that reported itself sound.
+    let mut s = stream("/diagnostics", "rig", Some(10.0), &[0, 100_000_000]);
+    s.modality = Modality::Diagnostics;
+    let unread = dataset(vec![episode(0, vec![s])]);
+    let f = health_findings(&unread);
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].code, "AUTONOMY.HARDWARE_UNREPORTED");
+
+    // A dataset that publishes no diagnostics at all is missing nothing: that silence is the
+    // absence of a question, not an unanswered one — and most datasets are in it.
+    let none = dataset(vec![episode(
+        0,
+        vec![stream(
+            "/lidar/points",
+            "rig",
+            Some(10.0),
+            &[0, 100_000_000],
+        )],
+    )]);
+    assert!(health_findings(&none).is_empty());
+
+    // And the abstention stands down under a metadata-only run, which read no body of any format.
+    let withheld = autonomy::ReportedHealth {
+        max_error_fraction: 0.1,
+    }
+    .run_in(
+        &unread,
+        &CheckContext {
+            frames_read: false,
+            attested_keys: Vec::new(),
+            sampled: false,
+        },
+    );
+    assert!(withheld.is_empty(), "{withheld:?}");
 }

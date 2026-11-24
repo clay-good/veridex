@@ -84,6 +84,9 @@ pub fn standard_checks_with(t: &Tolerances) -> Vec<Box<dyn Check>> {
         Box::new(autonomy::PointCloudLayout),
         Box::new(autonomy::ImageIntegrity),
         Box::new(autonomy::MessageBodyDecode),
+        Box::new(autonomy::ReportedHealth {
+            max_error_fraction: t.hardware_error_fraction,
+        }),
         Box::new(autonomy::SensorClock {
             max_offset_ns: t.sensor_clock_offset_ns,
         }),

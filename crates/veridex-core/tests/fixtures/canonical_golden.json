@@ -427,7 +427,27 @@
             "message_count": 540,
             "missing": 60,
             "non_increasing": 2
-          }
+          },
+          "observed_diagnostics": [
+            {
+              "name": "velodyne: Hardware",
+              "hardware_id": "HDL-64E",
+              "messages": 100,
+              "error": 61,
+              "warn": 0,
+              "stale": 0,
+              "detail": "laser returns stopped"
+            },
+            {
+              "name": "velodyne: Packets",
+              "hardware_id": null,
+              "messages": 100,
+              "error": 0,
+              "warn": 100,
+              "stale": 0,
+              "detail": null
+            }
+          ]
         }
       ],
       "task": "pick up the block",

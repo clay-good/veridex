@@ -112,6 +112,7 @@ Three rules keep that honest:
 | Point-cloud record layout | `autonomy.point-cloud-layout` | every point cloud's record names the coordinates a consumer reads it by — a cloud spelling them `X`, `Y`, `Z`, or carrying no coordinate fields at all, holds points on the sensor's cadence and satisfies every criterion above while no loader can turn it into geometry |
 | Image integrity | `autonomy.image-integrity` | every camera actually recorded pixels, at one resolution throughout — the same driver failure on the modality a policy is usually trained on, plus a resolution that changed part-way through the recording, which shifts the training distribution without failing anything else |
 | Sensor clock | `autonomy.sensor-clock` | every rig sensor stamped its own capture time, on a clock that agrees with the recorder's — the 20 ms sync above is measured from the recorder's clock, and a sensor that never stamped its data has no second clock for that result to be about |
+| Reported health | `autonomy.reported-health` | no rig component reporting itself in error — a driver that reports `ERROR` keeps publishing well-formed data on cadence, so every criterion above it passes while the recording's own account of itself says the hardware had failed |
 | Message decode | `autonomy.message-decode` | every rig sensor's message bodies survived the recording, so the results above are about the whole stream — each criterion here that reads a body (sequence, ego pose, GNSS, point-cloud density, sensor clock) is computed from the bodies that decoded, so a stream whose bodies mostly did not survive satisfies all of them on the share that did |
 
 The `readiness` block on the certificate records the profile name, whether it was `applicable`, the
@@ -154,6 +155,7 @@ Real output, over the `av-lossy-camera` rig the demo generator writes
     ✓ autonomy.point-cloud-layout — every point cloud's record names the coordinates a consumer reads it by
     ✓ autonomy.image-integrity — every camera actually recorded pixels, at one resolution throughout
     ✓ autonomy.sensor-clock — every rig sensor stamped its own capture time, on a clock that agrees with the recorder's
+    ✓ autonomy.reported-health — no rig component reporting itself in error
     ✓ autonomy.message-decode — every rig sensor's message bodies survived the recording, so the results above are about the whole stream
 ```
 
