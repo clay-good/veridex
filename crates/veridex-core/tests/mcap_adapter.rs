@@ -806,6 +806,35 @@ fn point_cloud2_record(height: u32, width: u32, fields: &[(&str, u8)]) -> Vec<u8
     pc.buf
 }
 
+/// The same record, with the byte offset of each field chosen by the caller — so a test can write a
+/// record whose fields *share* bytes, which is the one layout fault the offsets alone can express.
+fn point_cloud2_record_at(
+    height: u32,
+    width: u32,
+    fields: &[(&str, u8, u32)],
+    point_step: u32,
+) -> Vec<u8> {
+    let mut pc = Cdr::new();
+    pc.header("lidar");
+    pc.u32(height);
+    pc.u32(width);
+    pc.u32(fields.len() as u32);
+    for (name, datatype, offset) in fields {
+        pc.string(name);
+        pc.u32(*offset);
+        pc.u8(*datatype);
+        pc.u32(1);
+    }
+    pc.u8(0); // is_bigendian
+    pc.u32(point_step);
+    let row_step = point_step * width;
+    pc.u32(row_step);
+    let data_len = row_step * height;
+    pc.u32(data_len);
+    pc.buf.resize(pc.buf.len() + data_len as usize, 0);
+    pc.buf
+}
+
 /// Runs the standard catalog over an MCAP holding `n` copies of one `PointCloud2` body, and returns
 /// the findings. Every layout test needs the same four lines, and the point of each is the real
 /// adapter plus the real engine: the claim is that everything *else* passes on these clouds.
@@ -913,6 +942,68 @@ fn a_cloud_that_declares_one_field_twice_is_caught_end_to_end() {
     assert_eq!(dup.len(), 1, "{findings:?}");
     assert!(dup[0].message.contains("`intensity`"), "{}", dup[0].message);
     assert_eq!(dup[0].severity, veridex_core::check::Severity::Warning);
+}
+
+#[test]
+fn a_cloud_whose_fields_read_the_same_bytes_is_caught_end_to_end() {
+    // `intensity` starts two bytes into `z`'s float32. Every invariant the point-count decoder
+    // checks still holds — the fields are inside the stride, the row and data lengths agree, the
+    // bytes are there — and the record's names, dtypes, order and point count are all exactly what
+    // a correct cloud declares. One of the two columns is the other's bytes, and nothing but the
+    // offsets can say so.
+    //
+    // Run through the real adapter and the real engine, because the claim is that everything *else*
+    // passes: before this, the reader declined the body outright and the cloud was reported as one
+    // whose bytes the recording lost.
+    let findings = layout_findings(
+        point_cloud2_record_at(
+            1,
+            1000,
+            &[("x", 7, 0), ("y", 7, 4), ("z", 7, 8), ("intensity", 7, 10)],
+            16,
+        ),
+        2,
+    );
+    let overlap: Vec<_> = findings
+        .iter()
+        .filter(|f| f.code == "AUTONOMY.POINT_FIELDS_OVERLAP")
+        .collect();
+    assert_eq!(overlap.len(), 1, "{findings:?}");
+    assert_eq!(overlap[0].severity, veridex_core::check::Severity::Error);
+    assert!(
+        overlap[0].message.contains("`intensity` and `z`"),
+        "the pair is named, in a stable order: {}",
+        overlap[0].message
+    );
+    // And the cloud is otherwise read: the body decoded, so nothing reports it as lost bytes and
+    // the point count reached the CDM.
+    for code in [
+        "AUTONOMY.MESSAGE_BODY_UNDECODED",
+        "AUTONOMY.POINT_CLOUD_EMPTY",
+        "AUTONOMY.POINT_CLOUD_NO_GEOMETRY",
+    ] {
+        assert!(
+            !findings.iter().any(|f| f.code == code),
+            "{code} must not fire on a cloud whose only fault is its offsets: {findings:?}"
+        );
+    }
+
+    // A record whose fields merely sit side by side, with padding, is silent — the ordinary case.
+    let padded = layout_findings(
+        point_cloud2_record_at(
+            1,
+            1000,
+            &[("x", 7, 0), ("y", 7, 4), ("z", 7, 8), ("intensity", 7, 16)],
+            20,
+        ),
+        2,
+    );
+    assert!(
+        !padded
+            .iter()
+            .any(|f| f.code == "AUTONOMY.POINT_FIELDS_OVERLAP"),
+        "{padded:?}"
+    );
 }
 
 #[test]
@@ -3644,7 +3735,7 @@ fn the_demo_rig_hashes_the_same_on_every_machine() {
         .dataset;
     assert_eq!(
         veridex_core::content_hash(&d).to_hex(),
-        "cf3c20a3f9891d8d66d87da60382e9fc009dd784198d78c49c5e998abe4a7f0f",
+        "9405bc157f0de81f5e30f2914982b9c1dd13110dba4ec629812096b0a704270a",
         "the demo rig's content hash must not depend on the machine that computed it"
     );
 

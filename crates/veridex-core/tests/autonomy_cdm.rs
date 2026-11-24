@@ -60,6 +60,8 @@ fn cloud_stream(fields: &[&str]) -> Stream {
                 .map(|n| PointField {
                     name: (*n).into(),
                     dtype: Some("float32".into()),
+                    offset: None,
+                    elements: None,
                 })
                 .collect(),
         ),

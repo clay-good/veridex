@@ -129,7 +129,13 @@ use crate::cdm::{
 /// and byte count, and a consumer that ignores the flag — which `numpy.frombuffer`, most Python bag
 /// tooling and PCL's default readers do — decodes one of them into byte-swapped values. Same rule
 /// again: a field a check can fail on is a field the hash binds.
-pub const CANONICAL_VERSION: u32 = 22;
+/// v23 binds each point field's `offset` and `elements` — where in a point's record the field
+/// starts and how far it runs. `AUTONOMY.POINT_FIELDS_OVERLAP` fails a stream on them, and they are
+/// the only thing that says where a consumer reads a field from: a cloud whose `x` and `intensity`
+/// start at the same byte has the right field names, the right dtypes, the right point count, the
+/// right cadence and the right coordinate frame, and one of its columns is the other's bytes. Same
+/// rule again.
+pub const CANONICAL_VERSION: u32 = 23;
 
 const DOMAIN: &[u8] = b"veridex.cdm.v1\0";
 
@@ -436,6 +442,12 @@ impl Stream {
             e.seq(pfs, |e, pf: &PointField| {
                 e.str(&pf.name);
                 e.opt(&pf.dtype, |e, d| e.str(d));
+                // Where the field starts and how far it runs. Bound because
+                // `AUTONOMY.POINT_FIELDS_OVERLAP` fails a stream on them, and because nothing else
+                // in the record can see the fault: two fields at the same offset carry the same
+                // names, dtypes, order and count as a correct record.
+                e.opt(&pf.offset, |e, o| e.u64(u64::from(*o)));
+                e.opt(&pf.elements, |e, n| e.u64(u64::from(*n)));
             })
         });
         // What the rig's components said about their own health. Bound because

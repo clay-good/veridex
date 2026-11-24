@@ -457,10 +457,14 @@ mod tests {
                     crate::cdm::PointField {
                         name: "x".into(),
                         dtype: Some("float32".into()),
+                        offset: None,
+                        elements: None,
                     },
                     crate::cdm::PointField {
                         name: "intensity".into(),
                         dtype: Some("uint16".into()),
+                        offset: None,
+                        elements: None,
                     },
                 ])
             }),

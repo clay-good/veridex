@@ -333,12 +333,19 @@ pub fn decode_point_cloud2_fields(data: &[u8], enc: Encoding) -> Option<Vec<Poin
     let mut fields = Vec::with_capacity(count);
     for _ in 0..count {
         let name = r.string()?;
-        let _offset = r.u32()?;
+        // Kept, both of them: the offset is the only thing that says where in a point a consumer
+        // reads this field from, and the element count is how far it runs. Two fields starting at
+        // the same byte is a record no consumer can read the same way twice, and nothing outside
+        // this record can see it — the names, the dtypes, the point count and the cadence are all
+        // exactly right on such a cloud.
+        let offset = r.u32()?;
         let datatype = r.u8()?;
-        let _elem_count = r.u32()?;
+        let elements = r.u32()?;
         fields.push(PointField {
             name,
             dtype: Some(point_datatype(datatype).to_string()),
+            offset: Some(offset),
+            elements: Some(elements),
         });
     }
     Some(fields)
@@ -867,15 +874,19 @@ pub fn decode_point_cloud2_point_count(data: &[u8], enc: Encoding) -> Option<Poi
     if point_step == 0 {
         return None;
     }
-    // Every field lies inside the point, and no two fields share a byte. Padding between them is
-    // normal (alignment); overlap is not, and neither is a field running past the stride.
-    extents.sort_unstable();
-    let mut prev_end = 0u64;
-    for (start, end) in &extents {
-        if *start < prev_end || *end > point_step {
-            return None;
-        }
-        prev_end = *end;
+    // Every field lies inside the point. A field running past the stride is a record that
+    // contradicts itself — the two numbers cannot both be what the publisher meant — and an
+    // arbitrary buffer fails it, which is part of what makes this body recognizable as a cloud at
+    // all.
+    //
+    // *Overlap* is a different thing and is deliberately **not** refused here. Two fields sharing a
+    // byte is a self-consistent record that a real publisher writes: a template copied and a dtype
+    // widened without recomputing the offsets. Declining the body for it threw away the point count
+    // and reported the cloud as one whose body did not decode — which reads as "the recording lost
+    // bytes" when the truth is "the publisher got an offset wrong". `autonomy.point-cloud-layout`
+    // says the latter, from the offsets this reader now keeps.
+    if extents.iter().any(|(_, end)| *end > point_step) {
+        return None;
     }
     // A row holds `width` points, so it is at least `point_step × width` bytes — the message may pad
     // beyond that but cannot fall short of it.
@@ -3008,12 +3019,20 @@ mod tests {
             Encoding::Cdr
         )
         .is_none());
-        // Nor is one that overlaps the field before it.
-        assert!(decode_point_cloud2_point_count(
-            &layout(&[(0, 7), (2, 7), (8, 7)], 12),
-            Encoding::Cdr
-        )
-        .is_none());
+        // A field that *overlaps* the one before it is a different matter, and deliberately not
+        // declined: the record is self-consistent, a real publisher writes it (a template copied
+        // and a dtype widened without recomputing the offsets), and declining it threw away the
+        // point count and reported the cloud as a body that did not decode — "the recording lost
+        // bytes", when the truth is "the publisher got an offset wrong".
+        // `AUTONOMY.POINT_FIELDS_OVERLAP` says the latter, from the offsets the layout decoder
+        // keeps.
+        assert_eq!(
+            decode_point_cloud2_point_count(&layout(&[(0, 7), (2, 7), (8, 7)], 12), Encoding::Cdr),
+            Some(PointCloudBody {
+                points: 1,
+                big_endian: false
+            })
+        );
         // Nor a datatype tag the message definition does not define — that is not a width to guess.
         assert!(decode_point_cloud2_point_count(&layout(&[(0, 99)], 12), Encoding::Cdr).is_none());
 

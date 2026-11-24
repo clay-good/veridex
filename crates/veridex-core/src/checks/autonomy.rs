@@ -2391,6 +2391,7 @@ impl Check for PointCloudLayout {
             "AUTONOMY.POINT_CLOUD_NO_GEOMETRY",
             "AUTONOMY.POINT_CLOUD_FIELD_UNTYPED",
             "AUTONOMY.POINT_CLOUD_DUPLICATE_FIELD",
+            "AUTONOMY.POINT_FIELDS_OVERLAP",
         ]
     }
     fn title(&self) -> &'static str {
@@ -2561,10 +2562,104 @@ impl Check for PointCloudLayout {
                         ),
                     );
                 }
+
+                // 4. Two fields reading the same bytes. A `PointCloud2` is a flat blob plus this
+                // record, and the offsets are the only thing that says where each field starts — so
+                // two fields whose byte ranges intersect means one of them is reading the other's
+                // data. The names are right, the dtypes are right, the point count and the cadence
+                // are right, and one column is garbage.
+                let mut extents: Vec<(u64, u64, &str)> = Vec::new();
+                for f in fields {
+                    let (Some(offset), Some(dtype)) = (f.offset, f.dtype.as_deref()) else {
+                        continue;
+                    };
+                    let Some(width) = point_dtype_width(dtype) else {
+                        continue;
+                    };
+                    // A field with no stated element count holds one element, which is what every
+                    // coordinate is.
+                    let elements = u64::from(f.elements.unwrap_or(1)).max(1);
+                    let start = u64::from(offset);
+                    extents.push((
+                        start,
+                        start.saturating_add(width.saturating_mul(elements)),
+                        f.name.as_str(),
+                    ));
+                }
+                extents.sort_unstable();
+                let mut overlapping: BTreeSet<(&str, &str)> = BTreeSet::new();
+                for (i, (_, end, name)) in extents.iter().enumerate() {
+                    for (next_start, _, next_name) in &extents[i + 1..] {
+                        if next_start >= end {
+                            break; // sorted by start: nothing further can intersect this one
+                        }
+                        // Ordered by name so the pair reads the same way every run, whichever
+                        // order the record declared them in.
+                        let pair = if name <= next_name {
+                            (*name, *next_name)
+                        } else {
+                            (*next_name, *name)
+                        };
+                        overlapping.insert(pair);
+                    }
+                }
+                if !overlapping.is_empty() {
+                    let listed: Vec<String> = overlapping
+                        .iter()
+                        .map(|(a, b)| format!("`{a}` and `{b}`"))
+                        .collect();
+                    findings.push(
+                        Finding::new(
+                            self.id(),
+                            Category::Autonomy,
+                            Severity::Error,
+                            at(),
+                            "AUTONOMY.POINT_FIELDS_OVERLAP",
+                            format!(
+                                "episode {}: in stream `{}`'s point record, {} share bytes — the \
+                                 same bytes are read as two different fields",
+                                ep.index,
+                                stream.name,
+                                listed.join(", ")
+                            ),
+                        )
+                        .with_risk(
+                            "One of the two fields is reading the other's data, and a consumer \
+                             cannot tell which: both resolve by name, both are the declared dtype, \
+                             and the cloud's point count, cadence and coordinate frame are all \
+                             exactly right. It is what a hand-rolled publisher produces after a \
+                             template is copied and a dtype widened without recomputing the \
+                             offsets, so the field that moved is usually the one after it in the \
+                             record — a geometry channel reading an intensity's bytes places every \
+                             point somewhere it never was.",
+                        )
+                        .with_remedy(
+                            "Recompute the `PointField.offset` values from the dtypes and \
+                             re-record. The points already written cannot be separated: the two \
+                             fields are the same bytes.",
+                        ),
+                    );
+                }
             }
         }
         findings
     }
+}
+
+/// The byte width of a point field's declared element type, by the name the reader records.
+///
+/// The widths of the eight `PointField` datatypes `sensor_msgs/PointCloud2` defines. `None` for a
+/// name this build does not know, which is what `AUTONOMY.POINT_CLOUD_FIELD_UNTYPED` reports — a
+/// field whose width is unknown has no extent, so it is left out of the overlap arithmetic rather
+/// than guessed at.
+fn point_dtype_width(dtype: &str) -> Option<u64> {
+    Some(match dtype {
+        "int8" | "uint8" => 1,
+        "int16" | "uint16" => 2,
+        "int32" | "uint32" | "float32" => 4,
+        "float64" => 8,
+        _ => return None,
+    })
 }
 
 /// **Reported health (design A2).** What the rig said about itself, which nothing read.

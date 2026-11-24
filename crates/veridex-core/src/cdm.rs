@@ -988,6 +988,19 @@ pub struct PointField {
     pub name: String,
     /// The field's declared element type (e.g. `float32`, `uint16`), if the source states one.
     pub dtype: Option<String>,
+    /// Where in each point's record this field starts, in bytes, where the source states it.
+    ///
+    /// A `PointCloud2` is a flat byte blob plus this record, and the offset is the only thing that
+    /// says where a consumer reads a field from. Two fields that start at the same byte — a
+    /// hand-rolled publisher that copied a template and changed a dtype without recomputing the
+    /// offsets — produce correct values for one of them and garbage for the other, from a cloud
+    /// whose point count, cadence, field names and dtypes are all exactly right.
+    #[serde(default)]
+    pub offset: Option<u32>,
+    /// How many elements of `dtype` this field holds per point, where the source states it (1 for
+    /// a scalar field, which is what every coordinate is).
+    #[serde(default)]
+    pub elements: Option<u32>,
 }
 
 /// A 6-DoF pose: a translation in metres and a unit-quaternion rotation `[x, y, z, w]`.

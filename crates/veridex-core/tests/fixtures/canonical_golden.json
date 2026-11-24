@@ -390,19 +390,27 @@
           "point_fields": [
             {
               "name": "x",
-              "dtype": "float32"
+              "dtype": "float32",
+              "offset": 0,
+              "elements": 1
             },
             {
               "name": "y",
-              "dtype": "float32"
+              "dtype": "float32",
+              "offset": 4,
+              "elements": 1
             },
             {
               "name": "z",
-              "dtype": "float32"
+              "dtype": "float32",
+              "offset": 8,
+              "elements": 1
             },
             {
               "name": "intensity",
-              "dtype": null
+              "dtype": null,
+              "offset": 12,
+              "elements": 1
             }
           ],
           "observed_point_counts": {

@@ -261,6 +261,24 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   `security` spec's "Tamper evidence and audit" requirement, which until now had no implementation
   and no decision beside it. `veridex.audit(log_text, expect_head=None)` returns the same JSON.
 
+- **Two point-cloud fields reading the same bytes, said precisely.** A `PointCloud2` is a flat byte
+  blob plus a record, and each field's `offset` is the only thing that says where a consumer reads it
+  from. The reader parsed those offsets to check them against the stride and then **threw them
+  away** — so when two fields' byte ranges intersected, the body was declined outright and the cloud
+  was reported as one whose bytes the recording lost (`AUTONOMY.MESSAGE_BODY_UNDECODED`). That is a
+  true statement about the read and the wrong diagnosis: the record is self-consistent, and what
+  actually happened is that a publisher got an offset wrong — a template copied and a dtype widened
+  without recomputing them.
+
+  The offsets and element counts now reach the CDM (**encoding v23**), the body is read, and
+  `AUTONOMY.POINT_FIELDS_OVERLAP` (error) names the overlapping pair in a stable order. A cloud with
+  this fault declares the right field names, the right dtypes, the right point count, the right
+  cadence and the right coordinate frame — and one of its columns is the other's bytes, which is why
+  a geometry channel reading an intensity's bytes places every point somewhere it never was. A field
+  running **past the stride** is still refused at the reader, because that record contradicts itself
+  and an arbitrary buffer fails it, which is part of what makes a body recognizable as a cloud at
+  all. The catalog is now 54 checks and 128 finding codes.
+
 - **What a sensor said about its own byte order.** A `sensor_msgs/Image` and a
   `sensor_msgs/PointCloud2` each carry an `is_bigendian` flag, and it is the one field in the message
   that says how the bulk blob behind it must be read. Both decoders parsed it and threw it away —
