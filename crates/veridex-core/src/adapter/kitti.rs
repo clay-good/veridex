@@ -277,6 +277,11 @@ fn parse_timestamp(line: &str) -> Option<i64> {
 /// Days since 1970-01-01 for a civil date (Howard Hinnant's algorithm, the inverse of the one the
 /// CLI formats issuance timestamps with). Written out rather than pulled in: this crate depends on
 /// no date library, and the conversion is exact and testable.
+///
+/// The `y >= 0` branch is unreachable from this reader and kept anyway: a negative year would have
+/// to come through [`parse_timestamp`], which splits the date on `-` and so refuses one. The
+/// algorithm is kept whole rather than trimmed to its reachable half, because a known algorithm with
+/// a piece removed is no longer the algorithm anyone can check it against.
 fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = if y >= 0 { y } else { y - 399 } / 400;
@@ -506,7 +511,9 @@ fn read_calibration(
 /// A rotation matrix (row-major 3x3) as a unit quaternion `[x, y, z, w]`.
 ///
 /// Shepperd's branch choice: the largest diagonal term decides which form is used, so the division
-/// is never by a near-zero quantity. A matrix that is not a rotation produces a quaternion that is
+/// is never by a near-zero quantity. The comparisons are deliberately strict and would be correct
+/// either way — at a tie the two branches produce the same quaternion, which is why a mutation sweep
+/// cannot tell them apart and no test tries to. A matrix that is not a rotation produces a quaternion that is
 /// not a unit quaternion — which is exactly what `AUTONOMY.CALIBRATION_IMPLAUSIBLE` exists to
 /// report, so it is passed through rather than normalized away here.
 fn quaternion_from_matrix(r: &[f64]) -> [f64; 4] {
@@ -896,4 +903,113 @@ fn ingest_drive(path: &Path, options: &IngestOptions) -> Result<Ingested, Ingest
             omitted_fields: omitted,
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Boundary pins for the timestamp reader, written after a mutation sweep: every comparison in
+    /// `parse_timestamp` and `days_from_civil` could be flipped with no test noticing, and the
+    /// civil-date conversion is the one piece here whose being wrong would make every temporal
+    /// result wrong in a way that looks like data.
+    #[test]
+    fn a_timestamp_is_read_as_the_instant_it_names() {
+        // The demo drive's own stamp, against the epoch seconds it is: `date -u -d` on
+        // 2011-09-26 13:02:25 gives 1317042145.
+        assert_eq!(
+            parse_timestamp("2011-09-26 13:02:25.000000000"),
+            Some(1_317_042_145_000_000_000)
+        );
+        // Nanoseconds are read as nanoseconds, and a shorter fraction is scaled rather than
+        // truncated — `.5` is half a second, not five nanoseconds.
+        assert_eq!(
+            parse_timestamp("2011-09-26 13:02:25.964389445"),
+            Some(1_317_042_145_964_389_445)
+        );
+        assert_eq!(
+            parse_timestamp("2011-09-26 13:02:25.5"),
+            Some(1_317_042_145_500_000_000)
+        );
+    }
+
+    #[test]
+    fn a_drive_recorded_in_january_or_february_reads_as_the_right_day() {
+        // The branch the fixtures never reach. The civil-date conversion shifts the year for
+        // January and February — the era trick that makes leap days land at the end of a cycle —
+        // and a drive recorded in those two months would otherwise be read a year out, which every
+        // temporal result would then be computed from. KITTI's own drives include a 2011-01-28 set.
+        assert_eq!(
+            parse_timestamp("2011-01-28 09:00:00.000000000"),
+            Some(1_296_205_200_000_000_000)
+        );
+        assert_eq!(
+            parse_timestamp("2012-02-29 12:00:00.000000000"),
+            Some(1_330_516_800_000_000_000),
+            "a leap day is a real day"
+        );
+        // March, the first month of the shifted calendar, and December, its last.
+        assert_eq!(
+            parse_timestamp("2011-03-01 00:00:00.000000000"),
+            Some(1_298_937_600_000_000_000)
+        );
+        assert_eq!(
+            parse_timestamp("2011-12-31 23:59:59.000000000"),
+            Some(1_325_375_999_000_000_000)
+        );
+    }
+
+    #[test]
+    fn the_clock_fields_accept_what_a_clock_can_hold_and_refuse_the_rest() {
+        // A leap second is a real stamp a recorder can write, and the last second of a day is not
+        // an invalid hour. Both are one step from a value that is genuinely out of range.
+        assert!(parse_timestamp("2011-09-26 23:59:60.000000000").is_some());
+        assert!(parse_timestamp("2011-09-26 24:00:00.000000000").is_none());
+        assert!(parse_timestamp("2011-09-26 23:60:00.000000000").is_none());
+        assert!(parse_timestamp("2011-09-26 23:59:61.000000000").is_none());
+        // And the shapes that are not a timestamp at all, which become no frame.
+        for text in [
+            "",
+            "2011-09-26",
+            "2011-09-26T13:02:25.0Z",
+            "2011-13-01 00:00:00.0",
+            "2011-09-26 13:02:25.abc",
+            "not a timestamp",
+        ] {
+            assert!(parse_timestamp(text).is_none(), "`{text}` is not a stamp");
+        }
+    }
+
+    #[test]
+    fn a_sweeps_point_count_is_its_length_over_the_point_size() {
+        // The whole of the LiDAR reading: sixteen bytes a point, so a file that is not a whole
+        // number of points is not a sweep this reader will count.
+        assert_eq!(VELODYNE_POINT_BYTES, 16);
+        assert_eq!(1024 % VELODYNE_POINT_BYTES, 0);
+        assert_ne!(1020 % VELODYNE_POINT_BYTES, 0);
+    }
+
+    #[test]
+    fn a_rotation_matrix_becomes_a_unit_quaternion_in_every_branch() {
+        // Shepperd's branch choice, which the sweep showed is never exercised past the first
+        // branch: each of the four is picked by a different rotation, and all four must come back
+        // as unit quaternions or `AUTONOMY.CALIBRATION_IMPLAUSIBLE` would fire on sound geometry.
+        let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        // 180° about x, y and z: each drives the trace negative and selects a different branch.
+        let about_x = [1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, -1.0];
+        let about_y = [-1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, -1.0];
+        let about_z = [-1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 1.0];
+        for (name, m) in [
+            ("identity", identity),
+            ("x", about_x),
+            ("y", about_y),
+            ("z", about_z),
+        ] {
+            let q = quaternion_from_matrix(&m);
+            let norm = q.iter().map(|v| v * v).sum::<f64>().sqrt();
+            assert!((norm - 1.0).abs() < 1e-12, "{name}: {q:?} has norm {norm}");
+        }
+        // The identity really is the identity rotation, not just something of unit length.
+        assert_eq!(quaternion_from_matrix(&identity), [0.0, 0.0, 0.0, 1.0]);
+    }
 }

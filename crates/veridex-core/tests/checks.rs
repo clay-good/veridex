@@ -8409,3 +8409,85 @@ fn every_finding_code_is_named_by_some_test() {
          all it can arise from, an adapter fixture where it is reachable end to end."
     );
 }
+
+// Boundary pins for `autonomy.reported-health`, written after a mutation sweep: flipping its two
+// comparisons from `>` to `>=` changed nothing any test could see, which means the thresholds the
+// check promises were not the thresholds under test.
+
+#[test]
+fn a_component_exactly_at_the_error_threshold_is_not_reported() {
+    // The check promises "more than `hardware_error_fraction`", and a driver that reports one error
+    // in ten with the default of 0.1 is exactly at it, not past it. One step further fires.
+    let at = health_findings(&dataset_reporting(vec![health(
+        "velodyne: Hardware",
+        10,
+        1,
+        0,
+        0,
+    )]));
+    assert!(
+        at.is_empty(),
+        "exactly at the threshold is not past it: {at:?}"
+    );
+    let past = health_findings(&dataset_reporting(vec![health(
+        "velodyne: Hardware",
+        10,
+        2,
+        0,
+        0,
+    )]));
+    assert_eq!(past.len(), 1, "{past:?}");
+    assert_eq!(past[0].code, "AUTONOMY.HARDWARE_ERROR");
+}
+
+#[test]
+fn a_component_warning_on_exactly_half_its_statuses_is_not_reported() {
+    // `AUTONOMY.HARDWARE_WARNING` is for a component warning on *most* of its statuses. Half is not
+    // most, and one more than half is.
+    let half = health_findings(&dataset_reporting(vec![health(
+        "velodyne: Packets",
+        10,
+        0,
+        5,
+        0,
+    )]));
+    assert!(half.is_empty(), "{half:?}");
+    let most = health_findings(&dataset_reporting(vec![health(
+        "velodyne: Packets",
+        10,
+        0,
+        6,
+        0,
+    )]));
+    assert_eq!(most.len(), 1, "{most:?}");
+    assert_eq!(most[0].code, "AUTONOMY.HARDWARE_WARNING");
+}
+
+#[test]
+fn one_share_alike_license_beside_permissive_ones_names_its_own_reason() {
+    // Two share-alike families cannot both be satisfied; *one* beside permissive licenses is a
+    // different sentence — the derived work has to carry that license, which the permissive sources
+    // do not state. The codes are the same, so only the reason distinguishes them, and a mutation
+    // sweep found nothing pinning it.
+    let one = license_codes(&["apache-2.0", "gpl-3.0"]);
+    assert!(
+        one.contains(&"PROVENANCE.LICENSE_CONFLICT".to_string()),
+        "{one:?}"
+    );
+    use veridex_core::check::Check;
+    let message = |licenses: &[&str]| -> String {
+        provenance::LicenseCompatibility
+            .run(&dataset_licensed(licenses))
+            .into_iter()
+            .find(|f| f.code == "PROVENANCE.LICENSE_CONFLICT")
+            .map(|f| f.message)
+            .unwrap_or_default()
+    };
+    let single = message(&["apache-2.0", "gpl-3.0"]);
+    assert!(
+        single.contains("requires the derived work to carry its own license"),
+        "{single}"
+    );
+    let two = message(&["gpl-3.0", "cc-by-sa-4.0"]);
+    assert!(two.contains("and it cannot carry both"), "{two}");
+}

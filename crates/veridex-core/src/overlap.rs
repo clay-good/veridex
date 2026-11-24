@@ -782,4 +782,58 @@ mod tests {
             r.near[0]
         );
     }
+    // Boundary pins, written after a mutation sweep over this module: three of its comparisons
+    // could be flipped with no test noticing, and each one is a promise the report makes.
+
+    #[test]
+    fn a_pair_exactly_at_the_threshold_is_reported() {
+        // The threshold is the one `near-duplicate-episode` applies within a dataset, and that one
+        // reports a pair whose weakest shared stream *reaches* it. Either side of the boundary must
+        // behave as it says: eight of ten at 0.8 is a match, seven is not.
+        let a = dataset(vec![episode_of(0, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10])]);
+        let eight = dataset(vec![episode_of(0, &[1, 2, 3, 4, 5, 6, 7, 8, 91, 92])]);
+        let r = overlap_at(&a, &eight, 0.8);
+        assert!(
+            r.shares_frames(),
+            "exactly at the threshold is a match: {r:?}"
+        );
+        let seven = dataset(vec![episode_of(0, &[1, 2, 3, 4, 5, 6, 7, 81, 82, 83])]);
+        assert!(!overlap_at(&a, &seven, 0.8).shares_frames());
+    }
+
+    #[test]
+    fn the_report_says_nothing_about_episodes_it_could_compare() {
+        // The "could not be compared" sentence is for the episodes that carry no fingerprint. A
+        // clean pair has none, and printing "0 episode(s) could not be compared" would be a
+        // sentence about nothing in a report whose whole value is that its silences mean something.
+        let a = dataset(vec![episode_of(0, &[1, 2, 3])]);
+        let b = dataset(vec![episode_of(0, &[4, 5, 6])]);
+        let text = render_overlap(&report(&a, &b));
+        assert!(!text.contains("could not be compared"), "{text}");
+    }
+
+    #[test]
+    fn a_long_list_of_groups_is_summarized_and_a_short_one_is_not() {
+        // The tail line exists so a corpus sharing thousands of episodes stays readable. It must
+        // appear only when something was actually left out.
+        let many: Vec<Episode> = (0..SHOWN_GROUPS as u64 + 1)
+            .map(|i| episode_of(i, &[i as u8 + 1, i as u8 + 1]))
+            .collect();
+        let r = report(&dataset(many.clone()), &dataset(many));
+        let text = render_overlap(&r);
+        assert!(r.shared.len() > SHOWN_GROUPS, "{} groups", r.shared.len());
+        assert!(text.contains("and 1 more group(s)"), "{text}");
+
+        let few = vec![episode_of(0, &[7, 7])];
+        let short = render_overlap(&report(&dataset(few.clone()), &dataset(few)));
+        assert!(!short.contains("more group(s)"), "{short}");
+
+        // And exactly at the cap, where the subtraction yields zero rather than nothing: "and 0
+        // more" is a sentence about nothing.
+        let exact: Vec<Episode> = (0..SHOWN_GROUPS as u64)
+            .map(|i| episode_of(i, &[i as u8 + 1, i as u8 + 1]))
+            .collect();
+        let at_cap = render_overlap(&report(&dataset(exact.clone()), &dataset(exact)));
+        assert!(!at_cap.contains("more group(s)"), "{at_cap}");
+    }
 }

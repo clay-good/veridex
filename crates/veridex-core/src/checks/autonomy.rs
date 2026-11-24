@@ -2709,7 +2709,10 @@ impl Check for ReportedHealth {
                                  keeps publishing stale data.",
                             ),
                         );
-                    } else if c.warn > c.messages / 2 && c.messages > 0 {
+                    // No `messages > 0` guard: a component that published nothing has
+                    // `0 > 0`, which is already false. The sweep that flips these comparisons found
+                    // the guard could not change an answer, which is what dead code looks like.
+                    } else if c.warn > c.messages / 2 {
                         findings.push(
                             Finding::new(
                                 self.id(),

@@ -8,6 +8,33 @@ All notable changes to Veridex are recorded here. The format follows
 The first shippable slice of the [`bootstrap-veridex-mvp`](openspec/changes/bootstrap-veridex-mvp/)
 change. Runs end-to-end: ingest → validate → score → report → sign.
 
+### Changed
+
+- **A mutation sweep over this release's new code, and what it found.** Flipping every comparison in
+  the four new checks, the pooling module and the KITTI reader (`>` ↔ `>=`, `<` ↔ `<=`) and running
+  the suite against each: **19 of 31 mutants survived**, meaning nineteen thresholds the code
+  promises were not thresholds any test could see. Nine are now killed by boundary tests:
+
+  - a component exactly *at* `hardware_error_fraction` is not reported, and one step past it is —
+    the check promises "more than", and nothing held it to that;
+  - warning on exactly half a component's statuses is not "most";
+  - one share-alike license beside permissive ones names its own conflict reason, not the "cannot
+    carry both" reason that belongs to two of them;
+  - an episode pair at exactly the near-duplicate threshold *is* a match, and one frame below is
+    not;
+  - a clean overlap report says nothing about episodes it could compare, and a list exactly at the
+    display cap prints no "and 0 more";
+  - a KITTI timestamp at `23:59:60` parses (a leap second is a real stamp) while `24:00:00` does
+    not, and — the one that mattered — **a drive recorded in January or February reads as the right
+    day**: the civil-date conversion shifts the year for those two months, every fixture was
+    recorded in September, and a drive from KITTI's own 2011-01-28 set would have had every temporal
+    result computed from a wrong epoch had the branch been wrong.
+
+  Two survivors were dead code or an untestable tie and are now one line shorter or documented as
+  such: a `messages > 0` guard that could never change an answer is gone, and the quaternion branch
+  selection and the pre-Gregorian year branch are marked unreachable-or-equivalent with the reason,
+  rather than left looking untested.
+
 ### Added
 
 - **A run can be watched, bounded in time, and re-used.** The two `validation-engine` requirements
