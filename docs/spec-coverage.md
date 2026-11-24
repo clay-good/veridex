@@ -29,7 +29,7 @@ reasoning in an `Implemented in v0.1` note beside it.
 | `checks-catalog` | Statistical checks | `crates/veridex-core/src/checks/statistical.rs` | `checks::stream_pinned_at_its_max_is_saturated` |
 | `checks-catalog` | Semantic checks | `crates/veridex-core/src/checks/semantic.rs` | `boundaries::a_conflicting_annotation_list_names_four_and_counts_the_rest` |
 | `checks-catalog` | Video and media checks | `crates/veridex-core/src/checks/video.rs` | `boundaries::a_frame_gap_of_exactly_the_factor_is_reported` |
-| `checks-catalog` | Provenance completeness checks | `crates/veridex-core/src/checks/provenance.rs` | `scoring::coverage_counts_known_and_asserted_separately` |
+| `checks-catalog` | Provenance completeness checks | `crates/veridex-core/src/checks/provenance.rs` | `checks::missing_license_and_sensor_are_surfaced` |
 | `checks-catalog` | Duplicate and near-duplicate detection | `crates/veridex-core/src/checks/structural.rs` | `checks::an_episode_re_uploaded_with_its_tail_trimmed_is_a_near_duplicate` |
 | `checks-catalog` | Privacy and safety checks | `crates/veridex-core/src/checks/provenance.rs` | `checks::a_recorder_path_under_a_home_directory_is_reported` |
 | `checks-catalog` | Every check documents its rationale and remedy | `crates/veridex-core/src/check.rs` | `checks::every_registered_check_is_documented_in_docs_checks_md` |
@@ -64,7 +64,7 @@ reasoning in an `Implemented in v0.1` note beside it.
 | `provenance-lineage` | Provenance is part of the signed attestation | `crates/veridex-core/src/certificate/document.rs` | `certificate::certificate_binds_content_and_states_coverage` |
 | `provenance-lineage` | Provenance never fabricated | `crates/veridex-core/src/emit.rs` | `emit::croissant_preserves_provenance_classes_and_does_not_fabricate` |
 | `registry` | Publish and look up certificates | `crates/veridex-core/src/registry.rs` | `registry::a_published_certificate_is_found_by_the_hash_it_is_bound_to` |
-| `registry` | Public verification endpoint | `crates/veridex-core/src/registry.rs` | `registry::a_published_certificate_is_found_by_the_hash_it_is_bound_to` |
+| `registry` | Public verification endpoint | `crates/veridex-core/src/registry.rs` | `registry::verifying_through_the_registry_is_the_same_computation_as_offline` |
 | `registry` | Revocation and supersession | `crates/veridex-core/src/registry.rs` | `registry::revocation_is_the_issuers_word_and_not_a_withdrawal_of_the_document` |
 | `registry` | Badges | `crates/veridex-core/src/registry.rs` | `registry::a_badge_reflects_the_current_status_and_not_the_grade_alone` |
 | `registry` | Neutrality and offline independence preserved | `crates/veridex-core/src/registry.rs` | `registry::nothing_in_the_pipeline_needs_a_registry` |
@@ -73,7 +73,7 @@ reasoning in an `Implemented in v0.1` note beside it.
 | `reporting` | Machine-readable output is stable | `crates/veridex-core/src/report.rs` | `report::json_report_is_versioned_and_parseable` |
 | `reporting` | Verdict diffing | `crates/veridex-core/src/diff.rs` | `diff::a_new_finding_is_introduced_and_an_old_one_resolved` |
 | `reporting` | Reports never leak beyond what is shared | `crates/veridex-core/src/redact.rs` | `redact::an_identifier_exactly_at_the_floor_is_redacted_and_one_shorter_is_not` |
-| `reporting` | Remediation guidance | `crates/veridex-core/src/check.rs` | `checks::duplicate_episode_index_is_a_boundary_error` |
+| `reporting` | Remediation guidance | `crates/veridex-core/src/check.rs` | `variant_findings::every_finding_names_a_risk_and_a_remedy` |
 | `reporting` | Coverage disclosure | `crates/veridex-core/src/engine.rs` | `metadata_only::the_verdict_says_it_read_no_data` |
 | `security` | Key management | `crates/veridex-core/src/certificate/signing.rs` | `cli::full_keygen_certify_verify_flow` |
 | `security` | Signing trust model | `crates/veridex-core/src/certificate/signing.rs` | `certificate::wrong_issuer_key_is_rejected` |

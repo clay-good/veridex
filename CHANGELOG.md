@@ -131,6 +131,19 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Changed
 
+- **The spec-coverage map is now harder to satisfy than to read.** Three guards already held it
+  complete, current and honest about paths and test names. What they could not see was a *shared*
+  test: two requirements naming one test both read as evidenced while that test may assert only one
+  of them. Six overlaps existed, and three were wrong in exactly that way — the registry's "public
+  verification endpoint" pointed at the publish-and-look-up test, which says nothing about
+  verification being the same computation wherever it runs. Those three are repointed (one needed a
+  new test: verifying through the registry equals verifying offline, on the failures too, because
+  an equality that only holds for the passes is not the property), and each remaining overlap is
+  declared with the argument for why one test really does evidence both. A new row that reuses a
+  test without that argument fails the build, and so does an argument left behind after the overlap
+  is gone.
+
+
 - **Two findings said "rig sensor stream" about two different sets; both now say which.** The
   autonomy family counts streams two ways, differing by exactly the cameras: the five AV-native
   modalities the rig threshold counts, and those plus cameras, which is the set `AUTONOMY.RIG_SYNC`

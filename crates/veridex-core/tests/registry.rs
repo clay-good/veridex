@@ -385,3 +385,62 @@ fn a_hostile_registry_directory_cannot_choose_what_the_reader_holds() {
     assert_eq!(all.len(), 1);
     assert_eq!(all[0].cdm_content_hash, record.cdm_content_hash);
 }
+
+/// Verifying through the registry is the same computation as verifying offline, including failing.
+///
+/// This is the whole of what a "public verification endpoint" can honestly be. A registry that
+/// verified by its own rules would be an authority — a place where a document is valid because the
+/// registry says so — and the point of a signed certificate is that the answer does not depend on
+/// where it is computed. So the property is an equality, and it has to hold on the failures too: a
+/// wrong issuer and a hash from another dataset must be refused through the registry exactly as
+/// they are refused by hand.
+#[test]
+fn verifying_through_the_registry_is_the_same_computation_as_offline() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let signed = certify("endpoint", 2, "2026-03-01T10:00:00Z");
+    let other = certify("elsewhere", 3, "2026-03-01T10:00:00Z");
+    let record = registry::publish(dir.path(), &signed, "2026-03-01T10:05:00Z").expect("publish");
+    let found = registry::lookup_by_hash(dir.path(), &signed.certificate.cdm_content_hash)
+        .expect("the record is there");
+    assert_eq!(
+        found.certificate, signed,
+        "the document comes back verbatim"
+    );
+
+    let hash = signed.certificate.cdm_content_hash.as_str();
+    let wrong_hash = other.certificate.cdm_content_hash.as_str();
+    let issuer = signed.public_key.as_str();
+    let wrong_issuer = "0".repeat(64);
+    let cases: [(Option<&str>, Option<&str>); 5] = [
+        (None, None),
+        (Some(hash), None),
+        (Some(hash), Some(issuer)),
+        (Some(wrong_hash), None),
+        (Some(hash), Some(wrong_issuer.as_str())),
+    ];
+    for (presented, expected_issuer) in cases {
+        let through = registry::verify_record(&record, presented, expected_issuer);
+        let offline = veridex_core::verify(&signed, presented, expected_issuer);
+        assert_eq!(
+            through.is_ok(),
+            offline.is_ok(),
+            "the two answers differ for ({presented:?}, {expected_issuer:?})"
+        );
+        match (through, offline) {
+            (Ok(a), Ok(b)) => assert_eq!(
+                format!("{a:?}"),
+                format!("{b:?}"),
+                "the same verification has to produce the same statement"
+            ),
+            (Err(a), Err(b)) => assert_eq!(
+                a.to_string(),
+                b.to_string(),
+                "including the refusal, which is what a reader acts on"
+            ),
+            _ => unreachable!("the branches agree by the assertion above"),
+        }
+    }
+    // Two of those cases must actually fail, or the equality above is over nothing.
+    assert!(registry::verify_record(&record, Some(wrong_hash), None).is_err());
+    assert!(registry::verify_record(&record, None, Some(&wrong_issuer)).is_err());
+}

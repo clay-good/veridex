@@ -114,7 +114,7 @@ const COVERAGE: &[(&str, &str, &str, &str)] = &[
         "checks-catalog",
         "Provenance completeness checks",
         "crates/veridex-core/src/checks/provenance.rs",
-        "scoring::coverage_counts_known_and_asserted_separately",
+        "checks::missing_license_and_sensor_are_surfaced",
     ),
     (
         "checks-catalog",
@@ -330,7 +330,7 @@ const COVERAGE: &[(&str, &str, &str, &str)] = &[
         "registry",
         "Public verification endpoint",
         "crates/veridex-core/src/registry.rs",
-        "registry::a_published_certificate_is_found_by_the_hash_it_is_bound_to",
+        "registry::verifying_through_the_registry_is_the_same_computation_as_offline",
     ),
     (
         "registry",
@@ -385,7 +385,7 @@ const COVERAGE: &[(&str, &str, &str, &str)] = &[
         "reporting",
         "Remediation guidance",
         "crates/veridex-core/src/check.rs",
-        "checks::duplicate_episode_index_is_a_boundary_error",
+        "variant_findings::every_finding_names_a_risk_and_a_remedy",
     ),
     (
         "reporting",
@@ -674,4 +674,70 @@ fn the_coverage_map_is_published_as_a_document() {
         "docs/spec-coverage.md has {rows} rows for {} requirements",
         COVERAGE.len()
     );
+}
+
+/// Two requirements may name one test only where that is written down and argued.
+///
+/// A shared test is where this map goes soft. Both rows look evidenced, and one of them may be: a
+/// test that asserts what requirement A says can be silent about B while the table reads as though
+/// both were covered. The registry's "public verification endpoint" row pointed at the
+/// publish-and-look-up test, which says nothing about verification being the same computation
+/// wherever it runs — the thing that requirement is about.
+///
+/// So each remaining overlap is listed here with the reason the one test really does evidence both.
+/// Adding a row that reuses a test without adding it here fails the build, which is the point: the
+/// map is meant to be harder to satisfy than to read.
+const SHARED_TESTS: &[(&str, &str)] = &[
+    (
+        "scoring::coverage_counts_known_and_asserted_separately",
+        "The known/asserted split is one fact in three places: the check that reports it, the \
+         provenance model that defines the classes, and the certificate that carries the counts. \
+         One test over the shared computation is what keeps the three from disagreeing.",
+    ),
+    (
+        "metadata_only::the_verdict_says_it_read_no_data",
+        "An adapter declaring what it read and a report disclosing it are the same sentence seen \
+         from the two ends; a test that held only one of them would pass while the other drifted.",
+    ),
+    (
+        "certificate::certificate_binds_content_and_states_coverage",
+        "The certificate's content and the provenance inside it are bound by the same signature \
+         over the same document, so one test asserts both or neither.",
+    ),
+    (
+        "cli::a_label_says_what_the_certificate_says_and_nothing_more",
+        "The label is the nutrition label, and 'nothing more' is exactly the statement-of-fact \
+         requirement — the same assertion answers both.",
+    ),
+];
+
+#[test]
+fn a_test_named_by_two_requirements_is_declared_as_shared() {
+    use std::collections::BTreeMap;
+    let mut by_test: BTreeMap<&str, Vec<(&str, &str)>> = BTreeMap::new();
+    for (spec, req, _, test) in COVERAGE {
+        by_test.entry(test).or_default().push((spec, req));
+    }
+    let declared: std::collections::BTreeSet<&str> =
+        SHARED_TESTS.iter().map(|(test, _)| *test).collect();
+
+    for (test, rows) in &by_test {
+        if rows.len() > 1 {
+            assert!(
+                declared.contains(test),
+                "`{test}` is named by {} requirements and is not declared in SHARED_TESTS — say \
+                 why one test evidences all of them, or give each its own: {rows:?}",
+                rows.len()
+            );
+        }
+    }
+    // And the list does not outlive its rows: a declaration for a test no longer shared is a stale
+    // argument, which is the same rot in the other direction.
+    for (test, _) in SHARED_TESTS {
+        let count = by_test.get(test).map_or(0, Vec::len);
+        assert!(
+            count > 1,
+            "`{test}` is declared as shared and is named by {count} requirement(s)"
+        );
+    }
 }
