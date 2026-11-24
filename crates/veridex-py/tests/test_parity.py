@@ -371,9 +371,6 @@ def test_diff_refuses_a_file_that_is_not_a_report():
     assert json.loads(veridex.diff(full, full))["unchanged_count"] == 1
 
 
-    sys.exit(0)
-
-
 def test_cli_and_python_effective_config_agree(tmp_path):
     """The effective configuration — every value and the layer it came from — must be one document.
 
@@ -699,3 +696,4 @@ if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as d:
         test_cli_and_python_agree(Path(d))
     print("parity OK")
+    sys.exit(0)
