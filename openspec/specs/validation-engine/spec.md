@@ -103,6 +103,22 @@ SHALL never change the verdict.
 - **THEN** the resulting verdict is identical to a full revalidation of the current dataset
 - **AND** unchanged episodes are not needlessly reprocessed
 
+**Decided against as specified, not pending.** The two clauses cannot both hold here. A verdict
+identical to a full run is only identical if the bytes it covers were read: seven of the catalog's
+checks compare episodes against each other, and the content hash the verdict is bound to is taken
+over the whole canonicalized CDM — so a run that skipped an episode would have to reconstruct both
+from something other than that episode's bytes. Keying the skip on anything cheaper than the bytes
+(a modification time, a size, a path) makes the verdict a claim about what was *probably* there,
+which is the one thing a tool whose output is a signed certificate must not do; and keying it on the
+bytes means reading them, which is the cost the requirement exists to avoid.
+
+What the need behind it is actually served by, and what the CLI offers today:
+`--sample-episodes` / `--sample-fraction` for a cheap triage that **declares itself partial** and
+cannot be certified, and `--metadata-only` for a structural pass that opens no payload. Both are
+specified under `dataset-ingestion` and documented in [docs/partial-runs.md](../../../docs/partial-runs.md).
+A future cache would have to be a cache of *ingest* (the CDM for a set of file digests) rather than
+of validation, which is a different capability and would get its own proposal.
+
 ### Requirement: Progress and cancellation
 For long runs, the engine SHALL report progress and SHALL support cancellation that leaves no
 partial or misleading verdict. A cancelled run SHALL be clearly marked incomplete.
@@ -111,3 +127,12 @@ partial or misleading verdict. A cancelled run SHALL be clearly marked incomplet
 - **WHEN** a long validation run is cancelled partway
 - **THEN** no verdict claims completion
 - **AND** the result is marked incomplete/cancelled
+
+**Status: specified, and deliberately not built in the engine.** The safety half already holds —
+nothing partial is ever emitted, because the engine assembles a verdict only after every selected
+check has run, and a cancelled process produces no document at all. The *progress* half would be
+theater where this requirement puts it: the check loop over a CDM is milliseconds, and essentially
+all of a long run's wall clock is in ingest, which is where a progress and cancellation surface
+belongs. Building it in the engine would add a cancellation point that is never reached on a real
+dataset. It is left specified rather than implemented, so the gap is a known one rather than an
+unstated one.
