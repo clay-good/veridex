@@ -10,6 +10,17 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Changed
 
+- **The docs gate now runs the build docs.rs actually runs.** CI built the documentation with
+  `--document-private-items`, for a stated reason: most of this crate is crate-private, and rustdoc
+  only resolves links in what it documents, so the public-only build was green over nine broken
+  links inside the adapters and decoders. What that misses is the opposite fault — a **public** doc
+  comment linking a **private** item resolves fine when private items are documented, and then fails
+  on docs.rs, where it cannot. That is not hypothetical: the new audit module's `entry_hash` linked
+  its module-private domain tag, CI's docs job was green, and the release checklist's own command is
+  what failed. Both builds now run, in CI and in the checklist, with a note on which fault each one
+  catches.
+
+
 - **Three more adapter boundaries, each a rule rather than a bound.** A LaserScan return exactly at
   `range_min` or `range_max` **is** a measurement: those are the window the scanner declares it can
   measure *in*, inclusive, and a scanner reports its maximum for an open direction — so the mutants

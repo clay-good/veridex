@@ -18,10 +18,14 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all --all-features
 cargo publish --dry-run -p veridex-core            # packages, then compiles the packaged copy
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p veridex-core -p veridex-cli
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features --document-private-items -p veridex-core -p veridex-cli
 ```
 
-CI runs all five on every push, including the publish dry-run and the docs build — a docs.rs failure
-is invisible from crates.io, so it is caught here instead.
+CI runs all of these on every push, including the publish dry-run and **both** docs builds — a
+docs.rs failure is invisible from crates.io, so it is caught here instead. The two docs commands
+catch opposite faults and neither sees the other's: the private-items build resolves links inside the
+crate-private modules most of this crate lives in, and the public-only build is what docs.rs actually
+runs, where a public doc comment linking a private item cannot resolve.
 
 Then the CLI⇄Python parity suite, which CI runs in its own job and which needs the extension built:
 

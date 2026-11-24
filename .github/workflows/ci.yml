@@ -62,6 +62,18 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
+      # And again *without* `--document-private-items`, which is the build docs.rs actually runs.
+      # The two catch opposite faults and neither sees the other's: with private items, rustdoc
+      # resolves a link to a crate-private function and is happy — so a public doc comment linking a
+      # private item passes, and then fails on docs.rs, where that item is not documented and the
+      # link cannot resolve. That is not hypothetical: the audit module's `entry_hash` linked its
+      # module-private domain constant, the private-items build above was green, and the release
+      # checklist's own command (this one) is what failed.
+      - name: Docs (as docs.rs builds them)
+        run: cargo doc --no-deps --all-features -p veridex-core -p veridex-cli
+        env:
+          RUSTDOCFLAGS: -D warnings
+
       # The manifests are only proven publishable by trying. `veridex-cli` cannot be dry-run until
       # `veridex-core` is on crates.io (Cargo resolves the version it substitutes for the path), so
       # this is the one crate the check can cover — and it is the one everything else depends on.
