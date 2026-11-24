@@ -22,10 +22,10 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features --document-private
 ```
 
 CI runs all of these on every push, including the publish dry-run and **both** docs builds — a
-docs.rs failure is invisible from crates.io, so it is caught here instead. The two docs commands
-catch opposite faults and neither sees the other's: the private-items build resolves links inside the
-crate-private modules most of this crate lives in, and the public-only build is what docs.rs actually
-runs, where a public doc comment linking a private item cannot resolve.
+docs.rs failure is invisible from crates.io, so it is caught here instead. Both commands are here
+because they document different things: the private-items build resolves links inside the
+crate-private modules most of this crate lives in, and the public-only build documents exactly what
+a crates.io reader gets, which is what docs.rs publishes.
 
 Then the CLI⇄Python parity suite, which CI runs in its own job and which needs the extension built:
 

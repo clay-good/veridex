@@ -10,15 +10,15 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
 
 ### Changed
 
-- **The docs gate now runs the build docs.rs actually runs.** CI built the documentation with
-  `--document-private-items`, for a stated reason: most of this crate is crate-private, and rustdoc
-  only resolves links in what it documents, so the public-only build was green over nine broken
-  links inside the adapters and decoders. What that misses is the opposite fault — a **public** doc
-  comment linking a **private** item resolves fine when private items are documented, and then fails
-  on docs.rs, where it cannot. That is not hypothetical: the new audit module's `entry_hash` linked
-  its module-private domain tag, CI's docs job was green, and the release checklist's own command is
-  what failed. Both builds now run, in CI and in the checklist, with a note on which fault each one
-  catches.
+- **The docs gate now runs both builds: the one with private items, and the one docs.rs runs.** CI
+  built the documentation with `--document-private-items` only, for a stated reason — most of this
+  crate is crate-private, rustdoc only resolves links in what it documents, and the public-only
+  build had been green over nine broken links inside the adapters and decoders. The public-only
+  build is what docs.rs actually runs, though, and it is the command the release checklist gives a
+  maintainer by hand, so the two should not be able to disagree about whether the documentation
+  builds. (The link that prompted this — the new audit module's `entry_hash` naming its
+  module-private domain tag — was caught by both, the local checklist first and CI a few minutes
+  later. The reason to run both is that only one of them documents what a crates.io reader gets.)
 
 
 - **Three more adapter boundaries, each a rule rather than a bound.** A LaserScan return exactly at
