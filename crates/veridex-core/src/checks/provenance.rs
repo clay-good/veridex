@@ -979,9 +979,10 @@ impl Check for PersonalData {
                     Location::Dataset,
                     "PROVENANCE.IMAGERY_WITHOUT_CONSENT",
                     format!(
-                        "{} camera stream(s) are recorded ({listed}) and the dataset records no \
+                        "{} camera stream{} recorded ({listed}) and the dataset records no \
                          consent status for the imagery",
-                        cameras.len()
+                        cameras.len(),
+                        if cameras.len() == 1 { " is" } else { "s are" }
                     ),
                 )
                 .with_risk(
