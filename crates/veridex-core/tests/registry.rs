@@ -250,3 +250,138 @@ fn a_file_that_is_not_a_record_is_refused_rather_than_skipped() {
         "{err}"
     );
 }
+
+/// A certificate's own fields name a file in the registry, and a hostile one must not choose where.
+///
+/// `publish` writes `by-hash/<cdm_content_hash>.json`, and the hash comes from the document being
+/// published. Verification does not constrain it — it cannot: a registry does not decide whom to
+/// trust, so a self-signed certificate is a valid document whoever made it. So a certificate
+/// declaring a hash of `../../../tmp/x` is a signed instruction to write outside the registry, and
+/// a lookup with the same string reads outside it. A content hash is 64 lowercase hex characters;
+/// anything else is not one, and is refused before it reaches a path.
+#[test]
+fn a_certificate_cannot_choose_where_in_the_filesystem_its_record_lands() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let registry_dir = dir.path().join("registry");
+    std::fs::create_dir_all(&registry_dir).expect("mkdir");
+    let outside = dir.path().join("outside");
+    std::fs::create_dir_all(&outside).expect("mkdir");
+
+    let keypair = SigningKeypair::from_seed([4u8; 32]);
+    for hostile in [
+        "../outside/escaped",
+        "../../outside/escaped",
+        "/etc/veridex-escaped",
+        "not-hex-at-all",
+        // The right length, wrong alphabet.
+        &"g".repeat(64),
+        // Right alphabet, wrong length.
+        "abc123",
+    ] {
+        let mut signed = certify("escape", 1, "2026-03-01T10:00:00Z");
+        signed.certificate.cdm_content_hash = hostile.to_string();
+        // Re-signed, so the document is internally valid: the refusal has to come from the
+        // registry's own rule about what can be a filename, not from a broken signature.
+        let signed = sign(signed.certificate, &keypair);
+        assert!(
+            veridex_core::verify(&signed, None, None).is_ok(),
+            "the hostile document is a validly signed one: {hostile}"
+        );
+
+        let err = registry::publish(&registry_dir, &signed, "2026-03-01T10:05:00Z")
+            .expect_err("a hash that is not a hash is not publishable");
+        let text = err.to_string();
+        assert!(
+            text.contains("content hash"),
+            "the refusal says what was wrong: {text}"
+        );
+        // And nothing was written, anywhere.
+        assert!(
+            std::fs::read_dir(&outside)
+                .expect("the outside directory")
+                .next()
+                .is_none(),
+            "{hostile} wrote outside the registry"
+        );
+
+        // The same string on the read side reads nothing rather than reaching out of the registry.
+        let err = registry::lookup_by_hash(&registry_dir, hostile)
+            .expect_err("a lookup for a non-hash finds nothing");
+        assert!(
+            err.to_string().contains("content hash"),
+            "{}",
+            err.to_string()
+        );
+    }
+
+    // A real publication still works beside all of that, so the rule is not simply "refuse".
+    let good = certify("escape", 1, "2026-03-01T11:00:00Z");
+    registry::publish(&registry_dir, &good, "2026-03-01T11:05:00Z").expect("publish");
+    assert!(registry::lookup_by_hash(&registry_dir, &good.certificate.cdm_content_hash).is_ok());
+}
+
+/// A registry directory is somebody else's, so what it can make a reader do is bounded.
+///
+/// Three shapes, each one a directory entry choosing something the reader did not: a symlink
+/// deciding which bytes are read and from where, a record file large enough to be the memory
+/// budget, and a file whose name disagrees with the hash the record inside it is bound to. The last
+/// is not hostile so much as wrong, and it is the one that makes a lookup by hash and a listing
+/// answer differently about the same dataset.
+#[test]
+fn a_hostile_registry_directory_cannot_choose_what_the_reader_holds() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let registry_dir = dir.path().join("registry");
+    let signed = certify("bounded", 1, "2026-03-01T10:00:00Z");
+    let record =
+        registry::publish(&registry_dir, &signed, "2026-03-01T10:05:00Z").expect("publish");
+    let by_hash = registry_dir.join("by-hash");
+    let real = by_hash.join(format!("{}.json", record.cdm_content_hash));
+
+    // 1. A symlink standing in for a record.
+    let elsewhere = dir.path().join("elsewhere.json");
+    std::fs::copy(&real, &elsewhere).expect("copy");
+    let linked = by_hash.join(format!("{}.json", "a".repeat(64)));
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&elsewhere, &linked).expect("symlink");
+    #[cfg(unix)]
+    {
+        let err = registry::read_all(&registry_dir).expect_err("a symlink is not a record");
+        assert!(
+            err.to_string().contains("not a regular file"),
+            "{}",
+            err.to_string()
+        );
+        std::fs::remove_file(&linked).expect("unlink");
+    }
+
+    // 2. A record past the ceiling. The padding goes inside a JSON string, so the file is still a
+    // parseable record and the refusal is the size rather than the syntax.
+    let big = by_hash.join(format!("{}.json", "b".repeat(64)));
+    let text = std::fs::read_to_string(&real).expect("read");
+    // Pretty-printed, so the field is spaced as serde writes it.
+    let padded = text.replace(
+        "\"dataset_id\": \"bounded\"",
+        &format!("\"dataset_id\": \"{}\"", "x".repeat(2 * 1024 * 1024)),
+    );
+    assert_ne!(padded, text, "the padding went in");
+    std::fs::write(&big, &padded).expect("write");
+    let err = registry::read_all(&registry_dir).expect_err("an oversized record is refused");
+    assert!(err.to_string().contains("ceiling"), "{}", err.to_string());
+    std::fs::remove_file(&big).expect("remove");
+
+    // 3. A record filed under a hash it is not bound to.
+    let misfiled = by_hash.join(format!("{}.json", "c".repeat(64)));
+    std::fs::copy(&real, &misfiled).expect("copy");
+    let err = registry::read_all(&registry_dir).expect_err("a misfiled record is refused");
+    let text = err.to_string();
+    assert!(
+        text.contains("named for") && text.contains(&record.cdm_content_hash),
+        "{text}"
+    );
+    std::fs::remove_file(&misfiled).expect("remove");
+
+    // And with the hostile entries gone, the registry reads exactly as it did.
+    let all = registry::read_all(&registry_dir).expect("reads");
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].cdm_content_hash, record.cdm_content_hash);
+}

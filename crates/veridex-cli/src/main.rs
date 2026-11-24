@@ -2612,9 +2612,13 @@ fn cmd_registry(rest: &[String]) -> ExitCode {
         registry: &std::path::Path,
         target: &str,
     ) -> Result<veridex_core::registry::Record, ExitCode> {
+        use veridex_core::registry::RegistryError;
         match veridex_core::registry::lookup_by_hash(registry, target) {
             Ok(record) => Ok(record),
-            Err(veridex_core::registry::RegistryError::NotFound(_)) => {
+            // A target that is not a hash at all is a dataset name, which is the other thing this
+            // command accepts — so both "no record under that hash" and "that is not a hash" fall
+            // through to the lookup by name rather than ending the command.
+            Err(RegistryError::NotFound(_) | RegistryError::NotAContentHash(_)) => {
                 match veridex_core::registry::lookup_by_dataset(registry, target) {
                     // Newest first, so the first is the current word on that name.
                     Ok(records) => Ok(records.into_iter().next().expect("non-empty")),

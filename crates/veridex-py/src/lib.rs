@@ -685,7 +685,11 @@ fn registry_lookup(registry_dir: &str, target: &str) -> PyResult<String> {
     let dir = std::path::Path::new(registry_dir);
     let record = match veridex_core::registry::lookup_by_hash(dir, target) {
         Ok(record) => record,
-        Err(veridex_core::registry::RegistryError::NotFound(_)) => {
+        // A target that is not a hash at all is a dataset name, which is the other thing this
+        // function accepts — the same fall-through the CLI's `registry lookup` makes, and the
+        // parity test holds the two to one answer.
+        Err(veridex_core::registry::RegistryError::NotFound(_))
+        | Err(veridex_core::registry::RegistryError::NotAContentHash(_)) => {
             veridex_core::registry::lookup_by_dataset(dir, target)
                 .map_err(to_py_err)?
                 .into_iter()

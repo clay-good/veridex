@@ -133,6 +133,32 @@ pub enum RegistryError {
     /// No record for the thing asked about.
     #[error("no certificate published for {0}")]
     NotFound(String),
+    /// Something offered as a CDM content hash is not one, so it cannot name a record.
+    ///
+    /// A record's filename is its dataset's content hash, and that hash arrives from the
+    /// certificate being published or from whoever is asking — neither of which this library
+    /// controls. Verification cannot constrain it either: a registry does not decide whom to trust,
+    /// so a self-signed certificate is a valid document whoever wrote it. A string that is not 64
+    /// lowercase hex characters is therefore refused before it reaches a path, because
+    /// `../../elsewhere` is otherwise a signed instruction about where to write.
+    #[error(
+        "`{0}` is not a CDM content hash (64 lowercase hex characters), so it names no record"
+    )]
+    NotAContentHash(String),
+}
+
+/// Whether `candidate` is the hex form of a SHA-256 digest, which is the only thing that may name a
+/// record file.
+///
+/// Lowercase only, and exactly 64: the hash is rendered by one function
+/// ([`crate::content_hash`]'s hex form) and compared as a string throughout, so accepting a second
+/// spelling would make one dataset two records. It is also the check that keeps a path component
+/// out of a filename — `.`, `/`, `\\` and `..` are all outside the alphabet.
+fn is_content_hash(candidate: &str) -> bool {
+    candidate.len() == 64
+        && candidate
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 fn io_err(path: &std::path::Path, e: std::io::Error) -> RegistryError {
@@ -140,6 +166,41 @@ fn io_err(path: &std::path::Path, e: std::io::Error) -> RegistryError {
         path: path.display().to_string(),
         detail: e.to_string(),
     }
+}
+
+/// The largest record file this reader will hold. A record is a certificate plus six short
+/// strings — kilobytes — and a registry is a directory anyone may hand you, so the ceiling is the
+/// same kind of bound the adapters put on a source file: far above an honest record, and not the
+/// machine's memory.
+const MAX_RECORD_BYTES: u64 = 1 << 20;
+
+/// Read one record file, bounded, and only if it is a regular file.
+///
+/// `symlink_metadata`, not `metadata`: a symlink in `by-hash/` pointing at `/dev/zero` or at a file
+/// outside the registry is a directory entry choosing what this reads, which is the same fault as a
+/// hostile filename and has to be refused in the same place.
+fn read_record_file(path: &std::path::Path) -> std::io::Result<String> {
+    let meta = std::fs::symlink_metadata(path)?;
+    if !meta.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "{} is not a regular file, so it is not a record",
+                path.display()
+            ),
+        ));
+    }
+    if meta.len() > MAX_RECORD_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "{} is {} bytes, past the {MAX_RECORD_BYTES}-byte ceiling on one record",
+                path.display(),
+                meta.len()
+            ),
+        ));
+    }
+    std::fs::read_to_string(path)
 }
 
 /// Where a dataset's record lives inside the registry.
@@ -168,6 +229,11 @@ pub fn publish(
 ) -> Result<Record, RegistryError> {
     verify(signed, None, None)?;
     let hash = signed.certificate.cdm_content_hash.clone();
+    // Before any path is built from it. The document is signed and verifies; what it cannot do is
+    // choose a filename.
+    if !is_content_hash(&hash) {
+        return Err(RegistryError::NotAContentHash(hash));
+    }
 
     // Everything already published for this dataset identity, so the new certificate can be
     // related to it rather than silently replacing it.
@@ -230,8 +296,11 @@ pub fn lookup_by_hash(
     registry: &std::path::Path,
     cdm_content_hash: &str,
 ) -> Result<Record, RegistryError> {
+    if !is_content_hash(cdm_content_hash) {
+        return Err(RegistryError::NotAContentHash(cdm_content_hash.to_string()));
+    }
     let path = record_path(registry, cdm_content_hash);
-    let text = std::fs::read_to_string(&path).map_err(|e| {
+    let text = read_record_file(&path).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             RegistryError::NotFound(cdm_content_hash.to_string())
         } else {
@@ -299,8 +368,26 @@ pub fn read_all(registry: &std::path::Path) -> Result<Vec<Record>, RegistryError
     // Sorted so a listing is deterministic whatever order the filesystem hands back.
     paths.sort();
     for path in paths {
-        let text = std::fs::read_to_string(&path).map_err(|e| io_err(&path, e))?;
-        out.push(parse_record(&path, &text)?);
+        let text = read_record_file(&path).map_err(|e| io_err(&path, e))?;
+        let record = parse_record(&path, &text)?;
+        // The filename is the record's own content hash, and a registry where it is not is one
+        // where a lookup by hash and a listing answer differently about the same dataset. Checked
+        // on read rather than trusted, because the directory is the operator's and may have been
+        // edited by hand.
+        let named = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default();
+        if named != record.cdm_content_hash {
+            return Err(RegistryError::NotARecord {
+                path: path.display().to_string(),
+                detail: format!(
+                    "the file is named for {named} and the record inside it is bound to {}",
+                    record.cdm_content_hash
+                ),
+            });
+        }
+        out.push(record);
     }
     Ok(out)
 }

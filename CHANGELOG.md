@@ -72,6 +72,26 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   field numbers back out of the report's own mapped and unmapped lists and asserts they cover 1-30
   exactly once, so a field that is read by nobody and disclosed to nobody fails the build.
 
+### Fixed
+
+- **A certificate could choose where in the filesystem its registry record landed.** `publish`
+  writes `by-hash/<cdm_content_hash>.json`, and that hash comes from the document being published.
+  Verification cannot constrain it — a registry does not decide whom to trust, so a self-signed
+  certificate is a valid document whoever wrote it — which made a certificate declaring a hash of
+  `../../elsewhere/x` a signed instruction to write outside the registry directory, and the same
+  string on the read side a lookup outside it. A content hash is 64 lowercase hex characters;
+  anything else is now refused before it reaches a path, in `publish`, `lookup_by_hash` and
+  `revoke` alike. `registry lookup` still accepts a dataset name, because a target that is not a
+  hash is the other thing it takes — in the CLI and in the Python binding, which the parity test
+  holds to one answer.
+- **And three more things a registry directory could make its reader do.** The directory is
+  somebody else's: a symlink in `by-hash/` decided which bytes were read and from where (refused —
+  `symlink_metadata`, and only a regular file is a record), a record file had no size ceiling (now
+  1 MiB, the same kind of bound the adapters put on a source file: far above a certificate plus six
+  short strings, and not the machine's memory), and a file whose name disagreed with the hash the
+  record inside it is bound to read as a record of that dataset — which is a registry where a
+  lookup by hash and a listing answer differently about the same bytes.
+
 ### Changed
 
 - **Two findings said "rig sensor stream" about two different sets; both now say which.** The
