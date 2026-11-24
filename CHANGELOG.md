@@ -277,6 +277,23 @@ change. Runs end-to-end: ingest → validate → score → report → sign.
   `security` spec's "Tamper evidence and audit" requirement, which until now had no implementation
   and no decision beside it. `veridex.audit(log_text, expect_head=None)` returns the same JSON.
 
+- **The rate a Zarr store declares, and the last check with nowhere to fire.** A store's `.zattrs`
+  is free-form, and `fps` is what LeRobot, UMI and Diffusion Policy write there (`control_freq` is
+  robomimic's name for it). Nothing read it, so a Zarr store declared no rate at all — which left
+  `temporal.rate-consistency` structurally unreachable: it compares the rate two **episodes** declare
+  for one stream, and no reader produced a dataset where two episodes could declare different ones.
+
+  Read now from the episode group's own attributes where a group-per-episode store has them, and
+  from the root otherwise. That is what makes a merged store checkable: a dataset pooling 20 Hz demos
+  with 30 Hz ones states that per group, and the per-group declaration is the only record of it. An
+  attribute outside the short list of names that unambiguously mean a rate, or one whose value is
+  not a number, is **not** a declared rate — a rate guessed from an attribute is a claim Veridex made
+  up, and every temporal result would then be measured against it.
+
+  With it, the demo sweep's exemption list is **empty**: every check in the catalog is now exercised
+  end to end by some dataset in the sweep, and the test that was a list of two arguments is now an
+  assertion with nothing to excuse.
+
 - **The one timing claim a CAN database makes.** A `.dbc` is almost all layout — bit positions,
   widths, scaling, ranges — and one attribute is about time: `BA_ "GenMsgCycleTime" BO_ <id> <ms>`,
   how often an ECU is *specified* to send a message. Veridex now reads it as the stream's declared

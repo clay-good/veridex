@@ -222,6 +222,18 @@ than attaching them to the last one — an off-by-one in a replay buffer is exac
 tool exists to catch, and a boundary that runs backwards or past the end of the arrays it indexes is
 refused outright.
 
+**The rate a store declares about itself.** A Zarr store's `.zattrs` is free-form, and `fps` is what
+LeRobot, UMI and Diffusion Policy write there — `control_freq` is robomimic's name for the same
+quantity. Veridex reads those as the stream's declared rate, from the **episode group's own**
+attributes where a group-per-episode store has them and from the root otherwise. That is what makes a
+merged store checkable: a dataset pooling 20 Hz demos with 30 Hz ones states that per group, and the
+per-group declaration is the only record of it (`TEMPORAL.RATE_INCONSISTENT`). An attribute outside
+that short list of names, or one whose value is not a number, is **not** a declared rate — a rate
+guessed from an attribute is a claim Veridex made up, and every temporal result would then be
+measured against it. A value that *is* a number but not a usable rate (zero, negative) is carried
+through as declared, because a store with corrupt timing metadata must not look like one that states
+nothing (`TEMPORAL.INVALID_RATE`).
+
 Zarr's chunks are plain files, so there is no index to trust — but there is a codec to get right, and
 a compressed array read through the wrong one does not fail, it yields plausible numbers. Veridex
 reads `zlib`, `gzip`, `zstd`, `lz4`, and `blosc` (with `lz4`, `zstd`, or `zlib` inside it, byte

@@ -333,6 +333,15 @@ impl Adapter for ZarrAdapter {
                 continue;
             }
             let timeline = timelines.get(&slice.index).and_then(|t| t.as_ref());
+            // The rate this episode declares: its own group's attributes where it has a group of
+            // its own, falling back to the store's. A merged store pooling sessions recorded at
+            // different rates states that per group, and nothing read it — so two episodes an hour
+            // apart in cadence were summarized as though one rate applied to both.
+            let declared_rate_hz = match &slice.prefix {
+                Some(prefix) => declared_rate_of(&read_attrs(&data_dir.join(prefix))?)
+                    .or_else(|| declared_rate_of(&root_attrs)),
+                None => declared_rate_of(&root_attrs),
+            };
             let mut streams = Vec::new();
             for entry in &arrays {
                 let Some(name) = slice.stream_name(&entry.path) else {
@@ -344,6 +353,7 @@ impl Adapter for ZarrAdapter {
                         name,
                         slice,
                         declares_clock.get(&slice.index).copied().unwrap_or(false),
+                        declared_rate_hz,
                         &mut budget,
                         &mut notes,
                     )?
@@ -354,6 +364,7 @@ impl Adapter for ZarrAdapter {
                         slice,
                         &store_name,
                         timeline,
+                        declared_rate_hz,
                         &mut budget,
                         &mut decompression,
                         &mut notes,
@@ -1046,11 +1057,13 @@ fn ns_per_unit(units: &str) -> Option<f64> {
 ///
 /// The two disclosures [`build_stream`] makes about an array too short for its episode are made
 /// here too, from the same shapes, because that defect is visible in the metadata alone.
+#[allow(clippy::too_many_arguments)]
 fn declared_stream(
     entry: &ArrayEntry,
     name: &str,
     slice: &EpisodeSlice,
     declares_clock: bool,
+    declared_rate_hz: Option<f64>,
     budget: &mut FrameBudget,
     notes: &mut Notes,
 ) -> Result<Option<Stream>, IngestError> {
@@ -1098,8 +1111,8 @@ fn declared_stream(
     Ok(Some(Stream {
         name: name.to_string(),
         modality: modality_for(leaf_of(name), array),
-        // Zarr declares no sampling rate.
-        declared_rate_hz: None,
+        // What the store (or this episode's own group) declared, where it declared one.
+        declared_rate_hz,
         clock_id: clock_id.into(),
         clock_kind,
         dtype: Some(array.dtype.name.clone()),
@@ -1138,6 +1151,7 @@ fn build_stream(
     slice: &EpisodeSlice,
     store_name: &str,
     timeline: Option<&Vec<i64>>,
+    declared_rate_hz: Option<f64>,
     budget: &mut FrameBudget,
     decompression: &mut DecompressionBudget,
     notes: &mut Notes,
@@ -1247,8 +1261,9 @@ fn build_stream(
     Ok(Some(Stream {
         name: name.to_string(),
         modality: modality_for(leaf_of(name), array),
-        // Zarr declares no sample rate, and nothing is inferred from the timestamps.
-        declared_rate_hz: None,
+        // What the store (or this episode's own group) declared. Nothing is inferred from the
+        // timestamps: the observed rate is the checks' business, and a declared one is a claim.
+        declared_rate_hz,
         clock_id: clock_id.to_string(),
         clock_kind,
         dtype: Some(array.dtype.name.clone()),
@@ -1295,6 +1310,39 @@ fn modality_for(leaf: &str, array: &ZarrArray) -> Modality {
 
 /// A `.zattrs` value as text: a string as itself, anything else as its compact JSON — which is what
 /// the store actually said, rather than a rendering Veridex invented.
+/// The sampling rate a store's attributes declare, from the handful of names that unambiguously
+/// mean one.
+///
+/// A Zarr store's `.zattrs` is free-form, so this is a curated list rather than a pattern: `fps` is
+/// what LeRobot, UMI and Diffusion Policy write, and `control_freq` is robomimic's name for the same
+/// quantity. Anything else — a string, a nested object, a name this list does not hold — is not a
+/// declared rate and becomes none, because a rate guessed from an attribute is a claim Veridex made
+/// up and every temporal result would then be measured against it.
+///
+/// A value that is a number but **not usable** (zero, negative) is carried through rather than
+/// dropped: a store declaring `fps: 0` has corrupt metadata, and mapping it to "declares nothing"
+/// would make that indistinguishable from a store that declares nothing. `TEMPORAL.INVALID_RATE`
+/// is the finding for it.
+fn declared_rate_of(attrs: &std::collections::BTreeMap<String, serde_json::Value>) -> Option<f64> {
+    const RATE_KEYS: &[&str] = &[
+        "fps",
+        "frame_rate",
+        "framerate",
+        "rate_hz",
+        "sample_rate_hz",
+        "control_freq",
+        "control_hz",
+    ];
+    for key in RATE_KEYS {
+        if let Some(value) = attrs.get(*key).and_then(|v| v.as_f64()) {
+            if value.is_finite() {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
 fn render_attr(value: &serde_json::Value) -> String {
     let text = match value {
         serde_json::Value::String(s) => s.clone(),

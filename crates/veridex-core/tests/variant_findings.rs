@@ -167,6 +167,24 @@ fn generated_datasets(_dir: &Path) -> Vec<(String, std::path::PathBuf)> {
 fn write_generated(dir: &Path) -> Vec<(String, std::path::PathBuf)> {
     let mut out: Vec<(String, std::path::PathBuf)> = Vec::new();
 
+    // A merged Zarr store: two episode groups pooled from sessions recorded at *different* rates,
+    // each group stating its own in its `.zattrs`. This is the one shape that reaches
+    // `temporal.rate-consistency`, which compares the rate two episodes declare for one stream — a
+    // dataset pooling 20 Hz and 30 Hz demos is a real mistake, and the per-group declaration is the
+    // only record of it. Built by copying a committed fixture rather than committing another store.
+    let merged = dir.join("merged-rates.zarr");
+    if copy_tree(
+        &std::path::PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/zarr/group_layout.zarr"
+        )),
+        &merged,
+    ) && std::fs::write(merged.join("ep_0/.zattrs"), br#"{"fps": 20}"#).is_ok()
+        && std::fs::write(merged.join("ep_1/.zattrs"), br#"{"fps": 30}"#).is_ok()
+    {
+        out.push(("zarr/merged-rates".to_string(), merged));
+    }
+
     // CAN+DBC, the eighth adapter and the one with no generator and no committed fixture — its own
     // tests build their inputs inline, so without this the sweeps below would still be missing a
     // reader. Two text files, the pair `docs/formats.md` tells a reader to create, including the
@@ -285,6 +303,29 @@ fn write_generated(dir: &Path) -> Vec<(String, std::path::PathBuf)> {
 }
 
 /// The fixtures committed under `tests/fixtures/`.
+/// Copy a directory tree, returning whether it worked. Used to build a variant of a committed
+/// fixture without committing a second copy of it.
+fn copy_tree(from: &Path, to: &Path) -> bool {
+    if std::fs::create_dir_all(to).is_err() {
+        return false;
+    }
+    let Ok(entries) = std::fs::read_dir(from) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let target = to.join(entry.file_name());
+        let ok = match entry.file_type() {
+            Ok(t) if t.is_dir() => copy_tree(&entry.path(), &target),
+            Ok(_) => std::fs::copy(entry.path(), &target).is_ok(),
+            Err(_) => false,
+        };
+        if !ok {
+            return false;
+        }
+    }
+    true
+}
+
 fn committed_datasets() -> Vec<(String, std::path::PathBuf)> {
     let mut out: Vec<(String, std::path::PathBuf)> = Vec::new();
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
@@ -1047,11 +1088,7 @@ fn the_sweep_reaches_every_adapter() {
 /// fixture the check had been waiting for. What is left is the two that **cannot** arise from any
 /// reader this repo has — so an entry here is now a statement about the *adapters*, and a reader
 /// that starts declaring a nominal rate should expect this test to tell it so.
-const NOT_REACHED_BY_THE_SWEEP: &[(&str, &str)] = &[(
-    "temporal.rate-consistency",
-    "structurally unreachable from today's readers, not merely unfixtured: it compares the \
-         rates two episodes declare, and LeRobot's `fps` is one number for the whole dataset",
-)];
+const NOT_REACHED_BY_THE_SWEEP: &[(&str, &str)] = &[];
 
 #[test]
 fn the_sweep_exercises_the_checks_it_is_pinned_to() {

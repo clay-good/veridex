@@ -1278,3 +1278,81 @@ fn each_episode_group_carries_the_provenance_it_declares_itself() {
         "{codes:?}"
     );
 }
+
+#[test]
+fn a_merged_store_carries_the_rate_each_episode_declares() {
+    // A store's `.zattrs` is free-form, and `fps` is what LeRobot, UMI and Diffusion Policy write
+    // there (robomimic calls it `control_freq`). Nothing read it, so a Zarr store declared no rate
+    // at all — which left `temporal.rate-consistency` with no dataset in the world it could fire
+    // on, and a store pooling 20 Hz and 30 Hz sessions summarized as though one rate applied to
+    // both.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = dir.path().join("merged.zarr");
+    copy_fixture("group_layout.zarr", &store);
+    std::fs::write(store.join("ep_0/.zattrs"), br#"{"fps": 20}"#).expect("ep_0 attrs");
+    std::fs::write(store.join("ep_1/.zattrs"), br#"{"fps": 30}"#).expect("ep_1 attrs");
+
+    let d = default_registry()
+        .ingest(&Source::Local(store), &IngestOptions::default())
+        .expect("ingests")
+        .dataset;
+    let rate = |episode: usize| -> Option<f64> {
+        d.episodes[episode]
+            .streams
+            .first()
+            .and_then(|s| s.declared_rate_hz)
+    };
+    assert_eq!((rate(0), rate(1)), (Some(20.0), Some(30.0)));
+
+    // And the check that exists for exactly this says so.
+    use veridex_core::check::Check;
+    let mut d2 = d.clone();
+    d2.canonicalize_order();
+    let codes: Vec<String> = veridex_core::checks::temporal::RateConsistency
+        .run(&d2)
+        .into_iter()
+        .map(|f| f.code)
+        .collect();
+    assert!(
+        codes.iter().all(|c| c == "TEMPORAL.RATE_INCONSISTENT") && !codes.is_empty(),
+        "{codes:?}"
+    );
+}
+
+#[test]
+fn a_rate_a_store_does_not_declare_is_not_guessed_at() {
+    // The other half: an attribute that is not one of the names that unambiguously mean a rate, or
+    // not a number at all, must leave the stream declaring nothing. A rate guessed from an
+    // attribute is a claim Veridex made up, and every temporal result would then be measured
+    // against it.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let declared = |attrs: &str, n: usize| -> Option<f64> {
+        let store = dir.path().join(format!("store{n}.zarr"));
+        copy_fixture("group_layout.zarr", &store);
+        std::fs::write(store.join("ep_0/.zattrs"), attrs.as_bytes()).expect("attrs");
+        default_registry()
+            .ingest(&Source::Local(store), &IngestOptions::default())
+            .expect("ingests")
+            .dataset
+            .episodes[0]
+            .streams
+            .first()
+            .and_then(|s| s.declared_rate_hz)
+    };
+    assert_eq!(declared(r#"{"control_freq": 50}"#, 0), Some(50.0));
+    assert_eq!(
+        declared(r#"{"hz": 50}"#, 1),
+        None,
+        "not a name this list holds"
+    );
+    assert_eq!(
+        declared(r#"{"fps": "30"}"#, 2),
+        None,
+        "a string is not a rate"
+    );
+    assert_eq!(declared(r#"{"fps": {"camera": 30}}"#, 3), None);
+    // A number that is not a usable rate is still what the store *declared*, and
+    // `TEMPORAL.INVALID_RATE` is the finding for it — dropping it would make a corrupt store
+    // indistinguishable from a silent one.
+    assert_eq!(declared(r#"{"fps": 0}"#, 4), Some(0.0));
+}
